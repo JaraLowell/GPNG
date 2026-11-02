@@ -41,8 +41,8 @@ use super::icons::{
 use super::layout::ActivePane;
 use super::mheard::MheardList;
 use super::session::{
-    decode_rx_text, default_bell_wav, default_ctext_path, format_hex_preview, parse_ax25_ui,
-    play_bell_wav, SessionChrome,
+    decode_rx_text, default_bell_wav, format_hex_preview, parse_ax25_ui, play_bell_wav,
+    SessionChrome,
 };
 use super::theme::vga;
 
@@ -183,6 +183,8 @@ impl TextPad {
 
 pub struct GpGuiApp {
     cfg: Config,
+    /// Path used to persist MYCALL (and later settings) into Config.toml.
+    config_path: PathBuf,
     events: mpsc::Receiver<TncEvent>,
     cmd_tx: mpsc::Sender<TncCommand>,
     active: ActivePane,
@@ -237,6 +239,7 @@ impl GpGuiApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         cfg: Config,
+        config_path: PathBuf,
         events: mpsc::Receiver<TncEvent>,
         cmd_tx: mpsc::Sender<TncCommand>,
     ) -> Self {
@@ -271,6 +274,7 @@ impl GpGuiApp {
         } else {
             cfg.tnc.monitor_mode.clone()
         };
+        let session = SessionChrome::from_config(&cfg.session.chrome);
         Self {
             monitor_bg: egui_color(&colors.monitor_background),
             monitor_fg: egui_color(&colors.monitor_foreground),
@@ -281,6 +285,7 @@ impl GpGuiApp {
             connect_bg: egui_color(&colors.connect_background),
             connect_fg: egui_color(&colors.connect_foreground),
             cfg,
+            config_path,
             events,
             cmd_tx,
             active: ActivePane::Monitor,
@@ -298,10 +303,7 @@ impl GpGuiApp {
             serial_open: false,
             serial_rx_bytes: 0,
             serial_rx_frames: 0,
-            session: SessionChrome {
-                ctext_path: default_ctext_path(),
-                ..SessionChrome::default()
-            },
+            session,
             editor: GpEditor::default(),
             mheard: MheardList::load_default(),
             bell_wav: default_bell_wav(),
@@ -584,6 +586,25 @@ impl GpGuiApp {
         }
     }
 
+    /// Local TX echo into the RX pad(s). Channel pads always keep a transcript;
+    /// Monitor (and the monitor copy of channel TX) follows the Echo toggle.
+    fn echo_own_line(&mut self, line: &str) {
+        let idx = match self.active {
+            ActivePane::Channel(n) => n as usize,
+            _ => 0,
+        };
+        if idx != 0 {
+            if let Some(pad) = self.pads.get_mut(idx) {
+                pad.push(PadKind::Own, line.to_string());
+            }
+            if self.session.echo {
+                self.pads[0].push(PadKind::Own, line.to_string());
+            }
+        } else if self.session.echo {
+            self.pads[0].push(PadKind::Own, line.to_string());
+        }
+    }
+
     fn submit(&mut self) {
         let line = std::mem::take(&mut self.input);
         let line = line.trim_end().to_string();
@@ -596,6 +617,9 @@ impl GpGuiApp {
             self.typed_history.pop_front();
         }
 
+        // Always show what we typed when Echo is on (before any early return).
+        self.echo_own_line(&line);
+
         // Local / TNC monitor-mode helpers: `M IUSC`, `M`, `MONITOR IUSC`
         if let Some(mode) = parse_monitor_set(&line) {
             self.monitor_mode = mode.clone();
@@ -605,22 +629,6 @@ impl GpGuiApp {
                 data: format!("M {mode}").into_bytes(),
             });
             return;
-        }
-
-        let idx = match self.active {
-            ActivePane::Channel(n) => n as usize,
-            _ => 0,
-        };
-        // Own / echo: white. Channel pads always show TX; Monitor only when Echo is on.
-        if idx != 0 {
-            if let Some(pad) = self.pads.get_mut(idx) {
-                pad.push(PadKind::Own, line.clone());
-            }
-            if self.session.echo {
-                self.pads[0].push(PadKind::Own, line.clone());
-            }
-        } else if self.session.echo {
-            self.pads[0].push(PadKind::Own, line.clone());
         }
 
         if let Some((action, args)) = parse_line(&line) {
@@ -653,7 +661,7 @@ impl GpGuiApp {
             version: version::APP_VERSION.into(),
             peer_call: String::new(),
             peer_name: String::new(),
-            my_call: self.cfg.primary_mycall().to_string(),
+            my_call: self.mycall_for_active().to_string(),
             channel: match self.active {
                 ActivePane::Channel(n) => n,
                 _ => 0,
@@ -668,6 +676,7 @@ impl GpGuiApp {
             },
             origin_line: gpi::random_origin_line(),
             digi: String::new(),
+            qrg: format!("{:.3}", self.session.qrg_mhz),
             name_unknown: false,
         }
     }
@@ -688,20 +697,9 @@ impl GpGuiApp {
             ActivePane::Channel(n) => n,
             _ => 0,
         };
-        let idx = channel as usize;
         for raw in text.lines() {
             let line = raw.trim_end_matches('\r').to_string();
-            // Show locally (own / white when echo or channel pad).
-            if idx != 0 {
-                if let Some(pad) = self.pads.get_mut(idx) {
-                    pad.push(PadKind::Own, line.clone());
-                }
-                if self.session.echo {
-                    self.pads[0].push(PadKind::Own, line.clone());
-                }
-            } else {
-                self.pads[0].push(PadKind::System, line.clone());
-            }
+            self.echo_own_line(&line);
             let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
                 channel,
                 data: format!("{line}\r").into_bytes(),
@@ -838,6 +836,7 @@ impl eframe::App for GpGuiApp {
                 let full_h = ui.available_height();
                 self.rx_pane(ui, full_w, full_h);
                 self.qrg_dialog(ctx);
+                self.mycall_dialog(ctx);
             });
     }
 }
@@ -966,7 +965,7 @@ impl GpGuiApp {
         let title_x = rect.left() + title_w;
         let mid_y = rect.top() + rect.height() * 0.5;
 
-        let my = self.cfg.primary_mycall();
+        let my = self.mycall_for_active();
         let owned = self.status_field_rows(my);
         let rows = [owned.0.as_slice(), owned.1.as_slice()];
         let row_h = (rect.height() / 2.0).max(1.0);
@@ -1064,7 +1063,7 @@ impl GpGuiApp {
             ActivePane::Channel(n) => (
                 vec![
                     format!("Ready for Connect"),
-                    format!("My: {my}"),
+                    format!("My: {}", self.cfg.mycall_for_slot(n)),
                     format!("Buffers: {}", self.buffer_lines),
                 ],
                 vec![
@@ -1428,6 +1427,14 @@ impl GpGuiApp {
         }
     }
 
+    fn persist_session_chrome(&mut self) {
+        self.cfg.session.chrome = self.session.to_config();
+        if let Err(e) = self.cfg.persist_chrome(&self.config_path) {
+            self.status = format!("config: {e}");
+            self.log_event(format!("persist chrome: {e}"));
+        }
+    }
+
     fn handle_session_click(&mut self, action: SessionClick) {
         match action {
             SessionClick::Qrg => self.session.open_qrg_dialog(),
@@ -1439,14 +1446,17 @@ impl GpGuiApp {
                 } else {
                     "ASCII: plain".into()
                 };
+                self.persist_session_chrome();
             }
             SessionClick::LineStep => {
                 self.session.line_step = self.session.line_step.cycle();
                 self.status = format!("line step: {:?}", self.session.line_step);
+                self.persist_session_chrome();
             }
             SessionClick::Echo => {
                 self.session.echo = !self.session.echo;
                 self.status = format!("Echo {}", on_off(self.session.echo));
+                self.persist_session_chrome();
             }
             SessionClick::Bell => {
                 self.session.bell = !self.session.bell;
@@ -1454,6 +1464,7 @@ impl GpGuiApp {
                 if self.session.bell {
                     play_bell_wav(&self.bell_wav);
                 }
+                self.persist_session_chrome();
             }
             SessionClick::Spy(n) => {
                 if self.session.spy_slot == Some(n) {
@@ -1470,10 +1481,12 @@ impl GpGuiApp {
                 self.session.seven_plus = !self.session.seven_plus;
                 self.status = format!("7+ {}", on_off(self.session.seven_plus));
                 self.log_event(format!("7Plus {}", on_off(self.session.seven_plus)));
+                self.persist_session_chrome();
             }
             SessionClick::Remote => {
                 self.session.remote = !self.session.remote;
                 self.status = format!("Remote {}", on_off(self.session.remote));
+                self.persist_session_chrome();
             }
             SessionClick::BinRx => {
                 self.session.bin_rx = !self.session.bin_rx;
@@ -1486,6 +1499,7 @@ impl GpGuiApp {
             SessionClick::ScrLock => {
                 self.session.scr_lock = !self.session.scr_lock;
                 self.status = format!("ScrLock {}", on_off(self.session.scr_lock));
+                self.persist_session_chrome();
             }
             SessionClick::ScrollUp => {
                 if !self.session.scr_lock {
@@ -1525,6 +1539,7 @@ impl GpGuiApp {
             self.session.set_ctext_path(path);
             self.status = format!("CT: {}", self.session.ctext_display_name());
             self.log_event(format!("Connect text → {}", self.session.ctext_display_name()));
+            self.persist_session_chrome();
         }
     }
 
@@ -1552,6 +1567,7 @@ impl GpGuiApp {
                             Ok(()) => {
                                 self.status = self.session.qrg_label();
                                 self.log_event(self.session.qrg_label());
+                                self.persist_session_chrome();
                             }
                             Err(e) => self.status = e,
                         }
@@ -1563,6 +1579,80 @@ impl GpGuiApp {
             });
         if !open {
             self.session.show_qrg_dialog = false;
+        }
+    }
+
+    fn mycall_slot_for_active(&self) -> u8 {
+        match self.active {
+            ActivePane::Channel(n) => n,
+            _ => 0,
+        }
+    }
+
+    fn mycall_for_active(&self) -> &str {
+        self.cfg.mycall_for_slot(self.mycall_slot_for_active())
+    }
+
+    fn open_mycall_dialog(&mut self) {
+        let slot = self.mycall_slot_for_active();
+        let current = self.cfg.mycall_for_slot(slot).to_string();
+        self.session.open_mycall_dialog(slot, &current);
+    }
+
+    fn apply_mycall_from_edit(&mut self) -> Result<(), String> {
+        let slot = self.session.mycall_slot;
+        let call = self.cfg.set_mycall_for_slot(slot, &self.session.mycall_edit)?;
+        self.cfg.persist_mycall(&self.config_path)?;
+        self.session.show_mycall_dialog = false;
+        let where_ = if slot == 0 {
+            "Monitor / global".into()
+        } else {
+            format!("channel {slot}")
+        };
+        self.status = format!("MYCALL {call} ({where_})");
+        self.log_event(format!("MYCALL {call} → {where_}"));
+        if slot == 0 {
+            self.pads[0].push(PadKind::System, version::startup_local_call(&call));
+        }
+        Ok(())
+    }
+
+    fn mycall_dialog(&mut self, ctx: &Context) {
+        if !self.session.show_mycall_dialog {
+            return;
+        }
+        let title = if self.session.mycall_slot == 0 {
+            "MYCALL — Monitor (global)".to_string()
+        } else {
+            format!("MYCALL — Channel {}", self.session.mycall_slot)
+        };
+        let mut open = true;
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Call:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.session.mycall_edit)
+                            .desired_width(120.0)
+                            .font(FontId::monospace(16.0)),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        if let Err(e) = self.apply_mycall_from_edit() {
+                            self.status = e;
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.session.show_mycall_dialog = false;
+                    }
+                });
+            });
+        if !open {
+            self.session.show_mycall_dialog = false;
         }
     }
 
@@ -1650,9 +1740,13 @@ impl GpGuiApp {
                 "MHEARD" => self.select(ActivePane::Mh),
                 "SPY" => self.select(ActivePane::Spy),
                 "EXIT" => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
-                "MYCALL" => {
-                    self.status = format!("MYCALL {}", self.cfg.primary_mycall());
+                // Classic GP shelled to DOS; here we just minimize (can't stay resident).
+                "DOS" => {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    self.status = "minimized".into();
                 }
+                "MYCALL" => self.open_mycall_dialog(),
                 "CONNECT" => {
                     let ch = match self.active {
                         ActivePane::Channel(n) => n,
@@ -2009,6 +2103,7 @@ fn load_window_icon() -> egui::IconData {
 
 pub fn run(
     cfg: Config,
+    config_path: PathBuf,
     events: mpsc::Receiver<TncEvent>,
     cmd_tx: mpsc::Sender<TncCommand>,
 ) -> anyhow::Result<()> {
@@ -2025,11 +2120,18 @@ pub fn run(
     };
 
     let cfg = Arc::new(cfg);
+    let config_path = Arc::new(config_path);
     eframe::run_native(
         &title,
         native,
         Box::new(move |cc| {
-            let app = GpGuiApp::new(cc, (*cfg).clone(), events, cmd_tx);
+            let app = GpGuiApp::new(
+                cc,
+                (*cfg).clone(),
+                (*config_path).clone(),
+                events,
+                cmd_tx,
+            );
             Ok(Box::new(app))
         }),
     )

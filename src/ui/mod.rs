@@ -12,6 +12,8 @@ pub mod mheard;
 pub mod session;
 pub mod theme;
 
+use std::path::PathBuf;
+
 use crate::config::Config;
 use crate::tnc::{TncCommand, TncEvent};
 use tokio::sync::mpsc;
@@ -19,6 +21,7 @@ use tokio::sync::mpsc;
 /// Start the operator UI. Pass `tui = true` for the text fallback.
 pub fn run(
     cfg: Config,
+    config_path: PathBuf,
     events: mpsc::Receiver<TncEvent>,
     cmd_tx: mpsc::Sender<TncCommand>,
     tui: bool,
@@ -26,6 +29,6 @@ pub fn run(
     if tui {
         app::run(cfg, events, cmd_tx)
     } else {
-        gui::run(cfg, events, cmd_tx)
+        gui::run(cfg, config_path, events, cmd_tx)
     }
 }

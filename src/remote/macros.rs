@@ -19,6 +19,8 @@ pub struct MacroContext {
     pub news_hint: String,
     pub origin_line: String,
     pub digi: String,
+    /// QRG in MHz (session-bar / Config.toml), e.g. `27.235`.
+    pub qrg: String,
     /// If true, `%?` should solicit a name (caller handles interaction).
     pub name_unknown: bool,
 }
@@ -37,6 +39,7 @@ impl MacroContext {
             news_hint: String::new(),
             origin_line: "73 de GP".into(),
             digi: String::new(),
+            qrg: "27.235".into(),
             name_unknown: false,
         }
     }
@@ -92,6 +95,7 @@ pub fn expand(input: &str, ctx: &MacroContext) -> String {
             'Z' | 'z' => ctx.zone.clone(),
             '_' => "\r\n".into(),
             'O' | 'o' => ctx.origin_line.clone(),
+            'Q' | 'q' => ctx.qrg.clone(),
             '?' => {
                 if ctx.name_unknown {
                     // Placeholder — real UI should prompt; mark for session layer.
@@ -152,6 +156,7 @@ pub fn catalogue() -> HashMap<&'static str, &'static str> {
         ("%_", "CRLF"),
         ("%%", "Literal percent"),
         ("%O", "Random ORIGIN.GPI line"),
+        ("%Q", "QRG frequency (MHz)"),
         ("%?", "Ask for name if unknown"),
         ("%>", "Enable remote prompt"),
         ("%DIGI%", "Digipeater path token"),

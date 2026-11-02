@@ -348,6 +348,209 @@ impl Config {
             .map(String::as_str)
             .unwrap_or("N0CALL")
     }
+
+    /// MYCALL for a slot: `0` = monitor / global, `1..=N` = channel.
+    /// Channels without an override fall back to the primary call.
+    pub fn mycall_for_slot(&self, slot: u8) -> &str {
+        let idx = slot as usize;
+        self.station
+            .mycall
+            .get(idx)
+            .map(String::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| self.primary_mycall())
+    }
+
+    /// Set MYCALL for a slot (extends the list as needed). Returns the
+    /// normalised callsign.
+    pub fn set_mycall_for_slot(&mut self, slot: u8, call: &str) -> Result<String, String> {
+        let call = normalize_mycall(call)?;
+        let idx = slot as usize;
+        let primary = self.primary_mycall().to_string();
+        while self.station.mycall.len() <= idx {
+            self.station.mycall.push(primary.clone());
+        }
+        self.station.mycall[idx] = call.clone();
+        if slot == 0 {
+            self.tnc.runtime_mycall = call.clone();
+        }
+        Ok(call)
+    }
+
+    /// Rewrite the `mycall = [...]` line in a Config.toml, keeping comments.
+    pub fn persist_mycall(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let list = self
+            .station
+            .mycall
+            .iter()
+            .map(|c| format!("\"{}\"", c.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        upsert_toml_key(path, None, "mycall", &format!("[{list}]"))
+    }
+
+    /// Rewrite / create the `[session.chrome]` block for session-bar buttons.
+    pub fn persist_chrome(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let c = &self.session.chrome;
+        let ctext = toml_string(&c.ctext);
+        let body = format!(
+            "qrg_mhz = {:.3}\n\
+             ctext = {ctext}\n\
+             extended_ascii = {}\n\
+             smooth_scroll = {}\n\
+             echo = {}\n\
+             bell = {}\n\
+             seven_plus = {}\n\
+             remote = {}\n\
+             scr_lock = {}\n",
+            c.qrg_mhz,
+            c.extended_ascii,
+            c.smooth_scroll,
+            c.echo,
+            c.bell,
+            c.seven_plus,
+            c.remote,
+            c.scr_lock,
+        );
+        upsert_toml_section(path, "session.chrome", &body)
+    }
+}
+
+fn toml_string(s: &str) -> String {
+    // Basic TOML basic-string escaping.
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("\"{escaped}\"")
+}
+
+/// Replace or insert `key = value` at file top-level (or under first match of key).
+fn upsert_toml_key(
+    path: &Path,
+    _section: Option<&str>,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let replacement = format!("{key} = {value}");
+    let key_lc = key.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len() + 32);
+    let mut replaced = false;
+    let ends_nl = text.ends_with('\n');
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let is_key = {
+            let head = trimmed.split('=').next().unwrap_or("").trim();
+            !replaced && head.eq_ignore_ascii_case(&key_lc)
+        };
+        if is_key {
+            let indent_len = line.len() - trimmed.len();
+            out.push_str(&line[..indent_len]);
+            out.push_str(&replacement);
+            out.push('\n');
+            replaced = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !replaced {
+        return Err(format!("no {key} = line found in {}", path.display()));
+    }
+    if !ends_nl && out.ends_with('\n') {
+        out.pop();
+    }
+    fs::write(path, out).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Replace an existing `[name]` section body, or append the section.
+fn upsert_toml_section(path: &Path, name: &str, body: &str) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let header = format!("[{name}]");
+    let header_lc = header.to_ascii_lowercase();
+    let ends_nl = text.ends_with('\n');
+    let lines: Vec<&str> = text.lines().collect();
+
+    let mut start = None;
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim().eq_ignore_ascii_case(&header_lc) {
+            start = Some(i);
+            break;
+        }
+    }
+
+    let mut out = String::with_capacity(text.len() + body.len() + 32);
+    if let Some(s) = start {
+        for line in &lines[..s] {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push_str(&header);
+        out.push('\n');
+        out.push_str(body);
+        if !body.ends_with('\n') {
+            out.push('\n');
+        }
+        let mut i = s + 1;
+        while i < lines.len() {
+            let t = lines[i].trim();
+            if t.starts_with('[') && t.ends_with(']') {
+                break;
+            }
+            i += 1;
+        }
+        for line in &lines[i..] {
+            out.push_str(line);
+            out.push('\n');
+        }
+    } else {
+        out.push_str(&text);
+        if !text.is_empty() && !text.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+        out.push_str(&header);
+        out.push('\n');
+        out.push_str(body);
+        if !body.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    if !ends_nl && out.ends_with('\n') && start.is_some() {
+        // keep trailing newline if original had one; section append always ends with \n
+    }
+    fs::write(path, out).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Uppercase callsign with optional `-SSID` (1–15).
+fn normalize_mycall(raw: &str) -> Result<String, String> {
+    let t = raw.trim().to_ascii_uppercase();
+    if t.is_empty() {
+        return Err("mycall is empty".into());
+    }
+    let (base, ssid) = match t.split_once('-') {
+        Some((b, s)) => (b, Some(s)),
+        None => (t.as_str(), None),
+    };
+    if base.is_empty() || base.len() > 6 || !base.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("invalid call '{t}'"));
+    }
+    if let Some(s) = ssid {
+        let n: u8 = s
+            .parse()
+            .map_err(|_| format!("invalid SSID in '{t}'"))?;
+        if n > 15 {
+            return Err(format!("SSID out of range in '{t}'"));
+        }
+        Ok(format!("{base}-{n}"))
+    } else {
+        Ok(base.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -441,6 +644,8 @@ pub struct SessionConfig {
     pub auto_spy: Vec<String>,
     pub no_auto_spy: Vec<String>,
     pub auto_spy_minimum_save: u32,
+    /// Session-bar button state (QRG, Echo, ScrLock, …).
+    pub chrome: SessionChromeConfig,
 }
 
 impl Default for SessionConfig {
@@ -466,6 +671,43 @@ impl Default for SessionConfig {
             auto_spy: Vec::new(),
             no_auto_spy: Vec::new(),
             auto_spy_minimum_save: 512,
+            chrome: SessionChromeConfig::default(),
+        }
+    }
+}
+
+/// Session-strip toggles persisted under `[session.chrome]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionChromeConfig {
+    pub qrg_mhz: f64,
+    /// Connect-text path (`CT:` button).
+    pub ctext: String,
+    /// `äöü` extended DOS / CP437 mode.
+    pub extended_ascii: bool,
+    /// Smooth (stairs) vs hard (`/`) line step.
+    pub smooth_scroll: bool,
+    pub echo: bool,
+    /// Session-bar bell (♪).
+    pub bell: bool,
+    pub seven_plus: bool,
+    /// Channel Remote toggle (not the callsign allow-list).
+    pub remote: bool,
+    pub scr_lock: bool,
+}
+
+impl Default for SessionChromeConfig {
+    fn default() -> Self {
+        Self {
+            qrg_mhz: 27.235,
+            ctext: String::new(),
+            extended_ascii: false,
+            smooth_scroll: false,
+            echo: true,
+            bell: true,
+            seven_plus: false,
+            remote: false,
+            scr_lock: true,
         }
     }
 }

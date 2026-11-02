@@ -48,7 +48,7 @@ fn main() -> Result<()> {
     let events = tnc_channels.events;
     let shutdown_tx = cmd_tx.clone();
 
-    let ui_result = ui::run(cfg, events, cmd_tx, tui);
+    let ui_result = ui::run(cfg, config_path, events, cmd_tx, tui);
 
     graphic_packet::tnc::request_shutdown();
     let _ = rt.block_on(shutdown_tx.send(TncCommand::Shutdown));

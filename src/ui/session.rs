@@ -10,6 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::config::SessionChromeConfig;
+
 /// How new lines arrive in the RX pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineStep {
@@ -56,6 +58,11 @@ pub struct SessionChrome {
     pub spy_slot: Option<u8>,
     pub show_qrg_dialog: bool,
     pub qrg_edit: String,
+    /// MYCALL popup (same style as QRG).
+    pub show_mycall_dialog: bool,
+    pub mycall_edit: String,
+    /// `0` = monitor / global; `1..=N` = channel.
+    pub mycall_slot: u8,
     /// One-shot scroll nudge in pixels (negative = up).
     pub scroll_nudge: f32,
 }
@@ -67,7 +74,7 @@ impl Default for SessionChrome {
             ctext_path: PathBuf::from("CTEXT.GPI"),
             extended_ascii: false,
             line_step: LineStep::Hard,
-            echo: false,
+            echo: true, // classic default — show local TX in the RX pane
             bell: true,
             seven_plus: false,
             remote: false,
@@ -78,12 +85,53 @@ impl Default for SessionChrome {
             spy_slot: None,
             show_qrg_dialog: false,
             qrg_edit: String::new(),
+            show_mycall_dialog: false,
+            mycall_edit: String::new(),
+            mycall_slot: 0,
             scroll_nudge: 0.0,
         }
     }
 }
 
 impl SessionChrome {
+    /// Apply persisted `[session.chrome]` values (empty `ctext` → default GTEXT).
+    pub fn from_config(chrome: &SessionChromeConfig) -> Self {
+        let mut s = Self::default();
+        s.qrg_mhz = chrome.qrg_mhz;
+        if !chrome.ctext.trim().is_empty() {
+            s.ctext_path = PathBuf::from(&chrome.ctext);
+        } else {
+            s.ctext_path = default_ctext_path();
+        }
+        s.extended_ascii = chrome.extended_ascii;
+        s.line_step = if chrome.smooth_scroll {
+            LineStep::Smooth
+        } else {
+            LineStep::Hard
+        };
+        s.echo = chrome.echo;
+        s.bell = chrome.bell;
+        s.seven_plus = chrome.seven_plus;
+        s.remote = chrome.remote;
+        s.scr_lock = chrome.scr_lock;
+        s
+    }
+
+    /// Snapshot for writing back to Config.toml.
+    pub fn to_config(&self) -> SessionChromeConfig {
+        SessionChromeConfig {
+            qrg_mhz: self.qrg_mhz,
+            ctext: self.ctext_path.to_string_lossy().into_owned(),
+            extended_ascii: self.extended_ascii,
+            smooth_scroll: matches!(self.line_step, LineStep::Smooth),
+            echo: self.echo,
+            bell: self.bell,
+            seven_plus: self.seven_plus,
+            remote: self.remote,
+            scr_lock: self.scr_lock,
+        }
+    }
+
     pub fn qrg_label(&self) -> String {
         format!("QRG: {:.3}", self.qrg_mhz)
     }
@@ -113,6 +161,12 @@ impl SessionChrome {
     pub fn open_qrg_dialog(&mut self) {
         self.qrg_edit = format!("{:.3}", self.qrg_mhz);
         self.show_qrg_dialog = true;
+    }
+
+    pub fn open_mycall_dialog(&mut self, slot: u8, current: &str) {
+        self.mycall_slot = slot;
+        self.mycall_edit = current.to_string();
+        self.show_mycall_dialog = true;
     }
 
     pub fn set_ctext_path(&mut self, path: PathBuf) {

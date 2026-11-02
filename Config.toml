@@ -51,6 +51,17 @@ auto_spy = []
 no_auto_spy = []
 auto_spy_minimum_save = 512
 
+# Session-bar button state (restored on start; rewritten when you toggle).
+[session.chrome]
+qrg_mhz = 144.800
+ctext = "tools\\GTEXT.GPI"
+extended_ascii = true
+smooth_scroll = false
+echo = true
+bell = true
+seven_plus = true
+remote = true
+scr_lock = false
 [buffers]
 # Legacy line counts (≈80 columns each in classic GP).
 text_buffer = [600, 300]   # TEXTBUFFER: monitor (Buffers: on magenta bar), then channels…
