@@ -165,15 +165,46 @@ fn write_kiss_data(link: &mut SerialLink, port: u8, payload: &[u8]) -> Result<()
     Ok(())
 }
 
+/// Max unframed text kept while waiting for a line terminator.
+const MAX_TEXT_PENDING: usize = 1024;
+
+/// Emit CR/LF-terminated plain-text lines (radio still in TNC/APRS text mode,
+/// e.g. `DB0ET>APRS,WIDE1-1:...`) as Monitor lines. Returns bytes consumed.
+fn drain_text_lines(buf: &[u8], events: &mpsc::Sender<TncEvent>) -> usize {
+    let mut consumed = 0;
+    while let Some(pos) = buf[consumed..]
+        .iter()
+        .position(|&b| b == b'\r' || b == b'\n')
+    {
+        let line = &buf[consumed..consumed + pos];
+        consumed += pos + 1;
+        if line.iter().any(|b| b.is_ascii_graphic()) {
+            let _ = events.blocking_send(TncEvent::HostFrame {
+                channel: 0,
+                code: HostCode::Monitor,
+                payload: line.to_vec(),
+            });
+        }
+    }
+    consumed
+}
+
 /// Pull complete KISS frames (`FEND … FEND`) from the stream.
 fn drain_kiss_frames(stream: &mut Vec<u8>, events: &mpsc::Sender<TncEvent>) {
     loop {
         if let Some(start) = stream.iter().position(|&b| b == FEND) {
             if start > 0 {
+                let mut prefix = stream[..start].to_vec();
+                prefix.push(b'\r');
+                drain_text_lines(&prefix, events);
                 stream.drain(..start);
             }
         } else {
-            stream.clear();
+            let used = drain_text_lines(stream, events);
+            stream.drain(..used);
+            if stream.len() > MAX_TEXT_PENDING {
+                stream.clear();
+            }
             return;
         }
         if stream.len() < 2 {
@@ -220,4 +251,36 @@ fn unescape_kiss(raw: &[u8]) -> Option<(u8, Vec<u8>)> {
         i += 1;
     }
     Some((port, out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_text_lines_become_monitor_frames() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut stream = b"DB0ET>U3RTS5,WIDE1-1:'}Xzl\rDB0".to_vec();
+        drain_kiss_frames(&mut stream, &tx);
+        match rx.try_recv().unwrap() {
+            TncEvent::HostFrame { channel, code, payload } => {
+                assert_eq!(channel, 0);
+                assert!(matches!(code, HostCode::Monitor));
+                assert_eq!(payload, b"DB0ET>U3RTS5,WIDE1-1:'}Xzl");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(stream, b"DB0");
+    }
+
+    #[test]
+    fn kiss_frame_still_decodes() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut stream = vec![FEND, 0x00, b'A', FESC, TFEND, FEND];
+        drain_kiss_frames(&mut stream, &tx);
+        match rx.try_recv().unwrap() {
+            TncEvent::HostFrame { payload, .. } => assert_eq!(payload, vec![b'A', FEND]),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 }
