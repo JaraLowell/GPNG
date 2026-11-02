@@ -1,0 +1,42 @@
+[package]
+name = "graphic-packet"
+version = "0.1.0"
+edition = "2021"
+description = "Modern asynchronous rewrite of Graphic Packet (GP), the classic AX.25 terminal by Ulf Saran (DH1DAE)"
+license = "MIT OR Apache-2.0"
+authors = ["Graphic Packet Contributors"]
+readme = "README.md"
+keywords = ["ax25", "packet-radio", "ham-radio", "tnc", "hostmode"]
+categories = ["network-programming", "command-line-utilities"]
+
+[dependencies]
+# Async runtime: dual-task architecture (serial RX + terminal UI).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "fs", "signal"] }
+
+# Type-safe configuration for Config.toml and legacy CONFIG.GP keys.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Cross-platform USB-to-serial / classic COM-port access for TNCs.
+serialport = "4"
+
+# Ergonomic error propagation for I/O and config loading.
+thiserror = "2"
+anyhow = "1"
+
+# Structured logging while the serial and UI loops run concurrently.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Pixel UI (icons + analog clock) — ratatui cannot show ICONS.GP bitmaps.
+eframe = "0.29"
+egui = "0.29"
+chrono = "0.4"
+
+# Session-bar: CTEXT file picker + classic bell.wav
+rfd = "0.15"
+rodio = { version = "0.20", default-features = true, features = ["wav"] }
+
+# Optional text-mode fallback (`--tui`).
+ratatui = "0.29"
+crossterm = "0.28"

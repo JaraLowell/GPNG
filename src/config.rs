@@ -1,0 +1,798 @@
+//! Configuration for the modern Graphic Packet rewrite.
+//!
+//! Classic GP stored settings in `CONFIG.GP` (and baked defaults into
+//! `GP2862K.EXE`). This module:
+//!
+//! 1. Exposes a typed [`Config`] tree for `Config.toml`.
+//! 2. Accepts the historical key names (`MYCALL`, `SERBAUD`, `CHANNELS`, …)
+//!    when loading a legacy-style key=value file.
+//! 3. Normalises both sources into one runtime structure.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("failed to read config from {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("invalid TOML in {path}: {source}")]
+    Toml {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
+    #[error("legacy config parse error in {path}: {message}")]
+    Legacy { path: PathBuf, message: String },
+}
+
+// ---------------------------------------------------------------------------
+// Root configuration
+// ---------------------------------------------------------------------------
+
+/// Complete runtime configuration (modern + legacy-mapped).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    pub station: StationConfig,
+    pub serial: SerialConfig,
+    pub session: SessionConfig,
+    pub buffers: BufferConfig,
+    pub paths: PathConfig,
+    pub tnc: TncConfig,
+    pub colors: ColorConfig,
+    pub print: PrintConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            station: StationConfig::default(),
+            serial: SerialConfig::default(),
+            session: SessionConfig::default(),
+            buffers: BufferConfig::default(),
+            paths: PathConfig::default(),
+            tnc: TncConfig::default(),
+            colors: ColorConfig::default(),
+            print: PrintConfig::default(),
+        }
+    }
+}
+
+impl Config {
+    /// Load `Config.toml` if present; otherwise return defaults.
+    ///
+    /// Also tries a sibling legacy `CONFIG.GP` / `config.gp` and merges
+    /// recognised keys on top of the TOML (or defaults).
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let mut cfg = if path.exists() {
+            Self::from_toml_file(path)?
+        } else {
+            tracing::warn!(
+                "config file {} not found — using built-in defaults",
+                path.display()
+            );
+            Self::default()
+        };
+
+        // Optional legacy overlay next to the modern file, or classic name.
+        let legacy_candidates = [
+            path.with_file_name("CONFIG.GP"),
+            path.with_file_name("config.gp"),
+            PathBuf::from("CONFIG.GP"),
+        ];
+        for candidate in &legacy_candidates {
+            if candidate.exists() && candidate != path {
+                tracing::info!("merging legacy settings from {}", candidate.display());
+                cfg.merge_legacy_file(candidate)?;
+                break;
+            }
+        }
+
+        Ok(cfg)
+    }
+
+    /// Parse a modern TOML configuration file.
+    pub fn from_toml_file(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let text = fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        toml::from_str(&text).map_err(|source| ConfigError::Toml {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    /// Overlay values from a classic `CONFIG.GP` key=value document.
+    pub fn merge_legacy_file(&mut self, path: impl AsRef<Path>) -> Result<(), ConfigError> {
+        let path = path.as_ref();
+        let text = fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        self.merge_legacy_text(&text)
+            .map_err(|message| ConfigError::Legacy {
+                path: path.to_path_buf(),
+                message,
+            })
+    }
+
+    /// Apply legacy `KEY = value` lines (semicolon comments, case-insensitive keys).
+    pub fn merge_legacy_text(&mut self, text: &str) -> Result<(), String> {
+        // TNCINI / TNCDEI / TNCDOS may appear multiple times — collect then replace.
+        let mut tnc_init = Vec::new();
+        let mut tnc_dei = Vec::new();
+        let mut tnc_dos = Vec::new();
+        let mut saw_tnc_init = false;
+        let mut saw_tnc_dei = false;
+        let mut saw_tnc_dos = false;
+
+        for (lineno, raw) in text.lines().enumerate() {
+            let line = strip_legacy_comment(raw).trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let (key, value) = split_legacy_kv(line).ok_or_else(|| {
+                format!("line {}: expected KEY = VALUE, got `{raw}`", lineno + 1)
+            })?;
+            let key_upper = key.to_ascii_uppercase();
+            let value = value.trim();
+
+            match key_upper.as_str() {
+                // --- station ------------------------------------------------
+                "MYCALL" => {
+                    self.station.mycall = split_csv(value);
+                }
+                "ZONE" => self.station.zone = value.to_string(),
+                "TIME" => {
+                    self.station.time_offset_minutes = parse_i32(value, "TIME")?;
+                }
+
+                // --- serial -------------------------------------------------
+                "SERBAUD" => self.serial.baud = parse_u32(value, "SERBAUD")?,
+                "SERNR" => {
+                    self.serial.com_number = parse_u32(value, "SERNR")?;
+                    // If the operator only set SERNR, synthesise a modern port name.
+                    if self.serial.port.is_empty() || self.serial.port.starts_with("COM") {
+                        self.serial.port = format!("COM{}", self.serial.com_number);
+                    }
+                }
+                "SERPORT" => {
+                    self.serial.io_port = Some(parse_hex_or_dec(value)?);
+                }
+                "SERIRQ" => self.serial.irq = Some(parse_u32(value, "SERIRQ")?),
+                "FASTPOLL" => self.serial.fast_poll = value.to_ascii_lowercase(),
+                "MULTIPORT" => self.serial.multiport = value.to_ascii_lowercase(),
+
+                // --- session ------------------------------------------------
+                "CHANNELS" => self.session.channels = parse_u32(value, "CHANNELS")?,
+                "MAXSPY" => self.session.max_spy = parse_u32(value, "MAXSPY")?,
+                "CONNECTBELL" => {
+                    self.session.connect_bell = parse_u32(value, "CONNECTBELL")?;
+                }
+                "RXCLICK" => self.session.rx_click = parse_u32(value, "RXCLICK")?,
+                "SCREENSAVE" => {
+                    self.session.screensave_minutes = parse_u32(value, "SCREENSAVE")?;
+                }
+                "POPUPTIME" => {
+                    self.session.popup_time_seconds = parse_u32(value, "POPUPTIME")?;
+                }
+                "POPUPENABLEKEYBOARD" => {
+                    self.session.popup_enable_keyboard = parse_boolish(value);
+                }
+                "INSERTMONLINE" => self.session.insert_mon_line = parse_boolish(value),
+                "QUESTIONS" => self.session.questions = parse_boolish(value),
+                "BACKUP" => self.session.backup = parse_boolish(value),
+                "ZOOM" => self.session.zoom = parse_u32(value, "ZOOM")?,
+                "PROMPT" => self.session.prompt = value.to_string(),
+                "NONAME" => self.session.noname = value.to_string(),
+                "REMOTELANGUAGE" => {
+                    self.session.remote_language = value.to_string();
+                }
+                "SECURITY" => self.session.security = parse_boolish(value),
+                "REMOTE" => self.session.remote = split_csv(value),
+                "NOREMOTE" => self.session.no_remote = split_csv(value),
+                "AUTOSPY" => self.session.auto_spy = split_csv_words(value),
+                "NOAUTOSPY" => self.session.no_auto_spy = split_csv(value),
+                "AUTOSPYMINIMUMSAVE" => {
+                    self.session.auto_spy_minimum_save =
+                        parse_u32(value, "AUTOSPYMINIMUMSAVE")?;
+                }
+
+                // --- buffers ------------------------------------------------
+                "TEXTBUFFER" => {
+                    self.buffers.text_buffer = parse_u32_list(value, "TEXTBUFFER")?;
+                }
+                "EDITBUFFER" => {
+                    self.buffers.edit_buffer = parse_u32(value, "EDITBUFFER")?;
+                }
+                "CHECKBUFFER" => {
+                    self.buffers.check_buffer = parse_u32(value, "CHECKBUFFER")?;
+                }
+                "LISTBUFFER" => {
+                    self.buffers.list_buffer = parse_u32(value, "LISTBUFFER")?;
+                }
+                "SPYBUFFER" => {
+                    self.buffers.spy_buffer = parse_u32(value, "SPYBUFFER")?;
+                }
+                "MHBUFFER" => self.buffers.mh_buffer = parse_u32(value, "MHBUFFER")?,
+                "INPUTBUFFER" => {
+                    self.buffers.input_buffer = parse_u32(value, "INPUTBUFFER")?;
+                }
+
+                // --- paths --------------------------------------------------
+                "USERDIR" => self.paths.user_dir = PathBuf::from(value),
+                "EXTERNALDIR" => self.paths.external_dir = PathBuf::from(value),
+                "SAVEDIR" => self.paths.save_dir = PathBuf::from(value),
+                "LOGDIR" => self.paths.log_dir = PathBuf::from(value),
+                "SPYDIR" => self.paths.spy_dir = PathBuf::from(value),
+
+                // --- TNC command lists (multi-valued) -----------------------
+                "TNCINI" => {
+                    saw_tnc_init = true;
+                    tnc_init.push(value.to_string());
+                }
+                "TNCDEI" => {
+                    saw_tnc_dei = true;
+                    tnc_dei.push(value.to_string());
+                }
+                "TNCDOS" => {
+                    saw_tnc_dos = true;
+                    tnc_dos.push(value.to_string());
+                }
+
+                // --- colours (legacy VGA names) -----------------------------
+                "CLOCKBACKGROUND" => self.colors.clock_background = value.to_string(),
+                "INPUTFOREGROUND" => self.colors.input_foreground = value.to_string(),
+                "INPUTBACKGROUND" => self.colors.input_background = value.to_string(),
+                "MONITORFOREGROUND" => {
+                    self.colors.monitor_foreground = value.to_string();
+                }
+                "MONITORBACKGROUND" => {
+                    self.colors.monitor_background = value.to_string();
+                }
+                "CONNECTFOREGROUND" => {
+                    self.colors.connect_foreground = value.to_string();
+                }
+                "CONNECTBACKGROUND" => {
+                    self.colors.connect_background = value.to_string();
+                }
+                "STATEBACKGROUND" => self.colors.state_background = value.to_string(),
+                "STATEFOREGROUND" => self.colors.state_foreground = value.to_string(),
+                "MENUBACKGROUND" => self.colors.menu_background = value.to_string(),
+                "MENUFOREGROUND" => self.colors.menu_foreground = value.to_string(),
+                "MENUINVERSATTR" => self.colors.menu_invers_attr = value.to_string(),
+                "BORDERATTR" => self.colors.border_attr = value.to_string(),
+                "CONNECTINVERSATTR" => {
+                    self.colors.connect_invers_attr = value.to_string();
+                }
+                "MONITORINVERSATTR" => {
+                    self.colors.monitor_invers_attr = value.to_string();
+                }
+                "EDITORFOREGROUND" => {
+                    self.colors.editor_foreground = value.to_string();
+                }
+                "EDITORBACKGROUND" => {
+                    self.colors.editor_background = value.to_string();
+                }
+                "CHECKFOREGROUND" => self.colors.check_foreground = value.to_string(),
+                "CHECKBACKGROUND" => self.colors.check_background = value.to_string(),
+                "CHECKINVERSATTR" => {
+                    self.colors.check_invers_attr = value.to_string();
+                }
+                "EDITORINVERSATTR" => {
+                    self.colors.editor_invers_attr = value.to_string();
+                }
+                "LISTBACKGROUND" => self.colors.list_background = value.to_string(),
+                "LISTFOREGROUND" => self.colors.list_foreground = value.to_string(),
+                "LISTINVERSATTR" => self.colors.list_invers_attr = value.to_string(),
+                "MHBACKGROUND" => self.colors.mh_background = value.to_string(),
+                "MHFOREGROUND" => self.colors.mh_foreground = value.to_string(),
+                "MHINVERSATTR" => self.colors.mh_invers_attr = value.to_string(),
+                "SPYBACKGROUND" => self.colors.spy_background = value.to_string(),
+                "SPYFOREGROUND" => self.colors.spy_foreground = value.to_string(),
+                "SPYINVERSATTR" => self.colors.spy_invers_attr = value.to_string(),
+
+                // --- printer ------------------------------------------------
+                "DEFAULTPRINT" => {
+                    self.print.default_print = parse_u8_list(value, "DEFAULTPRINT")?;
+                }
+                "INVERSPRINT" => {
+                    self.print.invers_print = parse_u8_list(value, "INVERSPRINT")?;
+                }
+
+                // Known but ignored modern-irrelevant keys (e.g. GRAPHIC=VGA).
+                "GRAPHIC" | "LOG" | "QRG" | "UTC" => {
+                    tracing::debug!("ignoring legacy display/log key `{key_upper}`");
+                }
+
+                other => {
+                    tracing::debug!("unrecognised legacy key `{other}` — skipped");
+                }
+            }
+        }
+
+        if saw_tnc_init {
+            self.tnc.init = tnc_init;
+        }
+        if saw_tnc_dei {
+            self.tnc.deinit = tnc_dei;
+        }
+        if saw_tnc_dos {
+            self.tnc.dos_shell = tnc_dos;
+        }
+
+        Ok(())
+    }
+
+    /// Primary station callsign (monitor / channel-0 MYCALL).
+    pub fn primary_mycall(&self) -> &str {
+        self.station
+            .mycall
+            .first()
+            .map(String::as_str)
+            .unwrap_or("N0CALL")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sections
+// ---------------------------------------------------------------------------
+
+/// Station identity — legacy `MYCALL`, `ZONE`, `TIME`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StationConfig {
+    /// Monitor call first, then optional per-channel overrides.
+    pub mycall: Vec<String>,
+    pub zone: String,
+    pub time_offset_minutes: i32,
+}
+
+impl Default for StationConfig {
+    fn default() -> Self {
+        Self {
+            mycall: vec!["N0CALL".into()],
+            zone: "UTC".into(),
+            time_offset_minutes: 0,
+        }
+    }
+}
+
+/// Serial / USB-TNC attachment — legacy `SER*`, `FASTPOLL`, `MULTIPORT`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SerialConfig {
+    /// Modern device path (`COM3`, `/dev/ttyUSB0`, …).
+    pub port: String,
+    /// Legacy `SERBAUD`.
+    pub baud: u32,
+    /// Legacy `SERNR` (COM index); informational when `port` is explicit.
+    pub com_number: u32,
+    /// Legacy `SERPORT` IO base (e.g. `0x3F8`); unused for USB-serial.
+    pub io_port: Option<u32>,
+    /// Legacy `SERIRQ`; unused for USB-serial.
+    pub irq: Option<u32>,
+    pub fast_poll: String,
+    pub multiport: String,
+}
+
+impl Default for SerialConfig {
+    fn default() -> Self {
+        Self {
+            port: "COM3".into(),
+            baud: 9600,
+            com_number: 3,
+            io_port: None,
+            irq: None,
+            fast_poll: "auto".into(),
+            multiport: "auto".into(),
+        }
+    }
+}
+
+impl SerialConfig {
+    /// Hostmode poll sleep from legacy `FASTPOLL` (`on` / `off` / `auto`).
+    pub fn poll_interval_ms(&self) -> u64 {
+        match self.fast_poll.to_ascii_lowercase().as_str() {
+            "on" | "1" | "true" | "yes" => 25,
+            "off" | "0" | "false" | "no" => 150,
+            _ => 50, // auto
+        }
+    }
+}
+
+/// Session / UI behaviour — channels, spy, remote, bells, …
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionConfig {
+    pub channels: u32,
+    pub max_spy: u32,
+    pub connect_bell: u32,
+    pub rx_click: u32,
+    pub screensave_minutes: u32,
+    pub popup_time_seconds: u32,
+    pub popup_enable_keyboard: bool,
+    pub insert_mon_line: bool,
+    pub questions: bool,
+    pub backup: bool,
+    pub zoom: u32,
+    pub prompt: String,
+    pub noname: String,
+    pub remote_language: String,
+    pub security: bool,
+    pub remote: Vec<String>,
+    pub no_remote: Vec<String>,
+    pub auto_spy: Vec<String>,
+    pub no_auto_spy: Vec<String>,
+    pub auto_spy_minimum_save: u32,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            channels: 10,
+            max_spy: 1,
+            connect_bell: 1,
+            rx_click: 2,
+            screensave_minutes: 0,
+            popup_time_seconds: 3,
+            popup_enable_keyboard: false,
+            insert_mon_line: false,
+            questions: false,
+            backup: true,
+            zoom: 1,
+            prompt: "%c to %y>".into(),
+            noname: "%c".into(),
+            remote_language: "EN".into(),
+            security: false,
+            remote: Vec::new(),
+            no_remote: Vec::new(),
+            auto_spy: Vec::new(),
+            no_auto_spy: Vec::new(),
+            auto_spy_minimum_save: 512,
+        }
+    }
+}
+
+/// Scroll-back sizes in lines (classic GP: ~80 columns).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BufferConfig {
+    pub text_buffer: Vec<u32>,
+    pub edit_buffer: u32,
+    pub check_buffer: u32,
+    pub list_buffer: u32,
+    pub spy_buffer: u32,
+    pub mh_buffer: u32,
+    pub input_buffer: u32,
+}
+
+impl Default for BufferConfig {
+    fn default() -> Self {
+        Self {
+            text_buffer: vec![600, 300],
+            edit_buffer: 1000,
+            check_buffer: 200,
+            list_buffer: 200,
+            spy_buffer: 100,
+            mh_buffer: 50,
+            input_buffer: 200,
+        }
+    }
+}
+
+/// Filesystem layout — legacy `*DIR` keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PathConfig {
+    pub user_dir: PathBuf,
+    pub external_dir: PathBuf,
+    pub save_dir: PathBuf,
+    pub log_dir: PathBuf,
+    pub spy_dir: PathBuf,
+}
+
+impl Default for PathConfig {
+    fn default() -> Self {
+        Self {
+            user_dir: PathBuf::from("USER"),
+            external_dir: PathBuf::from("EXTERNAL"),
+            save_dir: PathBuf::from("SAVE"),
+            log_dir: PathBuf::from("LOG"),
+            spy_dir: PathBuf::from("SPY"),
+        }
+    }
+}
+
+/// Hostmode dialect and startup/shutdown command lists.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TncConfig {
+    /// Legacy `TNCINI` rows (including the GP pseudo-command `DateTime`).
+    pub init: Vec<String>,
+    /// Legacy `TNCDEI` rows.
+    pub deinit: Vec<String>,
+    /// Legacy `TNCDOS` rows (applied around an external shell).
+    pub dos_shell: Vec<String>,
+    /// `"wa8ded"` / `"jhost"`, `"tfpcx"`, or `"kiss"`.
+    pub protocol: String,
+    /// KISSINIT-style file (default `KISS.INI`) — used when `protocol = "kiss"`.
+    pub kiss_ini: String,
+    /// Section name inside `kiss_ini` (e.g. `TM-D700`, `TS2000_9600`).
+    pub kiss_section: String,
+    /// Delay after each character when sending KISS.INI (ms). Classic default 30.
+    pub kiss_char_delay_ms: u64,
+    /// Delay after each CR line (ms). Classic default 300.
+    pub kiss_line_delay_ms: u64,
+    /// Settle delay after the section (ms). Classic `-D` exit time; Kenwood often 5000.
+    pub kiss_exit_delay_ms: u64,
+}
+
+impl Default for TncConfig {
+    fn default() -> Self {
+        Self {
+            init: vec![
+                "DateTime".into(),
+                "@V0".into(),
+                "K 2".into(),
+                "M UISC".into(),
+            ],
+            deinit: vec!["MN".into()],
+            dos_shell: vec!["MN".into()],
+            protocol: "wa8ded".into(),
+            kiss_ini: "KISS.INI".into(),
+            kiss_section: "TM-D710".into(),
+            kiss_char_delay_ms: 30,
+            kiss_line_delay_ms: 300,
+            kiss_exit_delay_ms: 5000,
+        }
+    }
+}
+
+impl TncConfig {
+    pub fn protocol_kind(&self) -> HostProtocol {
+        match self.protocol.to_ascii_lowercase().as_str() {
+            "tfpcx" => HostProtocol::Tfpcx,
+            "kiss" => HostProtocol::Kiss,
+            // `wa8ded`, `jhost`, `hostmode`, or anything else → WA8DED.
+            _ => HostProtocol::Wa8ded,
+        }
+    }
+}
+
+/// Which modem driver to construct at startup (only one is loaded).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostProtocol {
+    /// Classic WA8DED binary hostmode + timed poll (`JHOST1` / `JHOST0`).
+    Wa8ded,
+    /// TFPCX soft-TNC (BayCom-class); WA8DED-compatible framing.
+    Tfpcx,
+    /// TAPR KISS over serial (`FEND` / `FESC`).
+    Kiss,
+}
+
+/// Classic VGA colour attribute names (kept as strings for theme migration).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorConfig {
+    pub clock_background: String,
+    pub input_foreground: String,
+    pub input_background: String,
+    pub monitor_foreground: String,
+    pub monitor_background: String,
+    pub connect_foreground: String,
+    pub connect_background: String,
+    pub state_background: String,
+    pub state_foreground: String,
+    pub menu_background: String,
+    pub menu_foreground: String,
+    pub menu_invers_attr: String,
+    pub border_attr: String,
+    pub connect_invers_attr: String,
+    pub monitor_invers_attr: String,
+    pub editor_foreground: String,
+    pub editor_background: String,
+    pub check_foreground: String,
+    pub check_background: String,
+    pub check_invers_attr: String,
+    pub editor_invers_attr: String,
+    pub list_background: String,
+    pub list_foreground: String,
+    pub list_invers_attr: String,
+    pub mh_background: String,
+    pub mh_foreground: String,
+    pub mh_invers_attr: String,
+    pub spy_background: String,
+    pub spy_foreground: String,
+    pub spy_invers_attr: String,
+}
+
+impl Default for ColorConfig {
+    fn default() -> Self {
+        Self {
+            clock_background: "Black".into(),
+            input_foreground: "White".into(),
+            input_background: "LightBlue".into(),
+            monitor_foreground: "Yellow".into(),
+            monitor_background: "Blue".into(),
+            connect_foreground: "White".into(),
+            connect_background: "DarkGray".into(),
+            state_background: "Magenta".into(),
+            state_foreground: "White".into(),
+            menu_background: "Red".into(),
+            menu_foreground: "LightGray".into(),
+            menu_invers_attr: "White".into(),
+            border_attr: "White".into(),
+            connect_invers_attr: "LightGreen".into(),
+            monitor_invers_attr: "LightGray".into(),
+            editor_foreground: "White".into(),
+            editor_background: "Blue".into(),
+            check_foreground: "White".into(),
+            check_background: "Blue".into(),
+            check_invers_attr: "Yellow".into(),
+            editor_invers_attr: "LightGreen".into(),
+            list_background: "Cyan".into(),
+            list_foreground: "White".into(),
+            list_invers_attr: "Yellow".into(),
+            mh_background: "LightGray".into(),
+            mh_foreground: "Black".into(),
+            mh_invers_attr: "LightBlue".into(),
+            spy_background: "Blue".into(),
+            spy_foreground: "White".into(),
+            spy_invers_attr: "LightCyan".into(),
+        }
+    }
+}
+
+/// ESC/P printer attribute streams — legacy `DEFAULTPRINT` / `INVERSPRINT`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrintConfig {
+    pub default_print: Vec<u8>,
+    pub invers_print: Vec<u8>,
+}
+
+impl Default for PrintConfig {
+    fn default() -> Self {
+        Self {
+            default_print: vec![27, 53, 27, 70],
+            invers_print: vec![27, 52, 27, 69],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Legacy parsing helpers
+// ---------------------------------------------------------------------------
+
+fn strip_legacy_comment(line: &str) -> &str {
+    match line.find(';') {
+        Some(idx) => &line[..idx],
+        None => line,
+    }
+}
+
+fn split_legacy_kv(line: &str) -> Option<(&str, &str)> {
+    let eq = line.find('=')?;
+    Some((line[..eq].trim(), line[eq + 1..].trim()))
+}
+
+fn split_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn split_csv_words(value: &str) -> Vec<String> {
+    // AUTOSPY = to FBB  → keep as separate tokens or one phrase; store phrase parts.
+    value
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn parse_boolish(value: &str) -> bool {
+    matches!(
+        value.to_ascii_uppercase().as_str(),
+        "1" | "ON" | "YES" | "TRUE" | "ENABLE" | "ENABLED"
+    )
+}
+
+fn parse_u32(value: &str, key: &str) -> Result<u32, String> {
+    value
+        .trim()
+        .parse::<u32>()
+        .map_err(|e| format!("{key}: cannot parse `{value}` as u32 ({e})"))
+}
+
+fn parse_i32(value: &str, key: &str) -> Result<i32, String> {
+    value
+        .trim()
+        .parse::<i32>()
+        .map_err(|e| format!("{key}: cannot parse `{value}` as i32 ({e})"))
+}
+
+fn parse_hex_or_dec(value: &str) -> Result<u32, String> {
+    let v = value.trim();
+    if let Some(hex) = v
+        .strip_prefix("$")
+        .or_else(|| v.strip_prefix("0x"))
+        .or_else(|| v.strip_prefix("0X"))
+    {
+        u32::from_str_radix(hex, 16)
+            .map_err(|e| format!("SERPORT: invalid hex `{v}` ({e})"))
+    } else {
+        parse_u32(v, "SERPORT")
+    }
+}
+
+fn parse_u32_list(value: &str, key: &str) -> Result<Vec<u32>, String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| parse_u32(s, key))
+        .collect()
+}
+
+fn parse_u8_list(value: &str, key: &str) -> Result<Vec<u8>, String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse::<u8>()
+                .map_err(|e| format!("{key}: cannot parse `{s}` as u8 ({e})"))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merges_core_legacy_keys() {
+        let mut cfg = Config::default();
+        cfg.merge_legacy_text(
+            r#"
+            MyCall = NL0MSK,NL0MSK-1
+            SerBaud = 19200
+            SerNr = 1
+            Channels = 8
+            TNCINI = DateTime
+            TNCINI = M UISC
+            SerPort = $3F8
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.station.mycall, vec!["NL0MSK", "NL0MSK-1"]);
+        assert_eq!(cfg.serial.baud, 19200);
+        assert_eq!(cfg.serial.com_number, 1);
+        assert_eq!(cfg.serial.port, "COM1");
+        assert_eq!(cfg.serial.io_port, Some(0x3F8));
+        assert_eq!(cfg.session.channels, 8);
+        assert_eq!(cfg.tnc.init, vec!["DateTime", "M UISC"]);
+    }
+}

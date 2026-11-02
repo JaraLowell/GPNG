@@ -1,0 +1,144 @@
+# =============================================================================
+# Graphic Packet (modern) — Config.toml
+# -----------------------------------------------------------------------------
+# Maps cleanly onto the classic CONFIG.GP keys from GP2862K.EXE / GP 1.61.
+# Case is insignificant for legacy .GP files; TOML keys here are snake_case.
+# =============================================================================
+
+[station]
+# Legacy: MYCALL — monitor call first, then per-channel overrides (comma-separated).
+mycall = ["NL0MSK"]
+
+# Legacy: ZONE / TIME — display timezone offset and PC-clock skew (minutes).
+zone = "UTC"
+time_offset_minutes = 0
+
+[serial]
+# Legacy: SERNR / SERPORT / SERIRQ / SERBAUD
+# Prefer a modern device path (USB-serial). SERPORT/SERIRQ remain optional
+# for documentation / migration from DOS IO-port based setups.
+port = "COM6"          # Linux/macOS examples: "/dev/ttyUSB0", "/dev/tty.usbserial-*"
+# TM-D710 KISS: Kenwood docs use 9600 here — must match radio Menu PC PORT SPEED
+# (9600/19200/38400/57600). Only set 19200 if the radio menu is also 19200.
+baud = 9600            # SERBAUD
+com_number = 6         # SERNR (informational when `port` is set)
+# Optional DOS legacy fields (omit when unused — TOML has no null):
+# io_port = 0x3F8      # SERPORT — unused on modern USB-serial
+# irq = 4              # SERIRQ — unused on modern USB-serial
+fast_poll = "auto"     # FASTPOLL: "auto" | "on" | "off"
+multiport = "auto"     # MULTIPORT: "auto" | "on" | "off"
+
+[session]
+# Legacy: CHANNELS, MAXSPY, buffers, bells, remote, spy, …
+channels = 10
+max_spy = 1
+connect_bell = 1
+rx_click = 2
+screensave_minutes = 0
+popup_time_seconds = 3
+popup_enable_keyboard = false
+insert_mon_line = false
+questions = false
+backup = true
+zoom = 1
+prompt = "%c to %y>"
+noname = "%c"
+remote_language = "EN"
+security = false
+remote = []
+no_remote = []
+auto_spy = []
+no_auto_spy = []
+auto_spy_minimum_save = 512
+
+[buffers]
+# Legacy line counts (≈80 columns each in classic GP).
+text_buffer = [600, 300]   # TEXTBUFFER: monitor (Buffers: on magenta bar), then channels…
+edit_buffer = 1000
+check_buffer = 200
+list_buffer = 200
+spy_buffer = 100
+mh_buffer = 50
+input_buffer = 200
+
+[paths]
+# Legacy: USERDIR, EXTERNALDIR, SAVEDIR, LOGDIR, SPYDIR
+user_dir = "USER"
+external_dir = "EXTERNAL"
+save_dir = "SAVE"
+log_dir = "LOG"
+spy_dir = "SPY"
+
+[tnc]
+# Legacy: TNCINI / TNCDEI / TNCDOS — WA8DED / TFPCX hostmode command strings.
+# "DateTime" is a GP pseudo-command that syncs the TNC clock from the host.
+init = [
+    "DateTime",
+    "@V0",
+    "K 2",
+    "O 3",
+    "P 63",
+    "T 63",
+    "W 9",
+    "R 1",
+    "M UISC",
+    "C CQ",
+    "X 1",
+    "N 6",
+]
+deinit = [
+    "MN",
+    "K2",
+]
+dos_shell = [
+    "MN",
+]
+
+# Modem driver (only one is loaded): "wa8ded" (aliases: jhost, hostmode),
+# "tfpcx" (soft-TNC), or "kiss" (TAPR KISS).
+protocol = "kiss"
+
+# KISSINIT-style bring-up (only when protocol = "kiss"). See KISS.INI sections.
+kiss_ini = "KISS.INI"
+kiss_section = "TM-D710"   # TM-D710 | TM-D710_9600pkt | TM-D700 | TS2000_9600 | …
+kiss_char_delay_ms = 30
+kiss_line_delay_ms = 300
+kiss_exit_delay_ms = 5000  # settle after RESTART (classic KISSINIT -D exit)
+
+[colors]
+# Legacy VGA attribute names preserved for theme migration / future TUI.
+clock_background = "Black"
+input_foreground = "White"
+input_background = "LightBlue"
+monitor_foreground = "Yellow"
+monitor_background = "Blue"
+connect_foreground = "White"
+connect_background = "DarkGray"
+state_background = "Magenta"
+state_foreground = "White"
+menu_background = "Red"
+menu_foreground = "LightGray"
+menu_invers_attr = "White"
+border_attr = "White"
+connect_invers_attr = "LightGreen"
+monitor_invers_attr = "LightGray"
+editor_foreground = "White"
+editor_background = "Blue"
+check_foreground = "White"
+check_background = "Blue"
+check_invers_attr = "Yellow"
+editor_invers_attr = "LightGreen"
+list_background = "Cyan"
+list_foreground = "White"
+list_invers_attr = "Yellow"
+mh_background = "LightGray"
+mh_foreground = "Black"
+mh_invers_attr = "LightBlue"
+spy_background = "Blue"
+spy_foreground = "White"
+spy_invers_attr = "LightCyan"
+
+[print]
+# Legacy ESC/P printer attribute byte sequences.
+default_print = [27, 53, 27, 70]
+invers_print = [27, 52, 27, 69]
