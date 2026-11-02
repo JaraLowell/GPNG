@@ -199,7 +199,7 @@ pub struct GpGuiApp {
     buffer_lines: u32,
     /// Compact port id for the session-bar badge (`COM6` → shown as Com 6).
     serial_port: String,
-    /// UART link up (drives `[ ⇄ Com n open ]` vs closed).
+    /// UART link up (drives `[ <-> Com n open ]` vs closed).
     serial_open: bool,
     /// Raw UART bytes seen since start (proves RX even without frames).
     serial_rx_bytes: u64,
@@ -1435,10 +1435,11 @@ fn com_port_number(port: &str) -> String {
 
 fn com_open_badge(port: &str, open: bool) -> String {
     let n = com_port_number(port);
+    // ASCII `<->` — session-bar face has no ⇄ glyph (shows as tofu □).
     if open {
-        format!("[ ⇄ Com {n} open ]")
+        format!("[ <-> Com {n} open ]")
     } else {
-        format!("[ ⇄ Com {n} ]")
+        format!("[ <-> Com {n} ]")
     }
 }
 
