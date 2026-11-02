@@ -252,7 +252,7 @@ impl GpGuiApp {
         install_console_font(&cc.egui_ctx);
         let icon_tex = load_icon_textures(&cc.egui_ctx);
         let status = if icon_tex.is_empty() {
-            "ICONS.GP not found".into()
+            "tools/ICONS.GP not found".into()
         } else {
             format!("{} icons", icon_tex.len())
         };
@@ -1008,7 +1008,7 @@ impl GpGuiApp {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         ui.painter_at(rect).rect_filled(rect, 0.0, VGA_GRAY);
 
-        let on = Color32::from_rgb(85, 255, 85);
+        let on = VGA_GREEN; // same as clock ♫ when on (not bright LightGreen)
         let off = VGA_GRAY;
         let text_c = Color32::BLACK;
         let y = rect.top() + 2.0;
@@ -1312,7 +1312,7 @@ impl GpGuiApp {
                 ui.centered_and_justified(|ui| {
                     ui.label(
                         RichText::new(format!(
-                            "No icons — expected ICONS.GP ({}×{})",
+                            "No icons — expected tools/ICONS.GP ({}×{})",
                             ICON_WIDTH, ICON_HEIGHT
                         ))
                         .color(Color32::YELLOW),
@@ -1340,8 +1340,10 @@ impl GpGuiApp {
                 let cell = Rect::from_min_size(Pos2::new(x, y), Vec2::new(icon_w, icon_h));
                 let id = ui.id().with(("icon", icon_idx, label));
                 let resp = ui.interact(cell, id, Sense::click());
+                // Grey raised button face (classic GP), then the bitmap.
+                ui.painter().rect_filled(cell, 0.0, VGA_GRAY);
                 if label == "EMPTY" || self.icon_tex.get(icon_idx).is_none() {
-                    ui.painter().rect_filled(cell, 0.0, VGA_DARK_RED);
+                    // empty slot keeps grey face on dark-red strip
                 } else if let Some(tex) = self.icon_tex.get(icon_idx).cloned() {
                     ui.painter().image(
                         tex.id(),
@@ -1454,11 +1456,7 @@ fn paint_static_cell(
     let cell = Rect::from_min_size(Pos2::new(origin_x, y), Vec2::new(w, h));
     let _ = ui.interact(cell, ui.id().with(("sess-static", label)), Sense::hover());
     let painter = ui.painter();
-    let fill = if lit {
-        Color32::from_rgb(85, 255, 85)
-    } else {
-        VGA_GRAY
-    };
+    let fill = if lit { VGA_GREEN } else { VGA_GRAY };
     painter.rect_filled(cell, 0.0, fill);
     paint_bevel(painter, cell, lit);
     painter.text(
@@ -1495,9 +1493,8 @@ fn parse_monitor_set(line: &str) -> Option<String> {
 
 fn load_icon_textures(ctx: &Context) -> Vec<TextureHandle> {
     let path = [
-        PathBuf::from("ICONS.GP"),
-        PathBuf::from("../ICONS.GP"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ICONS.GP"),
+        PathBuf::from("tools/ICONS.GP"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/ICONS.GP"),
     ]
     .into_iter()
     .find(|p| p.exists());
@@ -1505,6 +1502,7 @@ fn load_icon_textures(ctx: &Context) -> Vec<TextureHandle> {
     let Some(path) = path else {
         return Vec::new();
     };
+    tracing::info!(file = %path.display(), "loading ICONS.GP");
     let Ok(lib) = IconLibrary::load(&path) else {
         return Vec::new();
     };

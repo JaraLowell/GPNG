@@ -59,10 +59,55 @@ impl GpIcon {
             .collect()
     }
 
-    /// RGBA8 buffer for egui / GPU upload (yellow classic chrome kept opaque).
+    /// Classic GP draws icons on LightGray button faces. Stock libraries use a
+    /// solid chrome key (usually yellow `14`, sometimes light-red `12`) from the
+    /// corners — flood-fill that to VGA light grey so the strip matches DOSBox.
+    pub fn with_grey_chrome(&self) -> Self {
+        let key = self.pixels.first().copied().unwrap_or(0) & 15;
+        // Only remap common GP-Paint paper colours.
+        if !matches!(key, 12 | 14) {
+            return self.clone();
+        }
+        let w = self.width;
+        let h = self.height;
+        let mut out = self.pixels.clone();
+        let mut stack = vec![(0usize, 0usize)];
+        let mut seen = vec![false; w * h];
+        while let Some((x, y)) = stack.pop() {
+            let i = y * w + x;
+            if seen[i] {
+                continue;
+            }
+            seen[i] = true;
+            if (self.pixels[i] & 15) != key {
+                continue;
+            }
+            out[i] = 7; // LightGray
+            if x > 0 {
+                stack.push((x - 1, y));
+            }
+            if x + 1 < w {
+                stack.push((x + 1, y));
+            }
+            if y > 0 {
+                stack.push((x, y - 1));
+            }
+            if y + 1 < h {
+                stack.push((x, y + 1));
+            }
+        }
+        Self {
+            width: w,
+            height: h,
+            pixels: out,
+        }
+    }
+
+    /// RGBA8 buffer for egui / GPU upload (grey button chrome).
     pub fn rgba8(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.pixels.len() * 4);
-        for &idx in &self.pixels {
+        let grey = self.with_grey_chrome();
+        let mut out = Vec::with_capacity(grey.pixels.len() * 4);
+        for &idx in &grey.pixels {
             let (r, g, b) = VGA16_RGB[(idx & 15) as usize];
             out.extend_from_slice(&[r, g, b, 255]);
         }
@@ -141,7 +186,7 @@ fn decode_record(chunk: &[u8]) -> Result<GpIcon, IconError> {
     })
 }
 
-/// Labels drawn into `ICONS.GP` slots 0..16 (see `assets/icons/export/`).
+/// Labels drawn into `ICONS.GP` slots 0..16.
 pub const ICON_SLOT_LABELS: [&str; 17] = [
     "CONNECT",    // 0
     "DISCONNECT", // 1
@@ -200,11 +245,11 @@ mod tests {
 
     #[test]
     fn decodes_stock_library_if_present() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ICONS.GP");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/ICONS.GP");
         if !path.exists() {
             return;
         }
-        let lib = IconLibrary::load(&path).expect("ICONS.GP");
+        let lib = IconLibrary::load(&path).expect("tools/ICONS.GP");
         assert_eq!(lib.icons.len(), 17);
         assert_eq!(lib.icons[0].width, ICON_WIDTH);
         assert_eq!(lib.icons[0].height, ICON_HEIGHT);

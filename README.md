@@ -12,9 +12,9 @@ This crate targets modern Windows / macOS / Linux hosts talking to USB-to-serial
 | `src/tnc/` | Modem drivers — WA8DED / TFPCX / KISS (one loaded from `[tnc] protocol`) |
 | `src/ui/` | Clean-room TUI (`ratatui`) recreating classic panes — **not** a BGI decompile |
 | `docs/LAYOUT.md` | Pane map from V1.63 screenshot + docs |
-| `docs/ICONS.md` | Decoded `ICONS.GP` (70×40 planar VGA, 17 icons) |
+| `docs/ICONS.md` | Decoded `ICONS.GP` format (70×40 planar VGA, 17 icons) |
 | `src/ui/icons.rs` | Runtime decoder for the icon library |
-| `assets/icons/export/` | PNG previews of all toolbar icons |
+| `tools/ICONS.GP` | Canonical toolbar icon library (loaded at runtime) |
 | `docs/COMPATIBILITY.md` | `//` remotes + `%` macros recovered from `*.GPH` / docs / EXE strings |
 | `src/remote/` | Abbreviation-aware command parser + GPI macro expander |
 | `docs/TRANSFER.md` | AutoBin `#BIN#` + 7Plus Code-AutoSave (≠ 7-Zip) for DOS GP interop |
@@ -32,9 +32,8 @@ regions over reverse-engineering `GP2862K.EXE` drawing code.
 ## Quick start
 
 ```bash
-cd gp-rs
 # Edit Config.toml — set [station].mycall and [serial].port
-# Pixel UI (ICONS.GP bitmaps + analog clock) — run beside the GP tree so ICONS.GP resolves:
+# Pixel UI loads toolbar bitmaps from tools/ICONS.GP
 cargo run
 # Text fallback:
 cargo run -- --tui

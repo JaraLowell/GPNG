@@ -34,12 +34,11 @@ This matches Borland BGI `getimage`-style planar packing (row-major planes).
 
 ## Decode
 
-See `src/ui/icons.rs` and `tools/decode_icons_gp.py`.
-Exported previews: `assets/icons/export/icon_XX.png`.
+See `src/ui/icons.rs`. Canonical library: **`tools/ICONS.GP`**.
 
 ## Screenshot mapping (toolbar)
 
-`ICONS.GP` slot labels (see `ICON_SLOT_LABELS` / `assets/icons/export/`):
+`ICONS.GP` slot labels (`ICON_SLOT_LABELS` in `src/ui/icons.rs`):
 
 | idx | label | idx | label |
 |----:|-------|----:|-------|
@@ -67,6 +66,7 @@ Channel tabs `1:`…`10:`, `BBS-Menu`, `Box-List` are **drawn chrome**, not
 
 ## Modern use
 
-1. Decode `ICONS.GP` → RGBA/PNG at runtime or build time.
-2. Pixel UI (egui/wgpu) blits 70×40 (or 2×/3×) into the icon strip.
+1. Decode → RGBA at runtime; yellow/light-red corner chrome is flood-filled to
+   VGA LightGray so icons sit on classic grey button faces (DOSBox look).
+2. Pixel UI blits 70×40 (scaled) onto a grey bevelled cell on the dark-red strip.
 3. ratatui can only approximate labels until a bitmap backend exists.

@@ -93,9 +93,8 @@ impl UiApp {
         let theme = Theme::from_config(&cfg.colors);
 
         let icons = [
-            PathBuf::from("ICONS.GP"),
-            PathBuf::from("../ICONS.GP"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ICONS.GP"),
+            PathBuf::from("tools/ICONS.GP"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/ICONS.GP"),
         ]
         .into_iter()
         .find_map(|p| IconLibrary::load(&p).ok());
