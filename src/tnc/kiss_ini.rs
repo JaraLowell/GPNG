@@ -50,6 +50,16 @@ pub fn resolve_kiss_ini(configured: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(configured))
 }
 
+/// Expand `%M` → `monitor_mode` (classic GP monitor flags, e.g. IUSC).
+pub fn expand_placeholders(line: &str, monitor_mode: &str) -> String {
+    let mode = if monitor_mode.is_empty() {
+        "IUSC"
+    } else {
+        monitor_mode
+    };
+    line.replace("%M", mode).replace("%m", mode)
+}
+
 /// Load one `[section]` from a KISSINIT file and send it on `link`.
 ///
 /// Emits Monitor-visible TX lines and any UART echo (proves ECHO ON / baud).
@@ -60,6 +70,7 @@ pub fn apply_section(
     char_delay_ms: u64,
     line_delay_ms: u64,
     exit_delay_ms: u64,
+    monitor_mode: &str,
     events: Option<&mpsc::Sender<TncEvent>>,
 ) -> Result<(), TncError> {
     let text = std::fs::read_to_string(path).map_err(|e| {
@@ -80,10 +91,11 @@ pub fn apply_section(
     );
 
     for raw in &lines {
+        let raw = expand_placeholders(raw, monitor_mode);
         let _ = events.and_then(|e| {
             e.blocking_send(TncEvent::Status(format!("kiss TX › {raw}"))).ok()
         });
-        let (actions, send_cr) = expand_line(raw);
+        let (actions, send_cr) = expand_line(&raw);
         for act in actions {
             match act {
                 Action::Byte(b) => {

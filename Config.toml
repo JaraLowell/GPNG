@@ -81,26 +81,36 @@ init = [
     "T 63",
     "W 9",
     "R 1",
-    "M UISC",
+    "M %M",
     "C CQ",
     "X 1",
     "N 6",
 ]
 deinit = [
     "MN",
+    "U1Away!",
     "K2",
+    "JHOST0",
 ]
 dos_shell = [
     "MN",
 ]
 
+# WA8DED open/close INI ([open] / [status] / [close]) — preferred over init[]/deinit[].
+wa8ded_ini = "WA8DED.INI"
+wa8ded_line_delay_ms = 300
+
 # Modem driver (only one is loaded): "wa8ded" (aliases: jhost, hostmode),
 # "tfpcx" (soft-TNC), or "kiss" (TAPR KISS).
 protocol = "kiss"
 
-# KISSINIT-style bring-up (only when protocol = "kiss"). See KISS.INI sections.
+# Monitor flags at connect — expanded as %M in WA8DED.INI / KISS.INI (e.g. M %M → M IUSC).
+monitor_mode = "IUSC"
+
+# KISSINIT-style open/close (only when protocol = "kiss"). See KISS.INI sections.
 kiss_ini = "KISS.INI"
-kiss_section = "TM-D710"   # TM-D710 | TM-D710_9600pkt | TM-D700 | TS2000_9600 | …
+kiss_section = "TM-D710"   # open profile: TM-D710 | TM-D710_9600pkt | TM-D700 | …
+kiss_close_section = "close"
 kiss_char_delay_ms = 30
 kiss_line_delay_ms = 300
 kiss_exit_delay_ms = 5000  # settle after RESTART (classic KISSINIT -D exit)

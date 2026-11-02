@@ -4,11 +4,14 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 use serialport::SerialPort;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::SerialConfig;
 
 use super::TncError;
+
+/// KISS return-to-command-mode sequence (KISSINIT `\k`).
+pub const KISS_EXIT: [u8; 3] = [0xC0, 0xFF, 0xC0];
 
 /// Thin wrapper around a configured OS serial handle.
 pub struct SerialLink {
@@ -24,13 +27,16 @@ impl SerialLink {
             baud = serial.baud,
             "opening modem serial port"
         );
-        let port = serialport::new(&serial.port, serial.baud)
+        let mut port = serialport::new(&serial.port, serial.baud)
             .data_bits(serialport::DataBits::Eight)
             .parity(serialport::Parity::None)
             .stop_bits(serialport::StopBits::One)
             .flow_control(serialport::FlowControl::None)
             .timeout(Duration::from_millis(50))
             .open()?;
+        // Assert modem-control lines (physical unplug/replug toggles these).
+        let _ = port.write_data_terminal_ready(true);
+        let _ = port.write_request_to_send(true);
         Ok(Self {
             port,
             port_name: serial.port.clone(),
@@ -71,5 +77,42 @@ impl SerialLink {
                 Ok(_) => continue,
             }
         }
+    }
+
+    /// Leave KISS (may already be in command mode — harmless).
+    pub fn kiss_exit(&mut self) -> Result<(), TncError> {
+        self.write_all(&KISS_EXIT)?;
+        // Second poke — some Kenwood firmwares ignore the first if busy.
+        std::thread::sleep(Duration::from_millis(200));
+        self.write_all(&KISS_EXIT)?;
+        Ok(())
+    }
+
+    /// Pulse DTR like a cable reconnect (helps stubborn USB-serial / TNC state).
+    pub fn pulse_dtr(&mut self) {
+        if let Err(e) = self.port.write_data_terminal_ready(false) {
+            warn!("DTR low failed: {e}");
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        if let Err(e) = self.port.write_data_terminal_ready(true) {
+            warn!("DTR high failed: {e}");
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+
+    /// Drop modem lines and flush before the OS handle is released.
+    pub fn prepare_close(&mut self) {
+        self.flush_input();
+        let _ = self.port.flush();
+        let _ = self.port.write_request_to_send(false);
+        let _ = self.port.write_data_terminal_ready(false);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+impl Drop for SerialLink {
+    fn drop(&mut self) {
+        let _ = self.port.write_request_to_send(false);
+        let _ = self.port.write_data_terminal_ready(false);
     }
 }

@@ -14,6 +14,7 @@ mod drivers;
 mod hostmode;
 mod kiss_ini;
 mod serial;
+mod wa8ded_ini;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -106,6 +107,9 @@ pub fn spawn_tnc_task(
         events: event_rx,
         commands: cmd_tx,
     };
+
+    // Fresh run — clear sticky abort from a previous in-process stop.
+    SHUTDOWN.store(false, Ordering::SeqCst);
 
     let kind = tnc_cfg.protocol_kind();
     let join = tokio::task::spawn_blocking(move || {

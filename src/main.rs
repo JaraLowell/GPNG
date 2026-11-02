@@ -47,15 +47,17 @@ fn main() -> Result<()> {
 
     graphic_packet::tnc::request_shutdown();
     let _ = rt.block_on(shutdown_tx.send(TncCommand::Shutdown));
-    // Let the driver send its exit sequence (KISS C0 FF C0 / JHOST0) before the port closes.
+    // KISS exit + DTR drop can take ~1s; allow headroom so the COM port is free.
     if rt
         .block_on(async {
-            tokio::time::timeout(std::time::Duration::from_secs(3), tnc_join).await
+            tokio::time::timeout(std::time::Duration::from_secs(8), tnc_join).await
         })
         .is_err()
     {
-        error!("TNC driver did not stop within 3 s");
+        error!("TNC driver did not stop within 8 s — COM may still be held");
     }
+    // Brief pause so Windows releases the COM handle before a quick relaunch.
+    std::thread::sleep(std::time::Duration::from_millis(250));
     rt.shutdown_timeout(std::time::Duration::from_millis(500));
     if let Err(err) = ui_result {
         error!("UI error: {err}");

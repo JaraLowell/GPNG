@@ -24,7 +24,6 @@ const FEND: u8 = 0xC0;
 const FESC: u8 = 0xDB;
 const TFEND: u8 = 0xDC;
 const TFESC: u8 = 0xDD;
-const KISS_EXIT: [u8; 3] = [FEND, 0xFF, FEND];
 
 pub fn run(
     serial: SerialConfig,
@@ -38,13 +37,17 @@ pub fn run(
         link.port_name, link.baud
     )));
 
+    // Soft-restart recovery: last run may have left the radio in KISS, where
+    // ASCII ECHO/KISS ON is ignored (unplug/replug works because it resets).
+    leave_kiss_for_commands(&mut link, &events);
+
     if let Err(err) = run_kiss_init(&mut link, &tnc_cfg, &events) {
         let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
     }
     // Leftover post-RESTART noise only — init TX/RX already logged to Monitor.
     link.flush_input();
     let _ = events.blocking_send(TncEvent::Status(format!(
-        "serial OPEN {} @ {} — KISS listen (radio: TNC→PACKET12, STA/CON should have blinked)",
+        "serial OPEN {} @ {} — KISS listen",
         link.port_name, link.baud
     )));
 
@@ -60,7 +63,7 @@ pub fn run(
 
         match commands.try_recv() {
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                let _ = link.write_all(&KISS_EXIT);
+                leave_kiss_and_close(&mut link, &tnc_cfg, &events);
                 return Ok(());
             }
             Ok(cmd) => {
@@ -89,6 +92,64 @@ pub fn run(
     }
 }
 
+/// Exit KISS → command mode so ASCII init is heard (idempotent if already cmd).
+fn leave_kiss_for_commands(link: &mut SerialLink, events: &mpsc::Sender<TncEvent>) {
+    let _ = events.blocking_send(TncEvent::Status(
+        "kiss: sending C0 FF C0 (exit KISS if still active from last run)…".into(),
+    ));
+    link.pulse_dtr();
+    if let Err(err) = link.kiss_exit() {
+        let _ = events.blocking_send(TncEvent::Warning(format!("kiss exit: {err}")));
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    link.flush_input();
+}
+
+fn leave_kiss_and_close(
+    link: &mut SerialLink,
+    tnc_cfg: &TncConfig,
+    events: &mpsc::Sender<TncEvent>,
+) {
+    // Optional KISS.INI [close] (same role as WA8DED.INI [close]).
+    let path = resolve_kiss_ini(&tnc_cfg.kiss_ini);
+    let close_sec = if tnc_cfg.kiss_close_section.is_empty() {
+        "close"
+    } else {
+        tnc_cfg.kiss_close_section.as_str()
+    };
+    if path.exists() {
+        let _ = events.blocking_send(TncEvent::Status(format!(
+            "kiss close [{}] from {}",
+            close_sec,
+            path.display()
+        )));
+        if let Err(err) = kiss_ini::apply_section(
+            link,
+            &path,
+            close_sec,
+            tnc_cfg.kiss_char_delay_ms,
+            tnc_cfg.kiss_line_delay_ms,
+            500, // short settle — radio should leave KISS
+            &tnc_cfg.monitor_mode,
+            Some(events),
+        ) {
+            let _ = events.blocking_send(TncEvent::Warning(format!(
+                "kiss close section: {err} — falling back to C0 FF C0"
+            )));
+            let _ = link.kiss_exit();
+        }
+    } else {
+        let _ = events.blocking_send(TncEvent::Status(
+            "kiss exit (C0 FF C0) + drop DTR before closing COM…".into(),
+        ));
+        let _ = link.kiss_exit();
+    }
+    // Give Kenwood time to leave KISS before the OS releases the port.
+    std::thread::sleep(Duration::from_millis(800));
+    link.prepare_close();
+    let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
+}
+
 fn run_kiss_init(
     link: &mut SerialLink,
     tnc_cfg: &TncConfig,
@@ -96,7 +157,7 @@ fn run_kiss_init(
 ) -> Result<(), TncError> {
     let path = resolve_kiss_ini(&tnc_cfg.kiss_ini);
     let _ = events.blocking_send(TncEvent::Status(format!(
-        "kiss init [{}] from {}",
+        "kiss open [{}] from {}",
         tnc_cfg.kiss_section,
         path.display()
     )));
@@ -107,10 +168,11 @@ fn run_kiss_init(
         tnc_cfg.kiss_char_delay_ms,
         tnc_cfg.kiss_line_delay_ms,
         tnc_cfg.kiss_exit_delay_ms,
+        &tnc_cfg.monitor_mode,
         Some(events),
     )?;
     let _ = events.blocking_send(TncEvent::Status(
-        "kiss init done — listening for frames".into(),
+        "kiss open done — listening for frames".into(),
     ));
     Ok(())
 }
@@ -133,19 +195,13 @@ fn handle_command(
             }
         }
         TncCommand::Reinitialize => {
+            leave_kiss_for_commands(link, events);
             if let Err(err) = run_kiss_init(link, tnc_cfg, events) {
                 let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
             }
         }
         TncCommand::Shutdown => {
-            // KISS "return" command (C0 FF C0) — radio leaves KISS for command mode.
-            if let Err(err) = link.write_all(&KISS_EXIT) {
-                let _ = events.blocking_send(TncEvent::Warning(format!("KISS exit: {err}")));
-            } else {
-                let _ = events.blocking_send(TncEvent::Status("kiss exit sent (C0 FF C0)".into()));
-            }
-            std::thread::sleep(Duration::from_millis(300));
-            let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
+            leave_kiss_and_close(link, tnc_cfg, events);
             return Ok(true);
         }
     }

@@ -24,6 +24,7 @@ use eframe::egui::{
     self, Color32, ColorImage, Context, FontData, FontDefinitions, FontFamily, FontId, Frame, Pos2,
     Rect, RichText, Sense, Stroke, TextWrapMode, TextureHandle, TextureOptions, Ui, Vec2,
 };
+use eframe::egui::text::{LayoutJob, TextFormat};
 use tokio::sync::mpsc;
 
 use crate::config::Config;
@@ -51,6 +52,10 @@ const VGA_GREEN: Color32 = Color32::from_rgb(0, 170, 0);
 const VGA_DARK_RED: Color32 = Color32::from_rgb(170, 0, 0);
 const VGA_GRAY: Color32 = Color32::from_rgb(170, 170, 170);
 const VGA_DARK_GRAY: Color32 = Color32::from_rgb(85, 85, 85);
+/// Classic GP text-window colours (Monitor / Channel / Spy pads).
+const PAD_INCOMING: Color32 = Color32::from_rgb(85, 255, 85); // light green
+const PAD_OWN: Color32 = Color32::WHITE;
+const PAD_SYSTEM: Color32 = Color32::from_rgb(255, 168, 0); // orange (init / debug)
 
 /// Classic DOS / BGI 3D bevel: raised = light-grey top+left, black bottom+right;
 /// pressed (sunken) = reversed.
@@ -101,20 +106,73 @@ fn egui_color(name: &str) -> Color32 {
     }
 }
 
+/// Classic GP line roles — colour carries meaning (no `***` needed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PadKind {
+    /// RX / decoded APRS / monitored frames.
+    Incoming,
+    /// Local TX echo (when Echo is on).
+    Own,
+    /// Init, status, warnings, raw UART debug.
+    System,
+}
+
+impl PadKind {
+    fn color(self) -> Color32 {
+        match self {
+            PadKind::Incoming => PAD_INCOMING,
+            PadKind::Own => PAD_OWN,
+            PadKind::System => PAD_SYSTEM,
+        }
+    }
+}
+
+struct PadLine {
+    kind: PadKind,
+    text: String,
+}
+
 struct TextPad {
-    lines: VecDeque<String>,
+    lines: VecDeque<PadLine>,
 }
 
 impl TextPad {
-    fn push(&mut self, line: impl Into<String>) {
-        self.lines.push_back(line.into());
+    fn push(&mut self, kind: PadKind, line: impl Into<String>) {
+        self.lines.push_back(PadLine {
+            kind,
+            text: line.into(),
+        });
         while self.lines.len() > MAX_LINES {
             self.lines.pop_front();
         }
     }
 
-    fn joined(&self) -> String {
-        self.lines.iter().cloned().collect::<Vec<_>>().join("\n")
+    fn layout_job(&self) -> LayoutJob {
+        let mut job = LayoutJob::default();
+        let font = FontId::monospace(14.0);
+        for (i, line) in self.lines.iter().enumerate() {
+            if i > 0 {
+                job.append(
+                    "\n",
+                    0.0,
+                    TextFormat {
+                        font_id: font.clone(),
+                        color: line.kind.color(),
+                        ..Default::default()
+                    },
+                );
+            }
+            job.append(
+                &line.text,
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: line.kind.color(),
+                    ..Default::default()
+                },
+            );
+        }
+        job
     }
 }
 
@@ -139,13 +197,16 @@ pub struct GpGuiApp {
     monitor_mode: String,
     /// Scroll-back capacity shown on the magenta bar (classic “Buffers:”).
     buffer_lines: u32,
-    /// Debug: serial path looked up / opened (from Status lines).
-    serial_label: String,
+    /// Compact port id for the session-bar badge (`COM6` → shown as Com 6).
+    serial_port: String,
+    /// UART link up (drives `[ ⇄ Com n open ]` vs closed).
+    serial_open: bool,
     /// Raw UART bytes seen since start (proves RX even without frames).
     serial_rx_bytes: u64,
     /// Decoded hostmode/KISS frames since start.
     serial_rx_frames: u64,
     monitor_bg: Color32,
+    #[allow(dead_code)] // per-line PadKind colours replace flat pane fg
     monitor_fg: Color32,
     state_bg: Color32,
     state_fg: Color32,
@@ -153,6 +214,7 @@ pub struct GpGuiApp {
     #[allow(dead_code)]
     input_fg: Color32,
     connect_bg: Color32,
+    #[allow(dead_code)]
     connect_fg: Color32,
     session: SessionChrome,
     bell_wav: PathBuf,
@@ -178,10 +240,13 @@ impl GpGuiApp {
             });
             channel_peer.push(None);
         }
-        pads[0].push(format!(
-            "*** Graphic Packet (modern) — MYCALL {}",
-            cfg.primary_mycall()
-        ));
+        pads[0].push(
+            PadKind::System,
+            format!(
+                "Graphic Packet (modern) — MYCALL {}",
+                cfg.primary_mycall()
+            ),
+        );
 
         let buffer_lines = cfg.buffers.text_buffer.first().copied().unwrap_or(500);
         install_console_font(&cc.egui_ctx);
@@ -193,7 +258,12 @@ impl GpGuiApp {
         };
 
         let colors = &cfg.colors;
-        let serial_label = format!("{}@{}", cfg.serial.port, cfg.serial.baud);
+        let serial_port = cfg.serial.port.clone();
+        let monitor_mode = if cfg.tnc.monitor_mode.is_empty() {
+            "IUSC".into()
+        } else {
+            cfg.tnc.monitor_mode.clone()
+        };
         Self {
             monitor_bg: egui_color(&colors.monitor_background),
             monitor_fg: egui_color(&colors.monitor_foreground),
@@ -215,9 +285,10 @@ impl GpGuiApp {
             channels,
             channel_peer,
             icon_tex,
-            monitor_mode: "IUSC".into(),
+            monitor_mode,
             buffer_lines,
-            serial_label,
+            serial_port,
+            serial_open: false,
             serial_rx_bytes: 0,
             serial_rx_frames: 0,
             session: SessionChrome {
@@ -252,7 +323,7 @@ impl GpGuiApp {
         while self.event_log.len() > 200 {
             self.event_log.pop_front();
         }
-        self.pads[0].push(format!("*** {msg}"));
+        self.pads[0].push(PadKind::System, msg);
     }
 
     fn drain_tnc(&mut self) {
@@ -260,11 +331,13 @@ impl GpGuiApp {
             match ev {
                 TncEvent::Status(m) => {
                     self.status = m.clone();
-                    if m.to_ascii_lowercase().contains("serial open")
-                        || m.to_ascii_lowercase().contains("kiss driver")
-                        || m.to_ascii_lowercase().contains("waiting for kiss")
+                    let low = m.to_ascii_lowercase();
+                    if low.contains("serial open")
+                        || low.contains("kiss driver on")
+                        || low.contains("wa8ded driver")
+                        || low.contains("tfpcx driver")
                     {
-                        self.serial_label = m.clone();
+                        self.serial_open = true;
                     }
                     self.log_event(m);
                 }
@@ -274,7 +347,7 @@ impl GpGuiApp {
                 }
                 TncEvent::LinkDown(m) => {
                     self.status = format!("link down: {m}");
-                    self.serial_label = format!("DOWN: {m}");
+                    self.serial_open = false;
                     self.log_event(format!("link down: {m}"));
                     for peer in &mut self.channel_peer {
                         *peer = None;
@@ -289,11 +362,14 @@ impl GpGuiApp {
                     self.serial_rx_bytes += bytes.len() as u64;
                     let hex = format_hex_preview(&bytes, 24);
                     if let Some(pad) = self.pads.get_mut(0) {
-                        pad.push(format!(
-                            "[RX {}B Σ{}] {hex}",
-                            bytes.len(),
-                            self.serial_rx_bytes
-                        ));
+                        pad.push(
+                            PadKind::System,
+                            format!(
+                                "RX {}B Σ{}  {hex}",
+                                bytes.len(),
+                                self.serial_rx_bytes
+                            ),
+                        );
                     }
                 }
                 TncEvent::HostFrame {
@@ -317,25 +393,29 @@ impl GpGuiApp {
                     if matches!(code, HostCode::LinkStatus) {
                         self.apply_link_status(channel, &text);
                     }
-                    let line = match code {
+                    let (kind, line) = match code {
                         HostCode::Ok => continue,
-                        HostCode::Monitor => format!("[MON] {text}"),
-                        HostCode::LinkStatus => format!("[LINK] {text}"),
+                        HostCode::Monitor => (PadKind::Incoming, text),
+                        HostCode::LinkStatus => (PadKind::System, text),
                         HostCode::Data => {
-                            // KISS/APRS: prefer AX.25 UI decode; else printable / hex.
                             if let Some(ax) = format_ax25_ui(&payload) {
-                                format!("[KISS] {ax}")
+                                (PadKind::Incoming, ax)
                             } else if text.chars().any(|c| c.is_ascii_graphic()) {
-                                format!("[DATA ch{channel}] {text}")
+                                (PadKind::Incoming, text)
                             } else {
-                                format!(
-                                    "[DATA ch{channel} {}B] {}",
-                                    payload.len(),
-                                    format_hex_preview(&payload, 32)
+                                (
+                                    PadKind::System,
+                                    format!(
+                                        "DATA ch{channel} {}B  {}",
+                                        payload.len(),
+                                        format_hex_preview(&payload, 32)
+                                    ),
                                 )
                             }
                         }
-                        HostCode::Other(c) => format!("[{c:#04x}] {text}"),
+                        HostCode::Other(c) => {
+                            (PadKind::System, format!("{c:#04x}  {text}"))
+                        }
                     };
                     // KISS port 0 and hostmode ch0 → Monitor; else channel pad.
                     let idx = if channel == 0 {
@@ -346,7 +426,7 @@ impl GpGuiApp {
                         0
                     };
                     if let Some(pad) = self.pads.get_mut(idx) {
-                        pad.push(line);
+                        pad.push(kind, line);
                     }
                 }
             }
@@ -435,14 +515,16 @@ impl GpGuiApp {
             ActivePane::Channel(n) => n as usize,
             _ => 0,
         };
-        if let Some(pad) = self.pads.get_mut(idx) {
-            pad.push(format!("> {line}"));
-        }
-        // Echo: also mirror sent text into the Monitor pad.
-        if self.session.echo && idx != 0 {
-            self.pads[0].push(format!("> {line}"));
-        } else if self.session.echo && idx == 0 {
-            // Already on monitor — keep a single echo marker.
+        // Own / echo: white. Channel pads always show TX; Monitor only when Echo is on.
+        if idx != 0 {
+            if let Some(pad) = self.pads.get_mut(idx) {
+                pad.push(PadKind::Own, line.clone());
+            }
+            if self.session.echo {
+                self.pads[0].push(PadKind::Own, line.clone());
+            }
+        } else if self.session.echo {
+            self.pads[0].push(PadKind::Own, line.clone());
         }
 
         if let Some((action, args)) = parse_line(&line) {
@@ -462,12 +544,15 @@ impl GpGuiApp {
         });
     }
 
-    fn active_text(&self) -> String {
+    fn active_layout(&self) -> LayoutJob {
         let idx = match self.active {
             ActivePane::Channel(n) => n as usize,
             _ => 0,
         };
-        self.pads.get(idx).map(TextPad::joined).unwrap_or_default()
+        self.pads
+            .get(idx)
+            .map(TextPad::layout_job)
+            .unwrap_or_default()
     }
 
     fn show_session_bar(&self) -> bool {
@@ -758,17 +843,15 @@ impl GpGuiApp {
 
     fn status_field_rows(&self, my: &str) -> (Vec<String>, Vec<String>) {
         match self.active {
+            // Classic GP Monitor magenta grid (COM lives on the session strip).
             ActivePane::Monitor => (
                 vec![
-                    format!("Serial: {}", self.serial_label),
-                    format!(
-                        "RX: {}B / {} frames",
-                        self.serial_rx_bytes, self.serial_rx_frames
-                    ),
+                    format!("Monitor Mode: {}", self.monitor_mode),
+                    format!("Buffers: {}", self.buffer_lines),
                 ],
                 vec![
-                    format!("Monitor Mode: {}", self.monitor_mode),
-                    format!("Buffers: {}  Mycall: {my}", self.buffer_lines),
+                    "Packets not yet displayed: 0".into(),
+                    format!("Global Mycall: {my}"),
                 ],
             ),
             ActivePane::Channel(n) => (
@@ -878,14 +961,12 @@ impl GpGuiApp {
     }
 
     fn rx_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
-        let (bg, fg) = match self.active {
-            ActivePane::Channel(_) => (self.connect_bg, self.connect_fg),
-            ActivePane::Mh | ActivePane::Check | ActivePane::List => (
-                Color32::from_rgb(170, 170, 170),
-                Color32::BLACK,
-            ),
-            ActivePane::Editor => (self.monitor_bg, self.monitor_fg),
-            _ => (self.monitor_bg, self.monitor_fg),
+        let bg = match self.active {
+            ActivePane::Channel(_) => self.connect_bg,
+            ActivePane::Mh | ActivePane::Check | ActivePane::List => {
+                Color32::from_rgb(170, 170, 170)
+            }
+            _ => self.monitor_bg,
         };
         let nudge = self.session.take_scroll_nudge();
         let stick = self.session.scr_lock;
@@ -914,13 +995,9 @@ impl GpGuiApp {
                                 ui.scroll_with_delta(Vec2::new(0.0, nudge));
                             }
                             ui.add(
-                                egui::Label::new(
-                                    RichText::new(self.active_text())
-                                        .color(fg)
-                                        .font(FontId::monospace(14.0)),
-                                )
-                                // No soft-wrap — column art (BBS menus, spy, etc.) must stay fixed.
-                                .wrap_mode(TextWrapMode::Extend),
+                                egui::Label::new(self.active_layout())
+                                    // No soft-wrap — column art (BBS menus, spy, etc.) must stay fixed.
+                                    .wrap_mode(TextWrapMode::Extend),
                             );
                         });
                 });
@@ -1059,6 +1136,12 @@ impl GpGuiApp {
                         w,
                         CellGlyph::Text,
                     );
+                }
+                // Non-clickable COM badge (classic GP had no COM in the magenta grid).
+                let com_badge = com_open_badge(&self.serial_port, self.serial_open);
+                let badge_w = (com_badge.len() as f32 * 7.2 + 12.0).clamp(88.0, 160.0);
+                if x + badge_w <= left_limit {
+                    let _ = paint_static_cell(ui, x, y, h, gap, &com_badge, badge_w, self.serial_open);
                 }
             }
             ActivePane::Channel(_) => {
@@ -1336,6 +1419,56 @@ enum SessionClick {
 
 fn on_off(v: bool) -> &'static str {
     if v { "ON" } else { "OFF" }
+}
+
+/// `COM6` / `com6` → `6`; otherwise keep the raw port token.
+fn com_port_number(port: &str) -> String {
+    let t = port.trim();
+    let rest = t
+        .strip_prefix("COM")
+        .or_else(|| t.strip_prefix("com"))
+        .unwrap_or(t);
+    rest.trim().to_string()
+}
+
+fn com_open_badge(port: &str, open: bool) -> String {
+    let n = com_port_number(port);
+    if open {
+        format!("[ ⇄ Com {n} open ]")
+    } else {
+        format!("[ ⇄ Com {n} ]")
+    }
+}
+
+/// Session-strip badge with no click handler (COM open indicator).
+fn paint_static_cell(
+    ui: &mut Ui,
+    origin_x: f32,
+    y: f32,
+    h: f32,
+    gap: f32,
+    label: &str,
+    w: f32,
+    lit: bool,
+) -> f32 {
+    let cell = Rect::from_min_size(Pos2::new(origin_x, y), Vec2::new(w, h));
+    let _ = ui.interact(cell, ui.id().with(("sess-static", label)), Sense::hover());
+    let painter = ui.painter();
+    let fill = if lit {
+        Color32::from_rgb(85, 255, 85)
+    } else {
+        VGA_GRAY
+    };
+    painter.rect_filled(cell, 0.0, fill);
+    paint_bevel(painter, cell, lit);
+    painter.text(
+        cell.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(11.0),
+        Color32::BLACK,
+    );
+    w + gap
 }
 
 fn looks_like_monitor_mode(s: &str) -> bool {

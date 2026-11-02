@@ -100,6 +100,7 @@ impl Config {
             }
         }
 
+        cfg.tnc.runtime_mycall = cfg.primary_mycall().to_string();
         Ok(cfg)
     }
 
@@ -541,6 +542,17 @@ pub struct TncConfig {
     pub kiss_line_delay_ms: u64,
     /// Settle delay after the section (ms). Classic `-D` exit time; Kenwood often 5000.
     pub kiss_exit_delay_ms: u64,
+    /// WA8DED open/close INI (`[open]` / `[status]` / `[close]`). Empty → use `init`/`deinit` vectors.
+    pub wa8ded_ini: String,
+    /// Pause after each WA8DED.INI hostmode command while waiting for a reply (ms).
+    pub wa8ded_line_delay_ms: u64,
+    /// Monitor flags sent at connect (`M IUSC` / `%M` in INI). Classic default IUSC.
+    pub monitor_mode: String,
+    /// KISS.INI section used on shutdown (default `close`).
+    pub kiss_close_section: String,
+    /// Filled at load from `[station].mycall` for the timing banner (not in TOML).
+    #[serde(skip)]
+    pub runtime_mycall: String,
 }
 
 impl Default for TncConfig {
@@ -550,9 +562,9 @@ impl Default for TncConfig {
                 "DateTime".into(),
                 "@V0".into(),
                 "K 2".into(),
-                "M UISC".into(),
+                "M %M".into(),
             ],
-            deinit: vec!["MN".into()],
+            deinit: vec!["MN".into(), "U1Away!".into(), "K2".into(), "JHOST0".into()],
             dos_shell: vec!["MN".into()],
             protocol: "wa8ded".into(),
             kiss_ini: "KISS.INI".into(),
@@ -560,6 +572,11 @@ impl Default for TncConfig {
             kiss_char_delay_ms: 30,
             kiss_line_delay_ms: 300,
             kiss_exit_delay_ms: 5000,
+            wa8ded_ini: "WA8DED.INI".into(),
+            wa8ded_line_delay_ms: 300,
+            monitor_mode: "IUSC".into(),
+            kiss_close_section: "close".into(),
+            runtime_mycall: String::new(),
         }
     }
 }

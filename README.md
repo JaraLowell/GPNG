@@ -53,8 +53,8 @@ Only **one** modem driver is constructed at startup (`[tnc] protocol`):
 
 | `protocol` | Driver | Notes |
 |------------|--------|-------|
-| `wa8ded` (aliases `jhost`, `hostmode`) | Timed WA8DED hostmode poll | `JHOST1` / `JHOST0`; poll `G0`; frames from `DOC/WA8DED Page1.txt` |
-| `tfpcx` | Soft-TNC hostmode | Same `channel\|code\|len\|payload` framing; no hard `JHOST0` on exit |
+| `wa8ded` (aliases `jhost`, `hostmode`) | Timed WA8DED hostmode poll | `JHOST1` → `WA8DED.INI` `[open]`/`[status]`; exit `[close]` (`MN`/`U1Away!`/`K2`/`JHOST0`); poll `G0` |
+| `tfpcx` | Soft-TNC hostmode | Same `channel\|code\|len\|payload` framing; Config `init`/`deinit` |
 | `kiss` | TAPR KISS | `FEND`/`FESC`; applies `KISS.INI` section then listens; port → channel |
 
 - **JHOST1** — enter WA8DED binary hostmode from terminal mode  
