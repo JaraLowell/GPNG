@@ -5,4 +5,5 @@
 //! `docs/COMPATIBILITY.md`.
 
 pub mod commands;
+pub mod gpi;
 pub mod macros;

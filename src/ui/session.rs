@@ -139,17 +139,9 @@ impl SessionChrome {
     }
 }
 
-/// Resolve `CTEXT.GPI` next to the exe / repo root.
+/// Resolve connect-text GPI (`tools/GTEXT.GPI` preferred, else `CTEXT.GPI`).
 pub fn default_ctext_path() -> PathBuf {
-    let candidates = [
-        PathBuf::from("CTEXT.GPI"),
-        PathBuf::from("../CTEXT.GPI"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../CTEXT.GPI"),
-    ];
-    candidates
-        .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from("CTEXT.GPI"))
+    crate::remote::gpi::default_gtext_path()
 }
 
 pub fn default_bell_wav() -> PathBuf {
@@ -211,11 +203,28 @@ pub fn format_hex_preview(raw: &[u8], max: usize) -> String {
     s
 }
 
-/// Best-effort AX.25 UI-frame summary for KISS/APRS monitor lines.
-///
-/// Returns `SRC>DST[,VIA]: info` when the payload looks like an AX.25 UI frame;
-/// otherwise `None` so the caller can fall back to hex/text.
-pub fn format_ax25_ui(payload: &[u8]) -> Option<String> {
+/// Parsed AX.25 UI frame (APRS / unproto) — dest, source, digis, info.
+#[derive(Debug, Clone)]
+pub struct Ax25UiFrame {
+    pub dest: String,
+    pub src: String,
+    pub via: Vec<String>,
+    pub info: String,
+}
+
+impl Ax25UiFrame {
+    pub fn display_line(&self) -> String {
+        let via = if self.via.is_empty() {
+            String::new()
+        } else {
+            format!(",{}", self.via.join(","))
+        };
+        format!("{}>{}{}: {}", self.src, self.dest, via, self.info)
+    }
+}
+
+/// Parse a KISS/AX.25 UI payload into addresses + info (APRS-friendly).
+pub fn parse_ax25_ui(payload: &[u8]) -> Option<Ax25UiFrame> {
     if payload.len() < 16 {
         return None;
     }
@@ -264,14 +273,23 @@ pub fn format_ax25_ui(payload: &[u8]) -> Option<String> {
     }
     let info = decode_rx_text(&payload[i..], false)
         .chars()
-        .map(|c| if c.is_control() && c != '\n' && c != '\r' { '.' } else { c })
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\r' {
+                '.'
+            } else {
+                c
+            }
+        })
         .collect::<String>();
-    let dest = &addrs[0];
-    let src = &addrs[1];
-    let via = if addrs.len() > 2 {
-        format!(",{}", addrs[2..].join(","))
-    } else {
-        String::new()
-    };
-    Some(format!("{src}>{dest}{via}: {info}"))
+    Some(Ax25UiFrame {
+        dest: addrs[0].clone(),
+        src: addrs[1].clone(),
+        via: addrs[2..].to_vec(),
+        info,
+    })
+}
+
+/// Best-effort AX.25 UI-frame summary for KISS/APRS monitor lines.
+pub fn format_ax25_ui(payload: &[u8]) -> Option<String> {
+    parse_ax25_ui(payload).map(|f| f.display_line())
 }

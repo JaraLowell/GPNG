@@ -15,6 +15,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 
 # Type-safe configuration for Config.toml and legacy CONFIG.GP keys.
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 
 # Cross-platform USB-to-serial / classic COM-port access for TNCs.
@@ -36,6 +37,9 @@ chrono = "0.4"
 # Session-bar: CTEXT file picker + classic bell.wav
 rfd = "0.15"
 rodio = { version = "0.20", default-features = true, features = ["wav"] }
+
+# `%O` random line from ORIGIN.GPI
+rand = "0.8"
 
 # Optional text-mode fallback (`--tui`).
 ratatui = "0.29"

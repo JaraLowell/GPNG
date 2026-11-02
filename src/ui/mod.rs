@@ -4,9 +4,11 @@
 //! clock (classic BGI look). Optional `--tui` uses ratatui text mode.
 
 pub mod app;
+pub mod editor;
 pub mod gui;
 pub mod icons;
 pub mod layout;
+pub mod mheard;
 pub mod session;
 pub mod theme;
 

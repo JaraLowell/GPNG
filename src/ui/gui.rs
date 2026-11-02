@@ -28,16 +28,20 @@ use eframe::egui::text::{LayoutJob, TextFormat};
 use tokio::sync::mpsc;
 
 use crate::config::Config;
-use crate::remote::commands::parse_line;
+use crate::remote::commands::{parse_line, RemoteAction};
+use crate::remote::gpi;
+use crate::remote::macros::MacroContext;
 use crate::tnc::{HostCode, TncCommand, TncEvent};
 use crate::version;
 
+use super::editor::GpEditor;
 use super::icons::{
     toolbar_for, IconLibrary, ICON_HEIGHT, ICON_SLOT_LABELS, ICON_WIDTH,
 };
 use super::layout::ActivePane;
+use super::mheard::MheardList;
 use super::session::{
-    decode_rx_text, default_bell_wav, default_ctext_path, format_ax25_ui, format_hex_preview,
+    decode_rx_text, default_bell_wav, default_ctext_path, format_hex_preview, parse_ax25_ui,
     play_bell_wav, SessionChrome,
 };
 use super::theme::vga;
@@ -218,6 +222,10 @@ pub struct GpGuiApp {
     #[allow(dead_code)]
     connect_fg: Color32,
     session: SessionChrome,
+    /// Internal GPI / text editor (EDIT icon → default GTEXT.GPI).
+    editor: GpEditor,
+    /// Stations heard (APRS/AX.25 UI) — JSON-backed.
+    mheard: MheardList,
     bell_wav: PathBuf,
     /// Hourly gong (classic ALT-G / click ♫ on the clock).
     hour_gong: bool,
@@ -241,9 +249,10 @@ impl GpGuiApp {
             });
             channel_peer.push(None);
         }
+        pads[0].push(PadKind::System, version::startup_credits());
         pads[0].push(
             PadKind::System,
-            version::startup_banner(cfg.primary_mycall()),
+            version::startup_local_call(cfg.primary_mycall()),
         );
 
         let buffer_lines = cfg.buffers.text_buffer.first().copied().unwrap_or(500);
@@ -293,9 +302,83 @@ impl GpGuiApp {
                 ctext_path: default_ctext_path(),
                 ..SessionChrome::default()
             },
+            editor: GpEditor::default(),
+            mheard: MheardList::load_default(),
             bell_wav: default_bell_wav(),
             hour_gong: true,
             last_gong: None,
+        }
+    }
+
+    /// Open Editor on `GTEXT.GPI` (classic default connect-text file).
+    fn open_editor_default(&mut self) {
+        self.active = ActivePane::Editor;
+        let path = gpi::default_gtext_path();
+        match self.editor.load_path(&path) {
+            Ok(()) => {
+                self.status = format!("EDIT {}", self.editor.display_name());
+                self.log_event(format!("editor ← {}", self.editor.display_name()));
+            }
+            Err(e) => {
+                self.editor.path = path;
+                self.editor.text.clear();
+                self.editor.dirty = false;
+                self.status = e.clone();
+                self.log_event(format!("editor: {e}"));
+            }
+        }
+    }
+
+    fn editor_save(&mut self) {
+        match self.editor.save() {
+            Ok(()) => {
+                self.status = format!("saved {}", self.editor.display_name());
+                self.log_event(format!("editor saved {}", self.editor.display_name()));
+                // Keep session CT in sync when editing GTEXT.
+                if self
+                    .editor
+                    .display_name()
+                    .eq_ignore_ascii_case("GTEXT.GPI")
+                {
+                    self.session.set_ctext_path(self.editor.path.clone());
+                }
+            }
+            Err(e) => {
+                self.status = e.clone();
+                self.log_event(format!("editor save: {e}"));
+            }
+        }
+    }
+
+    fn editor_load_dialog(&mut self) {
+        // Prefer absolute tools/ so the picker opens there regardless of cwd.
+        let start = [
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools"),
+            std::env::current_dir()
+                .map(|d| d.join("tools"))
+                .unwrap_or_else(|_| PathBuf::from("tools")),
+            PathBuf::from("tools"),
+        ]
+        .into_iter()
+        .find(|p| p.is_dir())
+        .and_then(|p| p.canonicalize().ok().or(Some(p)))
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools"));
+        let dialog = rfd::FileDialog::new()
+            .add_filter("GPI / text", &["gpi", "GPI", "txt", "TXT"])
+            .set_title("Load GPI / text")
+            .set_directory(&start);
+        if let Some(path) = dialog.pick_file() {
+            match self.editor.load_path(&path) {
+                Ok(()) => {
+                    self.status = format!("loaded {}", self.editor.display_name());
+                    self.log_event(format!("editor ← {}", self.editor.display_name()));
+                    self.select(ActivePane::Editor);
+                }
+                Err(e) => {
+                    self.status = e.clone();
+                    self.log_event(format!("editor load: {e}"));
+                }
+            }
         }
     }
 
@@ -382,8 +465,9 @@ impl GpGuiApp {
                         HostCode::Monitor => (PadKind::Incoming, text),
                         HostCode::LinkStatus => (PadKind::System, text),
                         HostCode::Data => {
-                            if let Some(ax) = format_ax25_ui(&payload) {
-                                (PadKind::Incoming, ax)
+                            if let Some(frame) = parse_ax25_ui(&payload) {
+                                self.mheard.hear(&frame);
+                                (PadKind::Incoming, frame.display_line())
                             } else if text.chars().any(|c| c.is_ascii_graphic()) {
                                 (PadKind::Incoming, text)
                             } else {
@@ -456,6 +540,34 @@ impl GpGuiApp {
                 self.channel_peer[idx] = Some("****".into());
             }
         }
+        // Classic: on connect, send GTEXT / CTEXT to the peer.
+        if upper.contains("CONNECTED TO ") || upper.contains("CONNECTED") {
+            self.send_connect_text(channel);
+        }
+    }
+
+    /// Expand and TX `GTEXT.GPI` (or picked CT file) on the given channel.
+    fn send_connect_text(&mut self, channel: u8) {
+        let path = if self.session.ctext_path.exists() {
+            self.session.ctext_path.clone()
+        } else {
+            gpi::default_gtext_path()
+        };
+        let Some(raw) = gpi::read_file(&path) else {
+            return;
+        };
+        let mut ctx = self.macro_ctx();
+        ctx.channel = channel;
+        if let Some(peer) = self.channel_peer.get(channel as usize).and_then(|p| p.as_ref()) {
+            ctx.peer_call = peer.clone();
+        }
+        let text = gpi::expand_gpi_text(&raw, &ctx);
+        let prev = self.active;
+        if channel >= 1 {
+            self.active = ActivePane::Channel(channel);
+        }
+        self.send_gpi_text(&text);
+        self.active = prev;
     }
 
     fn channel_connected(&self, n: u8) -> bool {
@@ -512,10 +624,17 @@ impl GpGuiApp {
         }
 
         if let Some((action, args)) = parse_line(&line) {
-            // Local `//` always runs. `Remote` gates *incoming* peer remotes (TNC RX path).
-            self.status = format!("remote {action:?}: {args}");
-            self.log_event(format!("remote {action:?} {args}"));
+            self.handle_remote(action, &args);
             return;
+        }
+        // Unregistered `//verb` → serve matching tools/*.GPI (not ORIGIN).
+        if let Some(verb) = line.strip_prefix("//").or_else(|| line.strip_prefix("\\\\")) {
+            let verb = verb.split_whitespace().next().unwrap_or("");
+            if !verb.is_empty() {
+                if self.serve_gpi_verb(verb) {
+                    return;
+                }
+            }
         }
 
         let channel = match self.active {
@@ -528,7 +647,111 @@ impl GpGuiApp {
         });
     }
 
+    fn macro_ctx(&self) -> MacroContext {
+        let now = Local::now();
+        MacroContext {
+            version: version::APP_VERSION.into(),
+            peer_call: String::new(),
+            peer_name: String::new(),
+            my_call: self.cfg.primary_mycall().to_string(),
+            channel: match self.active {
+                ActivePane::Channel(n) => n,
+                _ => 0,
+            },
+            time: now.format("%H:%M:%S").to_string(),
+            date: now.format("%d-%m-%Y").to_string(),
+            zone: "UTC".into(),
+            news_hint: if gpi::news_available() {
+                "News available — //NEws".into()
+            } else {
+                String::new()
+            },
+            origin_line: gpi::random_origin_line(),
+            digi: String::new(),
+            name_unknown: false,
+        }
+    }
+
+    /// Serve a GPI by remote action or verb; returns true if handled.
+    fn serve_gpi_verb(&mut self, verb: &str) -> bool {
+        let ctx = self.macro_ctx();
+        let Some((stem, text)) = gpi::serve_verb(verb, &ctx) else {
+            return false;
+        };
+        self.status = format!("GPI {stem}");
+        self.send_gpi_text(&text);
+        true
+    }
+
+    fn send_gpi_text(&mut self, text: &str) {
+        let channel = match self.active {
+            ActivePane::Channel(n) => n,
+            _ => 0,
+        };
+        let idx = channel as usize;
+        for raw in text.lines() {
+            let line = raw.trim_end_matches('\r').to_string();
+            // Show locally (own / white when echo or channel pad).
+            if idx != 0 {
+                if let Some(pad) = self.pads.get_mut(idx) {
+                    pad.push(PadKind::Own, line.clone());
+                }
+                if self.session.echo {
+                    self.pads[0].push(PadKind::Own, line.clone());
+                }
+            } else {
+                self.pads[0].push(PadKind::System, line.clone());
+            }
+            let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
+                channel,
+                data: format!("{line}\r").into_bytes(),
+            });
+        }
+    }
+
+    fn handle_remote(&mut self, action: RemoteAction, args: &str) {
+        self.status = format!("remote {action:?}");
+        let ctx = self.macro_ctx();
+
+        if let Some(stem) = gpi::stem_for_action(action) {
+            if let Some(text) = gpi::load_expanded(stem, &ctx) {
+                self.send_gpi_text(&text);
+                return;
+            }
+            self.log_event(format!("GPI {stem}.GPI not found"));
+            return;
+        }
+
+        match action {
+            RemoteAction::Version => {
+                let line = version::startup_credits();
+                self.send_gpi_text(&line);
+            }
+            RemoteAction::Echo => {
+                self.send_gpi_text(args);
+            }
+            RemoteAction::Bell => {
+                play_bell_wav(&self.bell_wav);
+                self.log_event("bell");
+            }
+            RemoteAction::MHeard => {
+                let body = if self.mheard.entries.is_empty() {
+                    "MHeard: (empty)".into()
+                } else {
+                    self.mheard.lines().join("\r")
+                };
+                self.send_gpi_text(&body);
+            }
+            _ => {
+                self.log_event(format!("remote {action:?} (not implemented)"));
+            }
+        }
+    }
+
     fn active_layout(&self) -> LayoutJob {
+        if matches!(self.active, ActivePane::Mh) {
+            return mheard_layout(&self.mheard);
+        }
         let idx = match self.active {
             ActivePane::Channel(n) => n as usize,
             _ => 0,
@@ -851,14 +1074,24 @@ impl GpGuiApp {
                     "Unack: 0".into(),
                 ],
             ),
-            ActivePane::Editor => (
-                vec![
-                    "NONAME.TXT".into(),
-                    "Line: 1".into(),
-                    "Col: 1".into(),
-                ],
-                vec!["Insert".into(), "Filled Lines: 1/780".into()],
-            ),
+            ActivePane::Editor => {
+                let name = if self.editor.dirty {
+                    format!("{}*", self.editor.display_name())
+                } else {
+                    self.editor.display_name()
+                };
+                (
+                    vec![
+                        name,
+                        format!("Line: {}", self.editor.cursor_line),
+                        format!("Col: {}", self.editor.cursor_col),
+                    ],
+                    vec![
+                        "Insert".into(),
+                        format!("Filled Lines: {}/780", self.editor.line_count()),
+                    ],
+                )
+            }
             ActivePane::Check => (
                 vec!["Selected file:".into()],
                 vec!["Reference: not computed".into()],
@@ -870,7 +1103,13 @@ impl GpGuiApp {
                 ],
                 vec!["File drawer:".into()],
             ),
-            ActivePane::Mh => (vec!["stations heard".into()], vec![]),
+            ActivePane::Mh => (
+                vec![
+                    format!("Stations: {}", self.mheard.entries.len()),
+                    format!("{}", self.mheard.path().display()),
+                ],
+                vec![],
+            ),
             ActivePane::Spy => (vec!["Spy".into()], vec![]),
         }
     }
@@ -945,6 +1184,10 @@ impl GpGuiApp {
     }
 
     fn rx_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
+        if matches!(self.active, ActivePane::Editor) {
+            self.editor_pane(ui, width, height);
+            return;
+        }
         let bg = match self.active {
             ActivePane::Channel(_) => self.connect_bg,
             ActivePane::Mh | ActivePane::Check | ActivePane::List => {
@@ -984,6 +1227,42 @@ impl GpGuiApp {
                                     .wrap_mode(TextWrapMode::Extend),
                             );
                         });
+                });
+        });
+    }
+
+    /// Full-pane monospace editor (CP437 GPI files).
+    fn editor_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
+        let bg = Color32::from_rgb(0, 0, 0);
+        let fg = Color32::from_rgb(170, 170, 170);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+            Frame::none()
+                .fill(bg)
+                .stroke(Stroke::new(1.0, Color32::from_rgb(170, 170, 170)))
+                .inner_margin(4.0)
+                .show(ui, |ui| {
+                    ui.set_min_size(rect.size() - Vec2::splat(2.0));
+                    let avail = ui.available_size();
+                    let rows = ((avail.y / 16.0).floor() as usize).clamp(8, 60);
+                    let before = self.editor.text.clone();
+                    let output = egui::TextEdit::multiline(&mut self.editor.text)
+                        .id_salt("gp_editor")
+                        .font(FontId::monospace(14.0))
+                        .text_color(fg)
+                        .frame(false)
+                        .desired_width(avail.x)
+                        .desired_rows(rows)
+                        .lock_focus(true)
+                        .show(ui);
+                    if output.response.changed() && self.editor.text != before {
+                        self.editor.dirty = true;
+                    }
+                    if let Some(cursor) = output.cursor_range {
+                        let cc = cursor.as_sorted_char_range().start;
+                        let snap = self.editor.text.clone();
+                        self.editor.update_cursor_from_galley(&snap, cc);
+                    }
                 });
         });
     }
@@ -1360,7 +1639,14 @@ impl GpGuiApp {
         if let Some(label) = clicked {
             match label {
                 "MONITOR" => self.select(ActivePane::Monitor),
-                "EDIT" => self.select(ActivePane::Editor),
+                "EDIT" => self.open_editor_default(),
+                "SAVE" => {
+                    if !matches!(self.active, ActivePane::Editor) {
+                        self.open_editor_default();
+                    }
+                    self.editor_save();
+                }
+                "LOAD" => self.editor_load_dialog(),
                 "MHEARD" => self.select(ActivePane::Mh),
                 "SPY" => self.select(ActivePane::Spy),
                 "EXIT" => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
@@ -1368,8 +1654,12 @@ impl GpGuiApp {
                     self.status = format!("MYCALL {}", self.cfg.primary_mycall());
                 }
                 "CONNECT" => {
-                    self.status = "CONNECT …".into();
-                    self.log_event("CONNECT requested");
+                    let ch = match self.active {
+                        ActivePane::Channel(n) => n,
+                        _ => 1,
+                    };
+                    self.status = format!("CT → ch{ch}");
+                    self.send_connect_text(ch);
                 }
                 other => self.status = format!("icon: {other}"),
             }
@@ -1405,6 +1695,48 @@ enum SessionClick {
 
 fn on_off(v: bool) -> &'static str {
     if v { "ON" } else { "OFF" }
+}
+
+fn mheard_layout(list: &MheardList) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    let font = FontId::monospace(14.0);
+    let color = Color32::BLACK;
+    let lines = list.lines();
+    if lines.is_empty() {
+        job.append(
+            "No stations heard yet — APRS/AX.25 UI frames appear here.",
+            0.0,
+            TextFormat {
+                font_id: font,
+                color,
+                ..Default::default()
+            },
+        );
+        return job;
+    }
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            job.append(
+                "\n",
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color,
+                    ..Default::default()
+                },
+            );
+        }
+        job.append(
+            line,
+            0.0,
+            TextFormat {
+                font_id: font.clone(),
+                color,
+                ..Default::default()
+            },
+        );
+    }
+    job
 }
 
 /// `COM6` / `com6` → `6`; otherwise keep the raw port token.
