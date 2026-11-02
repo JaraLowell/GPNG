@@ -44,3 +44,11 @@ rand = "0.8"
 # Optional text-mode fallback (`--tui`).
 ratatui = "0.29"
 crossterm = "0.28"
+
+# Window / taskbar icon (assets/GPNG.ico — PNG or ICO).
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
+
+[build-dependencies]
+# Embed assets/GPNG.ico into the Windows .exe resource.
+winresource = "0.1"
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }

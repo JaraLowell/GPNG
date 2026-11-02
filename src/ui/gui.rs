@@ -1986,6 +1986,27 @@ fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool) -> bool {
     resp.clicked()
 }
 
+fn load_window_icon() -> egui::IconData {
+    const BYTES: &[u8] = include_bytes!("../../assets/GPNG.ico");
+    // Asset is often a PNG saved as `.ico` — pick format from magic bytes.
+    let img = if BYTES.starts_with(&[0x89, b'P', b'N', b'G']) {
+        image::load_from_memory_with_format(BYTES, image::ImageFormat::Png)
+    } else {
+        image::load_from_memory(BYTES)
+    };
+    match img {
+        Ok(img) => {
+            let rgba = img.into_rgba8();
+            egui::IconData {
+                width: rgba.width(),
+                height: rgba.height(),
+                rgba: rgba.into_raw(),
+            }
+        }
+        Err(_) => egui::IconData::default(),
+    }
+}
+
 pub fn run(
     cfg: Config,
     events: mpsc::Receiver<TncEvent>,
@@ -1995,7 +2016,8 @@ pub fn run(
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1024.0, 820.0])
         .with_min_inner_size([860.0, 700.0])
-        .with_title(title.clone());
+        .with_title(title.clone())
+        .with_icon(load_window_icon());
 
     let native = eframe::NativeOptions {
         viewport,

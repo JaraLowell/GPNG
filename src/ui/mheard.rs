@@ -37,14 +37,16 @@ impl HeardStation {
         }
     }
 
-    /// `yyyy/mm/dd hh:mm  CALL > TO  VIA…`
+    /// `yyyy/mm/dd hh:mm  CALL_____ > TO______  via PATH`
     pub fn display_line(&self) -> String {
+        let from = pad_call(&self.call);
+        let to = pad_call(&self.to);
         if self.via.is_empty() {
-            format!("{} {}  {} > {}", self.date, self.time, self.call, self.to)
+            format!("{} {}  {} > {}", self.date, self.time, from, to)
         } else {
             format!(
-                "{} {}  {} > {}  {}",
-                self.date, self.time, self.call, self.to, self.via
+                "{} {}  {} > {}  via {}",
+                self.date, self.time, from, to, self.via
             )
         }
     }
@@ -82,30 +84,42 @@ impl MheardList {
         self.entries.sort_by(|a, b| b.heard_ms.cmp(&a.heard_ms));
     }
 
-    /// Insert or refresh a call; keeps newest-first order. Saves JSON when changed.
+    /// Insert or refresh a call. On re-hear, replace date, time, to, and via
+    /// (including clearing via when there is no digi path), then move to top.
     pub fn hear(&mut self, frame: &Ax25UiFrame) {
         let now = Local::now();
-        // Avoid second-level spam: same call within same minute → bump time only.
         let entry = HeardStation::from_ax25(frame, now);
-        let call_up = entry.call.to_ascii_uppercase();
         if let Some(pos) = self
             .entries
             .iter()
-            .position(|e| e.call.eq_ignore_ascii_case(&call_up))
+            .position(|e| e.call.eq_ignore_ascii_case(&entry.call))
         {
-            let prev = &self.entries[pos];
-            if prev.date == entry.date
-                && prev.time == entry.time
-                && prev.to == entry.to
-                && prev.via == entry.via
-            {
-                return; // identical minute stamp
+            let unchanged = {
+                let prev = &self.entries[pos];
+                prev.date == entry.date
+                    && prev.time == entry.time
+                    && prev.to.eq_ignore_ascii_case(&entry.to)
+                    && prev.via == entry.via
+            };
+            if unchanged {
+                return;
             }
-            self.entries.remove(pos);
-        }
-        self.entries.insert(0, entry);
-        if self.entries.len() > MAX_ENTRIES {
-            self.entries.truncate(MAX_ENTRIES);
+            // Full replace of stamp + destination + path (via may become empty).
+            {
+                let prev = &mut self.entries[pos];
+                prev.date = entry.date;
+                prev.time = entry.time;
+                prev.to = entry.to;
+                prev.via = entry.via; // "" when heard direct / no digis
+                prev.heard_ms = entry.heard_ms;
+            }
+            let updated = self.entries.remove(pos);
+            self.entries.insert(0, updated);
+        } else {
+            self.entries.insert(0, entry);
+            if self.entries.len() > MAX_ENTRIES {
+                self.entries.truncate(MAX_ENTRIES);
+            }
         }
         self.dirty = true;
         let _ = self.save();
@@ -125,6 +139,11 @@ impl MheardList {
     pub fn lines(&self) -> Vec<String> {
         self.entries.iter().map(HeardStation::display_line).collect()
     }
+}
+
+/// Fixed-width call field so MHeard lines align as a table.
+fn pad_call(s: &str) -> String {
+    format!("{:<9}", s)
 }
 
 pub fn default_mheard_path() -> PathBuf {
