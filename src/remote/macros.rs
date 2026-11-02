@@ -26,7 +26,7 @@ pub struct MacroContext {
 impl MacroContext {
     pub fn demo() -> Self {
         Self {
-            version: "1.63".into(),
+            version: crate::version::APP_VERSION.into(),
             peer_call: "N0PEER".into(),
             peer_name: "Peer".into(),
             my_call: "N0CALL".into(),
@@ -166,11 +166,13 @@ mod tests {
     #[test]
     fn expands_version_and_pad() {
         let ctx = MacroContext {
-            version: "1.63".into(),
             peer_name: "Ulf".into(),
             ..MacroContext::demo()
         };
-        assert_eq!(expand("GP %V", &ctx), "GP 1.63");
+        assert_eq!(
+            expand("GP %V", &ctx),
+            format!("GP {}", crate::version::APP_VERSION)
+        );
         assert_eq!(expand("%N#6", &ctx), "Ulf   ");
         assert_eq!(expand("100%%", &ctx), "100%");
     }

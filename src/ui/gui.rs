@@ -30,6 +30,7 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 use crate::remote::commands::parse_line;
 use crate::tnc::{HostCode, TncCommand, TncEvent};
+use crate::version;
 
 use super::icons::{
     toolbar_for, IconLibrary, ICON_HEIGHT, ICON_SLOT_LABELS, ICON_WIDTH,
@@ -242,10 +243,7 @@ impl GpGuiApp {
         }
         pads[0].push(
             PadKind::System,
-            format!(
-                "Graphic Packet (modern) — MYCALL {}",
-                cfg.primary_mycall()
-            ),
+            version::startup_banner(cfg.primary_mycall()),
         );
 
         let buffer_lines = cfg.buffers.text_buffer.first().copied().unwrap_or(500);
@@ -332,45 +330,31 @@ impl GpGuiApp {
                 TncEvent::Status(m) => {
                     self.status = m.clone();
                     let low = m.to_ascii_lowercase();
-                    if low.contains("serial open")
-                        || low.contains("kiss driver on")
-                        || low.contains("wa8ded driver")
-                        || low.contains("tfpcx driver")
-                    {
+                    // Monitor pad: only the quiet “serial OPEN …” line (from Config port/baud).
+                    if low.starts_with("serial open") {
+                        self.serial_open = true;
+                        self.log_event(m);
+                    } else if low.contains("wa8ded driver") || low.contains("tfpcx driver") {
                         self.serial_open = true;
                     }
-                    self.log_event(m);
                 }
                 TncEvent::Warning(m) => {
                     self.status = m.clone();
-                    self.log_event(format!("! {m}"));
+                    // Keep real failures; skip routine bring-up noise.
+                    if !m.to_ascii_lowercase().starts_with("kiss") {
+                        self.log_event(format!("! {m}"));
+                    }
                 }
                 TncEvent::LinkDown(m) => {
                     self.status = format!("link down: {m}");
                     self.serial_open = false;
-                    self.log_event(format!("link down: {m}"));
                     for peer in &mut self.channel_peer {
                         *peer = None;
                     }
                 }
-                // Debug: show wire activity so KISS/WA8DED RX is visible even
-                // before a full frame decodes (APRS / live radio check).
+                // UART counters only — full KISS frames land as Incoming (green).
                 TncEvent::RawRx(bytes) => {
-                    if bytes.is_empty() {
-                        continue;
-                    }
                     self.serial_rx_bytes += bytes.len() as u64;
-                    let hex = format_hex_preview(&bytes, 24);
-                    if let Some(pad) = self.pads.get_mut(0) {
-                        pad.push(
-                            PadKind::System,
-                            format!(
-                                "RX {}B Σ{}  {hex}",
-                                bytes.len(),
-                                self.serial_rx_bytes
-                            ),
-                        );
-                    }
                 }
                 TncEvent::HostFrame {
                     channel,
@@ -1627,7 +1611,7 @@ fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool) -> bool {
     painter.text(
         ver_pos,
         egui::Align2::CENTER_CENTER,
-        "GP V2.01",
+        version::version_badge(),
         FontId::monospace(12.0),
         Color32::WHITE,
     );
@@ -1675,10 +1659,11 @@ pub fn run(
     events: mpsc::Receiver<TncEvent>,
     cmd_tx: mpsc::Sender<TncCommand>,
 ) -> anyhow::Result<()> {
+    let title = version::window_title();
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1024.0, 820.0])
         .with_min_inner_size([860.0, 700.0])
-        .with_title("Graphic Packet (modern)");
+        .with_title(title.clone());
 
     let native = eframe::NativeOptions {
         viewport,
@@ -1687,7 +1672,7 @@ pub fn run(
 
     let cfg = Arc::new(cfg);
     eframe::run_native(
-        "Graphic Packet",
+        &title,
         native,
         Box::new(move |cc| {
             let app = GpGuiApp::new(cc, (*cfg).clone(), events, cmd_tx);

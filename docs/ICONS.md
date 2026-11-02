@@ -28,9 +28,11 @@ Recovered from the on-disk library (not by decompiling drawing code).
 - Icon count in stock files: **17** (`0x82 + 17×1482 = 25324`).
 - Bytes per plane-row: `ceil(70/8) = 9`.
 - For each row `y`: planes 0..3 stored back-to-back (`9×4` bytes), then next row.
-- Pixel colour = EGA/VGA index bits `plane0 + 2*plane1 + 4*plane2 + 8*plane3`.
+- Pixel colour = EGA/VGA index with **file plane0 = MSB (bit 3)**:
+  `bit3*plane0 + bit2*plane1 + bit1*plane2 + bit0*plane3`.
+  (LSB-first decode swaps LightGray↔Yellow vs GP / GPPAINT / DOSBox.)
 
-This matches Borland BGI `getimage`-style planar packing (row-major planes).
+Row-interleaved planar packing (4 plane strips per row), not nibble-packed.
 
 ## Decode
 
@@ -66,7 +68,6 @@ Channel tabs `1:`…`10:`, `BBS-Menu`, `Box-List` are **drawn chrome**, not
 
 ## Modern use
 
-1. Decode → RGBA at runtime; yellow/light-red corner chrome is flood-filled to
-   VGA LightGray so icons sit on classic grey button faces (DOSBox look).
+1. Decode → RGBA at runtime (MSB-first planes; icons already use LightGray paper).
 2. Pixel UI blits 70×40 (scaled) onto a grey bevelled cell on the dark-red strip.
 3. ratatui can only approximate labels until a bitmap backend exists.

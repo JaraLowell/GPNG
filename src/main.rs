@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 use graphic_packet::config::Config;
 use graphic_packet::tnc::{spawn_tnc_task, TncCommand};
 use graphic_packet::ui;
+use graphic_packet::version::{self, APP_NAME};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -21,7 +22,11 @@ fn main() -> Result<()> {
 
     let tui = std::env::args().any(|a| a == "--tui");
 
-    info!("Graphic Packet (modern) — {}", if tui { "TUI" } else { "pixel UI" });
+    info!(
+        "{APP_NAME} v{} — {}",
+        version::APP_VERSION,
+        if tui { "TUI" } else { "pixel UI" }
+    );
 
     let config_path = resolve_config_path();
     let cfg = Config::load(&config_path)

@@ -59,55 +59,10 @@ impl GpIcon {
             .collect()
     }
 
-    /// Classic GP draws icons on LightGray button faces. Stock libraries use a
-    /// solid chrome key (usually yellow `14`, sometimes light-red `12`) from the
-    /// corners — flood-fill that to VGA light grey so the strip matches DOSBox.
-    pub fn with_grey_chrome(&self) -> Self {
-        let key = self.pixels.first().copied().unwrap_or(0) & 15;
-        // Only remap common GP-Paint paper colours.
-        if !matches!(key, 12 | 14) {
-            return self.clone();
-        }
-        let w = self.width;
-        let h = self.height;
-        let mut out = self.pixels.clone();
-        let mut stack = vec![(0usize, 0usize)];
-        let mut seen = vec![false; w * h];
-        while let Some((x, y)) = stack.pop() {
-            let i = y * w + x;
-            if seen[i] {
-                continue;
-            }
-            seen[i] = true;
-            if (self.pixels[i] & 15) != key {
-                continue;
-            }
-            out[i] = 7; // LightGray
-            if x > 0 {
-                stack.push((x - 1, y));
-            }
-            if x + 1 < w {
-                stack.push((x + 1, y));
-            }
-            if y > 0 {
-                stack.push((x, y - 1));
-            }
-            if y + 1 < h {
-                stack.push((x, y + 1));
-            }
-        }
-        Self {
-            width: w,
-            height: h,
-            pixels: out,
-        }
-    }
-
-    /// RGBA8 buffer for egui / GPU upload (grey button chrome).
+    /// RGBA8 buffer for egui / GPU upload.
     pub fn rgba8(&self) -> Vec<u8> {
-        let grey = self.with_grey_chrome();
-        let mut out = Vec::with_capacity(grey.pixels.len() * 4);
-        for &idx in &grey.pixels {
+        let mut out = Vec::with_capacity(self.pixels.len() * 4);
+        for &idx in &self.pixels {
             let (r, g, b) = VGA16_RGB[(idx & 15) as usize];
             out.extend_from_slice(&[r, g, b, 255]);
         }
@@ -167,14 +122,18 @@ fn decode_record(chunk: &[u8]) -> Result<GpIcon, IconError> {
     }
     let data = &chunk[4..need];
     let mut pixels = vec![0u8; width * height];
+    // GP/GP-Paint stores 4 bitplanes per row as plane0..plane3 in file order, but
+    // plane0 is the *MSB* (bit 3). Treating plane0 as LSB swapped LightGray↔Yellow
+    // (and other pairs) vs DOSBox / GPPAINT. Verified against V1.63 screenshots.
     for y in 0..height {
         let row = &data[y * bpr * 4..(y + 1) * bpr * 4];
         for plane in 0..4 {
             let plane_bytes = &row[plane * bpr..(plane + 1) * bpr];
+            let color_bit = 3 - plane;
             for x in 0..width {
                 let bit = 7 - (x % 8);
                 if plane_bytes[x / 8] & (1 << bit) != 0 {
-                    pixels[y * width + x] |= 1 << plane;
+                    pixels[y * width + x] |= 1 << color_bit;
                 }
             }
         }
@@ -196,7 +155,7 @@ pub const ICON_SLOT_LABELS: [&str; 17] = [
     "LOAD",       // 5
     "MONITOR",    // 6
     "MYCALL",     // 7
-    "EMPTY",      // 8 — blank yellow chrome
+    "EMPTY",      // 8 — blank grey chrome
     "SAVE",       // 9
     "SETUP",      // 10
     "FILETRANS",  // 11
@@ -256,5 +215,7 @@ mod tests {
         // Icons use more than a flat colour.
         let uniq: std::collections::HashSet<_> = lib.icons[0].pixels.iter().copied().collect();
         assert!(uniq.len() > 1);
+        // MSB-first planes: paper is LightGray (7), not Yellow (14).
+        assert_eq!(lib.icons[6].pixels[0] & 15, 7, "MONITOR chrome should be LightGray");
     }
 }

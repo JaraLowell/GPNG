@@ -1,8 +1,8 @@
 [package]
 name = "graphic-packet"
-version = "0.1.0"
+version = "2.1.0"
 edition = "2021"
-description = "Modern asynchronous rewrite of Graphic Packet (GP), the classic AX.25 terminal by Ulf Saran (DH1DAE)"
+description = "Graphic Packet NG — modern rewrite of Graphic Packet (GP), the classic AX.25 terminal by Ulf Saran (DH1DAE)"
 license = "MIT OR Apache-2.0"
 authors = ["Graphic Packet Contributors"]
 readme = "README.md"
