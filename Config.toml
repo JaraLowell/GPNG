@@ -50,6 +50,8 @@ no_remote = []
 auto_spy = []
 no_auto_spy = []
 auto_spy_minimum_save = 512
+# Spy windows 1..10 — empty string = inactive slot.
+spy_calls = ["", "", "", "", "", "", "", "", "", ""]
 
 # Session-bar button state (restored on start; rewritten when you toggle).
 [session.chrome]

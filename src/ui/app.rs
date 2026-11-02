@@ -500,7 +500,7 @@ impl UiApp {
             ActivePane::Check => (t.check_fg, t.check_bg),
             ActivePane::List => (t.list_fg, t.list_bg),
             ActivePane::Mh => (t.mh_fg, t.mh_bg),
-            ActivePane::Spy => (t.spy_fg, t.spy_bg),
+            ActivePane::Spy(_) => (t.spy_fg, t.spy_bg),
         };
         let idx = match pane {
             ActivePane::Monitor => 0,
@@ -520,7 +520,7 @@ impl UiApp {
             ActivePane::Check => " Check ".into(),
             ActivePane::List => " List ".into(),
             ActivePane::Mh => " MH ".into(),
-            ActivePane::Spy => " Spy ".into(),
+            ActivePane::Spy(n) => format!(" Spy {n} "),
         };
         let block = Block::default()
             .borders(Borders::ALL)

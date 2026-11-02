@@ -172,6 +172,8 @@ pub const TOOLBAR_MONITOR: &[usize] = &[12, 3, 10, 6, 2, 9, 7, 4];
 pub const TOOLBAR_CHANNEL: &[usize] = &[0, 3, 10, 6, 2, 9, 7, 4];
 /// MHeard strip.
 pub const TOOLBAR_MHEARD: &[usize] = &[12, 3, 10, 6, 2, 14, 8, 4];
+/// Spy strip — SPY sets call, KILL SPY clears it.
+pub const TOOLBAR_SPY: &[usize] = &[12, 3, 10, 6, 2, 14, 15, 4];
 /// Editor strip.
 pub const TOOLBAR_EDITOR: &[usize] = &[12, 3, 10, 6, 2, 9, 5, 4];
 /// BBS-Menu strip.
@@ -193,7 +195,7 @@ pub fn toolbar_for(pane: super::layout::ActivePane) -> &'static [usize] {
         Editor => TOOLBAR_EDITOR,
         Check => TOOLBAR_BBS_MENU,
         List => TOOLBAR_BOX_LIST,
-        Spy => TOOLBAR_MHEARD,
+        Spy(_) => TOOLBAR_SPY,
     }
 }
 

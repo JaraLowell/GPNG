@@ -194,6 +194,8 @@ pub struct GpGuiApp {
     /// Last typed lines (pre-write history), newest at the end.
     typed_history: VecDeque<String>,
     pads: Vec<TextPad>,
+    /// Spy windows `1..=10` (index 0 = spy 1).
+    spy_pads: Vec<TextPad>,
     /// Soft event / command log (mode changes, etc.).
     event_log: VecDeque<String>,
     channels: u8,
@@ -204,9 +206,11 @@ pub struct GpGuiApp {
     monitor_mode: String,
     /// Scroll-back capacity shown on the magenta bar (classic “Buffers:”).
     buffer_lines: u32,
-    /// Compact port id for the session-bar badge (`COM6` → shown as Com 6).
+    /// Serial device for the session-bar badge (`COM6`).
     serial_port: String,
-    /// UART link up (drives `[ <-> Com n open ]` vs closed).
+    /// Serial baud for the session-bar badge.
+    serial_baud: u32,
+    /// UART link up (green COM badge when open).
     serial_open: bool,
     /// Raw UART bytes seen since start (proves RX even without frames).
     serial_rx_bytes: u64,
@@ -269,12 +273,18 @@ impl GpGuiApp {
 
         let colors = &cfg.colors;
         let serial_port = cfg.serial.port.clone();
+        let serial_baud = cfg.serial.baud;
         let monitor_mode = if cfg.tnc.monitor_mode.is_empty() {
             "IUSC".into()
         } else {
             cfg.tnc.monitor_mode.clone()
         };
         let session = SessionChrome::from_config(&cfg.session.chrome);
+        let spy_pads = (0..10)
+            .map(|_| TextPad {
+                lines: VecDeque::new(),
+            })
+            .collect();
         Self {
             monitor_bg: egui_color(&colors.monitor_background),
             monitor_fg: egui_color(&colors.monitor_foreground),
@@ -293,6 +303,7 @@ impl GpGuiApp {
             input: String::new(),
             typed_history: VecDeque::new(),
             pads,
+            spy_pads,
             event_log: VecDeque::new(),
             channels,
             channel_peer,
@@ -300,6 +311,7 @@ impl GpGuiApp {
             monitor_mode,
             buffer_lines,
             serial_port,
+            serial_baud,
             serial_open: false,
             serial_rx_bytes: 0,
             serial_rx_frames: 0,
@@ -314,7 +326,7 @@ impl GpGuiApp {
 
     /// Open Editor on `GTEXT.GPI` (classic default connect-text file).
     fn open_editor_default(&mut self) {
-        self.active = ActivePane::Editor;
+        self.select(ActivePane::Editor);
         let path = gpi::default_gtext_path();
         match self.editor.load_path(&path) {
             Ok(()) => {
@@ -462,15 +474,21 @@ impl GpGuiApp {
                     if matches!(code, HostCode::LinkStatus) {
                         self.apply_link_status(channel, &text);
                     }
+                    let mut spy_src: Option<String> = None;
                     let (kind, line) = match code {
                         HostCode::Ok => continue,
-                        HostCode::Monitor => (PadKind::Incoming, text),
+                        HostCode::Monitor => {
+                            spy_src = extract_heard_call(&text);
+                            (PadKind::Incoming, text)
+                        }
                         HostCode::LinkStatus => (PadKind::System, text),
                         HostCode::Data => {
                             if let Some(frame) = parse_ax25_ui(&payload) {
+                                spy_src = Some(frame.src.clone());
                                 self.mheard.hear(&frame);
                                 (PadKind::Incoming, frame.display_line())
                             } else if text.chars().any(|c| c.is_ascii_graphic()) {
+                                spy_src = extract_heard_call(&text);
                                 (PadKind::Incoming, text)
                             } else {
                                 (
@@ -487,6 +505,9 @@ impl GpGuiApp {
                             (PadKind::System, format!("{c:#04x}  {text}"))
                         }
                     };
+                    if let Some(src) = spy_src.as_deref() {
+                        self.feed_spy_pads(src, kind, &line);
+                    }
                     // KISS port 0 and hostmode ch0 → Monitor; else channel pad.
                     let idx = if channel == 0 {
                         0
@@ -504,6 +525,10 @@ impl GpGuiApp {
     }
 
     fn select(&mut self, pane: ActivePane) {
+        // Leaving Spy → un-light the spy slot button.
+        if !matches!(pane, ActivePane::Spy(_)) {
+            self.session.spy_slot = None;
+        }
         self.active = pane;
         self.status = format!("active: {}", pane.label());
     }
@@ -750,6 +775,14 @@ impl GpGuiApp {
         if matches!(self.active, ActivePane::Mh) {
             return mheard_layout(&self.mheard);
         }
+        if let ActivePane::Spy(n) = self.active {
+            let idx = n.saturating_sub(1) as usize;
+            return self
+                .spy_pads
+                .get(idx)
+                .map(TextPad::layout_job)
+                .unwrap_or_default();
+        }
         let idx = match self.active {
             ActivePane::Channel(n) => n as usize,
             _ => 0,
@@ -761,7 +794,10 @@ impl GpGuiApp {
     }
 
     fn show_session_bar(&self) -> bool {
-        matches!(self.active, ActivePane::Monitor | ActivePane::Channel(_))
+        matches!(
+            self.active,
+            ActivePane::Monitor | ActivePane::Channel(_) | ActivePane::Spy(_)
+        )
     }
 
     fn pane_title(&self) -> String {
@@ -772,7 +808,30 @@ impl GpGuiApp {
             ActivePane::Editor => "GP-Editor".into(),
             ActivePane::Check => "BBS-Menu".into(),
             ActivePane::List => "DieBox-List".into(),
-            ActivePane::Spy => "Spy".into(),
+            ActivePane::Spy(n) => format!("Spy {n}"),
+        }
+    }
+
+    fn spy_call(&self, slot: u8) -> &str {
+        self.cfg
+            .session
+            .spy_calls
+            .get(slot.saturating_sub(1) as usize)
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
+    fn feed_spy_pads(&mut self, src: &str, kind: PadKind, line: &str) {
+        let src_up = src.to_ascii_uppercase();
+        for (i, call) in self.cfg.session.spy_calls.iter().enumerate() {
+            if call.is_empty() {
+                continue;
+            }
+            if call.eq_ignore_ascii_case(&src_up) {
+                if let Some(pad) = self.spy_pads.get_mut(i) {
+                    pad.push(kind, line.to_string());
+                }
+            }
         }
     }
 }
@@ -837,6 +896,7 @@ impl eframe::App for GpGuiApp {
                 self.rx_pane(ui, full_w, full_h);
                 self.qrg_dialog(ctx);
                 self.mycall_dialog(ctx);
+                self.spy_dialog(ctx);
             });
     }
 }
@@ -1109,7 +1169,18 @@ impl GpGuiApp {
                 ],
                 vec![],
             ),
-            ActivePane::Spy => (vec!["Spy".into()], vec![]),
+            ActivePane::Spy(n) => {
+                let call = self.spy_call(n);
+                let spy_line = if call.is_empty() {
+                    format!("Spying Call (none) — press SPY to set")
+                } else {
+                    format!("Spying Call {call}")
+                };
+                (
+                    vec![format!("Spy window {n}"), spy_line],
+                    vec![format!("Lines: {}", self.spy_pads.get(n.saturating_sub(1) as usize).map(|p| p.lines.len()).unwrap_or(0))],
+                )
+            }
         }
     }
 
@@ -1189,6 +1260,7 @@ impl GpGuiApp {
         }
         let bg = match self.active {
             ActivePane::Channel(_) => self.connect_bg,
+            ActivePane::Spy(_) => Color32::from_rgb(0, 0, 128), // classic spy blue
             ActivePane::Mh | ActivePane::Check | ActivePane::List => {
                 Color32::from_rgb(170, 170, 170)
             }
@@ -1355,9 +1427,25 @@ impl GpGuiApp {
             tx += paint_cell(ui, tx, label, lit, action, w, glyph);
         }
 
-        // Leading + middle fill the remaining left region.
+        // Monitor: spy slots + COM sit just left of ScrLock (right-justified).
+        let com_badge = format!("{} {}", self.serial_port, self.serial_baud);
+        let spy_cell_w = 20.0_f32;
+        let spy_n = if matches!(self.active, ActivePane::Monitor | ActivePane::Spy(_)) {
+            self.channels.min(10)
+        } else {
+            0
+        };
+        let badge_w = (com_badge.len() as f32 * 7.2 + 12.0).clamp(72.0, 140.0);
+        let right_mid_w = if spy_n > 0 {
+            spy_n as f32 * (spy_cell_w + gap) + badge_w + gap
+        } else {
+            0.0
+        };
+
+        // Leading controls stay on the left.
         let mut x = rect.left() + 2.0;
-        let left_limit = (rect.right() - trail_w - 6.0).max(x + 40.0);
+        let left_limit =
+            (rect.right() - trail_w - right_mid_w - 8.0).max(x + 40.0);
 
         let qrg = self.session.qrg_label();
         let ct = self.session.ctext_label();
@@ -1382,29 +1470,36 @@ impl GpGuiApp {
         }
 
         match self.active {
-            ActivePane::Monitor => {
-                for n in 1..=self.channels.min(10) {
-                    let w = 20.0_f32;
-                    if x + w > left_limit {
-                        break;
-                    }
-                    let lit = self.session.spy_slot == Some(n);
-                    x += paint_cell(
+            ActivePane::Monitor | ActivePane::Spy(_) => {
+                let trail_left = rect.right() - trail_w - 2.0;
+                let mut rx = (trail_left - right_mid_w).max(x + 4.0);
+                // Only lit while that spy window is active (off when on channel/monitor/…).
+                let active_spy = match self.active {
+                    ActivePane::Spy(n) => Some(n),
+                    _ => None,
+                };
+                for n in 1..=spy_n {
+                    let lit = active_spy == Some(n);
+                    rx += paint_cell(
                         ui,
-                        x,
+                        rx,
                         &format!("{n}"),
                         lit,
                         SessionClick::Spy(n),
-                        w,
+                        spy_cell_w,
                         CellGlyph::Text,
                     );
                 }
-                // Non-clickable COM badge (classic GP had no COM in the magenta grid).
-                let com_badge = com_open_badge(&self.serial_port, self.serial_open);
-                let badge_w = (com_badge.len() as f32 * 7.2 + 12.0).clamp(88.0, 160.0);
-                if x + badge_w <= left_limit {
-                    let _ = paint_static_cell(ui, x, y, h, gap, &com_badge, badge_w, self.serial_open);
-                }
+                let _ = paint_static_cell(
+                    ui,
+                    rx,
+                    y,
+                    h,
+                    gap,
+                    &com_badge,
+                    badge_w,
+                    self.serial_open,
+                );
             }
             ActivePane::Channel(_) => {
                 for (label, lit, action, w) in [
@@ -1467,15 +1562,14 @@ impl GpGuiApp {
                 self.persist_session_chrome();
             }
             SessionClick::Spy(n) => {
-                if self.session.spy_slot == Some(n) {
-                    self.session.spy_slot = None;
-                    self.select(ActivePane::Monitor);
+                self.session.spy_slot = Some(n);
+                self.active = ActivePane::Spy(n);
+                let call = self.spy_call(n);
+                self.status = if call.is_empty() {
+                    format!("Spy {n} — no call set")
                 } else {
-                    self.session.spy_slot = Some(n);
-                    self.select(ActivePane::Spy);
-                    self.status = format!("Spy {n}");
-                    self.log_event(format!("Spy window {n}"));
-                }
+                    format!("Spying Call {call}")
+                };
             }
             SessionClick::SevenPlus => {
                 self.session.seven_plus = !self.session.seven_plus;
@@ -1617,6 +1711,100 @@ impl GpGuiApp {
         Ok(())
     }
 
+    fn open_spy_call_dialog(&mut self) {
+        let slot = match self.active {
+            ActivePane::Spy(n) => n,
+            _ => self.session.spy_slot.unwrap_or(1),
+        };
+        let slot = slot.clamp(1, 10);
+        self.active = ActivePane::Spy(slot);
+        self.session.spy_slot = Some(slot);
+        let current = self.spy_call(slot).to_string();
+        self.session.open_spy_dialog(slot, &current);
+    }
+
+    fn kill_spy_call(&mut self) {
+        let slot = match self.active {
+            ActivePane::Spy(n) => n,
+            _ => match self.session.spy_slot {
+                Some(n) => n,
+                None => {
+                    self.status = "KILL SPY — open a spy window first".into();
+                    return;
+                }
+            },
+        };
+        let idx = slot.saturating_sub(1) as usize;
+        self.cfg.normalize_spy_calls();
+        if let Some(c) = self.cfg.session.spy_calls.get_mut(idx) {
+            c.clear();
+        }
+        if let Err(e) = self.cfg.persist_spy_calls(&self.config_path) {
+            self.status = format!("config: {e}");
+        } else {
+            self.status = format!("Spy {slot} cleared");
+        }
+    }
+
+    fn apply_spy_call_from_edit(&mut self) -> Result<(), String> {
+        let slot = self.session.spy_slot.unwrap_or(1).clamp(1, 10);
+        let raw = self.session.spy_edit.trim();
+        self.cfg.normalize_spy_calls();
+        let idx = slot.saturating_sub(1) as usize;
+        if raw.is_empty() {
+            if let Some(c) = self.cfg.session.spy_calls.get_mut(idx) {
+                c.clear();
+            }
+        } else {
+            let call = crate::config::normalize_mycall(raw)?;
+            if let Some(c) = self.cfg.session.spy_calls.get_mut(idx) {
+                *c = call;
+            }
+        }
+        self.cfg.persist_spy_calls(&self.config_path)?;
+        self.session.show_spy_dialog = false;
+        let call = self.spy_call(slot);
+        self.status = if call.is_empty() {
+            format!("Spy {slot} — no call set")
+        } else {
+            format!("Spying Call {call}")
+        };
+        Ok(())
+    }
+
+    fn spy_dialog(&mut self, ctx: &Context) {
+        if !self.session.show_spy_dialog {
+            return;
+        }
+        let slot = self.session.spy_slot.unwrap_or(1);
+        let mut open = true;
+        egui::Window::new(format!("SPY — window {slot}"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("Call to spy (empty = off):");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.session.spy_edit)
+                        .desired_width(120.0)
+                        .font(FontId::monospace(16.0)),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        if let Err(e) = self.apply_spy_call_from_edit() {
+                            self.status = e;
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.session.show_spy_dialog = false;
+                    }
+                });
+            });
+        if !open {
+            self.session.show_spy_dialog = false;
+        }
+    }
+
     fn mycall_dialog(&mut self, ctx: &Context) {
         if !self.session.show_mycall_dialog {
             return;
@@ -1709,7 +1897,7 @@ impl GpGuiApp {
                     ("MONITOR", ActivePane::Monitor) => true,
                     ("EDIT", ActivePane::Editor) => true,
                     ("MHEARD", ActivePane::Mh) => true,
-                    ("SPY", ActivePane::Spy) => true,
+                    ("SPY", ActivePane::Spy(_)) => true,
                     ("CHECK", ActivePane::Check) | ("BBS", ActivePane::Check) => true,
                     ("LIST", ActivePane::List) => true,
                     _ => false,
@@ -1738,7 +1926,8 @@ impl GpGuiApp {
                 }
                 "LOAD" => self.editor_load_dialog(),
                 "MHEARD" => self.select(ActivePane::Mh),
-                "SPY" => self.select(ActivePane::Spy),
+                "SPY" => self.open_spy_call_dialog(),
+                "KILL SPY" => self.kill_spy_call(),
                 "EXIT" => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
                 // Classic GP shelled to DOS; here we just minimize (can't stay resident).
                 "DOS" => {
@@ -1833,24 +2022,30 @@ fn mheard_layout(list: &MheardList) -> LayoutJob {
     job
 }
 
-/// `COM6` / `com6` → `6`; otherwise keep the raw port token.
-fn com_port_number(port: &str) -> String {
-    let t = port.trim();
-    let rest = t
-        .strip_prefix("COM")
-        .or_else(|| t.strip_prefix("com"))
-        .unwrap_or(t);
-    rest.trim().to_string()
-}
-
-fn com_open_badge(port: &str, open: bool) -> String {
-    let n = com_port_number(port);
-    // ASCII `<->` — session-bar face has no ⇄ glyph (shows as tofu □).
-    if open {
-        format!("[ <-> Com {n} open ]")
-    } else {
-        format!("[ <-> Com {n} ]")
+/// Best-effort source call from monitor / APRS-ish text (`fm CALL`, `CALL>`).
+fn extract_heard_call(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    if let Some(pos) = lower.find("fm ") {
+        let after = text[pos + 3..].trim_start();
+        let token = after
+            .split_whitespace()
+            .next()?
+            .trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+        if !token.is_empty() {
+            return Some(token.to_ascii_uppercase());
+        }
     }
+    if let Some((src, _)) = text.split_once('>') {
+        let token = src
+            .trim()
+            .split_whitespace()
+            .last()?
+            .trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+        if !token.is_empty() && token.len() <= 9 {
+            return Some(token.to_ascii_uppercase());
+        }
+    }
+    None
 }
 
 /// Session-strip badge with no click handler (COM open indicator).

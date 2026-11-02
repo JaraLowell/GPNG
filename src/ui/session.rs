@@ -63,6 +63,9 @@ pub struct SessionChrome {
     pub mycall_edit: String,
     /// `0` = monitor / global; `1..=N` = channel.
     pub mycall_slot: u8,
+    /// Set spy callsign popup.
+    pub show_spy_dialog: bool,
+    pub spy_edit: String,
     /// One-shot scroll nudge in pixels (negative = up).
     pub scroll_nudge: f32,
 }
@@ -88,6 +91,8 @@ impl Default for SessionChrome {
             show_mycall_dialog: false,
             mycall_edit: String::new(),
             mycall_slot: 0,
+            show_spy_dialog: false,
+            spy_edit: String::new(),
             scroll_nudge: 0.0,
         }
     }
@@ -167,6 +172,12 @@ impl SessionChrome {
         self.mycall_slot = slot;
         self.mycall_edit = current.to_string();
         self.show_mycall_dialog = true;
+    }
+
+    pub fn open_spy_dialog(&mut self, slot: u8, current: &str) {
+        self.spy_slot = Some(slot);
+        self.spy_edit = current.to_string();
+        self.show_spy_dialog = true;
     }
 
     pub fn set_ctext_path(&mut self, path: PathBuf) {

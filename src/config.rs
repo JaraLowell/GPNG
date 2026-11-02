@@ -101,6 +101,7 @@ impl Config {
         }
 
         cfg.tnc.runtime_mycall = cfg.primary_mycall().to_string();
+        cfg.normalize_spy_calls();
         Ok(cfg)
     }
 
@@ -416,6 +417,68 @@ impl Config {
         );
         upsert_toml_section(path, "session.chrome", &body)
     }
+
+    /// Ensure `spy_calls` has 10 entries; rewrite the TOML array.
+    pub fn normalize_spy_calls(&mut self) {
+        self.session.spy_calls.resize(10, String::new());
+    }
+
+    pub fn persist_spy_calls(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let mut calls = self.session.spy_calls.clone();
+        calls.resize(10, String::new());
+        let list = calls
+            .iter()
+            .map(|c| toml_string(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Prefer updating existing key; if missing, append under [session].
+        match upsert_toml_key(path, None, "spy_calls", &format!("[{list}]")) {
+            Ok(()) => Ok(()),
+            Err(_) => append_session_key(path, "spy_calls", &format!("[{list}]")),
+        }
+    }
+}
+
+fn append_session_key(path: &Path, key: &str, value: &str) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let header = "[session]";
+    let mut out = String::with_capacity(text.len() + 64);
+    let mut inserted = false;
+    let ends_nl = text.ends_with('\n');
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0usize;
+    while i < lines.len() {
+        out.push_str(lines[i]);
+        out.push('\n');
+        if !inserted && lines[i].trim().eq_ignore_ascii_case(header) {
+            // Insert after [session] header (before next section or at end of session keys).
+            let mut j = i + 1;
+            while j < lines.len() {
+                let t = lines[j].trim();
+                if t.starts_with('[') && t.ends_with(']') {
+                    break;
+                }
+                j += 1;
+            }
+            for line in &lines[i + 1..j] {
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push_str(&format!("{key} = {value}\n"));
+            inserted = true;
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    if !inserted {
+        out.push_str(&format!("\n{header}\n{key} = {value}\n"));
+    }
+    if !ends_nl && out.ends_with('\n') {
+        out.pop();
+    }
+    fs::write(path, out).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 fn toml_string(s: &str) -> String {
@@ -528,7 +591,7 @@ fn upsert_toml_section(path: &Path, name: &str, body: &str) -> Result<(), String
 }
 
 /// Uppercase callsign with optional `-SSID` (1–15).
-fn normalize_mycall(raw: &str) -> Result<String, String> {
+pub fn normalize_mycall(raw: &str) -> Result<String, String> {
     let t = raw.trim().to_ascii_uppercase();
     if t.is_empty() {
         return Err("mycall is empty".into());
@@ -646,6 +709,13 @@ pub struct SessionConfig {
     pub auto_spy_minimum_save: u32,
     /// Session-bar button state (QRG, Echo, ScrLock, …).
     pub chrome: SessionChromeConfig,
+    /// Spy window callsigns (`1..=10`); empty string = slot inactive.
+    #[serde(default = "default_spy_calls")]
+    pub spy_calls: Vec<String>,
+}
+
+fn default_spy_calls() -> Vec<String> {
+    vec![String::new(); 10]
 }
 
 impl Default for SessionConfig {
@@ -672,6 +742,7 @@ impl Default for SessionConfig {
             no_auto_spy: Vec::new(),
             auto_spy_minimum_save: 512,
             chrome: SessionChromeConfig::default(),
+            spy_calls: default_spy_calls(),
         }
     }
 }

@@ -29,7 +29,8 @@ pub enum ActivePane {
     Check,
     List,
     Mh,
-    Spy,
+    /// Spy window `1..=10`.
+    Spy(u8),
 }
 
 impl ActivePane {
@@ -41,7 +42,7 @@ impl ActivePane {
             Self::Check => "BBS-Menu".into(),
             Self::List => "Box-List".into(),
             Self::Mh => "MHeard".into(),
-            Self::Spy => "Spy".into(),
+            Self::Spy(n) => format!("Spy {n}"),
         }
     }
 }
