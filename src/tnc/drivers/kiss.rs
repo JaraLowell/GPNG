@@ -24,6 +24,7 @@ const FEND: u8 = 0xC0;
 const FESC: u8 = 0xDB;
 const TFEND: u8 = 0xDC;
 const TFESC: u8 = 0xDD;
+const KISS_EXIT: [u8; 3] = [FEND, 0xFF, FEND];
 
 pub fn run(
     serial: SerialConfig,
@@ -58,7 +59,10 @@ pub fn run(
         }
 
         match commands.try_recv() {
-            Err(mpsc::error::TryRecvError::Disconnected) => return Ok(()),
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                let _ = link.write_all(&KISS_EXIT);
+                return Ok(());
+            }
             Ok(cmd) => {
                 if handle_command(&mut link, &tnc_cfg, &events, cmd)? {
                     return Ok(());
@@ -134,6 +138,13 @@ fn handle_command(
             }
         }
         TncCommand::Shutdown => {
+            // KISS "return" command (C0 FF C0) — radio leaves KISS for command mode.
+            if let Err(err) = link.write_all(&KISS_EXIT) {
+                let _ = events.blocking_send(TncEvent::Warning(format!("KISS exit: {err}")));
+            } else {
+                let _ = events.blocking_send(TncEvent::Status("kiss exit sent (C0 FF C0)".into()));
+            }
+            std::thread::sleep(Duration::from_millis(300));
             let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
             return Ok(true);
         }

@@ -11,7 +11,22 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::serial::SerialLink;
-use super::{TncError, TncEvent};
+use super::{shutdown_requested, TncError, TncEvent};
+
+/// Sleep in short slices so a pending app shutdown aborts KISS.INI promptly.
+fn pause(ms: u64) -> Result<(), TncError> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(ms);
+    loop {
+        if shutdown_requested() {
+            return Err(TncError::Protocol("kiss init aborted (shutdown)".into()));
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        std::thread::sleep((deadline - now).min(Duration::from_millis(20)));
+    }
+}
 
 #[derive(Debug, Clone)]
 enum Action {
@@ -74,18 +89,18 @@ pub fn apply_section(
                 Action::Byte(b) => {
                     link.write_all(&[b])?;
                     if char_delay_ms > 0 {
-                        std::thread::sleep(Duration::from_millis(char_delay_ms));
+                        pause(char_delay_ms)?;
                     }
                 }
                 Action::DelayMs(ms) => {
-                    std::thread::sleep(Duration::from_millis(ms));
+                    pause(ms)?;
                 }
             }
         }
         if send_cr {
             link.write_all(&[b'\r'])?;
             if line_delay_ms > 0 {
-                std::thread::sleep(Duration::from_millis(line_delay_ms));
+                pause(line_delay_ms)?;
             }
         }
         // Collect echo / TNC reply after this line (ECHO ON should mirror text).
@@ -130,7 +145,7 @@ pub fn apply_section(
             )))
             .ok()
         });
-        std::thread::sleep(Duration::from_millis(exit_delay_ms));
+        pause(exit_delay_ms)?;
     }
     Ok(())
 }

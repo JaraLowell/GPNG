@@ -45,8 +45,18 @@ fn main() -> Result<()> {
 
     let ui_result = ui::run(cfg, events, cmd_tx, tui);
 
+    graphic_packet::tnc::request_shutdown();
     let _ = rt.block_on(shutdown_tx.send(TncCommand::Shutdown));
-    tnc_join.abort();
+    // Let the driver send its exit sequence (KISS C0 FF C0 / JHOST0) before the port closes.
+    if rt
+        .block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(3), tnc_join).await
+        })
+        .is_err()
+    {
+        error!("TNC driver did not stop within 3 s");
+    }
+    rt.shutdown_timeout(std::time::Duration::from_millis(500));
     if let Err(err) = ui_result {
         error!("UI error: {err}");
         return Err(err);

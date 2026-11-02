@@ -15,6 +15,8 @@ mod hostmode;
 mod kiss_ini;
 mod serial;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -78,6 +80,18 @@ pub enum TncError {
 pub struct TncChannels {
     pub events: mpsc::Receiver<TncEvent>,
     pub commands: mpsc::Sender<TncCommand>,
+}
+
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Signal drivers to abort long bring-up waits (KISS.INI pauses) so the
+/// queued [`TncCommand::Shutdown`] is handled promptly.
+pub fn request_shutdown() {
+    SHUTDOWN.store(true, Ordering::SeqCst);
+}
+
+pub(crate) fn shutdown_requested() -> bool {
+    SHUTDOWN.load(Ordering::SeqCst)
 }
 
 /// Spawn the blocking serial worker; constructs **only** the configured driver.
