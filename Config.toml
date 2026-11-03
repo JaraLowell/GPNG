@@ -53,6 +53,12 @@ auto_spy_minimum_save = 512
 # Spy windows 1..10 — empty string = inactive slot.
 spy_calls = ["", "", "", "", "", "", "", "", "", ""]
 
+# Channel window ANSI colour inside a payload (ESC, also written \x1b or \033).
+# true: [0m resets, [1m is bright, [30m–[37m set the foreground.
+# [40m–[47m background codes are removed and not applied.
+# false: strip every colour sequence and keep the normal channel colour.
+allow_color_ansi = true
+
 # Session-bar button state (restored on start; rewritten when you toggle).
 [session.chrome]
 qrg_mhz = 144.800
@@ -66,13 +72,16 @@ remote = true
 scr_lock = false
 [buffers]
 # Legacy line counts (≈80 columns each in classic GP).
-text_buffer = [600, 300]   # TEXTBUFFER: monitor (Buffers: on magenta bar), then channels…
+text_buffer = [600, 300]   # TEXTBUFFER: monitor scrollback, then channel scrollback
 edit_buffer = 1000
 check_buffer = 200
 list_buffer = 200
 spy_buffer = 100
 mh_buffer = 50
 input_buffer = 200
+# Max bytes of typed text or a text file in one packet (classic GP: 128).
+# Newlines are `\n` and stay inside the packet; they do not each start one.
+packet_payload = 128
 
 [paths]
 # Legacy: USERDIR, EXTERNALDIR, SAVEDIR, LOGDIR, SPYDIR
@@ -123,7 +132,7 @@ monitor_mode = "IUSC"
 
 # KISS wire: "serial" = Kenwood etc. via [serial] port/baud + KISS.INI;
 # "tcp" = Soundmodem / Direwolf raw KISS TCP (no KISS.INI).
-kiss_transport = "tcp"
+kiss_transport = "serial"
 kiss_tcp_host = "127.0.0.1"
 kiss_tcp_port = 8100          # UZ7HO Soundmodem KISS TCP; Direwolf often 8001
 

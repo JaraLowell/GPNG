@@ -246,6 +246,9 @@ impl Config {
                 "INPUTBUFFER" => {
                     self.buffers.input_buffer = parse_u32(value, "INPUTBUFFER")?;
                 }
+                "PACLEN" | "PACKETPAYLOAD" => {
+                    self.buffers.packet_payload = parse_u32(value, "PACLEN")?;
+                }
 
                 // --- paths --------------------------------------------------
                 "USERDIR" => self.paths.user_dir = PathBuf::from(value),
@@ -738,6 +741,10 @@ pub struct SessionConfig {
     pub auto_spy: Vec<String>,
     pub no_auto_spy: Vec<String>,
     pub auto_spy_minimum_save: u32,
+    /// Channel window: apply ESC `[0m` / `[1m` / `[30m`–`[37m` in a payload.
+    /// Background codes are always removed. `false` strips every colour sequence.
+    #[serde(default = "default_allow_color_ansi")]
+    pub allow_color_ansi: bool,
     /// Session-bar button state (QRG, Echo, ScrLock, …).
     pub chrome: SessionChromeConfig,
     /// Spy window callsigns (`1..=10`); empty string = slot inactive.
@@ -747,6 +754,10 @@ pub struct SessionConfig {
 
 fn default_spy_calls() -> Vec<String> {
     vec![String::new(); 10]
+}
+
+fn default_allow_color_ansi() -> bool {
+    true
 }
 
 impl Default for SessionConfig {
@@ -772,6 +783,7 @@ impl Default for SessionConfig {
             auto_spy: Vec::new(),
             no_auto_spy: Vec::new(),
             auto_spy_minimum_save: 512,
+            allow_color_ansi: default_allow_color_ansi(),
             chrome: SessionChromeConfig::default(),
             spy_calls: default_spy_calls(),
         }
@@ -825,6 +837,14 @@ pub struct BufferConfig {
     pub spy_buffer: u32,
     pub mh_buffer: u32,
     pub input_buffer: u32,
+    /// Max bytes of operator text in one TX packet (classic GP: 128).
+    #[serde(default = "default_packet_payload")]
+    pub packet_payload: u32,
+}
+
+/// Classic GP info-field size.
+fn default_packet_payload() -> u32 {
+    128
 }
 
 impl Default for BufferConfig {
@@ -837,6 +857,7 @@ impl Default for BufferConfig {
             spy_buffer: 100,
             mh_buffer: 50,
             input_buffer: 200,
+            packet_payload: 128,
         }
     }
 }

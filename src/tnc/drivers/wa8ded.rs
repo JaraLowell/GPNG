@@ -1,5 +1,9 @@
 //! Classic WA8DED hostmode driver — timed poll (`G0`) after `JHOST1`.
 //!
+//! Every couple of seconds, while the host queue is idle, the driver also
+//! asks the TNC for `@B` (free buffer bytes) and `L` (not displayed, not
+//! sent, unack, tries). Those replies become [`TncEvent::Buffers`].
+//!
 //! Bring-up:
 //!   1. terminal `JHOST1`
 //!   2. `WA8DED.INI` `[open]` (or Config.toml `init` fallback)
@@ -14,10 +18,19 @@ use tracing::info;
 
 use crate::config::{SerialConfig, TncConfig};
 
-use super::super::hostmode::{apply_command_list, drain_frames, poll_g0, write_host_frame};
+use super::super::host_delivery::{HostDelivery, HostKind, Tick};
+use super::super::hostmode::{
+    apply_command_list, drain_frames, parse_free_buffer, parse_link_status, poll_command,
+    write_host_frame, InboundFrame, LinkReport,
+};
 use super::super::serial::SerialLink;
 use super::super::wa8ded_ini::{self, resolve_wa8ded_ini};
-use super::super::{TncCommand, TncError, TncEvent};
+use super::super::{BufferReport, ChannelBuffers, TncCommand, TncError, TncEvent};
+
+/// Pause between status sweeps so `G0` still collects traffic.
+const STATUS_EVERY: Duration = Duration::from_secs(2);
+/// `L` is asked on channel 0 (monitor) through this channel.
+const STATUS_CHANNELS: u8 = 10;
 
 pub fn run(
     serial: SerialConfig,
@@ -48,13 +61,15 @@ pub fn run(
 
     let mut rx_buf = [0u8; 512];
     let mut stream = Vec::<u8>::new();
+    let mut delivery = HostDelivery::new();
+    let mut status_poll = StatusPoll::new();
     let mut last_poll = Instant::now()
         .checked_sub(Duration::from_millis(poll_ms))
         .unwrap_or_else(Instant::now);
 
     loop {
         while let Ok(cmd) = commands.try_recv() {
-            if handle_command(&mut link, &tnc_cfg, &events, cmd)? {
+            if handle_command(&mut link, &mut delivery, &tnc_cfg, &events, cmd)? {
                 return Ok(());
             }
         }
@@ -65,7 +80,7 @@ pub fn run(
                 return Ok(());
             }
             Ok(cmd) => {
-                if handle_command(&mut link, &tnc_cfg, &events, cmd)? {
+                if handle_command(&mut link, &mut delivery, &tnc_cfg, &events, cmd)? {
                     return Ok(());
                 }
             }
@@ -78,7 +93,7 @@ pub fn run(
                 let chunk = &rx_buf[..n];
                 let _ = events.blocking_send(TncEvent::RawRx(chunk.to_vec()));
                 stream.extend_from_slice(chunk);
-                drain_frames(&mut stream, &events);
+                take_replies(&mut link, &mut stream, &mut delivery, &events);
             }
             Err(err) => {
                 let _ = events.blocking_send(TncEvent::LinkDown(err.to_string()));
@@ -86,11 +101,33 @@ pub fn run(
             }
         }
 
-        if last_poll.elapsed() >= Duration::from_millis(poll_ms) {
-            if let Err(err) = poll_g0(&mut link) {
-                let _ = events.blocking_send(TncEvent::Warning(format!("poll G0: {err}")));
+        match delivery.tick(Instant::now()) {
+            Some(Tick::Resend(out)) => {
+                let _ = write_host_frame(&mut link, out.channel, &out.data);
             }
-            last_poll = Instant::now();
+            Some(Tick::GaveUp { channel }) => {
+                let _ = events.blocking_send(TncEvent::Warning(format!(
+                    "wa8ded ch{channel}: TNC did not accept the block"
+                )));
+            }
+            None => {}
+        }
+
+        if delivery.idle() && last_poll.elapsed() >= Duration::from_millis(poll_ms) {
+            let now = Instant::now();
+            // A poll occupies the one outstanding host frame, so its reply is
+            // not taken as the acknowledgement of operator data.
+            let queued = if let Some((channel, data, kind)) = status_poll.next(now) {
+                delivery.enqueue_kind(channel, data, kind, now)
+            } else {
+                delivery.enqueue_kind(0, poll_command().to_vec(), HostKind::Poll, now)
+            };
+            if let Some(out) = queued {
+                if let Err(err) = write_host_frame(&mut link, out.channel, &out.data) {
+                    let _ = events.blocking_send(TncEvent::Warning(format!("poll: {err}")));
+                }
+            }
+            last_poll = now;
         }
 
         std::thread::sleep(Duration::from_millis(10));
@@ -172,14 +209,18 @@ fn run_close(
 
 fn handle_command(
     link: &mut SerialLink,
+    delivery: &mut HostDelivery,
     tnc_cfg: &TncConfig,
     events: &mpsc::Sender<TncEvent>,
     cmd: TncCommand,
 ) -> Result<bool, TncError> {
     match cmd {
+        TncCommand::LocalAck { .. } => {}
         TncCommand::HostFrame { channel, data } => {
-            if let Err(err) = write_host_frame(link, channel, &data) {
-                let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
+            if let Some(out) = delivery.enqueue(channel, data, Instant::now()) {
+                if let Err(err) = write_host_frame(link, out.channel, &out.data) {
+                    let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
+                }
             }
         }
         TncCommand::TerminalLine(line) => {
@@ -226,4 +267,115 @@ fn leave_hostmode(link: &mut SerialLink) -> Result<(), TncError> {
     let _ = write_host_frame(link, 0, b"JHOST0");
     link.write_terminal("JHOST0")?;
     Ok(())
+}
+
+/// Round-robin `@B` then `L` on channels 0..=[`STATUS_CHANNELS`].
+struct StatusPoll {
+    /// 0 = between sweeps. 1 = `@B`. 2+ = `L` on channel `step - 2`.
+    step: u8,
+    next_at: Instant,
+}
+
+impl StatusPoll {
+    fn new() -> Self {
+        Self {
+            step: 0,
+            next_at: Instant::now(),
+        }
+    }
+
+    /// Next status query, or `None` when this slot should be a `G0`.
+    fn next(&mut self, now: Instant) -> Option<(u8, Vec<u8>, HostKind)> {
+        if self.step == 0 {
+            if now < self.next_at {
+                return None;
+            }
+            self.step = 1;
+        }
+        let query = if self.step == 1 {
+            (0, b"@B".to_vec(), HostKind::FreeBuffer)
+        } else {
+            (self.step - 2, b"L".to_vec(), HostKind::LinkStatus)
+        };
+        self.step += 1;
+        if self.step > STATUS_CHANNELS + 2 {
+            self.step = 0;
+            self.next_at = now + STATUS_EVERY;
+        }
+        Some(query)
+    }
+}
+
+fn take_replies(
+    link: &mut SerialLink,
+    stream: &mut Vec<u8>,
+    delivery: &mut HostDelivery,
+    events: &mpsc::Sender<TncEvent>,
+) {
+    let kind = delivery.inflight_kind();
+    let replies = drain_frames(stream);
+    if replies.is_empty() {
+        return;
+    }
+    if let Some(out) = delivery.on_tnc_frame(Instant::now()) {
+        let _ = write_host_frame(link, out.channel, &out.data);
+    }
+    for reply in &replies {
+        dispatch_reply(events, kind, reply);
+    }
+}
+
+fn dispatch_reply(events: &mpsc::Sender<TncEvent>, kind: Option<HostKind>, reply: &InboundFrame) {
+    match kind {
+        Some(HostKind::LinkStatus) => {
+            if let Some(parsed) = parse_link_status(&reply.payload) {
+                send_link(events, reply.channel, &parsed);
+            }
+        }
+        Some(HostKind::FreeBuffer) => {
+            if let Some(free) = parse_free_buffer(&reply.payload) {
+                let _ = events.blocking_send(TncEvent::Buffers(BufferReport {
+                    free: Some(free),
+                    not_displayed: None,
+                    replace_rows: false,
+                    rows: Vec::new(),
+                }));
+            }
+        }
+        _ => {
+            let _ = events.blocking_send(TncEvent::HostFrame {
+                channel: reply.channel,
+                code: reply.code,
+                payload: reply.payload.clone(),
+            });
+        }
+    }
+}
+
+fn send_link(events: &mpsc::Sender<TncEvent>, channel: u8, parsed: &LinkReport) {
+    if channel == 0 {
+        let _ = events.blocking_send(TncEvent::Buffers(BufferReport {
+            free: None,
+            not_displayed: Some(parsed.not_disp),
+            replace_rows: false,
+            rows: Vec::new(),
+        }));
+        return;
+    }
+    if !parsed.full {
+        return;
+    }
+    let _ = events.blocking_send(TncEvent::Buffers(BufferReport {
+        free: None,
+        not_displayed: None,
+        replace_rows: false,
+        rows: vec![ChannelBuffers {
+            channel,
+            peer: String::new(),
+            not_disp: parsed.not_disp,
+            not_sent: parsed.not_sent,
+            tries: parsed.tries,
+            unack: parsed.unack,
+        }],
+    }));
 }

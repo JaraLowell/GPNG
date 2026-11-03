@@ -3,6 +3,8 @@
 //! TFPCX already presents a hostmode interface to GP, so bring-up skips a hard
 //! dependency on hardware `JHOST1` echo. Timed `G0` poll and TNCINI/TNCDEI
 //! match the WA8DED path; shutdown uses deinit only (no required `JHOST0`).
+//! Buffer counters are built here from the host queue (TFPCX does not send
+//! the WA8DED `L` / `@B` report).
 
 use std::time::{Duration, Instant};
 
@@ -10,11 +12,10 @@ use tokio::sync::mpsc;
 
 use crate::config::{SerialConfig, TncConfig};
 
-use super::super::hostmode::{
-    apply_command_list, drain_frames, poll_g0, write_host_frame,
-};
+use super::super::host_delivery::{HostDelivery, HostKind, Tick};
+use super::super::hostmode::{apply_command_list, drain_frames, poll_command, write_host_frame};
 use super::super::serial::SerialLink;
-use super::super::{TncCommand, TncError, TncEvent};
+use super::super::{send_buffers_if_changed, BufferReport, TncCommand, TncError, TncEvent};
 
 pub fn run(
     serial: SerialConfig,
@@ -43,13 +44,15 @@ pub fn run(
 
     let mut rx_buf = [0u8; 512];
     let mut stream = Vec::<u8>::new();
+    let mut delivery = HostDelivery::new();
+    let mut last_buffers: Option<BufferReport> = None;
     let mut last_poll = Instant::now()
         .checked_sub(Duration::from_millis(poll_ms))
         .unwrap_or_else(Instant::now);
 
     loop {
         while let Ok(cmd) = commands.try_recv() {
-            if handle_command(&mut link, &tnc_cfg, &events, cmd)? {
+            if handle_command(&mut link, &mut delivery, &tnc_cfg, &events, cmd)? {
                 return Ok(());
             }
         }
@@ -60,7 +63,7 @@ pub fn run(
                 return Ok(());
             }
             Ok(cmd) => {
-                if handle_command(&mut link, &tnc_cfg, &events, cmd)? {
+                if handle_command(&mut link, &mut delivery, &tnc_cfg, &events, cmd)? {
                     return Ok(());
                 }
             }
@@ -73,7 +76,19 @@ pub fn run(
                 let chunk = &rx_buf[..n];
                 let _ = events.blocking_send(TncEvent::RawRx(chunk.to_vec()));
                 stream.extend_from_slice(chunk);
-                drain_frames(&mut stream, &events);
+                let replies = drain_frames(&mut stream);
+                if !replies.is_empty() {
+                    if let Some(out) = delivery.on_tnc_frame(Instant::now()) {
+                        let _ = write_host_frame(&mut link, out.channel, &out.data);
+                    }
+                    for reply in replies {
+                        let _ = events.blocking_send(TncEvent::HostFrame {
+                            channel: reply.channel,
+                            code: reply.code,
+                            payload: reply.payload,
+                        });
+                    }
+                }
             }
             Err(err) => {
                 let _ = events.blocking_send(TncEvent::LinkDown(err.to_string()));
@@ -81,9 +96,27 @@ pub fn run(
             }
         }
 
-        if last_poll.elapsed() >= Duration::from_millis(poll_ms) {
-            if let Err(err) = poll_g0(&mut link) {
-                let _ = events.blocking_send(TncEvent::Warning(format!("poll G0: {err}")));
+        match delivery.tick(Instant::now()) {
+            Some(Tick::Resend(out)) => {
+                let _ = write_host_frame(&mut link, out.channel, &out.data);
+            }
+            Some(Tick::GaveUp { channel }) => {
+                let _ = events.blocking_send(TncEvent::Warning(format!(
+                    "tfpcx ch{channel}: TNC did not accept the block"
+                )));
+            }
+            None => {}
+        }
+
+        send_buffers_if_changed(&events, &delivery.tx_snapshots(), &mut last_buffers);
+
+        if delivery.idle() && last_poll.elapsed() >= Duration::from_millis(poll_ms) {
+            if let Some(out) =
+                delivery.enqueue_kind(0, poll_command().to_vec(), HostKind::Poll, Instant::now())
+            {
+                if let Err(err) = write_host_frame(&mut link, out.channel, &out.data) {
+                    let _ = events.blocking_send(TncEvent::Warning(format!("poll G0: {err}")));
+                }
             }
             last_poll = Instant::now();
         }
@@ -94,14 +127,18 @@ pub fn run(
 
 fn handle_command(
     link: &mut SerialLink,
+    delivery: &mut HostDelivery,
     tnc_cfg: &TncConfig,
     events: &mpsc::Sender<TncEvent>,
     cmd: TncCommand,
 ) -> Result<bool, TncError> {
     match cmd {
+        TncCommand::LocalAck { .. } => {}
         TncCommand::HostFrame { channel, data } => {
-            if let Err(err) = write_host_frame(link, channel, &data) {
-                let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
+            if let Some(out) = delivery.enqueue(channel, data, Instant::now()) {
+                if let Err(err) = write_host_frame(link, out.channel, &out.data) {
+                    let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
+                }
             }
         }
         TncCommand::TerminalLine(line) => {

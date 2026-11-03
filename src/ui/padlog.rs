@@ -40,15 +40,26 @@ impl PadKind {
     }
 }
 
+/// One colour run inside a row. Empty `runs` means the whole `text` uses
+/// the row kind colour (logs, system lines, plain text).
+pub struct PadRun {
+    pub text: String,
+    pub color: Color32,
+}
+
 pub struct PadLine {
     pub kind: PadKind,
     pub text: String,
+    runs: Vec<PadRun>,
+    /// Identity of this row, so a later packet can append to it.
+    seq: u64,
 }
 
 pub struct TextPad {
     pub lines: VecDeque<PadLine>,
     /// Cap from `[buffers]` (monitor / channel / spy / bbs / box).
     pub max_lines: usize,
+    next_seq: u64,
 }
 
 impl TextPad {
@@ -56,17 +67,93 @@ impl TextPad {
         Self {
             lines: VecDeque::new(),
             max_lines: max_lines.max(1),
+            next_seq: 1,
         }
     }
 
     pub fn push(&mut self, kind: PadKind, line: impl Into<String>) {
+        self.push_seq(kind, line);
+    }
+
+    /// Push a row and return its id.
+    pub fn push_seq(&mut self, kind: PadKind, line: impl Into<String>) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
         self.lines.push_back(PadLine {
             kind,
             text: line.into(),
+            runs: Vec::new(),
+            seq,
         });
         while self.lines.len() > self.max_lines {
             self.lines.pop_front();
         }
+        seq
+    }
+
+    /// Append `more`. `color` None keeps the row kind colour.
+    pub fn append_styled(&mut self, seq: u64, more: &str, color: Option<Color32>) -> bool {
+        let Some(line) = self.lines.back_mut().filter(|line| line.seq == seq) else {
+            return false;
+        };
+        if more.is_empty() {
+            return true;
+        }
+        line.text.push_str(more);
+        let color = color.unwrap_or_else(|| line.kind.color());
+        if line.runs.is_empty() {
+            let prefix_len = line.text.len() - more.len();
+            if prefix_len > 0 {
+                let prefix = line.text[..prefix_len].to_string();
+                line.runs.push(PadRun {
+                    text: prefix,
+                    color: line.kind.color(),
+                });
+            }
+        }
+        if let Some(last) = line.runs.last_mut() {
+            if last.color == color {
+                last.text.push_str(more);
+                return true;
+            }
+        }
+        line.runs.push(PadRun {
+            text: more.to_string(),
+            color,
+        });
+        true
+    }
+
+    /// First bytes of a row, already in `color`.
+    pub fn push_styled(&mut self, kind: PadKind, line: impl Into<String>, color: Color32) -> u64 {
+        let text = line.into();
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let runs = if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![PadRun {
+                text: text.clone(),
+                color,
+            }]
+        };
+        self.lines.push_back(PadLine {
+            kind,
+            text,
+            runs,
+            seq,
+        });
+        while self.lines.len() > self.max_lines {
+            self.lines.pop_front();
+        }
+        seq
+    }
+
+    pub fn text_if_seq(&self, seq: u64) -> Option<String> {
+        self.lines
+            .back()
+            .filter(|line| line.seq == seq)
+            .map(|line| line.text.clone())
     }
 
     pub fn layout_job(&self) -> LayoutJob {
@@ -84,15 +171,29 @@ impl TextPad {
                     },
                 );
             }
-            job.append(
-                &line.text,
-                0.0,
-                TextFormat {
-                    font_id: font.clone(),
-                    color: line.kind.color(),
-                    ..Default::default()
-                },
-            );
+            if line.runs.is_empty() {
+                job.append(
+                    &line.text,
+                    0.0,
+                    TextFormat {
+                        font_id: font.clone(),
+                        color: line.kind.color(),
+                        ..Default::default()
+                    },
+                );
+            } else {
+                for run in &line.runs {
+                    job.append(
+                        &run.text,
+                        0.0,
+                        TextFormat {
+                            font_id: font.clone(),
+                            color: run.color,
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
         }
         job
     }

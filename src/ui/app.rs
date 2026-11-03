@@ -27,7 +27,7 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::remote::commands::{parse_line, RemoteAction};
-use crate::tnc::{HostCode, TncCommand, TncEvent};
+use crate::tnc::{pack_text_payloads, HostCode, TncCommand, TncEvent};
 
 use super::icons::{IconLibrary, TOOLBAR_LABELS};
 use super::layout::{compute, toolbar_caption, ActivePane, PaneRects, SplitState};
@@ -161,6 +161,7 @@ impl UiApp {
             TncEvent::RawRx(bytes) => {
                 tracing::debug!(len = bytes.len(), "raw RX (ui)");
             }
+            TncEvent::Buffers(_) => {}
             TncEvent::HostFrame {
                 channel,
                 code,
@@ -251,10 +252,13 @@ impl UiApp {
             ActivePane::Channel(n) => n,
             _ => 0,
         };
-        let _ = cmd_tx.try_send(TncCommand::HostFrame {
-            channel,
-            data: line.into_bytes(),
-        });
+        let max = self.cfg.buffers.packet_payload.max(1) as usize;
+        for chunk in pack_text_payloads(&line, max) {
+            let _ = cmd_tx.try_send(TncCommand::HostFrame {
+                channel,
+                data: chunk.into_bytes(),
+            });
+        }
     }
 
     fn on_mouse(&mut self, col: u16, row: u16) {

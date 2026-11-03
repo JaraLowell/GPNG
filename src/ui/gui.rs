@@ -13,6 +13,7 @@
 //!
 //! Magenta is **not** one text line: left title cell is 2 rows high; right
 //! side has Mode/Buffers on row 1 and Packets/Mycall on row 2 (Monitor).
+//! Buffers, Not disp, Not sent, Tries, and Unack come from the modem driver.
 
 use std::collections::VecDeque;
 use std::f32::consts::TAU;
@@ -33,9 +34,13 @@ use crate::remote::commands::{parse_line, RemoteAction};
 use crate::remote::gpi;
 use crate::remote::macros::MacroContext;
 use crate::tnc::ax25::{self, Ax25Frame, Ax25FrameType};
-use crate::tnc::{HostCode, TncCommand, TncEvent};
+use crate::tnc::{
+    pack_text_payloads, payload_lines, BufferReport, ChannelBuffers, HostCode, TncCommand,
+    TncEvent, TNC_RAM,
+};
 use crate::version;
 
+use super::ansi::{strip_ansi, AnsiDecoder, AnsiStyle};
 use super::editor::GpEditor;
 use super::icons::{
     toolbar_for, toolbar_for_channel, IconLibrary, ICON_HEIGHT, ICON_SLOT_LABELS, ICON_WIDTH,
@@ -173,8 +178,20 @@ pub struct GpGuiApp {
     icon_tex: Vec<TextureHandle>,
     /// WA8DED monitor flags, e.g. `IUSC` (from TNC / local set).
     monitor_mode: String,
-    /// Scroll-back capacity shown on the magenta bar (classic “Buffers:”).
-    buffer_lines: u32,
+    /// Free modem RAM, from the driver (`@B`, or 600 minus bytes still queued).
+    tnc_free: u32,
+    /// Receive frames the modem has not handed up yet (monitor row).
+    mon_not_disp: u32,
+    ch_not_disp: Vec<u32>,
+    ch_not_sent: Vec<u32>,
+    ch_tries: Vec<u32>,
+    ch_unack: Vec<u32>,
+    /// Open terminal row on a channel. `None` means the next byte starts a row.
+    rx_row: Vec<Option<u64>>,
+    /// Previous packet ended on CR; the next LF is the same newline.
+    rx_cr: Vec<bool>,
+    /// Colour pen for the channel. A packet cut does not reset it.
+    rx_ansi: Vec<AnsiDecoder>,
     /// Serial device for the session-bar badge (`COM6`).
     serial_port: String,
     /// Serial baud for the session-bar badge.
@@ -289,7 +306,7 @@ impl GpGuiApp {
         let mut box_pad = TextPad::new(box_max);
         box_pad.load_log(&padlog::box_path(&log_dir));
 
-        let buffer_lines = mon_max as u32;
+        let slots = channels as usize + 1;
         install_console_font(&cc.egui_ctx);
         let icon_tex = load_icon_textures(&cc.egui_ctx);
         let status = if icon_tex.is_empty() {
@@ -348,7 +365,15 @@ impl GpGuiApp {
             connect_dialog_focus: false,
             icon_tex,
             monitor_mode,
-            buffer_lines,
+            tnc_free: TNC_RAM,
+            mon_not_disp: 0,
+            ch_not_disp: vec![0; slots],
+            ch_not_sent: vec![0; slots],
+            ch_tries: vec![0; slots],
+            ch_unack: vec![0; slots],
+            rx_row: vec![None; slots],
+            rx_cr: vec![false; slots],
+            rx_ansi: vec![AnsiDecoder::new(); slots],
             serial_port,
             serial_baud,
             serial_open: false,
@@ -500,6 +525,7 @@ impl GpGuiApp {
                 TncEvent::RawRx(bytes) => {
                     self.serial_rx_bytes += bytes.len() as u64;
                 }
+                TncEvent::Buffers(report) => self.apply_buffers(report),
                 TncEvent::HostFrame {
                     channel,
                     code,
@@ -594,27 +620,23 @@ impl GpGuiApp {
                     if channel >= 1 && matches!(code, HostCode::Data) {
                         self.promote_connecting_on_data(channel);
                     }
-                    // Peer //commands (e.g. //Q → QRT + D) when Remote is ON.
-                    let remote_cmd = if channel >= 1
-                        && matches!(code, HostCode::Data)
-                        && self.session.remote
-                    {
-                        line.lines().find_map(|l| parse_line(l.trim()))
-                    } else {
-                        None
-                    };
-                    if !(skip_monitor_dup && idx == 0) {
+                    // Channel text is rebuilt from newlines across host frames.
+                    // A 128-byte cut is not a row break. `//` commands wait for
+                    // the newline that finishes the line.
+                    let reassemble = channel >= 1 && matches!(code, HostCode::Data);
+                    if reassemble {
+                        self.accept_rx_text(channel, &line, kind);
+                    } else if !(skip_monitor_dup && idx == 0) {
                         if let Some(pad) = self.pads.get_mut(idx) {
-                            let shown = if idx == 0 {
-                                stamp_monitor_fm(&line)
-                            } else {
-                                line
-                            };
-                            pad.push(kind, shown);
+                            for part in payload_lines(&line) {
+                                let shown = if idx == 0 {
+                                    stamp_monitor_fm(&strip_ansi(&part))
+                                } else {
+                                    part
+                                };
+                                pad.push(kind, shown);
+                            }
                         }
-                    }
-                    if let Some((action, args)) = remote_cmd {
-                        self.handle_remote_on_channel(channel, action, &args);
                     }
                 }
             }
@@ -965,25 +987,28 @@ impl GpGuiApp {
         let Some(text) = self.load_connect_text(answer) else {
             return;
         };
-        for raw in text.lines() {
-            let line = raw.trim_end_matches('\r').to_string();
-            if line.is_empty() && raw.is_empty() {
-                continue;
+        let max = self.cfg.buffers.packet_payload.max(1) as usize;
+        let peer = self.cfg.primary_mycall().to_string();
+        let my = self.effective_mycall(answer);
+        let kiss = self.kiss_mode();
+        // Sending window is the same terminal: a newline in the file is a
+        // row, and a colour sequence changes the pen. The 128-byte cut does not.
+        self.seal_term(answer);
+        self.accept_rx_text(answer, &text, PadKind::Own);
+        self.seal_term(answer);
+        if !kiss {
+            for line in payload_lines(&text) {
+                self.pads[0].push(PadKind::Own, strip_ansi(&line));
             }
-            // Answer side: own / white; caller: incoming / green.
-            if let Some(pad) = self.pads.get_mut(answer as usize) {
-                pad.push(PadKind::Own, line.clone());
-            }
-            if let Some(pad) = self.pads.get_mut(caller as usize) {
-                pad.push(PadKind::Incoming, line.clone());
-            }
-            if self.kiss_mode() {
-                let peer = self.cfg.primary_mycall().to_string();
-                let my = self.effective_mycall(answer);
+        }
+        self.seal_term(caller);
+        for chunk in pack_text_payloads(&text, max) {
+            // Caller rebuilds rows from newlines, not from the 128-byte cut.
+            self.accept_rx_text(caller, &chunk, PadKind::Incoming);
+            if kiss {
                 let ns = *self.ax25_vs.get(answer as usize).unwrap_or(&0);
                 let nr = *self.ax25_vr.get(answer as usize).unwrap_or(&0);
-                let info = format!("{line}\r").into_bytes();
-                let frame = ax25::build_i(&peer, &my, ns, nr, false, &info);
+                let frame = ax25::build_i(&peer, &my, ns, nr, false, chunk.as_bytes());
                 if let Some(vs) = self.ax25_vs.get_mut(answer as usize) {
                     *vs = (ns + 1) & 7;
                 }
@@ -998,13 +1023,15 @@ impl GpGuiApp {
                     nr,
                     false,
                     true,
-                    Some(&line),
+                    Some(&chunk),
                 );
+                // Caller answers this I-frame. No RF loopback, so the RR is
+                // generated here and applied to the send queue.
+                self.tx_local_rr(&my, &peer, ns);
             } else {
-                self.pads[0].push(PadKind::Own, line.clone());
                 let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
                     channel: answer,
-                    data: format!("{line}\r").into_bytes(),
+                    data: chunk.into_bytes(),
                 });
             }
         }
@@ -1123,6 +1150,10 @@ impl GpGuiApp {
         }
         if let Some(vr) = self.ax25_vr.get_mut(idx) {
             *vr = 0;
+        }
+        self.seal_term(channel);
+        if let Some(dec) = self.rx_ansi.get_mut(idx) {
+            *dec = AnsiDecoder::new();
         }
     }
 
@@ -1267,23 +1298,25 @@ impl GpGuiApp {
             ActivePane::Channel(n) => n as usize,
             _ => 0,
         };
-        if self.kiss_mode() {
-            if idx != 0 {
+        // Enter finishes a row. It does not glue onto an open received line.
+        // Colour bytes in the typed line paint that row; they are not shown.
+        if idx != 0 {
+            let ch = idx as u8;
+            self.seal_term(ch);
+            self.accept_rx_text(ch, line, PadKind::Own);
+            let wrote = self.rx_row.get(idx).copied().flatten().is_some();
+            self.seal_term(ch);
+            if !wrote {
                 if let Some(pad) = self.pads.get_mut(idx) {
-                    pad.push(PadKind::Own, line.to_string());
+                    pad.push(PadKind::Own, "");
                 }
             }
+        }
+        if self.kiss_mode() {
             return;
         }
-        if idx != 0 {
-            if let Some(pad) = self.pads.get_mut(idx) {
-                pad.push(PadKind::Own, line.to_string());
-            }
-            if self.session.echo {
-                self.pads[0].push(PadKind::Own, line.to_string());
-            }
-        } else if self.session.echo {
-            self.pads[0].push(PadKind::Own, line.to_string());
+        if self.session.echo {
+            self.pads[0].push(PadKind::Own, strip_ansi(line));
         }
     }
 
@@ -1311,7 +1344,7 @@ impl GpGuiApp {
         self.pads[0].push(kind, hdr);
         if let Some(text) = info_text {
             for line in ax25::monitor_payload_lines(text) {
-                self.pads[0].push(kind, line);
+                self.pads[0].push(kind, strip_ansi(&line));
             }
         }
     }
@@ -1339,6 +1372,33 @@ impl GpGuiApp {
         });
     }
 
+    /// RR response from `i_dest` back to `i_src` for I-frame `ns`.
+    /// Written on the air and fed to the send queue (`LocalAck`), because a
+    /// self-connect does not hear its own frames come back.
+    fn tx_local_rr(&mut self, i_src: &str, i_dest: &str, ns: u8) {
+        let nr = ns.wrapping_add(1) & 7;
+        if let Some(ch) = self.kiss_channel_owning_dest(i_dest) {
+            if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
+                *vr = nr;
+            }
+            self.kiss_link_activity(ch, true);
+        }
+        let frame = ax25::build_rr(i_src, i_dest, nr, false, false);
+        let _ = self.cmd_tx.try_send(TncCommand::LocalAck { port: 0, frame });
+        self.push_kiss_mon(
+            PadKind::Incoming,
+            i_dest,
+            i_src,
+            &[],
+            Ax25FrameType::Rr,
+            0,
+            nr,
+            false,
+            false,
+            None,
+        );
+    }
+
     /// Self-connect: other channel sees this text as Incoming (no RF loopback).
     fn deliver_self_connect_rx(&mut self, from_ch: u8, line: &str) {
         let Some((c, a)) = self.self_connect_live else {
@@ -1351,24 +1411,124 @@ impl GpGuiApp {
         } else {
             return;
         };
-        if let Some(pad) = self.pads.get_mut(other as usize) {
-            pad.push(PadKind::Incoming, line.to_string());
-        }
+        self.accept_rx_text(other, line, PadKind::Incoming);
         self.kiss_link_activity(other, true);
-        if self.session.remote {
-            if let Some((action, args)) = parse_line(line.trim()) {
-                self.handle_remote_on_channel(other, action, &args);
+    }
+
+    /// Terminal write. Bytes append to the open row. `\n` / `\r` end that row.
+    /// The end of a packet does not.
+    fn accept_rx_text(&mut self, channel: u8, chunk: &str, kind: PadKind) {
+        let bytes = chunk.as_bytes();
+        let mut i = 0;
+        if self.rx_cr.get(channel as usize).copied().unwrap_or(false) {
+            if let Some(flag) = self.rx_cr.get_mut(channel as usize) {
+                *flag = false;
+            }
+            if bytes.first() == Some(&b'\n') {
+                i = 1;
+            }
+            self.term_break(channel, kind);
+        }
+        while i < bytes.len() {
+            if bytes[i] == b'\n' {
+                self.term_break(channel, kind);
+                i += 1;
+            } else if bytes[i] == b'\r' {
+                if bytes.get(i + 1) == Some(&b'\n') {
+                    self.term_break(channel, kind);
+                    i += 2;
+                } else if i + 1 == bytes.len() {
+                    if let Some(flag) = self.rx_cr.get_mut(channel as usize) {
+                        *flag = true;
+                    }
+                    i += 1;
+                } else {
+                    self.term_break(channel, kind);
+                    i += 1;
+                }
+            } else {
+                let start = i;
+                while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
+                    i += 1;
+                }
+                let allow = self.cfg.session.allow_color_ansi;
+                let runs = self
+                    .rx_ansi
+                    .get_mut(channel as usize)
+                    .map(|dec| dec.push_text(&chunk[start..i], allow))
+                    .unwrap_or_default();
+                for (text, style) in runs {
+                    self.term_append(channel, kind, &text, style);
+                }
             }
         }
     }
 
-    /// Monitor / channel text → AX.25 UI or I-frame over KISS.
+    /// Next byte starts a new row. The current row stays as it is.
+    fn seal_term(&mut self, channel: u8) {
+        let idx = channel as usize;
+        if let Some(slot) = self.rx_row.get_mut(idx) {
+            *slot = None;
+        }
+        if let Some(flag) = self.rx_cr.get_mut(idx) {
+            *flag = false;
+        }
+    }
+
+    fn term_append(&mut self, channel: u8, kind: PadKind, text: &str, style: AnsiStyle) {
+        if text.is_empty() {
+            return;
+        }
+        let idx = channel as usize;
+        let color = style.paint(kind.color());
+        if let Some(seq) = self.rx_row.get(idx).copied().flatten() {
+            if self
+                .pads
+                .get_mut(idx)
+                .is_some_and(|pad| pad.append_styled(seq, text, Some(color)))
+            {
+                return;
+            }
+        }
+        let Some(pad) = self.pads.get_mut(idx) else {
+            return;
+        };
+        let seq = pad.push_styled(kind, text, color);
+        if let Some(slot) = self.rx_row.get_mut(idx) {
+            *slot = Some(seq);
+        }
+    }
+
+    fn term_break(&mut self, channel: u8, kind: PadKind) {
+        let idx = channel as usize;
+        let open = self.rx_row.get(idx).copied().flatten();
+        if let Some(seq) = open {
+            let text = self
+                .pads
+                .get(idx)
+                .and_then(|pad| pad.text_if_seq(seq))
+                .unwrap_or_default();
+            if let Some(slot) = self.rx_row.get_mut(idx) {
+                *slot = None;
+            }
+            self.maybe_remote_line(channel, &text);
+        } else if let Some(pad) = self.pads.get_mut(idx) {
+            pad.push(kind, "");
+        }
+    }
+
+    fn maybe_remote_line(&mut self, channel: u8, line: &str) {
+        if self.session.remote && channel >= 1 {
+            if let Some((action, args)) = parse_line(line.trim()) {
+                self.handle_remote_on_channel(channel, action, &args);
+            }
+        }
+    }
+
+    /// One already-packed chunk → AX.25 UI or I-frame. Bytes are sent as-is.
     fn send_kiss_text(&mut self, line: &str) {
         let my = self.mycall_for_active();
-        let mut info = line.as_bytes().to_vec();
-        if !info.ends_with(&[b'\r']) {
-            info.push(b'\r');
-        }
+        let info = line.as_bytes();
         match self.active {
             ActivePane::Channel(n) if self.channel_linked(n) => {
                 let Some(peer) = self
@@ -1380,7 +1540,7 @@ impl GpGuiApp {
                 };
                 let ns = *self.ax25_vs.get(n as usize).unwrap_or(&0);
                 let nr = *self.ax25_vr.get(n as usize).unwrap_or(&0);
-                let frame = ax25::build_i(&peer, &my, ns, nr, false, &info);
+                let frame = ax25::build_i(&peer, &my, ns, nr, false, info);
                 if let Some(vs) = self.ax25_vs.get_mut(n as usize) {
                     *vs = (ns + 1) & 7;
                 }
@@ -1398,15 +1558,21 @@ impl GpGuiApp {
                     true,
                     Some(line),
                 );
-                // Self-connect peer channel sees the chat.
+                // Self-connect peer channel sees the chat and answers with RR.
                 self.deliver_self_connect_rx(n, line);
+                if self
+                    .self_connect_live
+                    .is_some_and(|(c, a)| n == c || n == a)
+                {
+                    self.tx_local_rr(&my, &peer, ns);
+                }
             }
             ActivePane::Channel(_) => {
                 self.status = "KISS: not linked — Connect first, or type on Monitor (CQ)".into();
             }
             _ => {
                 // Unproto: MYCALL → CQ
-                let frame = ax25::build_ui("CQ", &my, &[], &info);
+                let frame = ax25::build_ui("CQ", &my, &[], info);
                 self.tx_kiss_payload(0, &frame);
                 self.push_kiss_mon(
                     PadKind::Own,
@@ -1597,8 +1763,7 @@ impl GpGuiApp {
                         })
                     })
                     .unwrap_or(0);
-                let line = info_text.trim_end_matches(['\r', '\n']).to_string();
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, Some(&line));
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, Some(&info_text));
                 if ch >= 1 {
                     if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
                         *vr = (frame.ns.wrapping_add(1)) & 7;
@@ -1623,16 +1788,7 @@ impl GpGuiApp {
                         None,
                     );
                     self.kiss_link_activity(ch, true);
-                    if let Some(pad) = self.pads.get_mut(ch as usize) {
-                        pad.push(PadKind::Incoming, line.clone());
-                    }
-                    if self.session.remote {
-                        if let Some((action, args)) =
-                            line.lines().find_map(|l| parse_line(l.trim()))
-                        {
-                            self.handle_remote_on_channel(ch, action, &args);
-                        }
-                    }
+                    self.accept_rx_text(ch, &info_text, PadKind::Incoming);
                 }
             }
             Ax25FrameType::Disc => {
@@ -2030,18 +2186,27 @@ impl GpGuiApp {
             }
         }
 
-        if self.kiss_mode() {
-            self.send_kiss_text(&line);
-            return;
+        self.send_operator_text(&line);
+    }
+
+    /// Typed text and text files: normalize breaks to `\n`, then one packet
+    /// per `packet_payload` bytes. Same chunks for KISS and hostmode.
+    fn send_operator_text(&mut self, text: &str) {
+        let max = self.cfg.buffers.packet_payload.max(1) as usize;
+        for chunk in pack_text_payloads(text, max) {
+            if self.kiss_mode() {
+                self.send_kiss_text(&chunk);
+            } else {
+                let channel = match self.active {
+                    ActivePane::Channel(n) => n,
+                    _ => 0,
+                };
+                let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
+                    channel,
+                    data: chunk.into_bytes(),
+                });
+            }
         }
-        let channel = match self.active {
-            ActivePane::Channel(n) => n,
-            _ => 0,
-        };
-        let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
-            channel,
-            data: line.into_bytes(),
-        });
     }
 
     fn macro_ctx(&self) -> MacroContext {
@@ -2082,22 +2247,10 @@ impl GpGuiApp {
     }
 
     fn send_gpi_text(&mut self, text: &str) {
-        let channel = match self.active {
-            ActivePane::Channel(n) => n,
-            _ => 0,
-        };
-        for raw in text.lines() {
-            let line = raw.trim_end_matches('\r').to_string();
+        for line in payload_lines(text) {
             self.echo_own_line(&line);
-            if self.kiss_mode() {
-                self.send_kiss_text(&line);
-                continue;
-            }
-            let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
-                channel,
-                data: format!("{line}\r").into_bytes(),
-            });
         }
+        self.send_operator_text(text);
     }
 
     fn handle_remote(&mut self, action: RemoteAction, args: &str) {
@@ -2552,16 +2705,56 @@ impl GpGuiApp {
         }
     }
 
+    fn apply_buffers(&mut self, report: BufferReport) {
+        if let Some(free) = report.free {
+            self.tnc_free = free;
+        }
+        if let Some(n) = report.not_displayed {
+            self.mon_not_disp = n;
+        }
+        if report.replace_rows {
+            self.ch_not_disp.fill(0);
+            self.ch_not_sent.fill(0);
+            self.ch_tries.fill(0);
+            self.ch_unack.fill(0);
+        }
+        for row in report.rows {
+            let Some(idx) = self.buffer_row_index(&row) else {
+                continue;
+            };
+            self.ch_not_disp[idx] = row.not_disp;
+            self.ch_not_sent[idx] = row.not_sent;
+            self.ch_tries[idx] = row.tries;
+            self.ch_unack[idx] = row.unack;
+        }
+    }
+
+    fn buffer_row_index(&self, row: &ChannelBuffers) -> Option<usize> {
+        if row.channel >= 1 {
+            let idx = row.channel as usize;
+            if idx < self.ch_not_disp.len() {
+                return Some(idx);
+            }
+        }
+        if !row.peer.is_empty() {
+            return self.channel_peer.iter().position(|peer| {
+                peer.as_ref()
+                    .is_some_and(|call| call.eq_ignore_ascii_case(&row.peer))
+            });
+        }
+        None
+    }
+
     fn status_field_rows(&self, my: &str) -> (Vec<String>, Vec<String>) {
         match self.active {
             // Classic GP Monitor magenta grid (COM lives on the session strip).
             ActivePane::Monitor => (
                 vec![
                     format!("Monitor Mode: {}", self.monitor_mode),
-                    format!("Buffers: {}", self.buffer_lines),
+                    format!("Buffers: {}", self.tnc_free),
                 ],
                 vec![
-                    "Packets not yet displayed: 0".into(),
+                    format!("Packets not yet displayed: {}", self.mon_not_disp),
                     format!("Global Mycall: {my}"),
                 ],
             ),
@@ -2578,17 +2771,18 @@ impl GpGuiApp {
                 } else {
                     "Ready for Connect".into()
                 };
+                let at = |v: &[u32]| v.get(idx).copied().unwrap_or(0);
                 (
                     vec![
                         link,
                         format!("My: {}", self.effective_mycall(n)),
-                        format!("Buffers: {}", self.buffer_lines),
+                        format!("Buffers: {}", self.tnc_free),
                     ],
                     vec![
-                        format!("Ch {n}  Not disp: 0"),
-                        "Not sent: 0".into(),
-                        "Tries: 0".into(),
-                        "Unack: 0".into(),
+                        format!("Ch {n}  Not disp: {}", at(&self.ch_not_disp)),
+                        format!("Not sent: {}", at(&self.ch_not_sent)),
+                        format!("Tries: {}", at(&self.ch_tries)),
+                        format!("Unack: {}", at(&self.ch_unack)),
                     ],
                 )
             }

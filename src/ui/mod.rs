@@ -3,6 +3,7 @@
 //! Default: **egui** pixel window with real `ICONS.GP` bitmaps and an analog
 //! clock (classic BGI look). Optional `--tui` uses ratatui text mode.
 
+pub mod ansi;
 pub mod app;
 pub mod editor;
 pub mod gui;
