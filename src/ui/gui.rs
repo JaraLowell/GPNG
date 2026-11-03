@@ -7,7 +7,7 @@
 //! ├── magenta status grid (2 rows, non-clickable) ──┤    all three)    │
 //! ├─────────────────────────────────────────────────┴──────────────────┤
 //! │ full-width content                                                  │
-//! │ session strip: QRG CT äöü / Echo ♪ [spy|7+/Remote/BIN] ScrLock ▲▼ B │
+//! │ session strip: QRG CT äöü / Echo ♪ Clear [spy|7+/Remote/BIN] ScrLock ▲▼ B │
 //! │ icons evenly spaced (set depends on pane)                           │
 //! ```
 //!
@@ -2366,6 +2366,36 @@ impl GpGuiApp {
         }
     }
 
+    /// Empty the visible Monitor, channel, or spy pad and rewrite its log.
+    fn clear_active_pad(&mut self) {
+        let dir = self.cfg.paths.log_dir.clone();
+        match self.active {
+            ActivePane::Monitor => {
+                if let Some(pad) = self.pads.first_mut() {
+                    pad.clear();
+                    pad.save_log(&padlog::monitor_path(&dir));
+                }
+                self.status = "Monitor cleared".into();
+            }
+            ActivePane::Channel(n) => {
+                if let Some(pad) = self.pads.get_mut(n as usize) {
+                    pad.clear();
+                    pad.save_log(&padlog::channel_path(&dir, n));
+                }
+                self.status = format!("Channel {n} cleared");
+            }
+            ActivePane::Spy(n) => {
+                let idx = n.saturating_sub(1) as usize;
+                if let Some(pad) = self.spy_pads.get_mut(idx) {
+                    pad.clear();
+                    pad.save_log(&padlog::spy_path(&dir, n));
+                }
+                self.status = format!("Spy {n} cleared");
+            }
+            _ => {}
+        }
+    }
+
     /// Persist Own/Incoming lines for Monitor, channels, spy, BBS, Box.
     fn save_pad_logs(&self) {
         let dir = &self.cfg.paths.log_dir;
@@ -3241,6 +3271,7 @@ impl GpGuiApp {
             ),
             ("Echo", self.session.echo, SessionClick::Echo, 38.0),
             ("♪", self.session.bell, SessionClick::Bell, 26.0),
+            ("Clear", false, SessionClick::Clear, 46.0),
         ];
         for (label, lit, action, w) in lead_owned {
             if x + w > left_limit {
@@ -3341,6 +3372,7 @@ impl GpGuiApp {
                 }
                 self.persist_session_chrome();
             }
+            SessionClick::Clear => self.clear_active_pad(),
             SessionClick::Spy(n) => {
                 self.session.spy_slot = Some(n);
                 self.active = ActivePane::Spy(n);
@@ -4119,6 +4151,7 @@ enum SessionClick {
     LineStep,
     Echo,
     Bell,
+    Clear,
     Spy(u8),
     SevenPlus,
     Remote,

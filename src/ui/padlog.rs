@@ -75,6 +75,11 @@ impl TextPad {
         self.push_seq(kind, line);
     }
 
+    /// Drop every row. The caller rewrites the pad's log so a restart stays empty.
+    pub fn clear(&mut self) {
+        self.lines.clear();
+    }
+
     /// Push a row and return its id.
     pub fn push_seq(&mut self, kind: PadKind, line: impl Into<String>) -> u64 {
         let seq = self.next_seq;

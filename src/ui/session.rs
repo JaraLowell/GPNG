@@ -2,7 +2,7 @@
 //!
 //! Classic layout (cells are clickable toggles / dialogs):
 //! ```text
-//! [ QRG: 27.235 ] [ CT: CTEXT ] [ äöü ] [ /|stairs ] [ Echo ] [ ♪ ]
+//! [ QRG: 27.235 ] [ CT: CTEXT ] [ äöü ] [ /|stairs ] [ Echo ] [ ♪ ] [ Clear ]
 //!   Monitor extras: [1]…[10] spy
 //!   Channel extras: [ 7+ ] [ Remote ] [ BIN-RX ] [ BIN-TX ]
 //! [ ScrLock ] [ ▲ ] [ ▼ ] [ B ]

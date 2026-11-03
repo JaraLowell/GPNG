@@ -1,27 +1,107 @@
 [
   {
     "date": "2026/11/03",
-    "time": "19:53",
+    "time": "20:51",
+    "call": "PA0KNW-2",
+    "to": "APRS",
+    "via": "DB0ET,WIDE1,WIDE2-1",
+    "heard_ms": 1793735470712
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:50",
+    "call": "DB0PBG-5",
+    "to": "APMI03",
+    "via": "DB0ET,WIDE2-1",
+    "heard_ms": 1793735407608
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:49",
+    "call": "DB0ET",
+    "to": "APTT4",
+    "via": "WIDE1-1,WIDE2-2",
+    "heard_ms": 1793735352600
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:48",
     "call": "DL0PBS-5",
     "to": "APMI03",
     "via": "DB0ET,WIDE2-1",
-    "heard_ms": 1793731996876
+    "heard_ms": 1793735339719
   },
   {
     "date": "2026/11/03",
-    "time": "19:52",
+    "time": "20:48",
     "call": "PA7D-10",
     "to": "APMI06",
-    "via": "PA1CD-10,DB0ET,WIDE2",
-    "heard_ms": 1793731949032
+    "via": "DB0ET,WIDE2-1",
+    "heard_ms": 1793735304025
   },
   {
     "date": "2026/11/03",
-    "time": "19:51",
-    "call": "DB0ET",
-    "to": "U3RTS5",
-    "via": "WIDE1-1,WIDE2-2",
-    "heard_ms": 1793731911386
+    "time": "20:46",
+    "call": "DB0OL-10",
+    "to": "AP4R10",
+    "via": "DB0ET,WIDE2",
+    "heard_ms": 1793735213865
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:36",
+    "call": "DB0WHV",
+    "to": "APRX29",
+    "via": "DB0ET,WIDE2-1",
+    "heard_ms": 1793734607532
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:35",
+    "call": "PA1CD-10",
+    "to": "APMI06",
+    "via": "DB0ET,WIDE2-1",
+    "heard_ms": 1793734551413
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:35",
+    "call": "DL1HI-9",
+    "to": "US3XQ8",
+    "via": "DB0ET,WIDE1,WIDE2-1",
+    "heard_ms": 1793734506874
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:29",
+    "call": "PD1RAC-10",
+    "to": "APMI06",
+    "via": "DB0ET,WIDE1",
+    "heard_ms": 1793734174246
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:28",
+    "call": "PI1SNK-7",
+    "to": "APXR50",
+    "via": "PD1RAC-10,WIDE1,DB0ET,WIDE2-1",
+    "heard_ms": 1793734125112
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:24",
+    "call": "PD2RLD-4",
+    "to": "U1USW7",
+    "via": "PD2RLD-2,PD1RAC-10,WIDE1,DB0ET,WIDE2",
+    "heard_ms": 1793733891764
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:21",
+    "call": "DB0LOL-4",
+    "to": "APMI06",
+    "via": "DB0OL-10,DB0ET,WIDE2",
+    "heard_ms": 1793733665021
   },
   {
     "date": "2026/11/03",
@@ -30,70 +110,6 @@
     "to": "APNL01",
     "via": "",
     "heard_ms": 1793731868332
-  },
-  {
-    "date": "2026/11/03",
-    "time": "19:50",
-    "call": "PA0KNW-2",
-    "to": "APRS",
-    "via": "DB0ET,WIDE1,WIDE2-1",
-    "heard_ms": 1793731857475
-  },
-  {
-    "date": "2026/11/03",
-    "time": "19:50",
-    "call": "DB0PBG-5",
-    "to": "APMI03",
-    "via": "DB0ET,WIDE2-1",
-    "heard_ms": 1793731803748
-  },
-  {
-    "date": "2026/11/03",
-    "time": "19:46",
-    "call": "DB0OL-10",
-    "to": "AP4R10",
-    "via": "DB0ET,WIDE2",
-    "heard_ms": 1793731613803
-  },
-  {
-    "date": "2026/11/03",
-    "time": "19:45",
-    "call": "PA1CD-10",
-    "to": "APMI06",
-    "via": "PD1RAC-10,DB0ET,WIDE2",
-    "heard_ms": 1793731552698
-  },
-  {
-    "date": "2026/11/03",
-    "time": "19:41",
-    "call": "DB0WHV",
-    "to": "APRX29",
-    "via": "DB0ET,WIDE2-1",
-    "heard_ms": 1793731296430
-  },
-  {
-    "date": "2026/11/03",
-    "time": "19:41",
-    "call": "PD1RAC-10",
-    "to": "APMI06",
-    "via": "DB0ET,WIDE1",
-    "heard_ms": 1793731294406
-  },
-  {
-    "date": "2026/11/03",
-    "time": "19:36",
-    "call": "DB0LOL-4",
-    "to": "APMI06",
-    "via": "DB0OL-10,DB0ET,WIDE2",
-    "heard_ms": 1793731019410
-  },
-  {
-    "date": "2026/11/03",
-    "time": "19:28",
-    "call": "PI1SNK-7",
-    "to": "APXR50",
-    "via": "PD1RAC-10,WIDE1,DB0ET,WIDE2-1",
-    "heard_ms": 1793730525625
   },
   {
     "date": "2026/11/03",
