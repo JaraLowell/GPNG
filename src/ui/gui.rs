@@ -270,7 +270,7 @@ impl GpGuiApp {
             let max = if n == 0 { mon_max } else { ch_max };
             let mut pad = TextPad::new(max);
             if n == 0 {
-                pad.load_log(&padlog::monitor_path(&log_dir));
+                pad.load_monitor_log(&padlog::monitor_path(&log_dir));
             } else {
                 pad.load_log(&padlog::channel_path(&log_dir, n));
             }
@@ -521,7 +521,7 @@ impl GpGuiApp {
                         *c = None;
                     }
                 }
-                // UART counters only — full KISS frames land as Incoming (green).
+                // UART counters only — decoded frames land on the monitor.
                 TncEvent::RawRx(bytes) => {
                     self.serial_rx_bytes += bytes.len() as u64;
                 }
@@ -560,8 +560,8 @@ impl GpGuiApp {
                         if status_ch >= 1 {
                             self.apply_link_status(status_ch, &text);
                         }
-                        // Modem link chatter → Monitor in white.
-                        self.pads[0].push(PadKind::Own, text.trim().to_string());
+                        // Modem link chatter on the monitor (not an `fm` header).
+                        self.pads[0].push_monitor(PadKind::Own, text.trim().to_string());
                         if channel == 0 {
                             skip_monitor_dup = true;
                         }
@@ -634,7 +634,11 @@ impl GpGuiApp {
                                 } else {
                                     part
                                 };
-                                pad.push(kind, shown);
+                                if idx == 0 {
+                                    pad.push_monitor(kind, shown);
+                                } else {
+                                    pad.push(kind, shown);
+                                }
                             }
                         }
                     }
@@ -998,7 +1002,7 @@ impl GpGuiApp {
         self.seal_term(answer);
         if !kiss {
             for line in payload_lines(&text) {
-                self.pads[0].push(PadKind::Own, strip_ansi(&line));
+                self.pads[0].push_monitor(PadKind::Own, strip_ansi(&line));
             }
         }
         self.seal_term(caller);
@@ -1316,7 +1320,7 @@ impl GpGuiApp {
             return;
         }
         if self.session.echo {
-            self.pads[0].push(PadKind::Own, strip_ansi(line));
+            self.pads[0].push_monitor(PadKind::Own, strip_ansi(line));
         }
     }
 
@@ -1341,10 +1345,10 @@ impl GpGuiApp {
         let hdr = stamp_monitor_fm(&ax25::monitor_ctl_line(
             src, dest, via, frame_kind, ns, nr, poll, command,
         ));
-        self.pads[0].push(kind, hdr);
+        self.pads[0].push_monitor(kind, hdr);
         if let Some(text) = info_text {
             for line in ax25::monitor_payload_lines(text) {
-                self.pads[0].push(kind, strip_ansi(&line));
+                self.pads[0].push_monitor(kind, strip_ansi(&line));
             }
         }
     }
@@ -2138,7 +2142,7 @@ impl GpGuiApp {
                 pad.push(PadKind::Own, line.to_string());
             }
         }
-        self.pads[0].push(PadKind::Own, line.to_string());
+        self.pads[0].push_monitor(PadKind::Own, line.to_string());
         let mut data = line.as_bytes().to_vec();
         if !data.ends_with(&[b'\r']) {
             data.push(b'\r');

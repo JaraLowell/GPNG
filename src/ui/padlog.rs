@@ -1,10 +1,13 @@
-//! Persist RX pads across restarts (white Own / green Incoming only).
+//! Persist RX pads across restarts.
 //!
 //! Files under `[paths].log_dir`/`pads/`:
 //! `monitor.txt`, `ch01.txt`…, `spy01.txt`…, `bbs.txt`, `box.txt`.
 //!
-//! Record format: `W|text` (own/white) or `G|text` (incoming/green).
-//! Orange System lines are never written.
+//! Channel rows stay white (own) or green (incoming). The monitor uses
+//! one colour for every `fm … to …` header and light grey for the payload,
+//! send and receive alike. Orange System lines are never written.
+//!
+//! Record format: `W|text` (own) or `G|text` (incoming).
 
 use std::collections::VecDeque;
 use std::fs::{self, File};
@@ -18,6 +21,10 @@ use tracing::warn;
 const PAD_INCOMING: Color32 = Color32::from_rgb(85, 255, 85); // light green
 const PAD_OWN: Color32 = Color32::WHITE;
 const PAD_SYSTEM: Color32 = Color32::from_rgb(255, 168, 0); // orange
+/// Monitor `fm … to … ctl …` line. Same green for sent and received frames.
+const MONITOR_FM: Color32 = PAD_INCOMING;
+/// Monitor payload under that header. Same grey for sent and received frames.
+const MONITOR_PAYLOAD: Color32 = Color32::from_rgb(170, 170, 170);
 
 /// Classic GP line roles — colour carries meaning (no `***` needed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +80,18 @@ impl TextPad {
 
     pub fn push(&mut self, kind: PadKind, line: impl Into<String>) {
         self.push_seq(kind, line);
+    }
+
+    /// Monitor row. `fm …` is green; the payload under it is light grey.
+    /// System stays orange and is not written to the log.
+    pub fn push_monitor(&mut self, kind: PadKind, line: impl Into<String>) {
+        let line = line.into();
+        if kind == PadKind::System {
+            self.push(kind, line);
+            return;
+        }
+        let color = monitor_color(&line);
+        self.push_styled(kind, line, color);
     }
 
     /// Drop every row. The caller rewrites the pad's log so a restart stays empty.
@@ -204,6 +223,15 @@ impl TextPad {
     }
 
     pub fn load_log(&mut self, path: &Path) {
+        self.load_log_colored(path, false);
+    }
+
+    /// Monitor log: `fm` headers come back green, payload lines light grey.
+    pub fn load_monitor_log(&mut self, path: &Path) {
+        self.load_log_colored(path, true);
+    }
+
+    fn load_log_colored(&mut self, path: &Path, monitor: bool) {
         let Ok(file) = File::open(path) else {
             return;
         };
@@ -216,7 +244,11 @@ impl TextPad {
                 "G" | "g" | "I" | "i" => PadKind::Incoming,
                 _ => continue,
             };
-            self.push(kind, text);
+            if monitor {
+                self.push_monitor(kind, text);
+            } else {
+                self.push(kind, text);
+            }
         }
     }
 
@@ -269,4 +301,31 @@ pub fn bbs_path(log_dir: &Path) -> PathBuf {
 
 pub fn box_path(log_dir: &Path) -> PathBuf {
     pads_dir(log_dir).join("box.txt")
+}
+
+/// `fm CALL to CALL ctl …`, including the `fm HH:MM` stamp.
+fn monitor_color(line: &str) -> Color32 {
+    if line.starts_with("fm ") || line.starts_with("FM ") {
+        MONITOR_FM
+    } else {
+        MONITOR_PAYLOAD
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monitor_fm_is_green_and_payload_is_grey() {
+        let mut pad = TextPad::new(8);
+        pad.push_monitor(PadKind::Own, "fm 21:14 NL0MSK to NL0MSK-2 ctl I00^");
+        pad.push_monitor(PadKind::Incoming, "   hallo");
+        pad.push_monitor(PadKind::System, "*** CONNECTED");
+        let lines: Vec<_> = pad.lines.iter().collect();
+        assert_eq!(lines[0].runs[0].color, MONITOR_FM);
+        assert_eq!(lines[1].runs[0].color, MONITOR_PAYLOAD);
+        assert!(lines[2].runs.is_empty());
+        assert_eq!(lines[2].kind, PadKind::System);
+    }
 }
