@@ -4,6 +4,22 @@ Asynchronous Rust foundation for a cross-platform rewrite of **Graphic Packet (G
 
 This crate targets modern Windows / macOS / Linux hosts talking to USB-to-serial TNCs (WA8DED hostmode, TFPCX, Kenwood KISS) and soft TNCs over **TCP KISS** (Soundmodem, Direwolf, …).
 
+## Development status
+
+This project is still under active development, and some features may not work
+as expected. KISS is currently being tested; the WA8DED and TFPCX drivers are
+not yet tested.
+
+The GUI is also still under development. The purpose and behavior of some
+legacy screens, including **BBS-Menu** and **Box-List (DieBox)**, are not yet
+clear because documentation for them has not been found. Remaining work
+includes completing the setup menu and adding a few utilities, such as log
+cleanup.
+
+File tranfer or BIN also needs investigating as we currelty cant use the DOS
+7Plus compression tool. But aiming for backwards compatibility we lookig in 
+to this at a later point
+
 ## Layout
 
 | Path | Role |
