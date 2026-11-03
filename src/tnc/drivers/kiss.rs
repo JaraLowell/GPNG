@@ -8,7 +8,10 @@
 //!
 //! Connected I-frames are paced here: one outstanding N(S), the next part
 //! goes out only after RR or an I-frame whose N(R) acknowledges it. UI frames
-//! are not acknowledged and are sent at once. Serial and TCP share this path.
+//! are not acknowledged and are sent at once. A self-connect RR is invented
+//! locally; it is held until the frame could have left the radio, so a file
+//! such as `//news` is not written faster than the TNC can transmit it.
+//! Serial and TCP share this path.
 //! The same queue is what the magenta bar shows: free bytes are 600 minus
 //! packets still waiting, and tries / unack come from the frame in flight.
 
@@ -144,6 +147,11 @@ pub fn run(
     let mut stream = Vec::<u8>::new();
     let mut delivery = KissDelivery::new();
     let mut last_buffers: Option<BufferReport> = None;
+    let hbaud = if link.is_tcp() {
+        1200
+    } else {
+        kiss_ini::hbaud_from_file(&resolve_kiss_ini(&tnc_cfg.kiss_ini), &tnc_cfg.kiss_section)
+    };
 
     loop {
         while let Ok(cmd) = commands.try_recv() {
@@ -195,6 +203,8 @@ pub fn run(
             }
             None => {}
         }
+
+        release_local_ack(&mut link, &mut delivery, &events, hbaud);
 
         send_buffers_if_changed(&events, &delivery.tx_snapshots(), &mut last_buffers);
     }
@@ -285,14 +295,11 @@ fn handle_command(
             }
         }
         TncCommand::LocalAck { port, frame } => {
-            if let Err(err) = write_kiss_data(link, port, &frame) {
-                let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
-            }
-            if let Some(out) = delivery.on_rx(&frame, Instant::now()) {
-                if let Err(err) = write_kiss_data(link, out.port, &out.frame) {
-                    let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
-                }
-            }
+            // Channel 1 ↔ 2 has no RF loopback, but the I-frame was just
+            // handed to the radio. Hold this RR until that frame could have
+            // been transmitted; applying it now would write the next packet
+            // into a full UART ("failed to write whole buffer").
+            delivery.hold_local_ack(port, frame);
         }
         TncCommand::TerminalLine(line) => {
             if let Err(err) = link.write_terminal(&line) {
@@ -320,6 +327,27 @@ fn handle_command(
         }
     }
     Ok(false)
+}
+
+/// Write one invented self-connect RR once the radio has had time to send
+/// the I-frame it acknowledges, then the next queued I-frame.
+fn release_local_ack(
+    link: &mut KissLink,
+    delivery: &mut KissDelivery,
+    events: &mpsc::Sender<TncEvent>,
+    hbaud: u32,
+) {
+    let Some(released) = delivery.poll_local_ack(Instant::now(), hbaud) else {
+        return;
+    };
+    if let Err(err) = write_kiss_data(link, released.ack.port, &released.ack.frame) {
+        let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
+    }
+    if let Some(out) = released.next {
+        if let Err(err) = write_kiss_data(link, out.port, &out.frame) {
+            let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
+        }
+    }
 }
 
 fn write_kiss_data(link: &mut KissLink, port: u8, payload: &[u8]) -> Result<(), TncError> {

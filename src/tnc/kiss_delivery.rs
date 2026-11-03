@@ -4,8 +4,11 @@
 //! waits for an RR or I whose N(R) acknowledges it, then sends the next.
 //! UI and supervisory frames (SABM, DISC, UA, RR, DM) go out immediately.
 //! Every I-frame, including NL0MSK to NL0MSK-2, waits for an RR. A
-//! self-connect has no RF loopback, so the UI sends that RR itself and the
-//! driver applies it with [`crate::tnc::TncCommand::LocalAck`].
+//! self-connect has no RF loopback, so the UI invents that RR
+//! ([`crate::tnc::TncCommand::LocalAck`]). The frame is still written to the
+//! radio, so the invented RR is held until the frame could have been
+//! transmitted and a real peer would have answered. Applying it in the same
+//! burst releases the next packet while the UART is still full.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -40,10 +43,39 @@ pub enum Tick {
     GaveUp { port: u8 },
 }
 
+/// RR the UI invented for a self-connect. Not applied until
+/// [`radio_ack_wait`] for the I-frame it acknowledges.
+struct HeldLocalAck {
+    port: u8,
+    frame: Vec<u8>,
+}
+
+/// One local RR that is now allowed onto the wire, plus the I-frame it frees.
+pub struct Released {
+    pub ack: Outgoing,
+    pub next: Option<Outgoing>,
+}
+
 #[derive(Default)]
 pub struct KissDelivery {
     queued: VecDeque<Outgoing>,
     inflight: Option<Inflight>,
+    held_acks: VecDeque<HeldLocalAck>,
+}
+
+/// How long a self-connect must wait before the next I-frame.
+///
+/// Channel 1 → channel 2 still sends each frame to the radio. There is no
+/// loopback, so nothing comes back to say the radio finished transmitting.
+/// This is that missing confirmation: TX delay, on-air time at `hbaud`, and
+/// a short RR. `hbaud` is the radio's packet speed (`HB` / `HBAUD`), not the
+/// PC serial baud.
+pub fn radio_ack_wait(frame_len: usize, hbaud: u32) -> Duration {
+    let hbaud = u64::from(hbaud.clamp(300, 115_200));
+    let bytes = (frame_len as u64).saturating_add(2);
+    let air_us = bytes.saturating_mul(8).saturating_mul(1_000_000) / hbaud;
+    let wait = Duration::from_micros(air_us) + Duration::from_millis(280);
+    wait.min(T1.saturating_sub(Duration::from_millis(500)))
 }
 
 impl KissDelivery {
@@ -94,6 +126,7 @@ impl KissDelivery {
         }) {
             self.queued.clear();
             self.inflight = None;
+            self.held_acks.clear();
             return Some(Outgoing { port, frame });
         }
         let Some(parsed) = parsed else {
@@ -114,6 +147,32 @@ impl KissDelivery {
             tries: 1,
         });
         Some(Outgoing { port, frame })
+    }
+
+    /// Queue a self-connect RR. [`Self::poll_local_ack`] writes it later.
+    pub fn hold_local_ack(&mut self, port: u8, frame: Vec<u8>) {
+        self.held_acks.push_back(HeldLocalAck { port, frame });
+    }
+
+    /// One due local RR, if the in-flight frame has had time to go out on the air.
+    pub fn poll_local_ack(&mut self, now: Instant, hbaud: u32) -> Option<Released> {
+        if self.held_acks.is_empty() {
+            return None;
+        }
+        if let Some(cur) = &self.inflight {
+            if now.duration_since(cur.sent) < radio_ack_wait(cur.frame.len(), hbaud) {
+                return None;
+            }
+        }
+        let ack = self.held_acks.pop_front()?;
+        let next = self.on_rx(&ack.frame, now);
+        Some(Released {
+            ack: Outgoing {
+                port: ack.port,
+                frame: ack.frame,
+            },
+            next,
+        })
     }
 
     /// Peer RR or I. N(R) is the next N(S) the peer expects.
@@ -160,6 +219,7 @@ impl KissDelivery {
             let port = self.inflight.as_ref().map(|f| f.port).unwrap_or(0);
             self.inflight = None;
             self.queued.clear();
+            self.held_acks.clear();
             return Some(Tick::GaveUp { port });
         }
         let inflight = self.inflight.as_mut().expect("inflight");
@@ -240,6 +300,38 @@ mod tests {
             .push(0, build_ui("CQ", "ME", &[], b"again"), t)
             .is_some());
         assert!(q.tx_snapshots().is_empty());
+    }
+
+    #[test]
+    fn local_ack_waits_until_the_frame_could_leave_the_radio() {
+        let mut q = KissDelivery::new();
+        let t = now();
+        let first = build_i("ME-1", "ME", 0, 0, false, &[b'x'; 80]);
+        let wait = radio_ack_wait(first.len(), 1200);
+        q.push(0, first, t).unwrap();
+        assert!(q
+            .push(0, build_i("ME-1", "ME", 1, 0, false, b"next"), t)
+            .is_none());
+        q.hold_local_ack(0, build_rr("ME", "ME-1", 1, false, false));
+        q.hold_local_ack(0, build_rr("ME", "ME-1", 2, false, false));
+        assert!(q
+            .poll_local_ack(t + wait - Duration::from_millis(1), 1200)
+            .is_none());
+        let released = q.poll_local_ack(t + wait, 1200).unwrap();
+        assert_eq!(
+            ax25::parse_frame(&released.next.unwrap().frame)
+                .unwrap()
+                .ns,
+            1
+        );
+        // The next invented RR stays queued until this new frame's air time.
+        assert!(q.poll_local_ack(t + wait, 1200).is_none());
+    }
+
+    #[test]
+    fn slower_radio_waits_longer() {
+        let frame = 160;
+        assert!(radio_ack_wait(frame, 1200) > radio_ack_wait(frame, 9600));
     }
 
     #[test]

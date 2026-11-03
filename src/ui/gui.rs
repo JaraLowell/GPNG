@@ -1378,7 +1378,8 @@ impl GpGuiApp {
 
     /// RR response from `i_dest` back to `i_src` for I-frame `ns`.
     /// Written on the air and fed to the send queue (`LocalAck`), because a
-    /// self-connect does not hear its own frames come back.
+    /// self-connect does not hear its own frames come back. The driver holds
+    /// it until the I-frame could have left the radio.
     fn tx_local_rr(&mut self, i_src: &str, i_dest: &str, ns: u8) {
         let nr = ns.wrapping_add(1) & 7;
         if let Some(ch) = self.kiss_channel_owning_dest(i_dest) {

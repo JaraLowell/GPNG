@@ -1,7 +1,7 @@
 //! Shared serial-port helpers for all modem drivers.
 
 use std::io::{Read, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serialport::SerialPort;
 use tracing::{info, warn};
@@ -32,6 +32,8 @@ impl SerialLink {
             .parity(serialport::Parity::None)
             .stop_bits(serialport::StopBits::One)
             .flow_control(serialport::FlowControl::None)
+            // Read timeout. On Windows this is also WriteTotalTimeoutConstant:
+            // a write that cannot finish inside it returns 0 bytes.
             .timeout(Duration::from_millis(50))
             .open()?;
         // Assert modem-control lines (physical unplug/replug toggles these).
@@ -44,8 +46,45 @@ impl SerialLink {
         })
     }
 
+    /// Write `buf`, waiting out a full driver buffer instead of failing.
+    ///
+    /// `Write::write_all` treats a 0-byte write as fatal ("failed to write
+    /// whole buffer"). Windows does that when the UART cannot take the whole
+    /// slice inside the 50 ms timeout — typical when a file is pushed faster
+    /// than the radio drains it. Short slices are retried until they land.
     pub fn write_all(&mut self, buf: &[u8]) -> Result<(), TncError> {
-        self.port.write_all(buf)?;
+        let chunk = tx_chunk_len(self.baud);
+        let mut offset = 0;
+        let mut last_progress = Instant::now();
+        while offset < buf.len() {
+            if last_progress.elapsed() > Duration::from_secs(2) {
+                return Err(TncError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "serial transmit buffer stayed full",
+                )));
+            }
+            let end = (offset + chunk).min(buf.len());
+            let requested = end - offset;
+            match self.port.write(&buf[offset..end]) {
+                Ok(0) => {
+                    std::thread::sleep(wire_time(self.baud, requested.max(1)));
+                }
+                Ok(n) => {
+                    last_progress = Instant::now();
+                    offset += n;
+                    if n < requested {
+                        std::thread::sleep(wire_time(self.baud, n.max(1)));
+                    }
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::TimedOut
+                        || e.kind() == std::io::ErrorKind::Interrupted =>
+                {
+                    std::thread::sleep(wire_time(self.baud, 1));
+                }
+                Err(e) => return Err(TncError::Io(e)),
+            }
+        }
         self.port.flush()?;
         Ok(())
     }
@@ -110,9 +149,43 @@ impl SerialLink {
     }
 }
 
+/// Bytes that fit in ~20 ms at 8N1, inside the 50 ms write timeout.
+pub(crate) fn tx_chunk_len(baud: u32) -> usize {
+    let baud = baud.max(300) as usize;
+    (baud / 500).clamp(1, 32)
+}
+
+/// How long `nbytes` take to leave a UART (8N1, 10 bit times per byte).
+pub(crate) fn wire_time(baud: u32, nbytes: usize) -> Duration {
+    let baud = u64::from(baud.max(300));
+    let us = (nbytes as u64)
+        .saturating_mul(10)
+        .saturating_mul(1_000_000)
+        / baud;
+    Duration::from_micros(us.max(1_000))
+}
+
 impl Drop for SerialLink {
     fn drop(&mut self) {
         let _ = self.port.write_request_to_send(false);
         let _ = self.port.write_data_terminal_ready(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_fits_inside_the_write_timeout() {
+        assert_eq!(tx_chunk_len(9600), 19);
+        assert_eq!(tx_chunk_len(115_200), 32);
+        assert_eq!(tx_chunk_len(300), 1);
+    }
+
+    #[test]
+    fn wire_time_matches_8n1() {
+        // 96 bytes at 9600 baud is 100 ms (10 bit times each).
+        assert_eq!(wire_time(9600, 96), Duration::from_millis(100));
     }
 }

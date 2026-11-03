@@ -155,9 +155,10 @@ pub enum TncCommand {
         /// Command / data byte stream (e.g. `b"I NL0MSK"`).
         data: Vec<u8>,
     },
-    /// KISS only. Write this AX.25 frame (an RR from the other end of a
-    /// self-connect) and treat it as a received acknowledgement, because
-    /// the TNC does not loop our own frames back.
+    /// KISS only. An RR from the other end of a self-connect. The driver
+    /// writes it, and treats it as the acknowledgement, only after the
+    /// I-frame has had time to leave the radio. The TNC does not loop our
+    /// own frames back, but it still has to transmit them.
     LocalAck {
         port: u8,
         frame: Vec<u8>,
@@ -204,7 +205,10 @@ pub fn spawn_tnc_task(
     tnc_cfg: TncConfig,
 ) -> (TncChannels, tokio::task::JoinHandle<()>) {
     let (event_tx, event_rx) = mpsc::channel::<TncEvent>(256);
-    let (cmd_tx, cmd_rx) = mpsc::channel::<TncCommand>(64);
+    // A text file is one command per packet (plus a local RR on a
+    // self-connect). The driver now releases those slowly, so the queue has
+    // to hold the whole file instead of dropping the tail.
+    let (cmd_tx, cmd_rx) = mpsc::channel::<TncCommand>(256);
 
     let channels = TncChannels {
         events: event_rx,

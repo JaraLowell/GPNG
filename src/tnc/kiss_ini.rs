@@ -213,6 +213,33 @@ fn extract_section(text: &str, section: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
+/// On-air packet speed from `HB` / `HBAUD` in `section`. 1200 when unset.
+pub fn section_hbaud(text: &str, section: &str) -> u32 {
+    let Some(lines) = extract_section(text, section) else {
+        return 1200;
+    };
+    for line in lines.iter().rev() {
+        let mut parts = line.split_whitespace();
+        let key = parts.next().unwrap_or("").to_ascii_uppercase();
+        if key == "HB" || key == "HBAUD" {
+            if let Some(n) = parts.next().and_then(|s| s.parse::<u32>().ok()) {
+                if (300..=115_200).contains(&n) {
+                    return n;
+                }
+            }
+        }
+    }
+    1200
+}
+
+/// Read [`section_hbaud`] from a KISS.INI file. Missing file → 1200.
+pub fn hbaud_from_file(path: &Path, section: &str) -> u32 {
+    match std::fs::read_to_string(path) {
+        Ok(text) => section_hbaud(&text, section),
+        Err(_) => 1200,
+    }
+}
+
 /// Expand one KISS.INI command line into paced actions + whether to append CR.
 fn expand_line(line: &str) -> (Vec<Action>, bool) {
     let mut actions = Vec::new();
@@ -286,6 +313,20 @@ mod tests {
         assert!(matches!(acts[1], Action::Byte(0xff)));
         assert!(matches!(acts[2], Action::Byte(0xc0)));
         assert!(matches!(acts[3], Action::DelayMs(1000)));
+    }
+
+    #[test]
+    fn hbaud_comes_from_the_active_section() {
+        let text = "\
+[TM-D710]
+HB 1200
+KISS ON
+[TM-D710_9600pkt]
+HB 9600
+";
+        assert_eq!(section_hbaud(text, "TM-D710"), 1200);
+        assert_eq!(section_hbaud(text, "TM-D710_9600pkt"), 9600);
+        assert_eq!(section_hbaud(text, "missing"), 1200);
     }
 
     #[test]
