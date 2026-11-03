@@ -7,10 +7,11 @@ pub const APP_NAME: &str = "Graphic Packet NG";
 pub const APP_VERSION: &str = "2.01";
 
 /// Modern authors shown on the Monitor startup credits line.
-pub const APP_AUTHORS: &str = "Mitch and Jara Lowel";
+pub const APP_AUTHORS: &str = "MichTronics (PD4MV) and Jara Lowel";
 
 /// Classic GP attribution on the credits line.
-pub const CLASSIC_CREDIT: &str = "Graphic Packet 1.63b 1994 by Ulf Saran";
+pub const CLASSIC_CREDIT: &str = "1994 Graphic Packet (GP),
+ the classic MS-Dos AX.25 terminal by Ulf Saran (DH1DAE)";
 
 /// Clock / compact badge text.
 pub fn version_badge() -> String {
