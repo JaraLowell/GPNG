@@ -66,6 +66,11 @@ pub struct SessionChrome {
     /// Set spy callsign popup.
     pub show_spy_dialog: bool,
     pub spy_edit: String,
+    /// Connect-to popup (`CALL` or `CALL,VIA[,VIA…]`).
+    pub show_connect_dialog: bool,
+    pub connect_edit: String,
+    /// Channel that will run the connect (`1..=N`).
+    pub connect_channel: u8,
     /// One-shot scroll nudge in pixels (negative = up).
     pub scroll_nudge: f32,
 }
@@ -93,6 +98,9 @@ impl Default for SessionChrome {
             mycall_slot: 0,
             show_spy_dialog: false,
             spy_edit: String::new(),
+            show_connect_dialog: false,
+            connect_edit: String::new(),
+            connect_channel: 1,
             scroll_nudge: 0.0,
         }
     }
@@ -180,6 +188,12 @@ impl SessionChrome {
         self.show_spy_dialog = true;
     }
 
+    pub fn open_connect_dialog(&mut self, channel: u8, prefill: &str) {
+        self.connect_channel = channel;
+        self.connect_edit = prefill.to_string();
+        self.show_connect_dialog = true;
+    }
+
     pub fn set_ctext_path(&mut self, path: PathBuf) {
         self.ctext_path = path;
     }
@@ -210,28 +224,51 @@ pub fn default_ctext_path() -> PathBuf {
 }
 
 pub fn default_bell_wav() -> PathBuf {
+    asset_wav("bell.wav")
+}
+
+pub fn default_connect_wav() -> PathBuf {
+    asset_wav("connect.wav")
+}
+
+/// Filename on disk is `disconect.wav` (classic spelling).
+pub fn default_disconnect_wav() -> PathBuf {
+    asset_wav("disconect.wav")
+}
+
+fn asset_wav(name: &str) -> PathBuf {
     let candidates = [
-        PathBuf::from("assets/bell.wav"),
-        PathBuf::from("gp-rs/assets/bell.wav"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/bell.wav"),
+        PathBuf::from("assets").join(name),
+        PathBuf::from("gp-rs/assets").join(name),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("assets")
+            .join(name),
     ];
     candidates
         .into_iter()
         .find(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/bell.wav"))
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("assets")
+                .join(name)
+        })
 }
 
-/// Best-effort bell: play `assets/bell.wav` on a background thread.
+/// Best-effort WAV play on a background thread.
 pub fn play_bell_wav(path: &Path) {
+    play_wav(path);
+}
+
+pub fn play_wav(path: &Path) {
     let path = path.to_path_buf();
     std::thread::spawn(move || {
-        if let Err(e) = play_bell_inner(&path) {
-            tracing::debug!("bell: {e}");
+        if let Err(e) = play_wav_inner(&path) {
+            tracing::debug!("wav {}: {e}", path.display());
         }
     });
 }
 
-fn play_bell_inner(path: &Path) -> Result<(), String> {
+fn play_wav_inner(path: &Path) -> Result<(), String> {
     use rodio::{Decoder, OutputStream, Sink};
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let source = Decoder::new(std::io::BufReader::new(file)).map_err(|e| e.to_string())?;

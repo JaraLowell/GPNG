@@ -7,7 +7,7 @@
 
 [station]
 # Legacy: MYCALL — monitor call first, then per-channel overrides (comma-separated).
-mycall = ["NL0MSK"]
+mycall = ["NL0MSK", "NL0MSK"]
 
 # Legacy: ZONE / TIME — display timezone offset and PC-clock skew (minutes).
 zone = "UTC"
@@ -114,13 +114,19 @@ wa8ded_ini = "WA8DED.INI"
 wa8ded_line_delay_ms = 300
 
 # Modem driver (only one is loaded): "wa8ded" (aliases: jhost, hostmode),
-# "tfpcx" (soft-TNC), or "kiss" (TAPR KISS).
+# "tfpcx" (soft-TNC), or "kiss" (TAPR KISS over serial or TCP).
 protocol = "kiss"
 
 # Monitor flags at connect — expanded as %M in WA8DED.INI / KISS.INI (e.g. M %M → M IUSC).
 monitor_mode = "IUSC"
 
-# KISSINIT-style open/close (only when protocol = "kiss"). See KISS.INI sections.
+# KISS wire: "serial" = Kenwood etc. via [serial] port/baud + KISS.INI;
+# "tcp" = Soundmodem / Direwolf raw KISS TCP (no KISS.INI).
+kiss_transport = "tcp"
+kiss_tcp_host = "127.0.0.1"
+kiss_tcp_port = 8100          # UZ7HO Soundmodem KISS TCP; Direwolf often 8001
+
+# KISSINIT-style open/close (serial KISS only). See KISS.INI sections.
 kiss_ini = "KISS.INI"
 kiss_section = "TM-D710"   # open profile: TM-D710 | TM-D710_9600pkt | TM-D700 | …
 kiss_close_section = "close"

@@ -168,10 +168,12 @@ pub const ICON_SLOT_LABELS: [&str; 17] = [
 
 /// Monitor strip (V1.63 screenshot).
 pub const TOOLBAR_MONITOR: &[usize] = &[12, 3, 10, 6, 2, 9, 7, 4];
-/// Channel / connect strip.
+/// Channel / connect strip (idle).
 pub const TOOLBAR_CHANNEL: &[usize] = &[0, 3, 10, 6, 2, 9, 7, 4];
-/// MHeard strip.
-pub const TOOLBAR_MHEARD: &[usize] = &[12, 3, 10, 6, 2, 14, 8, 4];
+/// Channel strip while linked — DISCONNECT replaces CONNECT.
+pub const TOOLBAR_CHANNEL_DISC: &[usize] = &[1, 3, 10, 6, 2, 9, 7, 4];
+/// MHeard strip — SPY + CONNECT (connect selected call on first free channel).
+pub const TOOLBAR_MHEARD: &[usize] = &[12, 3, 10, 6, 2, 14, 0, 4];
 /// Spy strip — SPY sets call, KILL SPY clears it.
 pub const TOOLBAR_SPY: &[usize] = &[12, 3, 10, 6, 2, 14, 15, 4];
 /// Editor strip.
@@ -196,6 +198,14 @@ pub fn toolbar_for(pane: super::layout::ActivePane) -> &'static [usize] {
         Check => TOOLBAR_BBS_MENU,
         List => TOOLBAR_BOX_LIST,
         Spy(_) => TOOLBAR_SPY,
+    }
+}
+
+pub fn toolbar_for_channel(linked: bool) -> &'static [usize] {
+    if linked {
+        TOOLBAR_CHANNEL_DISC
+    } else {
+        TOOLBAR_CHANNEL
     }
 }
 

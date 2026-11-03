@@ -2,14 +2,14 @@
 
 Asynchronous Rust foundation for a cross-platform rewrite of **Graphic Packet (GP)**, the classic 1990s MS-DOS AX.25 terminal by Ulf Saran (DH1DAE).
 
-This crate targets modern Windows / macOS / Linux hosts talking to USB-to-serial TNCs (WA8DED hostmode, TFPCX, and related soft-TNCs).
+This crate targets modern Windows / macOS / Linux hosts talking to USB-to-serial TNCs (WA8DED hostmode, TFPCX, Kenwood KISS) and soft TNCs over **TCP KISS** (Soundmodem, Direwolf, …).
 
 ## Layout
 
 | Path | Role |
 |------|------|
 | `src/config.rs` | Typed `Config` + `Config.toml` loader; maps legacy `CONFIG.GP` keys (`MYCALL`, `SERPORT`, `SERBAUD`, `CHANNELS`, colours, `TNCINI`, …) |
-| `src/tnc/` | Modem drivers — WA8DED / TFPCX / KISS (one loaded from `[tnc] protocol`) |
+| `src/tnc/` | Modem drivers — WA8DED / TFPCX / KISS serial or TCP (one loaded from `[tnc] protocol`) |
 | `src/ui/` | Clean-room TUI (`ratatui`) recreating classic panes — **not** a BGI decompile |
 | `docs/LAYOUT.md` | Pane map from V1.63 screenshot + docs |
 | `docs/ICONS.md` | Decoded `ICONS.GP` format (70×40 planar VGA, 17 icons) |
@@ -32,7 +32,9 @@ regions over reverse-engineering `GP2862K.EXE` drawing code.
 ## Quick start
 
 ```bash
-# Edit Config.toml — set [station].mycall and [serial].port
+# Edit Config.toml — set [station].mycall
+# Serial TNC/Kenwood: [serial].port + baud, [tnc] protocol / kiss_transport
+# Soundmodem lab: protocol = "kiss", kiss_transport = "tcp", kiss_tcp_*
 # Pixel UI loads toolbar bitmaps from tools/ICONS.GP
 cargo run
 # Text fallback:
@@ -54,7 +56,35 @@ Only **one** modem driver is constructed at startup (`[tnc] protocol`):
 |------------|--------|-------|
 | `wa8ded` (aliases `jhost`, `hostmode`) | Timed WA8DED hostmode poll | `JHOST1` → `WA8DED.INI` `[open]`/`[status]`; exit `[close]` (`MN`/`U1Away!`/`K2`/`JHOST0`); poll `G0` |
 | `tfpcx` | Soft-TNC hostmode | Same `channel\|code\|len\|payload` framing; Config `init`/`deinit` |
-| `kiss` | TAPR KISS | `FEND`/`FESC`; applies `KISS.INI` section then listens; port → channel |
+| `kiss` | TAPR KISS | `FEND`/`FESC`; serial **or** TCP wire (`kiss_transport`); KISS port → channel |
+
+### KISS transport
+
+| `kiss_transport` | Wire | Typical use |
+|------------------|------|-------------|
+| `serial` (default) | `[serial]` COM/tty + baud | Kenwood TM-D710 etc. — applies `KISS.INI` (`kiss_section` / `kiss_close_section`), DTR pulse, exit sequence |
+| `tcp` | `kiss_tcp_host`:`kiss_tcp_port` | Soft TNC already in KISS — **UZ7HO Soundmodem** (often port `8100`), **Direwolf** (often `8001`); no `KISS.INI` |
+
+Example Soundmodem lab setup in `Config.toml`:
+
+```toml
+[tnc]
+protocol = "kiss"
+kiss_transport = "tcp"
+kiss_tcp_host = "127.0.0.1"
+kiss_tcp_port = 8100
+```
+
+Session badge shows `TCP 127.0.0.1:8100` when the TCP path is active.
+
+KISS TX builds real AX.25 frames (hostmode `I`/`C`/`D` strings are not sent raw):
+
+| Pane | Frame | Addresses |
+|------|-------|-----------|
+| Monitor (unproto) | UI | `MYCALL` → `CQ` |
+| Channel connect | SABM → peer; answer SABM with **UA** (or **DM** if busy) | `MYCALL` ↔ peer |
+| Channel linked | I (+ RR on RX); idle **RR poll every 5 min**, drop after 3×30 s no reply | `MYCALL` ↔ peer |
+| Channel hangup | DISC (+ UA on peer DISC) | |
 
 - **JHOST1** — enter WA8DED binary hostmode from terminal mode  
 - **JHOST0** — leave hostmode (WA8DED path)  

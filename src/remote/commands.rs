@@ -209,5 +209,7 @@ mod tests {
         assert_eq!(parse_line("//CD ..").unwrap(), (RemoteAction::ChangeDir, "..".into()));
         assert_eq!(parse_line("//PAR").unwrap().0, RemoteAction::Parameters);
         assert_eq!(parse_line("//7+ ON").unwrap(), (RemoteAction::SevenPlusAutoSave, "ON".into()));
+        assert_eq!(parse_line("//Q").unwrap().0, RemoteAction::Quit);
+        assert_eq!(parse_line("//DISC").unwrap().0, RemoteAction::Disconnect);
     }
 }

@@ -18,6 +18,7 @@ use std::collections::VecDeque;
 use std::f32::consts::TAU;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::{Local, Timelike};
 use eframe::egui::{
@@ -27,27 +28,34 @@ use eframe::egui::{
 use eframe::egui::text::{LayoutJob, TextFormat};
 use tokio::sync::mpsc;
 
-use crate::config::Config;
+use crate::config::{Config, HostProtocol};
 use crate::remote::commands::{parse_line, RemoteAction};
 use crate::remote::gpi;
 use crate::remote::macros::MacroContext;
+use crate::tnc::ax25::{self, Ax25Frame, Ax25FrameType};
 use crate::tnc::{HostCode, TncCommand, TncEvent};
 use crate::version;
 
 use super::editor::GpEditor;
 use super::icons::{
-    toolbar_for, IconLibrary, ICON_HEIGHT, ICON_SLOT_LABELS, ICON_WIDTH,
+    toolbar_for, toolbar_for_channel, IconLibrary, ICON_HEIGHT, ICON_SLOT_LABELS, ICON_WIDTH,
 };
 use super::layout::ActivePane;
 use super::mheard::MheardList;
 use super::session::{
-    decode_rx_text, default_bell_wav, format_hex_preview, parse_ax25_ui, play_bell_wav,
-    SessionChrome,
+    decode_rx_text, default_bell_wav, default_connect_wav, default_disconnect_wav,
+    format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav, Ax25UiFrame, SessionChrome,
 };
 use super::theme::vga;
 
 const MAX_LINES: usize = 2_000;
 const TYPED_HISTORY: usize = 10;
+/// KISS T3: idle link check (RR poll) after this much silence.
+const AX25_T3_IDLE: Duration = Duration::from_secs(5 * 60);
+/// KISS T1: wait for RR/I after a poll before retry / drop.
+const AX25_T1_POLL: Duration = Duration::from_secs(30);
+/// Retries of RR poll before link timeout disconnect.
+const AX25_POLL_RETRIES: u8 = 3;
 const COMPOSE_ROWS: usize = 3;
 
 /// Classic VGA chrome (from GP V1.63 / DOSBox reference).
@@ -201,6 +209,27 @@ pub struct GpGuiApp {
     channels: u8,
     /// Peer callsign per channel index (`1..=channels`); `None` = disconnected.
     channel_peer: Vec<Option<String>>,
+    /// In-progress connect target per channel (not linked yet).
+    channel_connecting: Vec<Option<String>>,
+    /// Self-connect in flight: `(caller_ch, answer_ch)`.
+    self_connect_pair: Option<(u8, u8)>,
+    /// Self-connect still linked (until either side disconnects).
+    self_connect_live: Option<(u8, u8)>,
+    /// Ephemeral on-air SSID for self-connect / busy redirect (not Config.toml).
+    /// Channel numbers / `-n` are internal unless the user sets a slot MYCALL.
+    temp_slot_call: Vec<Option<String>>,
+    /// KISS AX.25 send sequence N(S) per channel (`0` unused).
+    ax25_vs: Vec<u8>,
+    /// KISS AX.25 receive sequence N(R) per channel (`0` unused).
+    ax25_vr: Vec<u8>,
+    /// Last I/S/U activity on a linked KISS channel (T3 idle clock).
+    ax25_alive_at: Vec<Option<Instant>>,
+    /// Outstanding RR poll (T1) — `None` = not waiting.
+    ax25_poll_at: Vec<Option<Instant>>,
+    /// RR poll attempts since last peer reply.
+    ax25_poll_tries: Vec<u8>,
+    /// Focus the connect dialog call field once when opened.
+    connect_dialog_focus: bool,
     icon_tex: Vec<TextureHandle>,
     /// WA8DED monitor flags, e.g. `IUSC` (from TNC / local set).
     monitor_mode: String,
@@ -232,7 +261,16 @@ pub struct GpGuiApp {
     editor: GpEditor,
     /// Stations heard (APRS/AX.25 UI) — JSON-backed.
     mheard: MheardList,
+    /// Selected row in the MHeard list (`None` = none).
+    mheard_selected: Option<usize>,
+    /// After SPY on MHeard: next list pick opens the confirm dialog.
+    mheard_spy_pick: bool,
+    /// Confirm dialog: Start Spy for {call}?
+    show_mheard_spy_confirm: bool,
+    mheard_spy_pending: String,
     bell_wav: PathBuf,
+    connect_wav: PathBuf,
+    disconnect_wav: PathBuf,
     /// Hourly gong (classic ALT-G / click ♫ on the clock).
     hour_gong: bool,
     /// Prevents double-fire within the same hour.
@@ -250,11 +288,25 @@ impl GpGuiApp {
         let channels = cfg.session.channels.clamp(1, 10) as u8;
         let mut pads = Vec::with_capacity(channels as usize + 1);
         let mut channel_peer = Vec::with_capacity(channels as usize + 1);
+        let mut channel_connecting = Vec::with_capacity(channels as usize + 1);
+        let mut temp_slot_call = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_vs = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_vr = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_alive_at = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_poll_at = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_poll_tries = Vec::with_capacity(channels as usize + 1);
         for _ in 0..=channels {
             pads.push(TextPad {
                 lines: VecDeque::new(),
             });
             channel_peer.push(None);
+            channel_connecting.push(None);
+            temp_slot_call.push(None);
+            ax25_vs.push(0);
+            ax25_vr.push(0);
+            ax25_alive_at.push(None);
+            ax25_poll_at.push(None);
+            ax25_poll_tries.push(0);
         }
         pads[0].push(PadKind::System, version::startup_credits());
         pads[0].push(
@@ -272,8 +324,11 @@ impl GpGuiApp {
         };
 
         let colors = &cfg.colors;
-        let serial_port = cfg.serial.port.clone();
-        let serial_baud = cfg.serial.baud;
+        let (serial_port, serial_baud) = if cfg.tnc.kiss_use_tcp() {
+            (cfg.tnc.kiss_tcp_addr(), 0)
+        } else {
+            (cfg.serial.port.clone(), cfg.serial.baud)
+        };
         let monitor_mode = if cfg.tnc.monitor_mode.is_empty() {
             "IUSC".into()
         } else {
@@ -307,6 +362,16 @@ impl GpGuiApp {
             event_log: VecDeque::new(),
             channels,
             channel_peer,
+            channel_connecting,
+            self_connect_pair: None,
+            self_connect_live: None,
+            temp_slot_call,
+            ax25_vs,
+            ax25_vr,
+            ax25_alive_at,
+            ax25_poll_at,
+            ax25_poll_tries,
+            connect_dialog_focus: false,
             icon_tex,
             monitor_mode,
             buffer_lines,
@@ -318,7 +383,13 @@ impl GpGuiApp {
             session,
             editor: GpEditor::default(),
             mheard: MheardList::load_default(),
+            mheard_selected: None,
+            mheard_spy_pick: false,
+            show_mheard_spy_confirm: false,
+            mheard_spy_pending: String::new(),
             bell_wav: default_bell_wav(),
+            connect_wav: default_connect_wav(),
+            disconnect_wav: default_disconnect_wav(),
             hour_gong: true,
             last_gong: None,
         }
@@ -427,26 +498,39 @@ impl GpGuiApp {
                 TncEvent::Status(m) => {
                     self.status = m.clone();
                     let low = m.to_ascii_lowercase();
-                    // Monitor pad: only the quiet “serial OPEN …” line (from Config port/baud).
-                    if low.starts_with("serial open") {
+                    // Serial Kenwood / TCP Soundmodem / hostmode bring-up → green COM badge.
+                    let link_up = low.starts_with("serial open")
+                        || low.starts_with("tcp open")
+                        || low.contains("wa8ded driver")
+                        || low.contains("tfpcx driver");
+                    if link_up {
+                        let was_open = self.serial_open;
                         self.serial_open = true;
-                        self.log_event(m);
-                    } else if low.contains("wa8ded driver") || low.contains("tfpcx driver") {
-                        self.serial_open = true;
+                        if low.starts_with("serial open") || low.starts_with("tcp open") {
+                            self.log_event(m);
+                        }
+                        if !was_open {
+                            self.sync_channel_identities();
+                        }
                     }
                 }
                 TncEvent::Warning(m) => {
                     self.status = m.clone();
-                    // Keep real failures; skip routine bring-up noise.
-                    if !m.to_ascii_lowercase().starts_with("kiss") {
+                    // Keep real failures; skip routine serial `KISS.INI:` bring-up noise.
+                    let low = m.to_ascii_lowercase();
+                    if !low.starts_with("kiss.ini") {
                         self.log_event(format!("! {m}"));
                     }
                 }
                 TncEvent::LinkDown(m) => {
                     self.status = format!("link down: {m}");
                     self.serial_open = false;
+                    self.log_event(format!("link down: {m}"));
                     for peer in &mut self.channel_peer {
                         *peer = None;
+                    }
+                    for c in &mut self.channel_connecting {
+                        *c = None;
                     }
                 }
                 // UART counters only — full KISS frames land as Incoming (green).
@@ -471,8 +555,27 @@ impl GpGuiApp {
                         self.monitor_mode = text.trim().to_ascii_uppercase();
                         self.log_event(format!("monitor mode ← TNC: {}", self.monitor_mode));
                     }
-                    if matches!(code, HostCode::LinkStatus) {
-                        self.apply_link_status(channel, &text);
+                    // Link status may arrive as LinkStatus *or* plain Monitor/Data text.
+                    let linkish = matches!(code, HostCode::LinkStatus)
+                        || (matches!(
+                            code,
+                            HostCode::Monitor | HostCode::Data | HostCode::Other(_)
+                        ) && looks_like_link_status(&text));
+                    let mut skip_monitor_dup = false;
+                    if linkish {
+                        let status_ch = if channel == 0 {
+                            self.infer_link_status_channel(&text).unwrap_or(0)
+                        } else {
+                            channel
+                        };
+                        if status_ch >= 1 {
+                            self.apply_link_status(status_ch, &text);
+                        }
+                        // Modem link chatter → Monitor in white.
+                        self.pads[0].push(PadKind::Own, text.trim().to_string());
+                        if channel == 0 {
+                            skip_monitor_dup = true;
+                        }
                     }
                     let mut spy_src: Option<String> = None;
                     let (kind, line) = match code {
@@ -483,6 +586,13 @@ impl GpGuiApp {
                         }
                         HostCode::LinkStatus => (PadKind::System, text),
                         HostCode::Data => {
+                            // KISS: full AX.25 L2 (UI / SABM / I / …) — not hostmode text.
+                            if self.kiss_mode() {
+                                if let Some(frame) = ax25::parse_frame(&payload) {
+                                    self.handle_kiss_ax25(frame);
+                                    continue;
+                                }
+                            }
                             if let Some(frame) = parse_ax25_ui(&payload) {
                                 spy_src = Some(frame.src.clone());
                                 self.mheard.hear(&frame);
@@ -516,8 +626,27 @@ impl GpGuiApp {
                     } else {
                         0
                     };
-                    if let Some(pad) = self.pads.get_mut(idx) {
-                        pad.push(kind, line);
+                    // First I-frame / data while still "connecting" → treat as linked
+                    // (some firmwares are light on LinkStatus text).
+                    if channel >= 1 && matches!(code, HostCode::Data) {
+                        self.promote_connecting_on_data(channel);
+                    }
+                    // Peer //commands (e.g. //Q → QRT + D) when Remote is ON.
+                    let remote_cmd = if channel >= 1
+                        && matches!(code, HostCode::Data)
+                        && self.session.remote
+                    {
+                        line.lines().find_map(|l| parse_line(l.trim()))
+                    } else {
+                        None
+                    };
+                    if !(skip_monitor_dup && idx == 0) {
+                        if let Some(pad) = self.pads.get_mut(idx) {
+                            pad.push(kind, line);
+                        }
+                    }
+                    if let Some((action, args)) = remote_cmd {
+                        self.handle_remote_on_channel(channel, action, &args);
                     }
                 }
             }
@@ -528,6 +657,11 @@ impl GpGuiApp {
         // Leaving Spy → un-light the spy slot button.
         if !matches!(pane, ActivePane::Spy(_)) {
             self.session.spy_slot = None;
+        }
+        // Leaving MHeard → cancel spy-from-list pick mode.
+        if !matches!(pane, ActivePane::Mh) {
+            self.mheard_spy_pick = false;
+            self.show_mheard_spy_confirm = false;
         }
         self.active = pane;
         self.status = format!("active: {}", pane.label());
@@ -540,13 +674,45 @@ impl GpGuiApp {
         }
         let idx = channel as usize;
         let upper = text.to_ascii_uppercase();
+        let was_linked = self.channel_peer.get(idx).and_then(|p| p.as_ref()).is_some();
+
         if upper.contains("DISCONNECTED")
             || upper.contains("LINK FAILURE")
             || upper.contains("LINK FAIL")
             || upper.contains("BUSY FROM")
             || upper.contains("FAILURE WITH")
         {
+            if was_linked {
+                play_wav(&self.disconnect_wav);
+            }
             self.channel_peer[idx] = None;
+            if let Some(c) = self.channel_connecting.get_mut(idx) {
+                *c = None;
+            }
+            if let Some((c, a)) = self.self_connect_pair {
+                if channel == c || channel == a {
+                    self.self_connect_pair = None;
+                    self.clear_temp_identity(a);
+                }
+            }
+            if let Some((c, a)) = self.self_connect_live {
+                if channel == c || channel == a {
+                    self.self_connect_live = None;
+                    let other = if channel == c { a } else { c };
+                    self.clear_temp_identity(a);
+                    // Drop the other end of a self-connect too.
+                    if self.channel_peer.get(other as usize).and_then(|p| p.as_ref()).is_some() {
+                        self.tx_modem_line(other, "D");
+                        if let Some(p) = self.channel_peer.get_mut(other as usize) {
+                            *p = None;
+                        }
+                    }
+                }
+            }
+            // All free again → one global `I` (+ any user-dedicated slots).
+            if !self.any_channel_busy() {
+                self.restore_global_identities();
+            }
             return;
         }
         if let Some(pos) = upper.find("CONNECTED TO ") {
@@ -557,38 +723,185 @@ impl GpGuiApp {
                 .unwrap_or("")
                 .trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
                 .to_ascii_uppercase();
+            if let Some(c) = self.channel_connecting.get_mut(idx) {
+                *c = None;
+            }
             self.channel_peer[idx] = if call.is_empty() {
                 Some("****".into())
             } else {
                 Some(call)
             };
         } else if upper.contains("CONNECTED") {
+            if let Some(c) = self.channel_connecting.get_mut(idx) {
+                *c = None;
+            }
             if self.channel_peer[idx].is_none() {
                 self.channel_peer[idx] = Some("****".into());
             }
         }
         // Classic: on connect, send GTEXT / CTEXT to the peer.
         if upper.contains("CONNECTED TO ") || upper.contains("CONNECTED") {
-            self.send_connect_text(channel);
+            if !was_linked {
+                play_wav(&self.connect_wav);
+            }
+            self.prepare_busy_redirect_identities();
+            // Self-connect: answer channel sends CTEXT (white there, green on caller).
+            if let Some((caller, answer)) = self.self_connect_pair {
+                if channel == caller || channel == answer {
+                    self.complete_self_connect_ctext(caller, answer);
+                    return;
+                }
+            }
+            if !was_linked {
+                self.send_connect_text(channel);
+            }
         }
+    }
+
+    /// Effective MYCALL for a slot (ephemeral self-connect SSID overrides config).
+    fn effective_mycall(&self, channel: u8) -> String {
+        if let Some(Some(call)) = self.temp_slot_call.get(channel as usize) {
+            return call.clone();
+        }
+        if channel == 0 {
+            self.cfg.primary_mycall().to_string()
+        } else {
+            self.cfg.mycall_for_slot(channel).to_string()
+        }
+    }
+
+    /// Push this slot's effective MYCALL to the TNC (`I call`).
+    fn push_channel_identity(&mut self, channel: u8) {
+        let call = self.effective_mycall(channel);
+        self.tx_modem_line(channel, &format!("I {call}"));
+    }
+
+    /// Give `channel` a user/config MYCALL and put it on the air.
+    /// One callsign → one channel (duplicates fall back to global, not `-n` spam).
+    fn claim_identity(&mut self, channel: u8, call: &str) -> Result<String, String> {
+        let call = crate::config::normalize_mycall(call)?;
+        let primary = self.cfg.primary_mycall().to_string();
+        if let Some(t) = self.temp_slot_call.get_mut(channel as usize) {
+            *t = None;
+        }
+        for ch in 1..=self.channels {
+            if ch == channel {
+                continue;
+            }
+            if self.effective_mycall(ch).eq_ignore_ascii_case(&call) {
+                if let Some(t) = self.temp_slot_call.get_mut(ch as usize) {
+                    *t = None;
+                }
+                let _ = self.cfg.set_mycall_for_slot(ch, &primary);
+                // Only re-push if that slot had a non-global call on the air.
+                if !call.eq_ignore_ascii_case(&primary) {
+                    self.push_channel_identity(ch);
+                }
+            }
+        }
+        self.cfg.set_mycall_for_slot(channel, &call)?;
+        // Radio: global lives on ch0; per-channel `I` only for a real override.
+        if channel == 0 || !call.eq_ignore_ascii_case(&primary) {
+            self.push_channel_identity(channel);
+        } else if channel == 1 {
+            // Keep ch1 acceptor in sync with global (single on-air call).
+            self.push_channel_identity(0);
+        }
+        Ok(call)
+    }
+
+    /// Temporary `{base}-{channel}` on air for self-connect / busy redirect only.
+    /// Not written into Config.toml and not applied to every free slot.
+    fn assign_channel_ssid(&mut self, channel: u8) -> Result<String, String> {
+        if channel == 0 {
+            return Ok(self.cfg.primary_mycall().to_string());
+        }
+        let call = Config::channel_ssid_mycall(self.cfg.primary_mycall(), channel);
+        let call = crate::config::normalize_mycall(&call)?;
+        if let Some(t) = self.temp_slot_call.get_mut(channel as usize) {
+            *t = Some(call.clone());
+        }
+        self.push_channel_identity(channel);
+        Ok(call)
+    }
+
+    fn clear_temp_identity(&mut self, channel: u8) {
+        let had = self
+            .temp_slot_call
+            .get_mut(channel as usize)
+            .and_then(|t| t.take())
+            .is_some();
+        if had {
+            // Put that TNC channel back to config/global — one `I`, not a flood.
+            self.push_channel_identity(channel);
+        }
+    }
+
+    fn any_channel_busy(&self) -> bool {
+        (1..=self.channels).any(|n| self.channel_connected(n))
+    }
+
+    /// User-set call in Config that is not the global MYCALL (e.g. DB0ABC).
+    fn channel_has_dedicated_mycall(&self, channel: u8) -> bool {
+        let primary = self.cfg.primary_mycall();
+        let call = self.cfg.mycall_for_slot(channel);
+        !call.is_empty() && !call.eq_ignore_ascii_case(primary)
+    }
+
+    /// Which channel currently owns this callsign, if any (includes temp SSID).
+    fn channel_owning_call(&self, call: &str) -> Option<u8> {
+        (1..=self.channels).find(|&ch| self.effective_mycall(ch).eq_ignore_ascii_case(call))
+    }
+
+    fn sync_channel_identities(&mut self) {
+        self.restore_global_identities();
+    }
+
+    /// Idle / link-up: **one** global `I` on the radio, plus any user-dedicated
+    /// channel overrides. Auto `-n` SSIDs stay internal / ephemeral only.
+    fn restore_global_identities(&mut self) {
+        let primary = self.cfg.primary_mycall().to_string();
+        for ch in 1..=self.channels {
+            if let Some(t) = self.temp_slot_call.get_mut(ch as usize) {
+                *t = None;
+            }
+            // Scrub leftover auto `{base}-{n}` entries from older builds.
+            let slot = self.cfg.mycall_for_slot(ch).to_string();
+            let auto = Config::channel_ssid_mycall(&primary, ch);
+            if slot.eq_ignore_ascii_case(&auto) {
+                let _ = self.cfg.set_mycall_for_slot(ch, &primary);
+            }
+        }
+        let _ = self.cfg.set_mycall_for_slot(1, &primary);
+        // Single global identity on the modem.
+        self.push_channel_identity(0);
+        // Manual per-channel MYCALL only.
+        for ch in 1..=self.channels {
+            if self.channel_has_dedicated_mycall(ch) {
+                self.push_channel_identity(ch);
+            }
+        }
+        let _ = self.cfg.persist_mycall(&self.config_path);
+    }
+
+    /// After a link is up: do **not** invent `-n` identities for free channels.
+    /// Global MYCALL stays on the radio; temps for self-connect stay as-is.
+    fn prepare_busy_redirect_identities(&mut self) {
+        // Intentionally empty — channel numbers are internal unless user-set.
+    }
+
+    /// Dedicated name in use → park redirect on a free channel with a temp SSID.
+    fn redirect_busy_dedicated(&mut self, from_channel: u8) -> Option<(u8, String)> {
+        let free = (1..=self.channels).find(|&n| n != from_channel && !self.channel_connected(n))?;
+        let call = self.assign_channel_ssid(free).ok()?;
+        Some((free, call))
     }
 
     /// Expand and TX `GTEXT.GPI` (or picked CT file) on the given channel.
     fn send_connect_text(&mut self, channel: u8) {
-        let path = if self.session.ctext_path.exists() {
-            self.session.ctext_path.clone()
-        } else {
-            gpi::default_gtext_path()
-        };
-        let Some(raw) = gpi::read_file(&path) else {
+        let Some(text) = self.load_connect_text(channel) else {
             return;
         };
-        let mut ctx = self.macro_ctx();
-        ctx.channel = channel;
-        if let Some(peer) = self.channel_peer.get(channel as usize).and_then(|p| p.as_ref()) {
-            ctx.peer_call = peer.clone();
-        }
-        let text = gpi::expand_gpi_text(&raw, &ctx);
         let prev = self.active;
         if channel >= 1 {
             self.active = ActivePane::Channel(channel);
@@ -597,18 +910,327 @@ impl GpGuiApp {
         self.active = prev;
     }
 
+    fn load_connect_text(&self, channel: u8) -> Option<String> {
+        let raw = [
+            self.session.ctext_path.clone(),
+            gpi::default_gtext_path(),
+            PathBuf::from("tools/GTEXT.GPI"),
+        ]
+        .into_iter()
+        .find_map(|p| gpi::read_file(&p))?;
+        let mut ctx = self.macro_ctx();
+        ctx.channel = channel;
+        if let Some(peer) = self.channel_peer.get(channel as usize).and_then(|p| p.as_ref()) {
+            ctx.peer_call = peer.clone();
+        }
+        ctx.my_call = self.effective_mycall(channel);
+        Some(gpi::expand_gpi_text(&raw, &ctx))
+    }
+
+    /// KISS self-connect: no RF loopback — TX UA as answer, link both ends, CTEXT.
+    fn kiss_finish_self_connect(&mut self, caller: u8, answer: u8) {
+        let answer_call = self.effective_mycall(answer);
+        let caller_call = self.effective_mycall(caller);
+        // Answer SABM with UA (visible in Soundmodem + Monitor).
+        self.tx_kiss_payload(0, &ax25::build_ua(&caller_call, &answer_call, true));
+        self.pads[0].push(
+            PadKind::Own,
+            format!("UA {answer_call} > {caller_call} (self-connect ans ch{answer})"),
+        );
+        if let Some(pad) = self.pads.get_mut(answer as usize) {
+            pad.push(
+                PadKind::System,
+                format!("*** CONNECTED to {caller_call}"),
+            );
+        }
+        if let Some(pad) = self.pads.get_mut(caller as usize) {
+            pad.push(
+                PadKind::System,
+                format!("*** CONNECTED to {answer_call}"),
+            );
+        }
+        for ch in [caller, answer] {
+            if let Some(vs) = self.ax25_vs.get_mut(ch as usize) {
+                *vs = 0;
+            }
+            if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
+                *vr = 0;
+            }
+            self.kiss_link_activity(ch, true);
+        }
+        play_wav(&self.connect_wav);
+        self.complete_self_connect_ctext(caller, answer);
+        self.status = format!("KISS self-connect ch{caller} ↔ ch{answer}");
+    }
+
+    /// Self-connect finished: answer side TX CTEXT — white on answer, green on caller.
+    fn complete_self_connect_ctext(&mut self, caller: u8, answer: u8) {
+        // Mark both ends linked (TNC may only report CONNECTED on the caller).
+        let answer_call = self.effective_mycall(answer);
+        // Channel list shows the peer callsign — answer side sees global MYCALL.
+        let caller_call = self.cfg.primary_mycall().to_string();
+        if let Some(p) = self.channel_peer.get_mut(caller as usize) {
+            *p = Some(answer_call);
+        }
+        if let Some(p) = self.channel_peer.get_mut(answer as usize) {
+            *p = Some(caller_call);
+        }
+        if let Some(c) = self.channel_connecting.get_mut(caller as usize) {
+            *c = None;
+        }
+        if let Some(c) = self.channel_connecting.get_mut(answer as usize) {
+            *c = None;
+        }
+        self.self_connect_live = Some((caller, answer));
+        self.self_connect_pair = None;
+
+        let Some(text) = self.load_connect_text(answer) else {
+            return;
+        };
+        for raw in text.lines() {
+            let line = raw.trim_end_matches('\r').to_string();
+            if line.is_empty() && raw.is_empty() {
+                continue;
+            }
+            // Answer side: own / white (+ Monitor).
+            if let Some(pad) = self.pads.get_mut(answer as usize) {
+                pad.push(PadKind::Own, line.clone());
+            }
+            self.pads[0].push(PadKind::Own, line.clone());
+            // Caller side: incoming / green (received CTEXT).
+            if let Some(pad) = self.pads.get_mut(caller as usize) {
+                pad.push(PadKind::Incoming, line.clone());
+            }
+            if self.kiss_mode() {
+                // Answer TX as I-frames to the caller callsign.
+                let peer = self.cfg.primary_mycall().to_string();
+                let my = self.effective_mycall(answer);
+                let ns = *self.ax25_vs.get(answer as usize).unwrap_or(&0);
+                let nr = *self.ax25_vr.get(answer as usize).unwrap_or(&0);
+                let info = format!("{line}\r").into_bytes();
+                let frame = ax25::build_i(&peer, &my, ns, nr, false, &info);
+                if let Some(vs) = self.ax25_vs.get_mut(answer as usize) {
+                    *vs = (ns + 1) & 7;
+                }
+                self.tx_kiss_payload(0, &frame);
+            } else {
+                let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
+                    channel: answer,
+                    data: format!("{line}\r").into_bytes(),
+                });
+            }
+        }
+        self.status = format!("CTEXT ch{answer} → ch{caller}");
+    }
+
+    /// Hostmode `D` or KISS DISC; tears down self-connect pair too.
+    /// Clears local link state immediately so the DISCONNECT icon / `n: ......`
+    /// update even if the modem is slow to report DISCONNECTED.
+    fn disconnect_channel(&mut self, channel: u8) {
+        if !(1..=self.channels).contains(&channel) {
+            return;
+        }
+        let was_linked = self
+            .channel_peer
+            .get(channel as usize)
+            .and_then(|p| p.as_ref())
+            .is_some();
+        if self.kiss_mode() {
+            self.kiss_send_disc(channel);
+        } else {
+            self.tx_modem_line(channel, "D");
+        }
+
+        let mut also = Vec::new();
+        if let Some((c, a)) = self.self_connect_live.take() {
+            if channel == c || channel == a {
+                also.push(if channel == c { a } else { c });
+            } else {
+                self.self_connect_live = Some((c, a));
+            }
+        }
+        if let Some((c, a)) = self.self_connect_pair.take() {
+            if channel == c || channel == a {
+                also.push(a);
+                also.push(c);
+                self.clear_temp_identity(a);
+            } else {
+                self.self_connect_pair = Some((c, a));
+            }
+        }
+        for other in also {
+            if other != channel && (1..=self.channels).contains(&other) {
+                if self.kiss_mode() {
+                    self.kiss_send_disc(other);
+                } else {
+                    self.tx_modem_line(other, "D");
+                }
+                self.clear_channel_link_state(other);
+            }
+        }
+        self.clear_channel_link_state(channel);
+        if was_linked {
+            play_wav(&self.disconnect_wav);
+        }
+        if !self.any_channel_busy() {
+            self.restore_global_identities();
+        }
+        self.status = format!("Disconnect ch{channel}");
+    }
+
+    fn kiss_send_disc(&mut self, channel: u8) {
+        let peer = self
+            .channel_peer
+            .get(channel as usize)
+            .and_then(|p| p.clone())
+            .or_else(|| {
+                self.channel_connecting
+                    .get(channel as usize)
+                    .and_then(|p| p.clone())
+            });
+        let Some(peer) = peer else {
+            return;
+        };
+        let src = self.effective_mycall(channel);
+        self.tx_kiss_payload(0, &ax25::build_disc(&peer, &src));
+    }
+
+    fn clear_channel_link_state(&mut self, channel: u8) {
+        let idx = channel as usize;
+        if let Some(p) = self.channel_peer.get_mut(idx) {
+            *p = None;
+        }
+        if let Some(c) = self.channel_connecting.get_mut(idx) {
+            *c = None;
+        }
+        if let Some(t) = self.ax25_alive_at.get_mut(idx) {
+            *t = None;
+        }
+        if let Some(t) = self.ax25_poll_at.get_mut(idx) {
+            *t = None;
+        }
+        if let Some(n) = self.ax25_poll_tries.get_mut(idx) {
+            *n = 0;
+        }
+        if let Some(vs) = self.ax25_vs.get_mut(idx) {
+            *vs = 0;
+        }
+        if let Some(vr) = self.ax25_vr.get_mut(idx) {
+            *vr = 0;
+        }
+    }
+
+    /// Connecting → linked once we see traffic (or explicit CONNECTED elsewhere).
+    fn promote_connecting_on_data(&mut self, channel: u8) {
+        let idx = channel as usize;
+        if self.channel_peer.get(idx).and_then(|p| p.as_ref()).is_some() {
+            return;
+        }
+        // Pending self-connect: either side's first data finishes the pair.
+        if let Some((caller, answer)) = self.self_connect_pair {
+            if channel == caller || channel == answer {
+                self.complete_self_connect_ctext(caller, answer);
+                return;
+            }
+        }
+        let Some(dest) = self
+            .channel_connecting
+            .get(idx)
+            .and_then(|c| c.as_ref())
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(c) = self.channel_connecting.get_mut(idx) {
+            *c = None;
+        }
+        if let Some(p) = self.channel_peer.get_mut(idx) {
+            *p = Some(dest);
+        }
+        play_wav(&self.connect_wav);
+        self.prepare_busy_redirect_identities();
+        self.send_connect_text(channel);
+    }
+
     fn channel_connected(&self, n: u8) -> bool {
+        let idx = n as usize;
+        self.channel_peer
+            .get(idx)
+            .and_then(|p| p.as_ref())
+            .is_some()
+            || self
+                .channel_connecting
+                .get(idx)
+                .and_then(|p| p.as_ref())
+                .is_some()
+    }
+
+    /// True when the channel strip should show DISCONNECT (fully linked).
+    fn channel_linked(&self, n: u8) -> bool {
         self.channel_peer
             .get(n as usize)
             .and_then(|p| p.as_ref())
             .is_some()
     }
 
-    fn channel_label(&self, n: u8) -> String {
-        match self.channel_peer.get(n as usize).and_then(|p| p.as_ref()) {
-            Some(call) => format!("{n}: {call}"),
-            None => format!("{n}: ......"),
+    /// Channel to drop for `//Q` / `//DISC`: prefer the given slot, else active
+    /// linked channel, else any linked channel.
+    fn resolve_disconnect_channel(&self, channel: u8) -> u8 {
+        if channel >= 1 && self.channel_connected(channel) {
+            return channel;
         }
+        if let ActivePane::Channel(n) = self.active {
+            if n >= 1 && self.channel_connected(n) {
+                return n;
+            }
+        }
+        (1..=self.channels)
+            .find(|&n| self.channel_linked(n))
+            .or_else(|| (1..=self.channels).find(|&n| self.channel_connected(n)))
+            .unwrap_or(0)
+    }
+
+    fn channel_label(&self, n: u8) -> String {
+        let idx = n as usize;
+        if let Some(call) = self.channel_peer.get(idx).and_then(|p| p.as_ref()) {
+            format!("{n}: {call}")
+        } else if let Some(call) = self.channel_connecting.get(idx).and_then(|p| p.as_ref()) {
+            format!("{n}: {call}")
+        } else {
+            format!("{n}: ......")
+        }
+    }
+
+    /// Which channel a ch0/monitor link-status line belongs to.
+    fn infer_link_status_channel(&self, text: &str) -> Option<u8> {
+        // "(2) CONNECTED to …" style — trust the modem's channel tag.
+        if let Some(ch) = parse_hostmode_channel_tag(text) {
+            if (1..=self.channels).contains(&ch) {
+                return Some(ch);
+            }
+        }
+        if let Some((c, _)) = self.self_connect_pair {
+            return Some(c); // pending self-connect → caller
+        }
+        // Prefer a channel that is mid-connect.
+        (1..=self.channels)
+            .find(|&n| {
+                self.channel_connecting
+                    .get(n as usize)
+                    .and_then(|p| p.as_ref())
+                    .is_some()
+            })
+            .or_else(|| {
+                let upper = text.to_ascii_uppercase();
+                if upper.contains("CONNECTED") {
+                    match self.active {
+                        ActivePane::Channel(n) => Some(n),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            })
     }
 
     /// Local TX echo into the RX pad(s). Channel pads always keep a transcript;
@@ -628,6 +1250,408 @@ impl GpGuiApp {
         } else if self.session.echo {
             self.pads[0].push(PadKind::Own, line.to_string());
         }
+    }
+
+    fn kiss_mode(&self) -> bool {
+        self.cfg.tnc.protocol_kind() == HostProtocol::Kiss
+    }
+
+    /// Raw KISS port payload (already AX.25-framed). Port 0 = Soundmodem radio 1.
+    fn tx_kiss_payload(&mut self, port: u8, payload: &[u8]) {
+        let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
+            channel: port,
+            data: payload.to_vec(),
+        });
+    }
+
+    /// Monitor / channel text → AX.25 UI or I-frame over KISS.
+    fn send_kiss_text(&mut self, line: &str) {
+        let my = self.mycall_for_active();
+        let mut info = line.as_bytes().to_vec();
+        if !info.ends_with(&[b'\r']) {
+            info.push(b'\r');
+        }
+        match self.active {
+            ActivePane::Channel(n) if self.channel_linked(n) => {
+                let Some(peer) = self
+                    .channel_peer
+                    .get(n as usize)
+                    .and_then(|p| p.clone())
+                else {
+                    return;
+                };
+                let ns = *self.ax25_vs.get(n as usize).unwrap_or(&0);
+                let nr = *self.ax25_vr.get(n as usize).unwrap_or(&0);
+                let frame = ax25::build_i(&peer, &my, ns, nr, false, &info);
+                if let Some(vs) = self.ax25_vs.get_mut(n as usize) {
+                    *vs = (ns + 1) & 7;
+                }
+                self.tx_kiss_payload(0, &frame);
+                self.kiss_link_activity(n, false);
+            }
+            ActivePane::Channel(_) => {
+                self.status = "KISS: not linked — Connect first, or type on Monitor (CQ)".into();
+            }
+            _ => {
+                // Unproto: MYCALL → CQ
+                let frame = ax25::build_ui("CQ", &my, &[], &info);
+                self.tx_kiss_payload(0, &frame);
+                self.status = format!("KISS UI {my} > CQ");
+            }
+        }
+    }
+
+    /// KISS RX: UI → Monitor; SABM/UA/I/DISC → channel link state.
+    fn handle_kiss_ax25(&mut self, frame: Ax25Frame) {
+        let info_text = decode_rx_text(&frame.info, self.session.extended_ascii);
+        match frame.kind {
+            Ax25FrameType::Ui => {
+                let ui = Ax25UiFrame {
+                    dest: frame.dest.clone(),
+                    src: frame.src.clone(),
+                    via: frame.via.clone(),
+                    info: info_text.clone(),
+                };
+                self.mheard.hear(&ui);
+                self.pads[0].push(PadKind::Incoming, ui.display_line());
+                self.feed_spy_pads(&frame.src, PadKind::Incoming, &ui.display_line());
+            }
+            Ax25FrameType::Sabm => {
+                if !self.cfg.is_own_call(&frame.dest)
+                    && self.channel_owning_call(&frame.dest).is_none()
+                {
+                    return;
+                }
+                // Pending KISS self-connect: this SABM is for our answer SSID —
+                // finish locally (also covers rare TX→RX loopback).
+                if let Some((caller, answer)) = self.self_connect_pair {
+                    let ans = self.effective_mycall(answer);
+                    if frame.dest.eq_ignore_ascii_case(&ans) {
+                        self.kiss_finish_self_connect(caller, answer);
+                        return;
+                    }
+                }
+                // Already linked to this peer on a live self-connect — ignore echo.
+                if let Some((c, a)) = self.self_connect_live {
+                    let ans = self.effective_mycall(a);
+                    let call = self.effective_mycall(c);
+                    if frame.src.eq_ignore_ascii_case(&call)
+                        && frame.dest.eq_ignore_ascii_case(&ans)
+                    {
+                        return;
+                    }
+                }
+                // Answer on the slot that owns this call, else first free.
+                let owned = self.channel_owning_call(&frame.dest);
+                let ch = match owned {
+                    Some(c) if !self.channel_linked(c) => Some(c),
+                    Some(_) => self.first_free_channel(),
+                    None => self.first_free_channel(),
+                };
+                let Some(ch) = ch else {
+                    // All busy → DM (refuse).
+                    let my = self.cfg.primary_mycall().to_string();
+                    self.tx_kiss_payload(0, &ax25::build_dm(&frame.src, &my, true));
+                    self.pads[0].push(
+                        PadKind::System,
+                        format!("DM → {} (busy, no free channel)", frame.src),
+                    );
+                    return;
+                };
+                let my = if owned == Some(ch) {
+                    frame.dest.clone()
+                } else {
+                    if let Some(t) = self.temp_slot_call.get_mut(ch as usize) {
+                        *t = Some(frame.dest.clone());
+                    }
+                    frame.dest.clone()
+                };
+                // SABM → UA (we answer connect requests).
+                self.tx_kiss_payload(0, &ax25::build_ua(&frame.src, &my, true));
+                if let Some(p) = self.channel_peer.get_mut(ch as usize) {
+                    *p = Some(frame.src.clone());
+                }
+                if let Some(c) = self.channel_connecting.get_mut(ch as usize) {
+                    *c = None;
+                }
+                if let Some(vs) = self.ax25_vs.get_mut(ch as usize) {
+                    *vs = 0;
+                }
+                if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
+                    *vr = 0;
+                }
+                self.kiss_link_activity(ch, true);
+                play_wav(&self.connect_wav);
+                if let Some(pad) = self.pads.get_mut(ch as usize) {
+                    pad.push(
+                        PadKind::System,
+                        format!("*** CONNECTED to {}", frame.src),
+                    );
+                }
+                self.pads[0].push(
+                    PadKind::Own,
+                    format!("UA {} > {} (ans ch{ch})", my, frame.src),
+                );
+                self.send_connect_text(ch);
+                self.status = format!("KISS linked ch{ch} ← {}", frame.src);
+            }
+            Ax25FrameType::Ua => {
+                let ch = (1..=self.channels).find(|&n| {
+                    self.channel_connecting
+                        .get(n as usize)
+                        .and_then(|p| p.as_ref())
+                        .is_some_and(|d| d.eq_ignore_ascii_case(&frame.src))
+                });
+                let Some(ch) = ch else {
+                    return;
+                };
+                if let Some((caller, answer)) = self.self_connect_pair {
+                    if ch == caller || ch == answer {
+                        self.complete_self_connect_ctext(caller, answer);
+                        self.kiss_link_activity(caller, true);
+                        self.kiss_link_activity(answer, true);
+                        return;
+                    }
+                }
+                if let Some(c) = self.channel_connecting.get_mut(ch as usize) {
+                    *c = None;
+                }
+                if let Some(p) = self.channel_peer.get_mut(ch as usize) {
+                    *p = Some(frame.src.clone());
+                }
+                self.kiss_link_activity(ch, true);
+                play_wav(&self.connect_wav);
+                if let Some(pad) = self.pads.get_mut(ch as usize) {
+                    pad.push(
+                        PadKind::System,
+                        format!("*** CONNECTED to {}", frame.src),
+                    );
+                }
+                self.send_connect_text(ch);
+                self.status = format!("KISS linked ch{ch} → {}", frame.src);
+            }
+            Ax25FrameType::Info => {
+                let ch = (1..=self.channels)
+                    .find(|&n| {
+                        self.channel_peer
+                            .get(n as usize)
+                            .and_then(|p| p.as_ref())
+                            .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
+                    })
+                    .unwrap_or(0);
+                if ch >= 1 {
+                    if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
+                        *vr = (frame.ns.wrapping_add(1)) & 7;
+                    }
+                    let my = self.effective_mycall(ch);
+                    let nr = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
+                    self.tx_kiss_payload(0, &ax25::build_rr(&frame.src, &my, nr, false, false));
+                    self.kiss_link_activity(ch, true);
+                    let line = info_text.trim_end_matches(['\r', '\n']).to_string();
+                    if let Some(pad) = self.pads.get_mut(ch as usize) {
+                        pad.push(PadKind::Incoming, line.clone());
+                    }
+                    if self.session.remote {
+                        if let Some((action, args)) =
+                            line.lines().find_map(|l| parse_line(l.trim()))
+                        {
+                            self.handle_remote_on_channel(ch, action, &args);
+                        }
+                    }
+                } else {
+                    self.pads[0].push(
+                        PadKind::Incoming,
+                        format!(
+                            "{}>{}: {}",
+                            frame.src,
+                            frame.dest,
+                            info_text.trim_end_matches(['\r', '\n'])
+                        ),
+                    );
+                }
+            }
+            Ax25FrameType::Disc => {
+                let ch = (1..=self.channels).find(|&n| {
+                    self.channel_peer
+                        .get(n as usize)
+                        .and_then(|p| p.as_ref())
+                        .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
+                        || self
+                            .channel_connecting
+                            .get(n as usize)
+                            .and_then(|p| p.as_ref())
+                            .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
+                });
+                if let Some(ch) = ch {
+                    let my = self.effective_mycall(ch);
+                    self.tx_kiss_payload(0, &ax25::build_ua(&frame.src, &my, true));
+                    let was = self.channel_linked(ch);
+                    self.clear_channel_link_state(ch);
+                    if was {
+                        play_wav(&self.disconnect_wav);
+                    }
+                    if let Some(pad) = self.pads.get_mut(ch as usize) {
+                        pad.push(PadKind::System, "*** DISCONNECTED");
+                    }
+                }
+            }
+            Ax25FrameType::Rr => {
+                let ch = (1..=self.channels).find(|&n| {
+                    self.channel_peer
+                        .get(n as usize)
+                        .and_then(|p| p.as_ref())
+                        .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
+                });
+                let Some(ch) = ch else {
+                    return;
+                };
+                self.kiss_link_activity(ch, true);
+                if frame.poll {
+                    // Peer RR poll → answer with RR Final.
+                    let my = self.effective_mycall(ch);
+                    let nr = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
+                    self.tx_kiss_payload(
+                        0,
+                        &ax25::build_rr(&frame.src, &my, nr, true, false),
+                    );
+                }
+            }
+            Ax25FrameType::Dm => {
+                let ch = (1..=self.channels).find(|&n| {
+                    self.channel_connecting
+                        .get(n as usize)
+                        .and_then(|p| p.as_ref())
+                        .is_some_and(|d| d.eq_ignore_ascii_case(&frame.src))
+                        || self
+                            .channel_peer
+                            .get(n as usize)
+                            .and_then(|p| p.as_ref())
+                            .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
+                });
+                if let Some(ch) = ch {
+                    if let Some(pad) = self.pads.get_mut(ch as usize) {
+                        pad.push(
+                            PadKind::System,
+                            format!("*** DM from {} — link refused/busy", frame.src),
+                        );
+                    }
+                    self.clear_channel_link_state(ch);
+                } else {
+                    self.pads[0].push(
+                        PadKind::System,
+                        format!("DM from {} (busy/disconnected)", frame.src),
+                    );
+                }
+            }
+            Ax25FrameType::Other => {}
+        }
+    }
+
+    /// Mark KISS link alive; peer traffic also clears an outstanding T1 poll.
+    fn kiss_link_activity(&mut self, channel: u8, from_peer: bool) {
+        let idx = channel as usize;
+        if let Some(t) = self.ax25_alive_at.get_mut(idx) {
+            *t = Some(Instant::now());
+        }
+        if from_peer {
+            if let Some(p) = self.ax25_poll_at.get_mut(idx) {
+                *p = None;
+            }
+            if let Some(n) = self.ax25_poll_tries.get_mut(idx) {
+                *n = 0;
+            }
+        }
+    }
+
+    /// T3 idle RR poll every ~5 min; no reply after T1 retries → DISC.
+    fn kiss_link_timers(&mut self) {
+        if !self.kiss_mode() {
+            return;
+        }
+        let now = Instant::now();
+        let mut poll: Vec<u8> = Vec::new();
+        let mut drop: Vec<u8> = Vec::new();
+        for ch in 1..=self.channels {
+            if !self.channel_linked(ch) {
+                continue;
+            }
+            let idx = ch as usize;
+            let alive = self.ax25_alive_at.get(idx).and_then(|t| *t).unwrap_or(now);
+            let pending = self.ax25_poll_at.get(idx).and_then(|t| *t);
+            let tries = *self.ax25_poll_tries.get(idx).unwrap_or(&0);
+            if let Some(sent) = pending {
+                if now.duration_since(sent) >= AX25_T1_POLL {
+                    if tries >= AX25_POLL_RETRIES {
+                        drop.push(ch);
+                    } else {
+                        poll.push(ch);
+                    }
+                }
+            } else if now.duration_since(alive) >= AX25_T3_IDLE {
+                poll.push(ch);
+            }
+        }
+        for ch in poll {
+            self.kiss_send_rr_poll(ch);
+        }
+        for ch in drop {
+            if let Some(pad) = self.pads.get_mut(ch as usize) {
+                pad.push(
+                    PadKind::System,
+                    "*** link timeout (no RR) — disconnecting",
+                );
+            }
+            self.disconnect_channel(ch);
+        }
+    }
+
+    fn kiss_send_rr_poll(&mut self, channel: u8) {
+        let Some(peer) = self
+            .channel_peer
+            .get(channel as usize)
+            .and_then(|p| p.clone())
+        else {
+            return;
+        };
+        let my = self.effective_mycall(channel);
+        let nr = *self.ax25_vr.get(channel as usize).unwrap_or(&0);
+        // Command RR with P=1 — peer should answer RR F.
+        self.tx_kiss_payload(0, &ax25::build_rr(&peer, &my, nr, true, true));
+        let idx = channel as usize;
+        if let Some(p) = self.ax25_poll_at.get_mut(idx) {
+            *p = Some(Instant::now());
+        }
+        if let Some(n) = self.ax25_poll_tries.get_mut(idx) {
+            *n = n.saturating_add(1);
+        }
+        let tries = *self.ax25_poll_tries.get(idx).unwrap_or(&1);
+        self.pads[0].push(
+            PadKind::Own,
+            format!("RR poll ch{channel} → {peer} (try {tries}/{AX25_POLL_RETRIES})"),
+        );
+        self.status = format!("KISS T3 poll ch{channel}");
+    }
+
+    /// Hostmode/modem command TX — skipped on KISS (identity lives in AX.25 headers).
+    fn tx_modem_line(&mut self, channel: u8, line: &str) {
+        if self.kiss_mode() {
+            return;
+        }
+        let line = line.trim_end_matches('\r').trim_end_matches('\n');
+        if line.is_empty() {
+            return;
+        }
+        if channel >= 1 {
+            if let Some(pad) = self.pads.get_mut(channel as usize) {
+                pad.push(PadKind::Own, line.to_string());
+            }
+        }
+        self.pads[0].push(PadKind::Own, line.to_string());
+        let mut data = line.as_bytes().to_vec();
+        if !data.ends_with(&[b'\r']) {
+            data.push(b'\r');
+        }
+        let _ = self.cmd_tx.try_send(TncCommand::HostFrame { channel, data });
     }
 
     fn submit(&mut self) {
@@ -670,6 +1694,10 @@ impl GpGuiApp {
             }
         }
 
+        if self.kiss_mode() {
+            self.send_kiss_text(&line);
+            return;
+        }
         let channel = match self.active {
             ActivePane::Channel(n) => n,
             _ => 0,
@@ -725,6 +1753,10 @@ impl GpGuiApp {
         for raw in text.lines() {
             let line = raw.trim_end_matches('\r').to_string();
             self.echo_own_line(&line);
+            if self.kiss_mode() {
+                self.send_kiss_text(&line);
+                continue;
+            }
             let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
                 channel,
                 data: format!("{line}\r").into_bytes(),
@@ -733,15 +1765,65 @@ impl GpGuiApp {
     }
 
     fn handle_remote(&mut self, action: RemoteAction, args: &str) {
+        self.handle_remote_on_channel(
+            match self.active {
+                ActivePane::Channel(n) => n,
+                _ => 0,
+            },
+            action,
+            args,
+        );
+    }
+
+    fn handle_remote_on_channel(&mut self, channel: u8, action: RemoteAction, args: &str) {
         self.status = format!("remote {action:?}");
+        let prev = self.active;
+        if channel >= 1 {
+            self.active = ActivePane::Channel(channel);
+        }
         let ctx = self.macro_ctx();
+
+        match action {
+            RemoteAction::Quit => {
+                // QRT text first, then hostmode disconnect.
+                let ch = self.resolve_disconnect_channel(channel);
+                if let Some(text) = gpi::load_expanded("qrt", &ctx) {
+                    if ch >= 1 {
+                        self.active = ActivePane::Channel(ch);
+                    }
+                    self.send_gpi_text(&text);
+                } else if let Some(stem) = gpi::stem_for_action(action) {
+                    self.status = format!("GPI {stem}.GPI not found");
+                }
+                if ch >= 1 {
+                    self.disconnect_channel(ch);
+                } else {
+                    self.status = "//Q — select a connected channel".into();
+                }
+                self.active = prev;
+                return;
+            }
+            RemoteAction::Disconnect => {
+                let ch = self.resolve_disconnect_channel(channel);
+                if ch >= 1 {
+                    self.disconnect_channel(ch);
+                } else {
+                    self.status = "//DISC — select a connected channel".into();
+                }
+                self.active = prev;
+                return;
+            }
+            _ => {}
+        }
 
         if let Some(stem) = gpi::stem_for_action(action) {
             if let Some(text) = gpi::load_expanded(stem, &ctx) {
                 self.send_gpi_text(&text);
+                self.active = prev;
                 return;
             }
-            self.log_event(format!("GPI {stem}.GPI not found"));
+            self.status = format!("GPI {stem}.GPI not found");
+            self.active = prev;
             return;
         }
 
@@ -755,7 +1837,6 @@ impl GpGuiApp {
             }
             RemoteAction::Bell => {
                 play_bell_wav(&self.bell_wav);
-                self.log_event("bell");
             }
             RemoteAction::MHeard => {
                 let body = if self.mheard.entries.is_empty() {
@@ -766,15 +1847,13 @@ impl GpGuiApp {
                 self.send_gpi_text(&body);
             }
             _ => {
-                self.log_event(format!("remote {action:?} (not implemented)"));
+                self.status = format!("remote {action:?} (not implemented)");
             }
         }
+        self.active = prev;
     }
 
     fn active_layout(&self) -> LayoutJob {
-        if matches!(self.active, ActivePane::Mh) {
-            return mheard_layout(&self.mheard);
-        }
         if let ActivePane::Spy(n) = self.active {
             let idx = n.saturating_sub(1) as usize;
             return self
@@ -839,6 +1918,7 @@ impl GpGuiApp {
 impl eframe::App for GpGuiApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.drain_tnc();
+        self.kiss_link_timers();
         self.maybe_hour_gong();
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
 
@@ -897,6 +1977,8 @@ impl eframe::App for GpGuiApp {
                 self.qrg_dialog(ctx);
                 self.mycall_dialog(ctx);
                 self.spy_dialog(ctx);
+                self.mheard_spy_confirm_dialog(ctx);
+                self.connect_dialog(ctx);
             });
     }
 }
@@ -1026,7 +2108,7 @@ impl GpGuiApp {
         let mid_y = rect.top() + rect.height() * 0.5;
 
         let my = self.mycall_for_active();
-        let owned = self.status_field_rows(my);
+        let owned = self.status_field_rows(&my);
         let rows = [owned.0.as_slice(), owned.1.as_slice()];
         let row_h = (rect.height() / 2.0).max(1.0);
         let fields_w = (rect.width() - title_w).max(1.0);
@@ -1120,19 +2202,33 @@ impl GpGuiApp {
                     format!("Global Mycall: {my}"),
                 ],
             ),
-            ActivePane::Channel(n) => (
-                vec![
-                    format!("Ready for Connect"),
-                    format!("My: {}", self.cfg.mycall_for_slot(n)),
-                    format!("Buffers: {}", self.buffer_lines),
-                ],
-                vec![
-                    format!("Ch {n}  Not disp: 0"),
-                    "Not sent: 0".into(),
-                    "Tries: 0".into(),
-                    "Unack: 0".into(),
-                ],
-            ),
+            ActivePane::Channel(n) => {
+                let idx = n as usize;
+                let link = if let Some(call) =
+                    self.channel_peer.get(idx).and_then(|p| p.as_ref())
+                {
+                    format!("Connected to {call}")
+                } else if let Some(call) =
+                    self.channel_connecting.get(idx).and_then(|p| p.as_ref())
+                {
+                    format!("Connecting to {call}")
+                } else {
+                    "Ready for Connect".into()
+                };
+                (
+                    vec![
+                        link,
+                        format!("My: {}", self.effective_mycall(n)),
+                        format!("Buffers: {}", self.buffer_lines),
+                    ],
+                    vec![
+                        format!("Ch {n}  Not disp: 0"),
+                        "Not sent: 0".into(),
+                        "Tries: 0".into(),
+                        "Unack: 0".into(),
+                    ],
+                )
+            }
             ActivePane::Editor => {
                 let name = if self.editor.dirty {
                     format!("{}*", self.editor.display_name())
@@ -1162,13 +2258,25 @@ impl GpGuiApp {
                 ],
                 vec!["File drawer:".into()],
             ),
-            ActivePane::Mh => (
-                vec![
-                    format!("Stations: {}", self.mheard.entries.len()),
-                    format!("{}", self.mheard.path().display()),
-                ],
-                vec![],
-            ),
+            ActivePane::Mh => {
+                let sel = self
+                    .mheard_selected
+                    .and_then(|i| self.mheard.entries.get(i))
+                    .map(|e| e.call.as_str())
+                    .unwrap_or("(none)");
+                let hint = if self.mheard_spy_pick {
+                    "SPY: pick a station".into()
+                } else {
+                    format!("{}", self.mheard.path().display())
+                };
+                (
+                    vec![
+                        format!("Stations: {}", self.mheard.entries.len()),
+                        format!("Selected: {sel}"),
+                    ],
+                    vec![hint],
+                )
+            }
             ActivePane::Spy(n) => {
                 let call = self.spy_call(n);
                 let spy_line = if call.is_empty() {
@@ -1258,12 +2366,14 @@ impl GpGuiApp {
             self.editor_pane(ui, width, height);
             return;
         }
+        if matches!(self.active, ActivePane::Mh) {
+            self.mheard_pane(ui, width, height);
+            return;
+        }
         let bg = match self.active {
             ActivePane::Channel(_) => self.connect_bg,
             ActivePane::Spy(_) => Color32::from_rgb(0, 0, 128), // classic spy blue
-            ActivePane::Mh | ActivePane::Check | ActivePane::List => {
-                Color32::from_rgb(170, 170, 170)
-            }
+            ActivePane::Check | ActivePane::List => Color32::from_rgb(170, 170, 170),
             _ => self.monitor_bg,
         };
         let nudge = self.session.take_scroll_nudge();
@@ -1300,6 +2410,114 @@ impl GpGuiApp {
                         });
                 });
         });
+    }
+
+    /// Clickable MHeard list (row select → SPY confirm).
+    fn mheard_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
+        let bg = Color32::from_rgb(170, 170, 170);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+        let show_bar = self.session.scrollbar;
+        let stick = self.session.scr_lock;
+        let nudge = self.session.take_scroll_nudge();
+        let pick = self.mheard_spy_pick;
+        let selected = self.mheard_selected;
+        let lines: Vec<(usize, String)> = self
+            .mheard
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.display_line()))
+            .collect();
+        let mut clicked: Option<usize> = None;
+
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+            Frame::none()
+                .fill(bg)
+                .stroke(Stroke::new(1.0, Color32::from_rgb(85, 85, 85)))
+                .inner_margin(6.0)
+                .show(ui, |ui| {
+                    ui.set_min_size(rect.size() - Vec2::splat(2.0));
+                    if pick {
+                        ui.label(
+                            RichText::new("SPY — click a station, then confirm")
+                                .color(Color32::from_rgb(0, 0, 128))
+                                .strong(),
+                        );
+                    }
+                    let bar_vis = if show_bar {
+                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+                    } else {
+                        egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+                    };
+                    egui::ScrollArea::both()
+                        .id_salt("mheard_list")
+                        .stick_to_bottom(stick)
+                        .auto_shrink([false, false])
+                        .scroll_bar_visibility(bar_vis)
+                        .show(ui, |ui| {
+                            if nudge != 0.0 {
+                                ui.scroll_with_delta(Vec2::new(0.0, nudge));
+                            }
+                            if lines.is_empty() {
+                                ui.label(
+                                    RichText::new(
+                                        "No stations heard yet — APRS/AX.25 UI frames appear here.",
+                                    )
+                                    .color(Color32::BLACK)
+                                    .font(FontId::monospace(14.0)),
+                                );
+                                return;
+                            }
+                            for (i, line) in &lines {
+                                let is_sel = selected == Some(*i);
+                                let fill = if is_sel {
+                                    Color32::from_rgb(0, 0, 170)
+                                } else {
+                                    Color32::TRANSPARENT
+                                };
+                                let fg = if is_sel {
+                                    Color32::WHITE
+                                } else {
+                                    Color32::BLACK
+                                };
+                                let resp = egui::Frame::none()
+                                    .fill(fill)
+                                    .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(line)
+                                                    .color(fg)
+                                                    .font(FontId::monospace(14.0)),
+                                            )
+                                            .wrap_mode(TextWrapMode::Extend)
+                                            .sense(Sense::click()),
+                                        )
+                                    })
+                                    .response;
+                                // Click on frame or label.
+                                let hit = ui.interact(
+                                    resp.rect,
+                                    ui.id().with(("mh_row", *i)),
+                                    Sense::click(),
+                                );
+                                if hit.clicked() || resp.clicked() {
+                                    clicked = Some(*i);
+                                }
+                            }
+                        });
+                });
+        });
+
+        if let Some(i) = clicked {
+            self.mheard_selected = Some(i);
+            if let Some(e) = self.mheard.entries.get(i) {
+                self.status = format!("MHeard: {}", e.call);
+                if self.mheard_spy_pick {
+                    self.open_mheard_spy_confirm(e.call.clone());
+                }
+            }
+        }
     }
 
     /// Full-pane monospace editor (CP437 GPI files).
@@ -1428,14 +2646,18 @@ impl GpGuiApp {
         }
 
         // Monitor: spy slots + COM sit just left of ScrLock (right-justified).
-        let com_badge = format!("{} {}", self.serial_port, self.serial_baud);
+        let com_badge = if self.serial_baud == 0 {
+            format!("TCP {}", self.serial_port)
+        } else {
+            format!("{} {}", self.serial_port, self.serial_baud)
+        };
         let spy_cell_w = 20.0_f32;
         let spy_n = if matches!(self.active, ActivePane::Monitor | ActivePane::Spy(_)) {
             self.channels.min(10)
         } else {
             0
         };
-        let badge_w = (com_badge.len() as f32 * 7.2 + 12.0).clamp(72.0, 140.0);
+        let badge_w = (com_badge.len() as f32 * 7.2 + 12.0).clamp(72.0, 180.0);
         let right_mid_w = if spy_n > 0 {
             spy_n as f32 * (spy_cell_w + gap) + badge_w + gap
         } else {
@@ -1683,8 +2905,8 @@ impl GpGuiApp {
         }
     }
 
-    fn mycall_for_active(&self) -> &str {
-        self.cfg.mycall_for_slot(self.mycall_slot_for_active())
+    fn mycall_for_active(&self) -> String {
+        self.effective_mycall(self.mycall_slot_for_active())
     }
 
     fn open_mycall_dialog(&mut self) {
@@ -1695,16 +2917,23 @@ impl GpGuiApp {
 
     fn apply_mycall_from_edit(&mut self) -> Result<(), String> {
         let slot = self.session.mycall_slot;
-        let call = self.cfg.set_mycall_for_slot(slot, &self.session.mycall_edit)?;
+        let edited = self.session.mycall_edit.clone();
+        let call = if slot == 0 {
+            self.cfg.set_mycall_for_slot(0, &edited)?
+        } else {
+            self.claim_identity(slot, &edited)?
+        };
         self.cfg.persist_mycall(&self.config_path)?;
         self.session.show_mycall_dialog = false;
         let where_ = if slot == 0 {
+            if !self.any_channel_busy() {
+                self.restore_global_identities();
+            }
             "Monitor / global".into()
         } else {
             format!("channel {slot}")
         };
         self.status = format!("MYCALL {call} ({where_})");
-        self.log_event(format!("MYCALL {call} → {where_}"));
         if slot == 0 {
             self.pads[0].push(PadKind::System, version::startup_local_call(&call));
         }
@@ -1721,6 +2950,344 @@ impl GpGuiApp {
         self.session.spy_slot = Some(slot);
         let current = self.spy_call(slot).to_string();
         self.session.open_spy_dialog(slot, &current);
+    }
+
+    /// Classic GP: SPY on MHeard → pick a row → confirm → first empty spy slot.
+    fn spy_from_mheard(&mut self) {
+        self.mheard_spy_pick = true;
+        if let Some(i) = self.mheard_selected {
+            if let Some(e) = self.mheard.entries.get(i) {
+                self.open_mheard_spy_confirm(e.call.clone());
+                return;
+            }
+        }
+        self.status = "Select a call in MHeard for Spy".into();
+    }
+
+    fn open_mheard_spy_confirm(&mut self, call: String) {
+        self.mheard_spy_pending = call;
+        self.show_mheard_spy_confirm = true;
+    }
+
+    fn first_empty_spy_slot(&self) -> Option<u8> {
+        self.cfg
+            .session
+            .spy_calls
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.is_empty())
+            .map(|(i, _)| (i as u8) + 1)
+    }
+
+    /// First disconnected channel `1..=channels`.
+    fn first_free_channel(&self) -> Option<u8> {
+        (1..=self.channels).find(|&n| !self.channel_connected(n))
+    }
+
+    /// Parse `CALL` or `CALL,VIA[,VIA…]` into dest + digi path.
+    fn parse_connect_target(raw: &str) -> Result<(String, Vec<String>), String> {
+        let parts: Vec<&str> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if parts.is_empty() {
+            return Err("connect: empty call".into());
+        }
+        let dest = crate::config::normalize_mycall(parts[0])?;
+        let mut vias = Vec::new();
+        for p in &parts[1..] {
+            vias.push(crate::config::normalize_mycall(p)?);
+        }
+        Ok((dest, vias))
+    }
+
+    /// WA8DED / TF hostmode connect: `C CALL` or `C CALL digi1 digi2…`.
+    /// Does not mark the channel connected until the TNC reports CONNECTED.
+    ///
+    /// - Foreign call / directed own SSID (`NL0MSK-10`) → connect that name as typed.
+    /// - Own global MYCALL (loopback) → caller stays on `channel`; first free channel
+    ///   answers as `{mycall}-{n}` because the caller channel is busy.
+    fn begin_connect(&mut self, channel: u8, dest: &str, vias: &[String]) {
+        if !(1..=self.channels).contains(&channel) {
+            self.status = format!("connect: bad channel {channel}");
+            return;
+        }
+
+        let mut dest = dest.to_string();
+        let mut vias = vias.to_vec();
+        let primary = self.cfg.primary_mycall().to_string();
+        let bare_own_global = dest.eq_ignore_ascii_case(&primary)
+            || (self.cfg.is_own_call(&dest) && !dest.contains('-'));
+        // Specific name we own (NL0MSK-10, or any dedicated slot call).
+        let directed_own = !dest.eq_ignore_ascii_case(&primary)
+            && (self.cfg.is_own_call(&dest) || self.channel_owning_call(&dest).is_some());
+
+        let mut self_connect = false;
+        if bare_own_global {
+            // Loopback to global: caller busy on `channel`; answer as {base}-{free}.
+            let Some(answer_ch) = (1..=self.channels)
+                .find(|&n| n != channel && !self.channel_connected(n))
+            else {
+                self.status = "no free channel for self-connect".into();
+                return;
+            };
+            match self.assign_channel_ssid(answer_ch) {
+                Ok(answer_call) => {
+                    dest = answer_call.clone();
+                    vias.clear();
+                    self_connect = true;
+                    self.self_connect_pair = Some((channel, answer_ch));
+                    let caller_id = self.effective_mycall(channel);
+                    if let Some(c) = self.channel_connecting.get_mut(answer_ch as usize) {
+                        *c = Some(caller_id);
+                    }
+                    if let Some(pad) = self.pads.get_mut(answer_ch as usize) {
+                        pad.push(
+                            PadKind::System,
+                            format!(
+                                "*** answer side {answer_call} (self-connect from ch{channel})"
+                            ),
+                        );
+                    }
+                }
+                Err(e) => {
+                    self.status = e;
+                    return;
+                }
+            }
+        } else if directed_own {
+            // Dialled a specific slot name. If that channel is busy, redirect to a
+            // free channel with a temporary {base}-{n} (still only one call each).
+            if let Some(owner) = self.channel_owning_call(&dest) {
+                if self.channel_connected(owner) {
+                    match self.redirect_busy_dedicated(owner) {
+                        Some((free, temp_call)) => {
+                            dest = temp_call.clone();
+                            vias.clear();
+                            if let Some(pad) = self.pads.get_mut(free as usize) {
+                                pad.push(
+                                    PadKind::System,
+                                    format!(
+                                        "*** redirect {owner} busy → {temp_call} on ch{free}"
+                                    ),
+                                );
+                            }
+                        }
+                        None => {
+                            self.status = format!("{dest} busy — no free channel");
+                            return;
+                        }
+                    }
+                } else {
+                    self.push_channel_identity(owner);
+                }
+            }
+        }
+
+        self.session.spy_slot = None;
+        self.active = ActivePane::Channel(channel);
+        let idx = channel as usize;
+        if let Some(peer) = self.channel_peer.get_mut(idx) {
+            *peer = None;
+        }
+        if let Some(c) = self.channel_connecting.get_mut(idx) {
+            *c = Some(dest.clone());
+        }
+        if let Some(vs) = self.ax25_vs.get_mut(idx) {
+            *vs = 0;
+        }
+        if let Some(vr) = self.ax25_vr.get_mut(idx) {
+            *vr = 0;
+        }
+        if let Some(pad) = self.pads.get_mut(idx) {
+            let via_note = if vias.is_empty() {
+                String::new()
+            } else {
+                format!(" via {}", vias.join(","))
+            };
+            let kind = if self_connect {
+                "self-connect"
+            } else {
+                "connecting"
+            };
+            pad.push(
+                PadKind::System,
+                format!("*** {kind} to {dest}{via_note}"),
+            );
+        }
+        if self.kiss_mode() {
+            let src = self.effective_mycall(channel);
+            let frame = ax25::build_sabm(&dest, &src);
+            self.tx_kiss_payload(0, &frame);
+            self.pads[0].push(PadKind::Own, format!("SABM {src} > {dest}"));
+            if self_connect {
+                // Soundmodem / half-duplex will not RX our own SABM — finish the
+                // answer side locally (UA on air + both channels linked + CTEXT).
+                if let Some((caller, answer)) = self.self_connect_pair {
+                    self.kiss_finish_self_connect(caller, answer);
+                }
+            } else {
+                self.status = format!("KISS SABM → {dest}");
+            }
+        } else {
+            let cmd = if vias.is_empty() {
+                format!("C {dest}")
+            } else {
+                format!("C {dest} {}", vias.join(" "))
+            };
+            self.tx_modem_line(channel, &cmd);
+            self.status = if self_connect {
+                format!("Self-connect ch{channel} → {dest}")
+            } else {
+                format!("Connecting to {dest}")
+            };
+        }
+    }
+
+    /// MHeard CONNECT: selected call → first free channel → `C call`.
+    fn connect_from_mheard(&mut self) {
+        let Some(i) = self.mheard_selected else {
+            self.status = "Select a call in MHeard to Connect".into();
+            return;
+        };
+        let Some(e) = self.mheard.entries.get(i) else {
+            self.status = "Select a call in MHeard to Connect".into();
+            return;
+        };
+        let call = e.call.clone();
+        let Some(ch) = self.first_free_channel() else {
+            self.status = "no free channel for Connect".into();
+            return;
+        };
+        match crate::config::normalize_mycall(&call) {
+            Ok(dest) => self.begin_connect(ch, &dest, &[]),
+            Err(err) => self.status = err,
+        }
+    }
+
+    fn open_connect_dialog_for_channel(&mut self, channel: u8) {
+        let ch = channel.clamp(1, self.channels);
+        self.session.open_connect_dialog(ch, "");
+        self.connect_dialog_focus = true;
+        self.status = format!("Connect — enter call for ch{ch}");
+    }
+
+    fn apply_connect_from_edit(&mut self) -> Result<(), String> {
+        let ch = self.session.connect_channel.clamp(1, self.channels);
+        let (dest, vias) = Self::parse_connect_target(&self.session.connect_edit)?;
+        self.session.show_connect_dialog = false;
+        self.begin_connect(ch, &dest, &vias);
+        Ok(())
+    }
+
+    fn connect_dialog(&mut self, ctx: &Context) {
+        if !self.session.show_connect_dialog {
+            return;
+        }
+        let ch = self.session.connect_channel;
+        let center = ctx.screen_rect().center();
+        // Do not use `.open(&mut)` — egui memory can keep the window closed.
+        egui::Window::new(format!("Connect — channel {ch}"))
+            .id(egui::Id::new(("gp_connect_dialog", ch)))
+            .collapsible(false)
+            .resizable(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(center)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.label("Whom to connect to?");
+                ui.label(
+                    RichText::new("Callsign — optional via after comma (CALL,VIA)")
+                        .small()
+                        .color(Color32::DARK_GRAY),
+                );
+                let te = ui.add(
+                    egui::TextEdit::singleline(&mut self.session.connect_edit)
+                        .desired_width(220.0)
+                        .font(FontId::monospace(16.0))
+                        .hint_text("N0CALL"),
+                );
+                if self.connect_dialog_focus {
+                    te.request_focus();
+                    self.connect_dialog_focus = false;
+                }
+                let enter = te.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Connect").clicked() || enter {
+                        if let Err(e) = self.apply_connect_from_edit() {
+                            self.status = e;
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.session.show_connect_dialog = false;
+                        self.status = "Connect cancelled".into();
+                    }
+                });
+            });
+    }
+
+    fn assign_spy_first_empty(&mut self, call: &str) -> Result<u8, String> {
+        let call = crate::config::normalize_mycall(call)?;
+        self.cfg.normalize_spy_calls();
+        let Some(slot) = self.first_empty_spy_slot() else {
+            return Err("all spy slots are full".into());
+        };
+        let idx = slot.saturating_sub(1) as usize;
+        if let Some(c) = self.cfg.session.spy_calls.get_mut(idx) {
+            *c = call.clone();
+        }
+        self.cfg.persist_spy_calls(&self.config_path)?;
+        Ok(slot)
+    }
+
+    fn mheard_spy_confirm_dialog(&mut self, ctx: &Context) {
+        if !self.show_mheard_spy_confirm {
+            return;
+        }
+        let call = self.mheard_spy_pending.clone();
+        let mut open = true;
+        egui::Window::new("Start Spy")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Start Spy for {call}"));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Yes").clicked() {
+                        match self.assign_spy_first_empty(&call) {
+                            Ok(slot) => {
+                                self.show_mheard_spy_confirm = false;
+                                self.mheard_spy_pick = false;
+                                self.session.spy_slot = Some(slot);
+                                self.active = ActivePane::Spy(slot);
+                                self.status = format!("Spying Call {call}");
+                            }
+                            Err(e) => self.status = e,
+                        }
+                    }
+                    if ui.button("No").clicked() {
+                        // Keep pick mode so another MHeard row can be chosen.
+                        self.show_mheard_spy_confirm = false;
+                        self.mheard_spy_pending.clear();
+                        self.status = "Select a call in MHeard for Spy".into();
+                    }
+                    if ui.button("Abort").clicked() {
+                        self.show_mheard_spy_confirm = false;
+                        self.mheard_spy_pick = false;
+                        self.mheard_spy_pending.clear();
+                        self.status = "Spy from MHeard aborted".into();
+                    }
+                });
+            });
+        if !open {
+            self.show_mheard_spy_confirm = false;
+            self.mheard_spy_pick = false;
+            self.mheard_spy_pending.clear();
+        }
     }
 
     fn kill_spy_call(&mut self) {
@@ -1863,7 +3430,10 @@ impl GpGuiApp {
             return;
         }
 
-        let toolbar = toolbar_for(self.active);
+        let toolbar = match self.active {
+            ActivePane::Channel(n) => toolbar_for_channel(self.channel_linked(n)),
+            other => toolbar_for(other),
+        };
         let n = toolbar.len().max(1) as f32;
         // Fill strip height with 1 px air above/below; width follows aspect.
         let vpad = 1.0;
@@ -1898,6 +3468,7 @@ impl GpGuiApp {
                     ("EDIT", ActivePane::Editor) => true,
                     ("MHEARD", ActivePane::Mh) => true,
                     ("SPY", ActivePane::Spy(_)) => true,
+                    ("SPY", ActivePane::Mh) if self.mheard_spy_pick => true,
                     ("CHECK", ActivePane::Check) | ("BBS", ActivePane::Check) => true,
                     ("LIST", ActivePane::List) => true,
                     _ => false,
@@ -1926,7 +3497,13 @@ impl GpGuiApp {
                 }
                 "LOAD" => self.editor_load_dialog(),
                 "MHEARD" => self.select(ActivePane::Mh),
-                "SPY" => self.open_spy_call_dialog(),
+                "SPY" => {
+                    if matches!(self.active, ActivePane::Mh) {
+                        self.spy_from_mheard();
+                    } else {
+                        self.open_spy_call_dialog();
+                    }
+                }
                 "KILL SPY" => self.kill_spy_call(),
                 "EXIT" => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
                 // Classic GP shelled to DOS; here we just minimize (can't stay resident).
@@ -1936,13 +3513,23 @@ impl GpGuiApp {
                     self.status = "minimized".into();
                 }
                 "MYCALL" => self.open_mycall_dialog(),
-                "CONNECT" => {
-                    let ch = match self.active {
-                        ActivePane::Channel(n) => n,
-                        _ => 1,
-                    };
-                    self.status = format!("CT → ch{ch}");
-                    self.send_connect_text(ch);
+                "CONNECT" => match self.active {
+                    ActivePane::Mh => self.connect_from_mheard(),
+                    ActivePane::Channel(n) => self.open_connect_dialog_for_channel(n),
+                    _ => {
+                        if let Some(ch) = self.first_free_channel() {
+                            self.open_connect_dialog_for_channel(ch);
+                        } else {
+                            self.status = "no free channel for Connect".into();
+                        }
+                    }
+                },
+                "DISCONNECT" => {
+                    if let ActivePane::Channel(n) = self.active {
+                        self.disconnect_channel(n);
+                    } else {
+                        self.status = "DISCONNECT — select a channel".into();
+                    }
                 }
                 other => self.status = format!("icon: {other}"),
             }
@@ -1980,47 +3567,6 @@ fn on_off(v: bool) -> &'static str {
     if v { "ON" } else { "OFF" }
 }
 
-fn mheard_layout(list: &MheardList) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    let font = FontId::monospace(14.0);
-    let color = Color32::BLACK;
-    let lines = list.lines();
-    if lines.is_empty() {
-        job.append(
-            "No stations heard yet — APRS/AX.25 UI frames appear here.",
-            0.0,
-            TextFormat {
-                font_id: font,
-                color,
-                ..Default::default()
-            },
-        );
-        return job;
-    }
-    for (i, line) in lines.iter().enumerate() {
-        if i > 0 {
-            job.append(
-                "\n",
-                0.0,
-                TextFormat {
-                    font_id: font.clone(),
-                    color,
-                    ..Default::default()
-                },
-            );
-        }
-        job.append(
-            line,
-            0.0,
-            TextFormat {
-                font_id: font.clone(),
-                color,
-                ..Default::default()
-            },
-        );
-    }
-    job
-}
 
 /// Best-effort source call from monitor / APRS-ish text (`fm CALL`, `CALL>`).
 fn extract_heard_call(text: &str) -> Option<String> {
@@ -2081,6 +3627,38 @@ fn looks_like_monitor_mode(s: &str) -> bool {
         && t.len() <= 8
         && t.chars()
             .all(|c| matches!(c, 'I' | 'U' | 'S' | 'C' | 'N' | '+' | '-' | 'i' | 'u' | 's' | 'c' | 'n'))
+}
+
+/// Modem / hostmode link chatter (may arrive as Monitor/Data, not only LinkStatus).
+fn looks_like_link_status(s: &str) -> bool {
+    let u = s.to_ascii_uppercase();
+    u.contains("CONNECTED")
+        || u.contains("DISCONNECTED")
+        || u.contains("LINK FAIL")
+        || u.contains("LINK FAILURE")
+        || u.contains("BUSY FROM")
+        || u.contains("FAILURE WITH")
+        || u.contains("RETRY OUT")
+        || u.contains("NO ANSWER")
+}
+
+/// `(2) CONNECTED to CALL` / `2: CONNECTED …` → channel number.
+fn parse_hostmode_channel_tag(text: &str) -> Option<u8> {
+    let t = text.trim_start();
+    if let Some(rest) = t.strip_prefix('(') {
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() && rest[digits.len()..].starts_with(')') {
+            return digits.parse().ok();
+        }
+    }
+    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !digits.is_empty() {
+        let rest = &t[digits.len()..];
+        if rest.starts_with(':') || rest.starts_with(' ') {
+            return digits.parse().ok();
+        }
+    }
+    None
 }
 
 fn parse_monitor_set(line: &str) -> Option<String> {

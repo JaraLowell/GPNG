@@ -1,12 +1,13 @@
-//! TAPR KISS modem driver — `FEND` / `FESC` framing over serial.
+//! TAPR KISS modem driver — `FEND` / `FESC` framing.
 //!
-//! On bring-up, applies a KISSINIT-style section from `KISS.INI` (see
-//! `[tnc] kiss_ini` / `kiss_section`) so radios like the TM-D700 enter KISS
-//! before we listen for APRS frames.
+//! **Serial** (`kiss_transport = "serial"`): Kenwood etc. — applies `KISS.INI`,
+//! DTR pulse, and exit sequence.
+//!
+//! **TCP** (`kiss_transport = "tcp"`): Soundmodem / Direwolf — raw KISS on a
+//! socket; no radio init (peer is already in KISS).
 //!
 //! RX frames become [`TncEvent::HostFrame`] with `channel` = KISS port and
-//! `code` = [`HostCode::Data`] so existing UI pads keep working. TX
-//! [`TncCommand::HostFrame`] encodes a KISS data frame on that port.
+//! `code` = [`HostCode::Data`]. TX [`TncCommand::HostFrame`] encodes a data frame.
 
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use crate::config::{SerialConfig, TncConfig};
 use super::super::hostmode::HostCode;
 use super::super::kiss_ini::{self, resolve_kiss_ini};
 use super::super::serial::SerialLink;
+use super::super::tcp::TcpKissLink;
 use super::super::{TncCommand, TncError, TncEvent};
 
 const FEND: u8 = 0xC0;
@@ -25,34 +27,121 @@ const FESC: u8 = 0xDB;
 const TFEND: u8 = 0xDC;
 const TFESC: u8 = 0xDD;
 
+enum KissLink {
+    Serial(SerialLink),
+    Tcp(TcpKissLink),
+}
+
+impl KissLink {
+    fn open(serial: &SerialConfig, tnc_cfg: &TncConfig) -> Result<Self, TncError> {
+        if tnc_cfg.kiss_use_tcp() {
+            Ok(Self::Tcp(TcpKissLink::connect(
+                &tnc_cfg.kiss_tcp_host,
+                tnc_cfg.kiss_tcp_port,
+            )?))
+        } else {
+            Ok(Self::Serial(SerialLink::open(serial)?))
+        }
+    }
+
+    fn is_tcp(&self) -> bool {
+        matches!(self, Self::Tcp(_))
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Serial(s) => format!("{} @ {}", s.port_name, s.baud),
+            Self::Tcp(t) => t.addr.clone(),
+        }
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), TncError> {
+        match self {
+            Self::Serial(s) => s.write_all(buf),
+            Self::Tcp(t) => t.write_all(buf),
+        }
+    }
+
+    fn try_read(&mut self, buf: &mut [u8]) -> Result<usize, TncError> {
+        match self {
+            Self::Serial(s) => s.try_read(buf),
+            Self::Tcp(t) => t.try_read(buf),
+        }
+    }
+
+    fn flush_input(&mut self) {
+        match self {
+            Self::Serial(s) => s.flush_input(),
+            Self::Tcp(t) => t.flush_input(),
+        }
+    }
+
+    fn write_terminal(&mut self, line: &str) -> Result<(), TncError> {
+        match self {
+            Self::Serial(s) => s.write_terminal(line),
+            Self::Tcp(t) => {
+                let mut buf = line.as_bytes().to_vec();
+                if !buf.ends_with(&[b'\r']) {
+                    buf.push(b'\r');
+                }
+                t.write_all(&buf)
+            }
+        }
+    }
+
+    fn leave_kiss_for_commands(&mut self) {
+        if let Self::Serial(s) = self {
+            s.pulse_dtr();
+            let _ = s.kiss_exit();
+            std::thread::sleep(Duration::from_millis(1500));
+            s.flush_input();
+        }
+    }
+
+    fn prepare_close(&mut self) {
+        if let Self::Serial(s) = self {
+            s.prepare_close();
+        }
+    }
+
+    fn kiss_exit(&mut self) -> Result<(), TncError> {
+        match self {
+            Self::Serial(s) => s.kiss_exit(),
+            Self::Tcp(_) => Ok(()),
+        }
+    }
+}
+
 pub fn run(
     serial: SerialConfig,
     tnc_cfg: TncConfig,
     events: mpsc::Sender<TncEvent>,
     mut commands: mpsc::Receiver<TncCommand>,
 ) -> Result<(), TncError> {
-    let mut link = SerialLink::open(&serial)?;
+    let mut link = KissLink::open(&serial, &tnc_cfg)?;
 
-    // Soft-restart recovery: last run may have left the radio in KISS, where
-    // ASCII ECHO/KISS ON is ignored (unplug/replug works because it resets).
-    leave_kiss_for_commands(&mut link);
-
-    if let Err(err) = run_kiss_init(&mut link, &tnc_cfg) {
-        let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
+    if !link.is_tcp() {
+        // Soft-restart recovery: radio may still be in KISS from last run.
+        link.leave_kiss_for_commands();
+        if let Err(err) = run_kiss_init(&mut link, &tnc_cfg) {
+            let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
+        }
     }
     link.flush_input();
-    // Sole Monitor status line after quiet bring-up (port/baud from Config).
-    let _ = events.blocking_send(TncEvent::Status(format!(
-        "serial OPEN {} @ {} — KISS listen",
-        link.port_name, link.baud
-    )));
+
+    let status = if link.is_tcp() {
+        format!("TCP OPEN {} — KISS listen", link.label())
+    } else {
+        format!("serial OPEN {} — KISS listen", link.label())
+    };
+    let _ = events.blocking_send(TncEvent::Status(status));
 
     let mut rx_buf = [0u8; 512];
     let mut stream = Vec::<u8>::new();
 
     loop {
         while let Ok(cmd) = commands.try_recv() {
-            if handle_command(&mut link, &tnc_cfg, &events, cmd)? {
+            if handle_command(&mut link, &serial, &tnc_cfg, &events, cmd)? {
                 return Ok(());
             }
         }
@@ -63,7 +152,7 @@ pub fn run(
                 return Ok(());
             }
             Ok(cmd) => {
-                if handle_command(&mut link, &tnc_cfg, &events, cmd)? {
+                if handle_command(&mut link, &serial, &tnc_cfg, &events, cmd)? {
                     return Ok(());
                 }
             }
@@ -87,20 +176,17 @@ pub fn run(
     }
 }
 
-/// Exit KISS → command mode so ASCII init is heard (idempotent if already cmd).
-fn leave_kiss_for_commands(link: &mut SerialLink) {
-    link.pulse_dtr();
-    let _ = link.kiss_exit();
-    std::thread::sleep(Duration::from_millis(1500));
-    link.flush_input();
-}
-
 fn leave_kiss_and_close(
-    link: &mut SerialLink,
+    link: &mut KissLink,
     tnc_cfg: &TncConfig,
     events: &mpsc::Sender<TncEvent>,
 ) {
-    // Optional KISS.INI [close] (same role as WA8DED.INI [close]) — quiet.
+    if link.is_tcp() {
+        link.flush_input();
+        let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
+        return;
+    }
+
     let path = resolve_kiss_ini(&tnc_cfg.kiss_ini);
     let close_sec = if tnc_cfg.kiss_close_section.is_empty() {
         "close"
@@ -108,18 +194,7 @@ fn leave_kiss_and_close(
         tnc_cfg.kiss_close_section.as_str()
     };
     if path.exists() {
-        if kiss_ini::apply_section(
-            link,
-            &path,
-            close_sec,
-            tnc_cfg.kiss_char_delay_ms,
-            tnc_cfg.kiss_line_delay_ms,
-            500,
-            &tnc_cfg.monitor_mode,
-            None,
-        )
-        .is_err()
-        {
+        if apply_kiss_ini_serial(link, tnc_cfg, &path, close_sec).is_err() {
             let _ = link.kiss_exit();
         }
     } else {
@@ -130,23 +205,48 @@ fn leave_kiss_and_close(
     let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
 }
 
-fn run_kiss_init(link: &mut SerialLink, tnc_cfg: &TncConfig) -> Result<(), TncError> {
+fn apply_kiss_ini_serial(
+    link: &mut KissLink,
+    tnc_cfg: &TncConfig,
+    path: &std::path::Path,
+    section: &str,
+) -> Result<(), TncError> {
+    let KissLink::Serial(serial) = link else {
+        return Ok(());
+    };
+    kiss_ini::apply_section(
+        serial,
+        path,
+        section,
+        tnc_cfg.kiss_char_delay_ms,
+        tnc_cfg.kiss_line_delay_ms,
+        500,
+        &tnc_cfg.monitor_mode,
+        None,
+    )
+}
+
+fn run_kiss_init(link: &mut KissLink, tnc_cfg: &TncConfig) -> Result<(), TncError> {
+    let KissLink::Serial(serial) = link else {
+        return Ok(());
+    };
     let path = resolve_kiss_ini(&tnc_cfg.kiss_ini);
     kiss_ini::apply_section(
-        link,
+        serial,
         &path,
         &tnc_cfg.kiss_section,
         tnc_cfg.kiss_char_delay_ms,
         tnc_cfg.kiss_line_delay_ms,
         tnc_cfg.kiss_exit_delay_ms,
         &tnc_cfg.monitor_mode,
-        None, // no TX/RX chatter on Monitor
+        None,
     )?;
     Ok(())
 }
 
 fn handle_command(
-    link: &mut SerialLink,
+    link: &mut KissLink,
+    serial: &SerialConfig,
     tnc_cfg: &TncConfig,
     events: &mpsc::Sender<TncEvent>,
     cmd: TncCommand,
@@ -163,9 +263,18 @@ fn handle_command(
             }
         }
         TncCommand::Reinitialize => {
-            leave_kiss_for_commands(link);
-            if let Err(err) = run_kiss_init(link, tnc_cfg) {
-                let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
+            if link.is_tcp() {
+                *link = KissLink::open(serial, tnc_cfg)?;
+                link.flush_input();
+                let _ = events.blocking_send(TncEvent::Status(format!(
+                    "TCP OPEN {} — KISS listen",
+                    link.label()
+                )));
+            } else {
+                link.leave_kiss_for_commands();
+                if let Err(err) = run_kiss_init(link, tnc_cfg) {
+                    let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
+                }
             }
         }
         TncCommand::Shutdown => {
@@ -176,10 +285,9 @@ fn handle_command(
     Ok(false)
 }
 
-fn write_kiss_data(link: &mut SerialLink, port: u8, payload: &[u8]) -> Result<(), TncError> {
+fn write_kiss_data(link: &mut KissLink, port: u8, payload: &[u8]) -> Result<(), TncError> {
     let mut frame = Vec::with_capacity(payload.len() * 2 + 4);
     frame.push(FEND);
-    // Data frame type = (port << 4) | 0x00
     frame.push(port << 4);
     for &b in payload {
         match b {
@@ -203,8 +311,7 @@ fn write_kiss_data(link: &mut SerialLink, port: u8, payload: &[u8]) -> Result<()
 /// Max unframed text kept while waiting for a line terminator.
 const MAX_TEXT_PENDING: usize = 1024;
 
-/// Emit CR/LF-terminated plain-text lines (radio still in TNC/APRS text mode,
-/// e.g. `DB0ET>APRS,WIDE1-1:...`) as Monitor lines. Returns bytes consumed.
+/// Emit CR/LF-terminated plain-text lines as Monitor lines. Returns bytes consumed.
 fn drain_text_lines(buf: &[u8], events: &mpsc::Sender<TncEvent>) -> usize {
     let mut consumed = 0;
     while let Some(pos) = buf[consumed..]
@@ -298,7 +405,11 @@ mod tests {
         let mut stream = b"DB0ET>U3RTS5,WIDE1-1:'}Xzl\rDB0".to_vec();
         drain_kiss_frames(&mut stream, &tx);
         match rx.try_recv().unwrap() {
-            TncEvent::HostFrame { channel, code, payload } => {
+            TncEvent::HostFrame {
+                channel,
+                code,
+                payload,
+            } => {
                 assert_eq!(channel, 0);
                 assert!(matches!(code, HostCode::Monitor));
                 assert_eq!(payload, b"DB0ET>U3RTS5,WIDE1-1:'}Xzl");

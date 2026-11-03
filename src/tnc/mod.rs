@@ -7,13 +7,15 @@
 //! ```text
 //!   wa8ded / jhost  → timed WA8DED hostmode poll (JHOST1/JHOST0)
 //!   tfpcx           → soft-TNC, same hostmode frames
-//!   kiss            → TAPR KISS (FEND/FESC)
+//!   kiss            → TAPR KISS over serial or TCP (FEND/FESC)
 //! ```
 
+pub mod ax25;
 mod drivers;
 mod hostmode;
 mod kiss_ini;
 mod serial;
+mod tcp;
 mod wa8ded_ini;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +26,7 @@ use tracing::{info, warn};
 
 use crate::config::{HostProtocol, SerialConfig, TncConfig};
 
+pub use ax25::{Ax25Frame, Ax25FrameType};
 pub use hostmode::HostCode;
 
 // ---------------------------------------------------------------------------

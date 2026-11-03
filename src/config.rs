@@ -350,6 +350,26 @@ impl Config {
             .unwrap_or("N0CALL")
     }
 
+    /// Callsign base without `-SSID` (`NL0MSK-2` → `NL0MSK`).
+    pub fn mycall_base(call: &str) -> &str {
+        call.split('-').next().unwrap_or(call)
+    }
+
+    /// Classic per-channel identity: `{base}-{channel}` (channel `0` = bare base).
+    pub fn channel_ssid_mycall(primary: &str, channel: u8) -> String {
+        let base = Self::mycall_base(primary);
+        if channel == 0 {
+            base.to_string()
+        } else {
+            format!("{base}-{channel}")
+        }
+    }
+
+    /// True if `call` is our station (same base as primary MYCALL).
+    pub fn is_own_call(&self, call: &str) -> bool {
+        Self::mycall_base(call).eq_ignore_ascii_case(Self::mycall_base(self.primary_mycall()))
+    }
+
     /// MYCALL for a slot: `0` = monitor / global, `1..=N` = channel.
     /// Channels without an override fall back to the primary call.
     pub fn mycall_for_slot(&self, slot: u8) -> &str {
@@ -863,6 +883,12 @@ pub struct TncConfig {
     pub monitor_mode: String,
     /// KISS.INI section used on shutdown (default `close`).
     pub kiss_close_section: String,
+    /// KISS wire: `"serial"` (Kenwood COM) or `"tcp"` (Soundmodem / Direwolf).
+    pub kiss_transport: String,
+    /// TCP KISS host (only when `kiss_transport = "tcp"`).
+    pub kiss_tcp_host: String,
+    /// TCP KISS port — UZ7HO Soundmodem often `8100`, Direwolf `8001`.
+    pub kiss_tcp_port: u16,
     /// Filled at load from `[station].mycall` for the timing banner (not in TOML).
     #[serde(skip)]
     pub runtime_mycall: String,
@@ -889,6 +915,9 @@ impl Default for TncConfig {
             wa8ded_line_delay_ms: 300,
             monitor_mode: "IUSC".into(),
             kiss_close_section: "close".into(),
+            kiss_transport: "serial".into(),
+            kiss_tcp_host: "127.0.0.1".into(),
+            kiss_tcp_port: 8100,
             runtime_mycall: String::new(),
         }
     }
@@ -903,6 +932,17 @@ impl TncConfig {
             _ => HostProtocol::Wa8ded,
         }
     }
+
+    /// True when KISS should use a TCP socket (Soundmodem, Direwolf, …).
+    pub fn kiss_use_tcp(&self) -> bool {
+        self.protocol_kind() == HostProtocol::Kiss
+            && self.kiss_transport.eq_ignore_ascii_case("tcp")
+    }
+
+    /// `host:port` for TCP KISS status / reconnect.
+    pub fn kiss_tcp_addr(&self) -> String {
+        format!("{}:{}", self.kiss_tcp_host.trim(), self.kiss_tcp_port)
+    }
 }
 
 /// Which modem driver to construct at startup (only one is loaded).
@@ -912,7 +952,7 @@ pub enum HostProtocol {
     Wa8ded,
     /// TFPCX soft-TNC (BayCom-class); WA8DED-compatible framing.
     Tfpcx,
-    /// TAPR KISS over serial (`FEND` / `FESC`).
+    /// TAPR KISS over serial or TCP (`FEND` / `FESC`).
     Kiss,
 }
 
