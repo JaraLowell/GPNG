@@ -54,9 +54,9 @@ Only **one** modem driver is constructed at startup (`[tnc] protocol`):
 
 | `protocol` | Driver | Notes |
 |------------|--------|-------|
-| `wa8ded` (aliases `jhost`, `hostmode`) | Timed WA8DED hostmode poll | `JHOST1` → `WA8DED.INI` `[open]`/`[status]`; exit `[close]` (`MN`/`U1Away!`/`K2`/`JHOST0`); poll `G0` |
-| `tfpcx` | Soft-TNC hostmode | Same `channel\|code\|len\|payload` framing; Config `init`/`deinit` |
-| `kiss` | TAPR KISS | `FEND`/`FESC`; serial **or** TCP wire (`kiss_transport`); KISS port → channel |
+| `wa8ded` (aliases `jhost`, `hostmode`) | Timed WA8DED hostmode poll | L2 lives in the TNC; host sends `I`/`C`/`D` hostmode. `JHOST1` → `WA8DED.INI`; exit `[close]`; poll `G0` |
+| `tfpcx` | Soft-TNC hostmode | Same hostmode framing; more host-side L2 later (deferred — no BayCom on hand) |
+| `kiss` | TAPR KISS | Host builds AX.25 via the [`ax25`](https://crates.io/crates/ax25) crate; `FEND`/`FESC`; serial **or** TCP (`kiss_transport`) |
 
 ### KISS transport
 
@@ -77,7 +77,7 @@ kiss_tcp_port = 8100
 
 Session badge shows `TCP 127.0.0.1:8100` when the TCP path is active.
 
-KISS TX builds real AX.25 frames (hostmode `I`/`C`/`D` strings are not sent raw):
+KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` strings are not sent raw). Monitor uses classic GP / axlisten lines, e.g. `fm NL0MSK to NL0MSK ctl SABM+`, `… ctl UA-`, `… ctl I00^ pid F0`, `… ctl RR1v`, optional `via DIGI`:
 
 | Pane | Frame | Addresses |
 |------|-------|-----------|

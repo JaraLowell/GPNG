@@ -6,6 +6,10 @@
 //! **TCP** (`kiss_transport = "tcp"`): Soundmodem / Direwolf — raw KISS on a
 //! socket; no radio init (peer is already in KISS).
 //!
+//! Unlike WA8DED/TFPCX hostmode, KISS carries raw AX.25 — the host builds L2
+//! with the [`ax25`] crate via [`crate::tnc::ax25`]. This driver only owns the
+//! KISS wire; connected-mode state stays in the UI for now.
+//!
 //! RX frames become [`TncEvent::HostFrame`] with `channel` = KISS port and
 //! `code` = [`HostCode::Data`]. TX [`TncCommand::HostFrame`] encodes a data frame.
 

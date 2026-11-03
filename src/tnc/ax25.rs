@@ -1,12 +1,21 @@
-//! Minimal AX.25 L2 helpers for KISS TX/RX (no FCS — the TNC adds CRC).
+//! AX.25 L2 helpers for the **KISS** driver path (no FCS — the TNC adds CRC).
+//!
+//! Encoding/decoding uses the [`ax25`] crate. WA8DED/TFPCX keep L2 inside the
+//! TNC via hostmode and do **not** use this module.
 //!
 //! Monitor / unproto → **UI** frames (`dest=CQ`, `src=MYCALL` by default).
 //! Connected channels → **SABM** / **I** / **RR** / **DISC**.
 
-/// AX.25 PID: no layer 3.
+use ax25::frame::{
+    Address, Ax25Frame as LibFrame, CommandResponse, Disconnect, DisconnectedMode, FrameContent,
+    Information, ProtocolIdentifier, ReceiveReady, RouteEntry, SetAsynchronousBalancedMode,
+    UnnumberedAcknowledge, UnnumberedInformation,
+};
+
+/// AX.25 PID: no layer 3 (`0xF0`).
 pub const PID_NO_L3: u8 = 0xF0;
 
-/// Parsed control field / frame class.
+/// Parsed control field / frame class (stable GUI-facing enum).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ax25FrameType {
     Ui,
@@ -32,7 +41,102 @@ pub struct Ax25Frame {
     pub nr: u8,
     /// P/F bit from the control field.
     pub poll: bool,
+    /// AX.25 v2 command (vs response) from address C-bits.
+    pub command: bool,
     pub info: Vec<u8>,
+}
+
+/// Classic GP / axlisten P/F mark: cmd+P `+`, cmd `^`, resp+F `-`, resp `v`.
+pub fn pf_mark(command: bool, poll: bool) -> char {
+    match (command, poll) {
+        (true, true) => '+',
+        (true, false) => '^',
+        (false, true) => '-',
+        (false, false) => 'v',
+    }
+}
+
+/// GP DOS / axlisten header: `fm SRC to DEST [via …] ctl …`.
+///
+/// I/S order is N(R) then N(S) (`I00^`, `RR1v`). I/UI append `pid F0`.
+pub fn monitor_ctl_line(
+    src: &str,
+    dest: &str,
+    via: &[String],
+    kind: Ax25FrameType,
+    ns: u8,
+    nr: u8,
+    poll: bool,
+    command: bool,
+) -> String {
+    let via = if via.is_empty() {
+        String::new()
+    } else {
+        format!(" via {}", via.join(","))
+    };
+    let m = pf_mark(command, poll);
+    let ctl = match kind {
+        Ax25FrameType::Ui => format!("UI{m} pid F0"),
+        Ax25FrameType::Sabm => format!("SABM{m}"),
+        Ax25FrameType::Ua => format!("UA{m}"),
+        Ax25FrameType::Disc => format!("DISC{m}"),
+        Ax25FrameType::Dm => format!("DM{m}"),
+        Ax25FrameType::Rr => format!("RR{nr}{m}"),
+        Ax25FrameType::Info => format!("I{nr}{ns}{m} pid F0"),
+        Ax25FrameType::Other => format!("???{m}"),
+    };
+    format!("fm {src} to {dest}{via} ctl {ctl}")
+}
+
+impl Ax25Frame {
+    /// Monitor header line for this decoded frame.
+    pub fn monitor_line(&self) -> String {
+        monitor_ctl_line(
+            &self.src,
+            &self.dest,
+            &self.via,
+            self.kind,
+            self.ns,
+            self.nr,
+            self.poll,
+            self.command,
+        )
+    }
+}
+
+/// Split I/UI info on `\r`, `\n`, or `\r\n` (DOS TNCs often use CR only).
+/// Each payload line is indented with three spaces for the Monitor pad.
+pub fn monitor_payload_lines(text: &str) -> Vec<String> {
+    let text = text.trim_end_matches(['\r', '\n']);
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' => {
+                out.push(format!("   {}", &text[start..i]));
+                i += 1;
+                if i < bytes.len() && bytes[i] == b'\n' {
+                    i += 1;
+                }
+                start = i;
+            }
+            b'\n' => {
+                out.push(format!("   {}", &text[start..i]));
+                i += 1;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    if start <= text.len() {
+        out.push(format!("   {}", &text[start..]));
+    }
+    out
 }
 
 /// Split `CALL` / `CALL-n` → `(BASE, ssid)`.
@@ -56,207 +160,172 @@ pub fn parse_call_ssid(call: &str) -> (String, u8) {
     }
 }
 
-/// Encode one 7-byte AX.25 address.
-///
-/// `command`: HDLC C-bit (dest of a command frame, or src of a response).
-/// `last`: address-extension bit clear on all but the final address.
-pub fn encode_address(call: &str, ssid: u8, command: bool, last: bool) -> [u8; 7] {
-    let (base, parsed_ssid) = parse_call_ssid(call);
-    let ssid = if call.contains('-') { parsed_ssid } else { ssid };
-    let mut out = [0u8; 7];
-    let mut chars = base.chars().map(|c| c as u8);
-    for i in 0..6 {
-        let b = chars.next().unwrap_or(b' ');
-        out[i] = b << 1;
-    }
-    let mut ssid_byte = (ssid & 0x0f) << 1;
-    ssid_byte |= 0x60; // reserved bits = 11
-    if command {
-        ssid_byte |= 0x80;
-    }
-    if last {
-        ssid_byte |= 0x01;
-    }
-    out[6] = ssid_byte;
-    out
+fn address(call: &str) -> Address {
+    let (base, ssid) = parse_call_ssid(call);
+    Address::from_parts(base, ssid).unwrap_or_default()
 }
 
-fn push_addr_path(out: &mut Vec<u8>, dest: &str, src: &str, via: &[&str], cmd: bool) {
-    let n = via.len();
-    out.extend_from_slice(&encode_address(dest, 0, cmd, false));
-    out.extend_from_slice(&encode_address(src, 0, !cmd, n == 0));
-    for (i, v) in via.iter().enumerate() {
-        out.extend_from_slice(&encode_address(v, 0, false, i + 1 == n));
-    }
+fn route_entries(via: &[&str]) -> Vec<RouteEntry> {
+    via.iter()
+        .map(|v| RouteEntry {
+            repeater: address(v),
+            has_repeated: false,
+        })
+        .collect()
+}
+
+fn encode(frame: LibFrame) -> Vec<u8> {
+    frame.to_bytes()
+}
+
+fn command_frame(dest: &str, src: &str, via: &[&str], content: FrameContent) -> Vec<u8> {
+    encode(LibFrame {
+        source: address(src),
+        destination: address(dest),
+        route: route_entries(via),
+        command_or_response: Some(CommandResponse::Command),
+        content,
+    })
+}
+
+fn response_frame(dest: &str, src: &str, content: FrameContent) -> Vec<u8> {
+    encode(LibFrame {
+        source: address(src),
+        destination: address(dest),
+        route: Vec::new(),
+        command_or_response: Some(CommandResponse::Response),
+        content,
+    })
 }
 
 /// Unproto / APRS-style **UI** frame (Monitor → CQ, etc.).
 pub fn build_ui(dest: &str, src: &str, via: &[&str], info: &[u8]) -> Vec<u8> {
-    let mut f = Vec::with_capacity(16 + via.len() * 7 + info.len());
-    push_addr_path(&mut f, dest, src, via, true);
-    f.push(0x03); // UI
-    f.push(PID_NO_L3);
-    f.extend_from_slice(info);
-    f
+    command_frame(
+        dest,
+        src,
+        via,
+        FrameContent::UnnumberedInformation(UnnumberedInformation {
+            pid: ProtocolIdentifier::None,
+            info: info.to_vec(),
+            poll_or_final: false,
+        }),
+    )
 }
 
 /// SABM (connect), poll bit set.
 pub fn build_sabm(dest: &str, src: &str) -> Vec<u8> {
-    let mut f = Vec::with_capacity(16);
-    push_addr_path(&mut f, dest, src, &[], true);
-    f.push(0x3F); // SABM P=1
-    f
+    command_frame(
+        dest,
+        src,
+        &[],
+        FrameContent::SetAsynchronousBalancedMode(SetAsynchronousBalancedMode { poll: true }),
+    )
 }
 
 /// DISC (disconnect), poll bit set.
 pub fn build_disc(dest: &str, src: &str) -> Vec<u8> {
-    let mut f = Vec::with_capacity(16);
-    push_addr_path(&mut f, dest, src, &[], true);
-    f.push(0x53); // DISC P=1
-    f
+    command_frame(
+        dest,
+        src,
+        &[],
+        FrameContent::Disconnect(Disconnect { poll: true }),
+    )
 }
 
 /// UA response (connect / disconnect ack).
 pub fn build_ua(dest: &str, src: &str, final_: bool) -> Vec<u8> {
-    let mut f = Vec::with_capacity(16);
-    push_addr_path(&mut f, dest, src, &[], false);
-    f.push(if final_ { 0x73 } else { 0x63 });
-    f
+    response_frame(
+        dest,
+        src,
+        FrameContent::UnnumberedAcknowledge(UnnumberedAcknowledge {
+            final_bit: final_,
+        }),
+    )
 }
 
 /// DM response (busy / refuse connect).
 pub fn build_dm(dest: &str, src: &str, final_: bool) -> Vec<u8> {
-    let mut f = Vec::with_capacity(16);
-    push_addr_path(&mut f, dest, src, &[], false);
-    f.push(if final_ { 0x1F } else { 0x0F });
-    f
+    response_frame(
+        dest,
+        src,
+        FrameContent::DisconnectedMode(DisconnectedMode {
+            final_bit: final_,
+        }),
+    )
 }
 
 /// Connected-mode **I** frame.
 pub fn build_i(dest: &str, src: &str, ns: u8, nr: u8, poll: bool, info: &[u8]) -> Vec<u8> {
-    let mut f = Vec::with_capacity(16 + info.len());
-    push_addr_path(&mut f, dest, src, &[], true);
-    let mut ctrl = ((nr & 7) << 5) | ((ns & 7) << 1);
-    if poll {
-        ctrl |= 0x10;
-    }
-    f.push(ctrl);
-    f.push(PID_NO_L3);
-    f.extend_from_slice(info);
-    f
+    command_frame(
+        dest,
+        src,
+        &[],
+        FrameContent::Information(Information {
+            pid: ProtocolIdentifier::None,
+            info: info.to_vec(),
+            receive_sequence: nr & 7,
+            send_sequence: ns & 7,
+            poll,
+        }),
+    )
 }
 
 /// RR — `as_command` + poll = T3 keepalive; response + final = ack / poll reply.
 pub fn build_rr(dest: &str, src: &str, nr: u8, poll_or_final: bool, as_command: bool) -> Vec<u8> {
-    let mut f = Vec::with_capacity(16);
-    push_addr_path(&mut f, dest, src, &[], as_command);
-    let mut ctrl = ((nr & 7) << 5) | 0x01;
-    if poll_or_final {
-        ctrl |= 0x10;
+    let content = FrameContent::ReceiveReady(ReceiveReady {
+        receive_sequence: nr & 7,
+        poll_or_final,
+    });
+    if as_command {
+        command_frame(dest, src, &[], content)
+    } else {
+        response_frame(dest, src, content)
     }
-    f.push(ctrl);
-    f
 }
 
-fn decode_address(chunk: &[u8; 7]) -> (String, bool) {
-    let mut call = String::new();
-    for b in &chunk[..6] {
-        let c = (*b >> 1) as char;
-        if c != ' ' && c.is_ascii_graphic() {
-            call.push(c);
+fn classify(content: &FrameContent) -> (Ax25FrameType, u8, u8, bool, Vec<u8>) {
+    match content {
+        FrameContent::UnnumberedInformation(ui) => {
+            (Ax25FrameType::Ui, 0, 0, ui.poll_or_final, ui.info.clone())
         }
+        FrameContent::SetAsynchronousBalancedMode(s) => {
+            (Ax25FrameType::Sabm, 0, 0, s.poll, Vec::new())
+        }
+        FrameContent::UnnumberedAcknowledge(ua) => {
+            (Ax25FrameType::Ua, 0, 0, ua.final_bit, Vec::new())
+        }
+        FrameContent::Disconnect(d) => (Ax25FrameType::Disc, 0, 0, d.poll, Vec::new()),
+        FrameContent::DisconnectedMode(dm) => {
+            (Ax25FrameType::Dm, 0, 0, dm.final_bit, Vec::new())
+        }
+        FrameContent::ReceiveReady(rr) => {
+            (Ax25FrameType::Rr, 0, rr.receive_sequence, rr.poll_or_final, Vec::new())
+        }
+        FrameContent::Information(i) => (
+            Ax25FrameType::Info,
+            i.send_sequence,
+            i.receive_sequence,
+            i.poll,
+            i.info.clone(),
+        ),
+        _ => (Ax25FrameType::Other, 0, 0, false, Vec::new()),
     }
-    let ssid = (chunk[6] >> 1) & 0x0f;
-    let last = chunk[6] & 0x01 != 0;
-    if ssid > 0 {
-        call.push_str(&format!("-{ssid}"));
-    }
-    (call, last)
-}
-
-fn classify_control(ctrl: u8) -> (Ax25FrameType, u8, u8, bool) {
-    let pf = ctrl & 0x10 != 0;
-    if ctrl & 0x01 == 0 {
-        // I frame
-        let ns = (ctrl >> 1) & 7;
-        let nr = (ctrl >> 5) & 7;
-        return (Ax25FrameType::Info, ns, nr, pf);
-    }
-    if ctrl & 0x03 == 0x01 {
-        // S frame
-        let nr = (ctrl >> 5) & 7;
-        let s = (ctrl >> 2) & 3;
-        let kind = match s {
-            0 => Ax25FrameType::Rr,
-            _ => Ax25FrameType::Other,
-        };
-        return (kind, 0, nr, pf);
-    }
-    // U frame
-    let u = ctrl & 0xEF; // mask P/F
-    let kind = match u {
-        0x03 => Ax25FrameType::Ui,
-        0x2F => Ax25FrameType::Sabm,
-        0x63 => Ax25FrameType::Ua,
-        0x43 => Ax25FrameType::Disc,
-        0x0F => Ax25FrameType::Dm,
-        _ => Ax25FrameType::Other,
-    };
-    (kind, 0, 0, pf)
 }
 
 /// Decode a KISS payload (AX.25 without FCS).
 pub fn parse_frame(payload: &[u8]) -> Option<Ax25Frame> {
-    if payload.len() < 15 {
-        return None;
-    }
-    let mut i = 0usize;
-    let mut addrs = Vec::new();
-    loop {
-        if i + 7 > payload.len() {
-            return None;
-        }
-        let chunk: [u8; 7] = payload[i..i + 7].try_into().ok()?;
-        let (call, last) = decode_address(&chunk);
-        if call.is_empty() {
-            return None;
-        }
-        addrs.push(call);
-        i += 7;
-        if last || addrs.len() >= 10 {
-            break;
-        }
-    }
-    if addrs.len() < 2 {
-        return None;
-    }
-    if i >= payload.len() {
-        return None;
-    }
-    let ctrl = payload[i];
-    i += 1;
-    let (kind, ns, nr, poll) = classify_control(ctrl);
-    let mut info = Vec::new();
-    match kind {
-        Ax25FrameType::Ui | Ax25FrameType::Info => {
-            if i < payload.len() {
-                let _pid = payload[i];
-                i += 1;
-                if i < payload.len() {
-                    info = payload[i..].to_vec();
-                }
-            }
-        }
-        _ => {}
-    }
+    let f = LibFrame::from_bytes(payload).ok()?;
+    let (kind, ns, nr, poll, info) = classify(&f.content);
+    let command = !matches!(f.command_or_response, Some(CommandResponse::Response));
     Some(Ax25Frame {
-        dest: addrs[0].clone(),
-        src: addrs[1].clone(),
-        via: addrs[2..].to_vec(),
+        dest: f.destination.to_string(),
+        src: f.source.to_string(),
+        via: f.route.iter().map(|r| r.repeater.to_string()).collect(),
         kind,
         ns,
         nr,
         poll,
+        command,
         info,
     })
 }
@@ -292,5 +361,65 @@ mod tests {
         assert_eq!(f.ns, 2);
         assert_eq!(f.nr, 5);
         assert_eq!(f.info, b"x");
+    }
+
+    #[test]
+    fn rr_command_vs_response() {
+        let cmd = build_rr("DB0ABC", "NL0MSK", 3, true, true);
+        let rsp = build_rr("DB0ABC", "NL0MSK", 3, true, false);
+        assert_ne!(cmd, rsp);
+        let f = parse_frame(&cmd).unwrap();
+        assert_eq!(f.kind, Ax25FrameType::Rr);
+        assert_eq!(f.nr, 3);
+        assert!(f.poll);
+    }
+
+    #[test]
+    fn ua_dm_bits() {
+        let ua = parse_frame(&build_ua("A", "B", true)).unwrap();
+        assert_eq!(ua.kind, Ax25FrameType::Ua);
+        assert!(ua.poll);
+        let dm = parse_frame(&build_dm("A", "B", false)).unwrap();
+        assert_eq!(dm.kind, Ax25FrameType::Dm);
+        assert!(!dm.poll);
+    }
+
+    #[test]
+    fn gp_monitor_lines() {
+        let sabm = parse_frame(&build_sabm("NL0MSK", "NL0MSK")).unwrap();
+        assert_eq!(
+            sabm.monitor_line(),
+            "fm NL0MSK to NL0MSK ctl SABM+"
+        );
+        let ua = parse_frame(&build_ua("NL0MSK", "NL0MSK", true)).unwrap();
+        assert_eq!(ua.monitor_line(), "fm NL0MSK to NL0MSK ctl UA-");
+        let i = parse_frame(&build_i("NL0MSK", "NL0MSK", 0, 0, false, b"hi")).unwrap();
+        assert_eq!(
+            i.monitor_line(),
+            "fm NL0MSK to NL0MSK ctl I00^ pid F0"
+        );
+        let rr = parse_frame(&build_rr("NL0MSK", "NL0MSK", 1, false, false)).unwrap();
+        assert_eq!(rr.monitor_line(), "fm NL0MSK to NL0MSK ctl RR1v");
+        let via = build_ui("CQ", "NL0MSK", &["DB0ABC"], b"x");
+        let ui = parse_frame(&via).unwrap();
+        assert_eq!(
+            ui.monitor_line(),
+            "fm NL0MSK to CQ via DB0ABC ctl UI^ pid F0"
+        );
+    }
+
+    #[test]
+    fn payload_indent_cr_lf() {
+        assert_eq!(monitor_payload_lines("hello"), vec!["   hello".to_string()]);
+        assert_eq!(
+            monitor_payload_lines("a\rb\nc\r\nd\r"),
+            vec![
+                "   a".to_string(),
+                "   b".to_string(),
+                "   c".to_string(),
+                "   d".to_string(),
+            ]
+        );
+        assert!(monitor_payload_lines("\r\n").is_empty());
     }
 }

@@ -56,6 +56,10 @@ const AX25_T3_IDLE: Duration = Duration::from_secs(5 * 60);
 const AX25_T1_POLL: Duration = Duration::from_secs(30);
 /// Retries of RR poll before link timeout disconnect.
 const AX25_POLL_RETRIES: u8 = 3;
+/// KISS SABM: wait for UA before resend.
+const AX25_SABM_RETRY: Duration = Duration::from_secs(5);
+/// Extra SABM sends after the first (then give up — no DISC on air).
+const AX25_SABM_RETRIES: u8 = 3;
 const COMPOSE_ROWS: usize = 3;
 
 /// Classic VGA chrome (from GP V1.63 / DOSBox reference).
@@ -160,6 +164,10 @@ pub struct GpGuiApp {
     ax25_poll_at: Vec<Option<Instant>>,
     /// RR poll attempts since last peer reply.
     ax25_poll_tries: Vec<u8>,
+    /// Last SABM send time while connecting (awaiting UA).
+    ax25_sabm_at: Vec<Option<Instant>>,
+    /// SABMs sent for this connect attempt (1 = first).
+    ax25_sabm_tries: Vec<u8>,
     /// Focus the connect dialog call field once when opened.
     connect_dialog_focus: bool,
     icon_tex: Vec<TextureHandle>,
@@ -239,6 +247,8 @@ impl GpGuiApp {
         let mut ax25_alive_at = Vec::with_capacity(channels as usize + 1);
         let mut ax25_poll_at = Vec::with_capacity(channels as usize + 1);
         let mut ax25_poll_tries = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_sabm_at = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_sabm_tries = Vec::with_capacity(channels as usize + 1);
         for n in 0..=channels {
             let max = if n == 0 { mon_max } else { ch_max };
             let mut pad = TextPad::new(max);
@@ -256,6 +266,8 @@ impl GpGuiApp {
             ax25_alive_at.push(None);
             ax25_poll_at.push(None);
             ax25_poll_tries.push(0);
+            ax25_sabm_at.push(None);
+            ax25_sabm_tries.push(0);
         }
         // Session banner (orange) — not persisted.
         pads[0].push(PadKind::System, version::startup_credits());
@@ -331,6 +343,8 @@ impl GpGuiApp {
             ax25_alive_at,
             ax25_poll_at,
             ax25_poll_tries,
+            ax25_sabm_at,
+            ax25_sabm_tries,
             connect_dialog_focus: false,
             icon_tex,
             monitor_mode,
@@ -893,9 +907,17 @@ impl GpGuiApp {
         let caller_call = self.effective_mycall(caller);
         // Answer SABM with UA (visible in Soundmodem + Monitor).
         self.tx_kiss_payload(0, &ax25::build_ua(&caller_call, &answer_call, true));
-        self.pads[0].push(
+        self.push_kiss_mon(
             PadKind::Own,
-            format!("UA {answer_call} > {caller_call} (self-connect ans ch{answer})"),
+            &answer_call,
+            &caller_call,
+            &[],
+            Ax25FrameType::Ua,
+            0,
+            0,
+            true,
+            false,
+            None,
         );
         if let Some(pad) = self.pads.get_mut(answer as usize) {
             pad.push(
@@ -919,6 +941,8 @@ impl GpGuiApp {
             self.kiss_link_activity(ch, true);
         }
         play_wav(&self.connect_wav);
+        self.kiss_clear_sabm_timer(caller);
+        self.kiss_clear_sabm_timer(answer);
         self.complete_self_connect_ctext(caller, answer);
         self.status = format!("KISS self-connect ch{caller} ↔ ch{answer}");
     }
@@ -952,17 +976,14 @@ impl GpGuiApp {
             if line.is_empty() && raw.is_empty() {
                 continue;
             }
-            // Answer side: own / white (+ Monitor).
+            // Answer side: own / white; caller: incoming / green.
             if let Some(pad) = self.pads.get_mut(answer as usize) {
                 pad.push(PadKind::Own, line.clone());
             }
-            self.pads[0].push(PadKind::Own, line.clone());
-            // Caller side: incoming / green (received CTEXT).
             if let Some(pad) = self.pads.get_mut(caller as usize) {
                 pad.push(PadKind::Incoming, line.clone());
             }
             if self.kiss_mode() {
-                // Answer TX as I-frames to the caller callsign.
                 let peer = self.cfg.primary_mycall().to_string();
                 let my = self.effective_mycall(answer);
                 let ns = *self.ax25_vs.get(answer as usize).unwrap_or(&0);
@@ -973,7 +994,20 @@ impl GpGuiApp {
                     *vs = (ns + 1) & 7;
                 }
                 self.tx_kiss_payload(0, &frame);
+                self.push_kiss_mon(
+                    PadKind::Own,
+                    &my,
+                    &peer,
+                    &[],
+                    Ax25FrameType::Info,
+                    ns,
+                    nr,
+                    false,
+                    true,
+                    Some(&line),
+                );
             } else {
+                self.pads[0].push(PadKind::Own, line.clone());
                 let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
                     channel: answer,
                     data: format!("{line}\r").into_bytes(),
@@ -1053,6 +1087,18 @@ impl GpGuiApp {
         };
         let src = self.effective_mycall(channel);
         self.tx_kiss_payload(0, &ax25::build_disc(&peer, &src));
+        self.push_kiss_mon(
+            PadKind::Own,
+            &src,
+            &peer,
+            &[],
+            Ax25FrameType::Disc,
+            0,
+            0,
+            true,
+            true,
+            None,
+        );
     }
 
     fn clear_channel_link_state(&mut self, channel: u8) {
@@ -1072,11 +1118,37 @@ impl GpGuiApp {
         if let Some(n) = self.ax25_poll_tries.get_mut(idx) {
             *n = 0;
         }
+        if let Some(t) = self.ax25_sabm_at.get_mut(idx) {
+            *t = None;
+        }
+        if let Some(n) = self.ax25_sabm_tries.get_mut(idx) {
+            *n = 0;
+        }
         if let Some(vs) = self.ax25_vs.get_mut(idx) {
             *vs = 0;
         }
         if let Some(vr) = self.ax25_vr.get_mut(idx) {
             *vr = 0;
+        }
+    }
+
+    fn kiss_arm_sabm_timer(&mut self, channel: u8) {
+        let idx = channel as usize;
+        if let Some(t) = self.ax25_sabm_at.get_mut(idx) {
+            *t = Some(Instant::now());
+        }
+        if let Some(n) = self.ax25_sabm_tries.get_mut(idx) {
+            *n = 1;
+        }
+    }
+
+    fn kiss_clear_sabm_timer(&mut self, channel: u8) {
+        let idx = channel as usize;
+        if let Some(t) = self.ax25_sabm_at.get_mut(idx) {
+            *t = None;
+        }
+        if let Some(n) = self.ax25_sabm_tries.get_mut(idx) {
+            *n = 0;
         }
     }
 
@@ -1195,11 +1267,20 @@ impl GpGuiApp {
 
     /// Local TX echo into the RX pad(s). Channel pads always keep a transcript;
     /// Monitor (and the monitor copy of channel TX) follows the Echo toggle.
+    /// KISS: channel body only here — Monitor gets `fm … ctl …` in `send_kiss_text`.
     fn echo_own_line(&mut self, line: &str) {
         let idx = match self.active {
             ActivePane::Channel(n) => n as usize,
             _ => 0,
         };
+        if self.kiss_mode() {
+            if idx != 0 {
+                if let Some(pad) = self.pads.get_mut(idx) {
+                    pad.push(PadKind::Own, line.to_string());
+                }
+            }
+            return;
+        }
         if idx != 0 {
             if let Some(pad) = self.pads.get_mut(idx) {
                 pad.push(PadKind::Own, line.to_string());
@@ -1216,12 +1297,73 @@ impl GpGuiApp {
         self.cfg.tnc.protocol_kind() == HostProtocol::Kiss
     }
 
+    /// GP DOS / axlisten monitor header on pad 0 (`fm … ctl …`).
+    fn push_kiss_mon(
+        &mut self,
+        kind: PadKind,
+        src: &str,
+        dest: &str,
+        via: &[String],
+        frame_kind: Ax25FrameType,
+        ns: u8,
+        nr: u8,
+        poll: bool,
+        command: bool,
+        info_text: Option<&str>,
+    ) {
+        let hdr = ax25::monitor_ctl_line(src, dest, via, frame_kind, ns, nr, poll, command);
+        self.pads[0].push(kind, hdr);
+        if let Some(text) = info_text {
+            for line in ax25::monitor_payload_lines(text) {
+                self.pads[0].push(kind, line);
+            }
+        }
+    }
+
+    fn push_kiss_mon_frame(&mut self, kind: PadKind, frame: &Ax25Frame, info_text: Option<&str>) {
+        self.push_kiss_mon(
+            kind,
+            &frame.src,
+            &frame.dest,
+            &frame.via,
+            frame.kind,
+            frame.ns,
+            frame.nr,
+            frame.poll,
+            frame.command,
+            info_text,
+        );
+    }
+
     /// Raw KISS port payload (already AX.25-framed). Port 0 = Soundmodem radio 1.
     fn tx_kiss_payload(&mut self, port: u8, payload: &[u8]) {
         let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
             channel: port,
             data: payload.to_vec(),
         });
+    }
+
+    /// Self-connect: other channel sees this text as Incoming (no RF loopback).
+    fn deliver_self_connect_rx(&mut self, from_ch: u8, line: &str) {
+        let Some((c, a)) = self.self_connect_live else {
+            return;
+        };
+        let other = if from_ch == c {
+            a
+        } else if from_ch == a {
+            c
+        } else {
+            return;
+        };
+        if let Some(pad) = self.pads.get_mut(other as usize) {
+            pad.push(PadKind::Incoming, line.to_string());
+        }
+        self.kiss_link_activity(other, true);
+        if self.session.remote {
+            if let Some((action, args)) = parse_line(line.trim()) {
+                self.handle_remote_on_channel(other, action, &args);
+            }
+        }
     }
 
     /// Monitor / channel text → AX.25 UI or I-frame over KISS.
@@ -1248,6 +1390,20 @@ impl GpGuiApp {
                 }
                 self.tx_kiss_payload(0, &frame);
                 self.kiss_link_activity(n, false);
+                self.push_kiss_mon(
+                    PadKind::Own,
+                    &my,
+                    &peer,
+                    &[],
+                    Ax25FrameType::Info,
+                    ns,
+                    nr,
+                    false,
+                    true,
+                    Some(line),
+                );
+                // Self-connect peer channel sees the chat.
+                self.deliver_self_connect_rx(n, line);
             }
             ActivePane::Channel(_) => {
                 self.status = "KISS: not linked — Connect first, or type on Monitor (CQ)".into();
@@ -1256,6 +1412,18 @@ impl GpGuiApp {
                 // Unproto: MYCALL → CQ
                 let frame = ax25::build_ui("CQ", &my, &[], &info);
                 self.tx_kiss_payload(0, &frame);
+                self.push_kiss_mon(
+                    PadKind::Own,
+                    &my,
+                    "CQ",
+                    &[],
+                    Ax25FrameType::Ui,
+                    0,
+                    0,
+                    false,
+                    true,
+                    Some(line),
+                );
                 self.status = format!("KISS UI {my} > CQ");
             }
         }
@@ -1273,8 +1441,12 @@ impl GpGuiApp {
                     info: info_text.clone(),
                 };
                 self.mheard.hear(&ui);
-                self.pads[0].push(PadKind::Incoming, ui.display_line());
-                self.feed_spy_pads(&frame.src, PadKind::Incoming, &ui.display_line());
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, Some(&info_text));
+                let mon = frame.monitor_line();
+                self.feed_spy_pads(&frame.src, PadKind::Incoming, &mon);
+                for line in ax25::monitor_payload_lines(&info_text) {
+                    self.feed_spy_pads(&frame.src, PadKind::Incoming, &line);
+                }
             }
             Ax25FrameType::Sabm => {
                 if !self.cfg.is_own_call(&frame.dest)
@@ -1308,13 +1480,23 @@ impl GpGuiApp {
                     Some(_) => self.first_free_channel(),
                     None => self.first_free_channel(),
                 };
+                // Heard SABM (even if we refuse).
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
                 let Some(ch) = ch else {
                     // All busy → DM (refuse).
                     let my = self.cfg.primary_mycall().to_string();
                     self.tx_kiss_payload(0, &ax25::build_dm(&frame.src, &my, true));
-                    self.pads[0].push(
-                        PadKind::System,
-                        format!("DM → {} (busy, no free channel)", frame.src),
+                    self.push_kiss_mon(
+                        PadKind::Own,
+                        &my,
+                        &frame.src,
+                        &[],
+                        Ax25FrameType::Dm,
+                        0,
+                        0,
+                        true,
+                        false,
+                        None,
                     );
                     return;
                 };
@@ -1340,6 +1522,7 @@ impl GpGuiApp {
                 if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
                     *vr = 0;
                 }
+                self.kiss_clear_sabm_timer(ch);
                 self.kiss_link_activity(ch, true);
                 play_wav(&self.connect_wav);
                 if let Some(pad) = self.pads.get_mut(ch as usize) {
@@ -1348,14 +1531,23 @@ impl GpGuiApp {
                         format!("*** CONNECTED to {}", frame.src),
                     );
                 }
-                self.pads[0].push(
+                self.push_kiss_mon(
                     PadKind::Own,
-                    format!("UA {} > {} (ans ch{ch})", my, frame.src),
+                    &my,
+                    &frame.src,
+                    &[],
+                    Ax25FrameType::Ua,
+                    0,
+                    0,
+                    true,
+                    false,
+                    None,
                 );
                 self.send_connect_text(ch);
                 self.status = format!("KISS linked ch{ch} ← {}", frame.src);
             }
             Ax25FrameType::Ua => {
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
                 let ch = (1..=self.channels).find(|&n| {
                     self.channel_connecting
                         .get(n as usize)
@@ -1379,6 +1571,7 @@ impl GpGuiApp {
                 if let Some(p) = self.channel_peer.get_mut(ch as usize) {
                     *p = Some(frame.src.clone());
                 }
+                self.kiss_clear_sabm_timer(ch);
                 self.kiss_link_activity(ch, true);
                 play_wav(&self.connect_wav);
                 if let Some(pad) = self.pads.get_mut(ch as usize) {
@@ -1391,6 +1584,7 @@ impl GpGuiApp {
                 self.status = format!("KISS linked ch{ch} → {}", frame.src);
             }
             Ax25FrameType::Info => {
+                // Route to channel whose peer is the sender (or dest is our call).
                 let ch = (1..=self.channels)
                     .find(|&n| {
                         self.channel_peer
@@ -1398,16 +1592,41 @@ impl GpGuiApp {
                             .and_then(|p| p.as_ref())
                             .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
                     })
+                    .or_else(|| {
+                        (1..=self.channels).find(|&n| {
+                            self.channel_linked(n)
+                                && self
+                                    .effective_mycall(n)
+                                    .eq_ignore_ascii_case(&frame.dest)
+                        })
+                    })
                     .unwrap_or(0);
+                let line = info_text.trim_end_matches(['\r', '\n']).to_string();
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, Some(&line));
                 if ch >= 1 {
                     if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
                         *vr = (frame.ns.wrapping_add(1)) & 7;
                     }
                     let my = self.effective_mycall(ch);
                     let nr = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
-                    self.tx_kiss_payload(0, &ax25::build_rr(&frame.src, &my, nr, false, false));
+                    // Ack I with RR (Final if peer set P).
+                    self.tx_kiss_payload(
+                        0,
+                        &ax25::build_rr(&frame.src, &my, nr, frame.poll, false),
+                    );
+                    self.push_kiss_mon(
+                        PadKind::Own,
+                        &my,
+                        &frame.src,
+                        &[],
+                        Ax25FrameType::Rr,
+                        0,
+                        nr,
+                        frame.poll,
+                        false,
+                        None,
+                    );
                     self.kiss_link_activity(ch, true);
-                    let line = info_text.trim_end_matches(['\r', '\n']).to_string();
                     if let Some(pad) = self.pads.get_mut(ch as usize) {
                         pad.push(PadKind::Incoming, line.clone());
                     }
@@ -1418,19 +1637,10 @@ impl GpGuiApp {
                             self.handle_remote_on_channel(ch, action, &args);
                         }
                     }
-                } else {
-                    self.pads[0].push(
-                        PadKind::Incoming,
-                        format!(
-                            "{}>{}: {}",
-                            frame.src,
-                            frame.dest,
-                            info_text.trim_end_matches(['\r', '\n'])
-                        ),
-                    );
                 }
             }
             Ax25FrameType::Disc => {
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
                 let ch = (1..=self.channels).find(|&n| {
                     self.channel_peer
                         .get(n as usize)
@@ -1445,6 +1655,18 @@ impl GpGuiApp {
                 if let Some(ch) = ch {
                     let my = self.effective_mycall(ch);
                     self.tx_kiss_payload(0, &ax25::build_ua(&frame.src, &my, true));
+                    self.push_kiss_mon(
+                        PadKind::Own,
+                        &my,
+                        &frame.src,
+                        &[],
+                        Ax25FrameType::Ua,
+                        0,
+                        0,
+                        true,
+                        false,
+                        None,
+                    );
                     let was = self.channel_linked(ch);
                     self.clear_channel_link_state(ch);
                     if was {
@@ -1456,27 +1678,24 @@ impl GpGuiApp {
                 }
             }
             Ax25FrameType::Rr => {
-                let ch = (1..=self.channels).find(|&n| {
-                    self.channel_peer
-                        .get(n as usize)
-                        .and_then(|p| p.as_ref())
-                        .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
-                });
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                let ch = self.kiss_channel_for_frame(&frame.src, &frame.dest);
                 let Some(ch) = ch else {
+                    // Still answer if the poll is clearly for one of our calls.
+                    if frame.poll {
+                        if let Some(ch) = self.kiss_channel_owning_dest(&frame.dest) {
+                            self.kiss_reply_rr_final(ch, &frame.src);
+                        }
+                    }
                     return;
                 };
                 self.kiss_link_activity(ch, true);
                 if frame.poll {
-                    // Peer RR poll → answer with RR Final.
-                    let my = self.effective_mycall(ch);
-                    let nr = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
-                    self.tx_kiss_payload(
-                        0,
-                        &ax25::build_rr(&frame.src, &my, nr, true, false),
-                    );
+                    self.kiss_reply_rr_final(ch, &frame.src);
                 }
             }
             Ax25FrameType::Dm => {
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
                 let ch = (1..=self.channels).find(|&n| {
                     self.channel_connecting
                         .get(n as usize)
@@ -1495,12 +1714,8 @@ impl GpGuiApp {
                             format!("*** DM from {} — link refused/busy", frame.src),
                         );
                     }
+                    self.kiss_clear_sabm_timer(ch);
                     self.clear_channel_link_state(ch);
-                } else {
-                    self.pads[0].push(
-                        PadKind::System,
-                        format!("DM from {} (busy/disconnected)", frame.src),
-                    );
                 }
             }
             Ax25FrameType::Other => {}
@@ -1523,11 +1738,12 @@ impl GpGuiApp {
         }
     }
 
-    /// T3 idle RR poll every ~5 min; no reply after T1 retries → DISC.
+    /// SABM retries while connecting; T3 idle RR poll when linked.
     fn kiss_link_timers(&mut self) {
         if !self.kiss_mode() {
             return;
         }
+        self.kiss_sabm_timers();
         let now = Instant::now();
         let mut poll: Vec<u8> = Vec::new();
         let mut drop: Vec<u8> = Vec::new();
@@ -1565,6 +1781,146 @@ impl GpGuiApp {
         }
     }
 
+    /// No UA after SABM → resend every 5 s (up to 3 retries), then local give-up (no DISC).
+    fn kiss_sabm_timers(&mut self) {
+        let now = Instant::now();
+        let mut retry: Vec<u8> = Vec::new();
+        let mut give_up: Vec<u8> = Vec::new();
+        for ch in 1..=self.channels {
+            if self.channel_linked(ch) {
+                continue;
+            }
+            let idx = ch as usize;
+            let connecting = self
+                .channel_connecting
+                .get(idx)
+                .and_then(|p| p.as_ref())
+                .is_some();
+            if !connecting {
+                continue;
+            }
+            // Self-connect finishes immediately — no SABM wait.
+            if self
+                .self_connect_pair
+                .is_some_and(|(c, a)| c == ch || a == ch)
+            {
+                continue;
+            }
+            let Some(sent) = self.ax25_sabm_at.get(idx).and_then(|t| *t) else {
+                continue;
+            };
+            if now.duration_since(sent) < AX25_SABM_RETRY {
+                continue;
+            }
+            let tries = *self.ax25_sabm_tries.get(idx).unwrap_or(&0);
+            // tries = SABMs already sent; allow 1 initial + AX25_SABM_RETRIES.
+            if tries >= 1 + AX25_SABM_RETRIES {
+                give_up.push(ch);
+            } else {
+                retry.push(ch);
+            }
+        }
+        for ch in retry {
+            self.kiss_resend_sabm(ch);
+        }
+        for ch in give_up {
+            self.kiss_sabm_give_up(ch);
+        }
+    }
+
+    fn kiss_resend_sabm(&mut self, channel: u8) {
+        let Some(dest) = self
+            .channel_connecting
+            .get(channel as usize)
+            .and_then(|p| p.clone())
+        else {
+            return;
+        };
+        let src = self.effective_mycall(channel);
+        self.tx_kiss_payload(0, &ax25::build_sabm(&dest, &src));
+        let idx = channel as usize;
+        if let Some(t) = self.ax25_sabm_at.get_mut(idx) {
+            *t = Some(Instant::now());
+        }
+        if let Some(n) = self.ax25_sabm_tries.get_mut(idx) {
+            *n = n.saturating_add(1);
+        }
+        self.push_kiss_mon(
+            PadKind::Own,
+            &src,
+            &dest,
+            &[],
+            Ax25FrameType::Sabm,
+            0,
+            0,
+            true,
+            true,
+            None,
+        );
+        if let Some(pad) = self.pads.get_mut(idx) {
+            pad.push(PadKind::System, format!("*** retry connect to {dest}"));
+        }
+        self.status = format!("KISS SABM retry ch{channel} → {dest}");
+    }
+
+    /// Connect timed out — clear UI state only (never linked, so no DISC on air).
+    fn kiss_sabm_give_up(&mut self, channel: u8) {
+        let dest = self
+            .channel_connecting
+            .get(channel as usize)
+            .and_then(|p| p.clone())
+            .unwrap_or_else(|| "????".into());
+        self.kiss_clear_sabm_timer(channel);
+        self.clear_channel_link_state(channel);
+        let msg = format!("*** no answer from {dest} — giving up");
+        if let Some(pad) = self.pads.get_mut(channel as usize) {
+            pad.push(PadKind::System, msg.clone());
+        }
+        self.pads[0].push(PadKind::System, msg);
+        self.status = format!("KISS connect failed ch{channel} → {dest}");
+        if !self.any_channel_busy() {
+            self.restore_global_identities();
+        }
+    }
+
+    /// Linked channel whose peer is `src`, or whose identity is `dest`.
+    fn kiss_channel_for_frame(&self, src: &str, dest: &str) -> Option<u8> {
+        (1..=self.channels)
+            .find(|&n| {
+                self.channel_peer
+                    .get(n as usize)
+                    .and_then(|p| p.as_ref())
+                    .is_some_and(|p| p.eq_ignore_ascii_case(src))
+            })
+            .or_else(|| self.kiss_channel_owning_dest(dest))
+    }
+
+    fn kiss_channel_owning_dest(&self, dest: &str) -> Option<u8> {
+        (1..=self.channels).find(|&n| {
+            self.channel_linked(n) && self.effective_mycall(n).eq_ignore_ascii_case(dest)
+        })
+    }
+
+    /// RR Final on air + Monitor (answer to peer poll / I+P).
+    fn kiss_reply_rr_final(&mut self, channel: u8, peer: &str) {
+        let my = self.effective_mycall(channel);
+        let nr = *self.ax25_vr.get(channel as usize).unwrap_or(&0);
+        self.tx_kiss_payload(0, &ax25::build_rr(peer, &my, nr, true, false));
+        self.push_kiss_mon(
+            PadKind::Own,
+            &my,
+            peer,
+            &[],
+            Ax25FrameType::Rr,
+            0,
+            nr,
+            true,
+            false,
+            None,
+        );
+        self.kiss_link_activity(channel, false);
+    }
+
     fn kiss_send_rr_poll(&mut self, channel: u8) {
         let Some(peer) = self
             .channel_peer
@@ -1584,12 +1940,36 @@ impl GpGuiApp {
         if let Some(n) = self.ax25_poll_tries.get_mut(idx) {
             *n = n.saturating_add(1);
         }
-        let tries = *self.ax25_poll_tries.get(idx).unwrap_or(&1);
-        self.pads[0].push(
+        self.push_kiss_mon(
             PadKind::Own,
-            format!("RR poll ch{channel} → {peer} (try {tries}/{AX25_POLL_RETRIES})"),
+            &my,
+            &peer,
+            &[],
+            Ax25FrameType::Rr,
+            0,
+            nr,
+            true,
+            true,
+            None,
         );
         self.status = format!("KISS T3 poll ch{channel}");
+
+        // Self-connect: no RF loopback — answer locally from the other channel.
+        if let Some((c, a)) = self.self_connect_live {
+            let other = if channel == c {
+                a
+            } else if channel == a {
+                c
+            } else {
+                return;
+            };
+            if self.channel_linked(other) {
+                let other_peer = self.effective_mycall(channel); // who polled
+                self.kiss_reply_rr_final(other, &other_peer);
+                // Poll was answered — clear T1 wait on the polling side.
+                self.kiss_link_activity(channel, true);
+            }
+        }
     }
 
     /// Hostmode/modem command TX — skipped on KISS (identity lives in AX.25 headers).
@@ -3108,7 +3488,18 @@ impl GpGuiApp {
             let src = self.effective_mycall(channel);
             let frame = ax25::build_sabm(&dest, &src);
             self.tx_kiss_payload(0, &frame);
-            self.pads[0].push(PadKind::Own, format!("SABM {src} > {dest}"));
+            self.push_kiss_mon(
+                PadKind::Own,
+                &src,
+                &dest,
+                &vias,
+                Ax25FrameType::Sabm,
+                0,
+                0,
+                true,
+                true,
+                None,
+            );
             if self_connect {
                 // Soundmodem / half-duplex will not RX our own SABM — finish the
                 // answer side locally (UA on air + both channels linked + CTEXT).
@@ -3116,6 +3507,7 @@ impl GpGuiApp {
                     self.kiss_finish_self_connect(caller, answer);
                 }
             } else {
+                self.kiss_arm_sabm_timer(channel);
                 self.status = format!("KISS SABM → {dest}");
             }
         } else {
