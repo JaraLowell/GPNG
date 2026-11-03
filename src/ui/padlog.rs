@@ -182,7 +182,7 @@ impl TextPad {
 
     pub fn layout_job(&self) -> LayoutJob {
         let mut job = LayoutJob::default();
-        let font = FontId::monospace(14.0);
+        let font = FontId::monospace(16.0);
         for (i, line) in self.lines.iter().enumerate() {
             if i > 0 {
                 job.append(

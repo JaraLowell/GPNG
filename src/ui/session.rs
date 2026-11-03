@@ -207,8 +207,8 @@ impl SessionChrome {
     }
 
     pub fn nudge_lines(&mut self, lines: i32) {
-        // ~14 px monospace row in the RX pane.
-        self.scroll_nudge += lines as f32 * -14.0;
+        // ~16 px monospace row in the RX pane.
+        self.scroll_nudge += lines as f32 * -16.0;
     }
 
     pub fn take_scroll_nudge(&mut self) -> f32 {
