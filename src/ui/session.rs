@@ -50,7 +50,7 @@ pub struct SessionChrome {
     pub remote: bool,
     pub bin_rx: bool,
     pub bin_tx: bool,
-    /// On: stick RX to end on new traffic. Off: keep viewport; use ▲▼.
+    /// On: freeze viewport (classic Scroll Lock). Off: always follow new lines.
     pub scr_lock: bool,
     /// Show the RX vertical scrollbar.
     pub scrollbar: bool,

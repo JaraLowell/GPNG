@@ -9,6 +9,7 @@ pub mod gui;
 pub mod icons;
 pub mod layout;
 pub mod mheard;
+pub mod padlog;
 pub mod session;
 pub mod theme;
 

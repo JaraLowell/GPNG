@@ -25,7 +25,7 @@ use eframe::egui::{
     self, Color32, ColorImage, Context, FontData, FontDefinitions, FontFamily, FontId, Frame, Pos2,
     Rect, RichText, Sense, Stroke, TextWrapMode, TextureHandle, TextureOptions, Ui, Vec2,
 };
-use eframe::egui::text::{LayoutJob, TextFormat};
+use eframe::egui::text::LayoutJob;
 use tokio::sync::mpsc;
 
 use crate::config::{Config, HostProtocol};
@@ -42,13 +42,13 @@ use super::icons::{
 };
 use super::layout::ActivePane;
 use super::mheard::MheardList;
+use super::padlog::{self, PadKind, TextPad};
 use super::session::{
     decode_rx_text, default_bell_wav, default_connect_wav, default_disconnect_wav,
     format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav, Ax25UiFrame, SessionChrome,
 };
 use super::theme::vga;
 
-const MAX_LINES: usize = 2_000;
 const TYPED_HISTORY: usize = 10;
 /// KISS T3: idle link check (RR poll) after this much silence.
 const AX25_T3_IDLE: Duration = Duration::from_secs(5 * 60);
@@ -66,9 +66,6 @@ const VGA_DARK_RED: Color32 = Color32::from_rgb(170, 0, 0);
 const VGA_GRAY: Color32 = Color32::from_rgb(170, 170, 170);
 const VGA_DARK_GRAY: Color32 = Color32::from_rgb(85, 85, 85);
 /// Classic GP text-window colours (Monitor / Channel / Spy pads).
-const PAD_INCOMING: Color32 = Color32::from_rgb(85, 255, 85); // light green
-const PAD_OWN: Color32 = Color32::WHITE;
-const PAD_SYSTEM: Color32 = Color32::from_rgb(255, 168, 0); // orange (init / debug)
 
 /// Classic DOS / BGI 3D bevel: raised = light-grey top+left, black bottom+right;
 /// pressed (sunken) = reversed.
@@ -119,75 +116,6 @@ fn egui_color(name: &str) -> Color32 {
     }
 }
 
-/// Classic GP line roles — colour carries meaning (no `***` needed).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PadKind {
-    /// RX / decoded APRS / monitored frames.
-    Incoming,
-    /// Local TX echo (when Echo is on).
-    Own,
-    /// Init, status, warnings, raw UART debug.
-    System,
-}
-
-impl PadKind {
-    fn color(self) -> Color32 {
-        match self {
-            PadKind::Incoming => PAD_INCOMING,
-            PadKind::Own => PAD_OWN,
-            PadKind::System => PAD_SYSTEM,
-        }
-    }
-}
-
-struct PadLine {
-    kind: PadKind,
-    text: String,
-}
-
-struct TextPad {
-    lines: VecDeque<PadLine>,
-}
-
-impl TextPad {
-    fn push(&mut self, kind: PadKind, line: impl Into<String>) {
-        self.lines.push_back(PadLine {
-            kind,
-            text: line.into(),
-        });
-        while self.lines.len() > MAX_LINES {
-            self.lines.pop_front();
-        }
-    }
-
-    fn layout_job(&self) -> LayoutJob {
-        let mut job = LayoutJob::default();
-        let font = FontId::monospace(14.0);
-        for (i, line) in self.lines.iter().enumerate() {
-            if i > 0 {
-                job.append(
-                    "\n",
-                    0.0,
-                    TextFormat {
-                        font_id: font.clone(),
-                        color: line.kind.color(),
-                        ..Default::default()
-                    },
-                );
-            }
-            job.append(
-                &line.text,
-                0.0,
-                TextFormat {
-                    font_id: font.clone(),
-                    color: line.kind.color(),
-                    ..Default::default()
-                },
-            );
-        }
-        job
-    }
-}
 
 pub struct GpGuiApp {
     cfg: Config,
@@ -204,6 +132,10 @@ pub struct GpGuiApp {
     pads: Vec<TextPad>,
     /// Spy windows `1..=10` (index 0 = spy 1).
     spy_pads: Vec<TextPad>,
+    /// BBS-Menu pad (`ActivePane::Check`).
+    bbs_pad: TextPad,
+    /// DieBox-List pad (`ActivePane::List`).
+    box_pad: TextPad,
     /// Soft event / command log (mode changes, etc.).
     event_log: VecDeque<String>,
     channels: u8,
@@ -286,6 +218,18 @@ impl GpGuiApp {
         cmd_tx: mpsc::Sender<TncCommand>,
     ) -> Self {
         let channels = cfg.session.channels.clamp(1, 10) as u8;
+        let mon_max = cfg.buffers.text_buffer.first().copied().unwrap_or(600) as usize;
+        let ch_max = cfg
+            .buffers
+            .text_buffer
+            .get(1)
+            .copied()
+            .unwrap_or(300) as usize;
+        let spy_max = cfg.buffers.spy_buffer.max(1) as usize;
+        let bbs_max = cfg.buffers.check_buffer.max(1) as usize;
+        let box_max = cfg.buffers.list_buffer.max(1) as usize;
+        let log_dir = cfg.paths.log_dir.clone();
+
         let mut pads = Vec::with_capacity(channels as usize + 1);
         let mut channel_peer = Vec::with_capacity(channels as usize + 1);
         let mut channel_connecting = Vec::with_capacity(channels as usize + 1);
@@ -295,10 +239,15 @@ impl GpGuiApp {
         let mut ax25_alive_at = Vec::with_capacity(channels as usize + 1);
         let mut ax25_poll_at = Vec::with_capacity(channels as usize + 1);
         let mut ax25_poll_tries = Vec::with_capacity(channels as usize + 1);
-        for _ in 0..=channels {
-            pads.push(TextPad {
-                lines: VecDeque::new(),
-            });
+        for n in 0..=channels {
+            let max = if n == 0 { mon_max } else { ch_max };
+            let mut pad = TextPad::new(max);
+            if n == 0 {
+                pad.load_log(&padlog::monitor_path(&log_dir));
+            } else {
+                pad.load_log(&padlog::channel_path(&log_dir, n));
+            }
+            pads.push(pad);
             channel_peer.push(None);
             channel_connecting.push(None);
             temp_slot_call.push(None);
@@ -308,13 +257,27 @@ impl GpGuiApp {
             ax25_poll_at.push(None);
             ax25_poll_tries.push(0);
         }
+        // Session banner (orange) — not persisted.
         pads[0].push(PadKind::System, version::startup_credits());
         pads[0].push(
             PadKind::System,
             version::startup_local_call(cfg.primary_mycall()),
         );
 
-        let buffer_lines = cfg.buffers.text_buffer.first().copied().unwrap_or(500);
+        let spy_pads: Vec<TextPad> = (1..=10)
+            .map(|slot| {
+                let mut pad = TextPad::new(spy_max);
+                pad.load_log(&padlog::spy_path(&log_dir, slot));
+                pad
+            })
+            .collect();
+
+        let mut bbs_pad = TextPad::new(bbs_max);
+        bbs_pad.load_log(&padlog::bbs_path(&log_dir));
+        let mut box_pad = TextPad::new(box_max);
+        box_pad.load_log(&padlog::box_path(&log_dir));
+
+        let buffer_lines = mon_max as u32;
         install_console_font(&cc.egui_ctx);
         let icon_tex = load_icon_textures(&cc.egui_ctx);
         let status = if icon_tex.is_empty() {
@@ -335,11 +298,6 @@ impl GpGuiApp {
             cfg.tnc.monitor_mode.clone()
         };
         let session = SessionChrome::from_config(&cfg.session.chrome);
-        let spy_pads = (0..10)
-            .map(|_| TextPad {
-                lines: VecDeque::new(),
-            })
-            .collect();
         Self {
             monitor_bg: egui_color(&colors.monitor_background),
             monitor_fg: egui_color(&colors.monitor_foreground),
@@ -359,6 +317,8 @@ impl GpGuiApp {
             typed_history: VecDeque::new(),
             pads,
             spy_pads,
+            bbs_pad,
+            box_pad,
             event_log: VecDeque::new(),
             channels,
             channel_peer,
@@ -1854,22 +1814,45 @@ impl GpGuiApp {
     }
 
     fn active_layout(&self) -> LayoutJob {
-        if let ActivePane::Spy(n) = self.active {
-            let idx = n.saturating_sub(1) as usize;
-            return self
-                .spy_pads
-                .get(idx)
+        match self.active {
+            ActivePane::Spy(n) => {
+                let idx = n.saturating_sub(1) as usize;
+                self.spy_pads
+                    .get(idx)
+                    .map(TextPad::layout_job)
+                    .unwrap_or_default()
+            }
+            ActivePane::Check => self.bbs_pad.layout_job(),
+            ActivePane::List => self.box_pad.layout_job(),
+            ActivePane::Channel(n) => self
+                .pads
+                .get(n as usize)
                 .map(TextPad::layout_job)
-                .unwrap_or_default();
+                .unwrap_or_default(),
+            _ => self
+                .pads
+                .first()
+                .map(TextPad::layout_job)
+                .unwrap_or_default(),
         }
-        let idx = match self.active {
-            ActivePane::Channel(n) => n as usize,
-            _ => 0,
-        };
-        self.pads
-            .get(idx)
-            .map(TextPad::layout_job)
-            .unwrap_or_default()
+    }
+
+    /// Persist Own/Incoming lines for Monitor, channels, spy, BBS, Box.
+    fn save_pad_logs(&self) {
+        let dir = &self.cfg.paths.log_dir;
+        if let Some(mon) = self.pads.first() {
+            mon.save_log(&padlog::monitor_path(dir));
+        }
+        for ch in 1..=self.channels {
+            if let Some(pad) = self.pads.get(ch as usize) {
+                pad.save_log(&padlog::channel_path(dir, ch));
+            }
+        }
+        for (i, pad) in self.spy_pads.iter().enumerate() {
+            pad.save_log(&padlog::spy_path(dir, (i + 1) as u8));
+        }
+        self.bbs_pad.save_log(&padlog::bbs_path(dir));
+        self.box_pad.save_log(&padlog::box_path(dir));
     }
 
     fn show_session_bar(&self) -> bool {
@@ -1916,6 +1899,10 @@ impl GpGuiApp {
 }
 
 impl eframe::App for GpGuiApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_pad_logs();
+    }
+
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.drain_tnc();
         self.kiss_link_timers();
@@ -2377,7 +2364,8 @@ impl GpGuiApp {
             _ => self.monitor_bg,
         };
         let nudge = self.session.take_scroll_nudge();
-        let stick = self.session.scr_lock;
+        // ScrLock off → follow last line; on → freeze (all RX panes share this).
+        let stick = !self.session.scr_lock;
         let show_bar = self.session.scrollbar;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
@@ -2417,7 +2405,7 @@ impl GpGuiApp {
         let bg = Color32::from_rgb(170, 170, 170);
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         let show_bar = self.session.scrollbar;
-        let stick = self.session.scr_lock;
+        let stick = !self.session.scr_lock;
         let nudge = self.session.take_scroll_nudge();
         let pick = self.mheard_spy_pick;
         let selected = self.mheard_selected;
