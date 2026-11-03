@@ -2,6 +2,14 @@
   {
     "date": "2026/11/03",
     "time": "20:51",
+    "call": "DB0ET",
+    "to": "U3RTS5",
+    "via": "WIDE1-1,WIDE2-2",
+    "heard_ms": 1793735510534
+  },
+  {
+    "date": "2026/11/03",
+    "time": "20:51",
     "call": "PA0KNW-2",
     "to": "APRS",
     "via": "DB0ET,WIDE1,WIDE2-1",
@@ -14,14 +22,6 @@
     "to": "APMI03",
     "via": "DB0ET,WIDE2-1",
     "heard_ms": 1793735407608
-  },
-  {
-    "date": "2026/11/03",
-    "time": "20:49",
-    "call": "DB0ET",
-    "to": "APTT4",
-    "via": "WIDE1-1,WIDE2-2",
-    "heard_ms": 1793735352600
   },
   {
     "date": "2026/11/03",

@@ -9,6 +9,16 @@ readme = "README.md"
 keywords = ["ax25", "packet-radio", "ham-radio", "tnc", "hostmode"]
 categories = ["network-programming", "command-line-utilities"]
 
+# Windows Explorer → Properties → Details. FileVersion / ProductVersion
+# follow `package.version` (2.1.0 → 2.1.0.0).
+[package.metadata.winresource]
+CompanyName = "NG Mitch and Jara"
+FileDescription = "Graphic Packet NG"
+ProductName = "Graphic Packet NG"
+InternalName = "graphic-packet"
+OriginalFilename = "graphic-packet.exe"
+LegalCopyright = "MIT OR Apache-2.0. The original GP binaries and docs remain under their historical licence terms in the parent tree."
+
 [dependencies]
 # Async runtime: dual-task architecture (serial RX + terminal UI).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "fs", "signal"] }
