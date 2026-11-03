@@ -147,18 +147,5 @@ fn pad_call(s: &str) -> String {
 }
 
 pub fn default_mheard_path() -> PathBuf {
-    let candidates = [
-        PathBuf::from("tools").join("MHEARD.json"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tools")
-            .join("MHEARD.json"),
-    ];
-    for p in &candidates {
-        if let Some(parent) = p.parent() {
-            if parent.is_dir() {
-                return p.clone();
-            }
-        }
-    }
-    candidates[0].clone()
+    crate::paths::data_file("MHEARD.json")
 }

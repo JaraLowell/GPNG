@@ -34,20 +34,9 @@ enum Action {
     DelayMs(u64),
 }
 
-/// Resolve `KISS.INI` beside the binary / crate / parent GP tree.
+/// Resolve `KISS.INI` from the configured path or `data/`.
 pub fn resolve_kiss_ini(configured: &str) -> PathBuf {
-    let candidates = [
-        PathBuf::from(configured),
-        PathBuf::from("gp-rs").join(configured),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(configured),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join(configured),
-    ];
-    candidates
-        .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(configured))
+    crate::paths::resolve_configured(configured)
 }
 
 /// Expand `%M` → `monitor_mode` (classic GP monitor flags, e.g. IUSC).

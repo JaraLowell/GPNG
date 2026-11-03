@@ -140,7 +140,7 @@ impl TextPad {
     }
 }
 
-/// `LOG/pads` (created on save).
+/// `data/log/pads` (created on save).
 pub fn pads_dir(log_dir: &Path) -> PathBuf {
     log_dir.join("pads")
 }

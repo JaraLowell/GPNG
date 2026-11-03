@@ -218,7 +218,7 @@ impl SessionChrome {
     }
 }
 
-/// Resolve connect-text GPI (`tools/GTEXT.GPI` preferred, else `CTEXT.GPI`).
+/// Resolve connect-text GPI (`data/GTEXT.GPI`).
 pub fn default_ctext_path() -> PathBuf {
     crate::remote::gpi::default_gtext_path()
 }
@@ -237,21 +237,20 @@ pub fn default_disconnect_wav() -> PathBuf {
 }
 
 fn asset_wav(name: &str) -> PathBuf {
-    let candidates = [
+    let in_data = crate::paths::data_file(name);
+    if in_data.is_file() {
+        return in_data;
+    }
+    let legacy = [
         PathBuf::from("assets").join(name),
-        PathBuf::from("gp-rs/assets").join(name),
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("assets")
             .join(name),
     ];
-    candidates
+    legacy
         .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("assets")
-                .join(name)
-        })
+        .find(|p| p.is_file())
+        .unwrap_or(in_data)
 }
 
 /// Best-effort WAV play on a background thread.

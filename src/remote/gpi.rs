@@ -1,7 +1,7 @@
 //! Classic `*.GPI` text files — served on `//` remotes and sampled by `%O`.
 //!
 //! `ORIGIN.GPI` is special: `%O` picks one random non-empty line.
-//! Every other `*.GPI` under `tools/` (or cwd) can be requested with
+//! Every other `*.GPI` under `data/` can be requested with
 //! `//{stem}` or a unique prefix / first letter (case-insensitive).
 
 use std::fs;
@@ -13,14 +13,10 @@ use super::macros::{expand, MacroContext};
 
 /// Directories searched for `*.GPI` (first hit wins per file name).
 pub fn gpi_search_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("tools"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools"),
-        PathBuf::from("."),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-    ];
-    dirs.retain(|d| d.is_dir());
-    dirs
+    crate::paths::data_dirs()
+        .into_iter()
+        .filter(|d| d.is_dir())
+        .collect()
 }
 
 fn resolve_named(file_name: &str) -> Option<PathBuf> {
@@ -77,7 +73,7 @@ pub fn news_available() -> bool {
 
 /// Default connect-text path (`GTEXT.GPI`).
 pub fn default_gtext_path() -> PathBuf {
-    resolve_named("GTEXT.GPI").unwrap_or_else(|| PathBuf::from("tools/GTEXT.GPI"))
+    resolve_named("GTEXT.GPI").unwrap_or_else(|| crate::paths::data_file("GTEXT.GPI"))
 }
 
 #[derive(Debug, Clone)]
@@ -197,7 +193,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_tools_gpi_if_present() {
+    fn finds_data_gpi_if_present() {
         let list = list_servable();
         if resolve_named("NEWS.GPI").is_none() {
             return;

@@ -56,7 +56,7 @@ spy_calls = ["", "", "", "", "", "", "", "", "", ""]
 # Session-bar button state (restored on start; rewritten when you toggle).
 [session.chrome]
 qrg_mhz = 144.800
-ctext = "tools\\GTEXT.GPI"
+ctext = "data/GTEXT.GPI"
 extended_ascii = true
 smooth_scroll = false
 echo = true
@@ -76,11 +76,12 @@ input_buffer = 200
 
 [paths]
 # Legacy: USERDIR, EXTERNALDIR, SAVEDIR, LOGDIR, SPYDIR
-user_dir = "USER"
-external_dir = "EXTERNAL"
-save_dir = "SAVE"
-log_dir = "LOG"
-spy_dir = "SPY"
+# All of these live under data/ so a release folder stays exe + Config.toml + data/.
+user_dir = "data/USER"
+external_dir = "data/EXTERNAL"
+save_dir = "data/SAVE"
+log_dir = "data/log"
+spy_dir = "data/SPY"
 
 [tnc]
 # Legacy: TNCINI / TNCDEI / TNCDOS — WA8DED / TFPCX hostmode command strings.
@@ -110,7 +111,7 @@ dos_shell = [
 ]
 
 # WA8DED open/close INI ([open] / [status] / [close]) — preferred over init[]/deinit[].
-wa8ded_ini = "WA8DED.INI"
+wa8ded_ini = "data/WA8DED.INI"
 wa8ded_line_delay_ms = 300
 
 # Modem driver (only one is loaded): "wa8ded" (aliases: jhost, hostmode),
@@ -122,12 +123,12 @@ monitor_mode = "IUSC"
 
 # KISS wire: "serial" = Kenwood etc. via [serial] port/baud + KISS.INI;
 # "tcp" = Soundmodem / Direwolf raw KISS TCP (no KISS.INI).
-kiss_transport = "serial"
+kiss_transport = "tcp"
 kiss_tcp_host = "127.0.0.1"
 kiss_tcp_port = 8100          # UZ7HO Soundmodem KISS TCP; Direwolf often 8001
 
-# KISSINIT-style open/close (serial KISS only). See KISS.INI sections.
-kiss_ini = "KISS.INI"
+# KISSINIT-style open/close (serial KISS only). See data/KISS.INI sections.
+kiss_ini = "data/KISS.INI"
 kiss_section = "TM-D710"   # open profile: TM-D710 | TM-D710_9600pkt | TM-D700 | …
 kiss_close_section = "close"
 kiss_char_delay_ms = 30

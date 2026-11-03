@@ -102,6 +102,17 @@ impl Config {
 
         cfg.tnc.runtime_mycall = cfg.primary_mycall().to_string();
         cfg.normalize_spy_calls();
+        // Relative dirs follow Config.toml, so a release copy works even when
+        // the process is started with a different working directory.
+        let base = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        cfg.paths.user_dir = anchor_to(base, cfg.paths.user_dir);
+        cfg.paths.external_dir = anchor_to(base, cfg.paths.external_dir);
+        cfg.paths.save_dir = anchor_to(base, cfg.paths.save_dir);
+        cfg.paths.log_dir = anchor_to(base, cfg.paths.log_dir);
+        cfg.paths.spy_dir = anchor_to(base, cfg.paths.spy_dir);
         Ok(cfg)
     }
 
@@ -844,11 +855,11 @@ pub struct PathConfig {
 impl Default for PathConfig {
     fn default() -> Self {
         Self {
-            user_dir: PathBuf::from("USER"),
-            external_dir: PathBuf::from("EXTERNAL"),
-            save_dir: PathBuf::from("SAVE"),
-            log_dir: PathBuf::from("LOG"),
-            spy_dir: PathBuf::from("SPY"),
+            user_dir: PathBuf::from("data/USER"),
+            external_dir: PathBuf::from("data/EXTERNAL"),
+            save_dir: PathBuf::from("data/SAVE"),
+            log_dir: PathBuf::from("data/log"),
+            spy_dir: PathBuf::from("data/SPY"),
         }
     }
 }
@@ -906,12 +917,12 @@ impl Default for TncConfig {
             deinit: vec!["MN".into(), "U1Away!".into(), "K2".into(), "JHOST0".into()],
             dos_shell: vec!["MN".into()],
             protocol: "wa8ded".into(),
-            kiss_ini: "KISS.INI".into(),
+            kiss_ini: "data/KISS.INI".into(),
             kiss_section: "TM-D710".into(),
             kiss_char_delay_ms: 30,
             kiss_line_delay_ms: 300,
             kiss_exit_delay_ms: 5000,
-            wa8ded_ini: "WA8DED.INI".into(),
+            wa8ded_ini: "data/WA8DED.INI".into(),
             wa8ded_line_delay_ms: 300,
             monitor_mode: "IUSC".into(),
             kiss_close_section: "close".into(),
@@ -1049,6 +1060,14 @@ impl Default for PrintConfig {
 // ---------------------------------------------------------------------------
 // Legacy parsing helpers
 // ---------------------------------------------------------------------------
+
+fn anchor_to(base: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
+}
 
 fn strip_legacy_comment(line: &str) -> &str {
     match line.find(';') {

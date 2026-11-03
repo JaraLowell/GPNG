@@ -14,18 +14,7 @@ use super::serial::SerialLink;
 use super::{TncError, TncEvent};
 
 pub fn resolve_wa8ded_ini(configured: &str) -> PathBuf {
-    let candidates = [
-        PathBuf::from(configured),
-        PathBuf::from("gp-rs").join(configured),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(configured),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join(configured),
-    ];
-    candidates
-        .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(configured))
+    crate::paths::resolve_configured(configured)
 }
 
 /// Expand `%M` → monitor flags from Config (`monitor_mode`, default IUSC).

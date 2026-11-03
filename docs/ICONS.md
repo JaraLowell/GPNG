@@ -36,7 +36,7 @@ Row-interleaved planar packing (4 plane strips per row), not nibble-packed.
 
 ## Decode
 
-See `src/ui/icons.rs`. Canonical library: **`tools/ICONS.GP`**.
+See `src/ui/icons.rs`. Canonical library: **`data/ICONS.GP`**.
 
 ## Screenshot mapping (toolbar)
 

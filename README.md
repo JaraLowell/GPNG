@@ -14,7 +14,8 @@ This crate targets modern Windows / macOS / Linux hosts talking to USB-to-serial
 | `docs/LAYOUT.md` | Pane map from V1.63 screenshot + docs |
 | `docs/ICONS.md` | Decoded `ICONS.GP` format (70×40 planar VGA, 17 icons) |
 | `src/ui/icons.rs` | Runtime decoder for the icon library |
-| `tools/ICONS.GP` | Canonical toolbar icon library (loaded at runtime) |
+| `data/` | Runtime files shipped beside the exe: GPI text, icons, sounds, `KISS.INI`, `WA8DED.INI`, and `log/` |
+| `data/ICONS.GP` | Canonical toolbar icon library (loaded at runtime) |
 | `docs/COMPATIBILITY.md` | `//` remotes + `%` macros recovered from `*.GPH` / docs / EXE strings |
 | `src/remote/` | Abbreviation-aware command parser + GPI macro expander |
 | `docs/TRANSFER.md` | AutoBin `#BIN#` + 7Plus Code-AutoSave (≠ 7-Zip) for DOS GP interop |
@@ -35,7 +36,7 @@ regions over reverse-engineering `GP2862K.EXE` drawing code.
 # Edit Config.toml — set [station].mycall
 # Serial TNC/Kenwood: [serial].port + baud, [tnc] protocol / kiss_transport
 # Soundmodem lab: protocol = "kiss", kiss_transport = "tcp", kiss_tcp_*
-# Pixel UI loads toolbar bitmaps from tools/ICONS.GP
+# Pixel UI loads toolbar bitmaps from data/ICONS.GP
 cargo run
 # Text fallback:
 cargo run -- --tui

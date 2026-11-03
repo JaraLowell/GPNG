@@ -5,7 +5,6 @@
 
 use std::collections::VecDeque;
 use std::io::{stdout, Stdout};
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -92,12 +91,10 @@ impl UiApp {
         }
         let theme = Theme::from_config(&cfg.colors);
 
-        let icons = [
-            PathBuf::from("tools/ICONS.GP"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/ICONS.GP"),
-        ]
-        .into_iter()
-        .find_map(|p| IconLibrary::load(&p).ok());
+        let icons = {
+            let path = crate::paths::data_file("ICONS.GP");
+            IconLibrary::load(&path).ok()
+        };
 
         let icon_note = icons
             .as_ref()

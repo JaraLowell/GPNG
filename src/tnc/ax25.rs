@@ -88,6 +88,37 @@ pub fn monitor_ctl_line(
     format!("fm {src} to {dest}{via} ctl {ctl}")
 }
 
+/// `fm SRC …` → `fm HH:MM SRC …` (24-hour, already-stamped lines left as-is).
+pub fn insert_monitor_time(line: &str, hhmm: &str) -> String {
+    let rest = line.trim_start();
+    let lead = &line[..line.len() - rest.len()];
+    let (head, tail) = if let Some(tail) = rest.strip_prefix("fm ") {
+        ("fm ", tail)
+    } else if let Some(tail) = rest.strip_prefix("FM ") {
+        ("FM ", tail)
+    } else {
+        return line.to_string();
+    };
+    if tail
+        .split_whitespace()
+        .next()
+        .is_some_and(is_hhmm)
+    {
+        return line.to_string();
+    }
+    format!("{lead}{head}{hhmm} {tail}")
+}
+
+fn is_hhmm(token: &str) -> bool {
+    let Some((h, m)) = token.split_once(':') else {
+        return false;
+    };
+    h.len() == 2
+        && m.len() == 2
+        && h.bytes().all(|b| b.is_ascii_digit())
+        && m.bytes().all(|b| b.is_ascii_digit())
+}
+
 impl Ax25Frame {
     /// Monitor header line for this decoded frame.
     pub fn monitor_line(&self) -> String {
@@ -406,6 +437,19 @@ mod tests {
             ui.monitor_line(),
             "fm NL0MSK to CQ via DB0ABC ctl UI^ pid F0"
         );
+    }
+
+    #[test]
+    fn stamps_hhmm_after_fm() {
+        assert_eq!(
+            insert_monitor_time("fm NL0MSK-2 to NL0MSK ctl I07^ pid F0", "03:22"),
+            "fm 03:22 NL0MSK-2 to NL0MSK ctl I07^ pid F0"
+        );
+        assert_eq!(
+            insert_monitor_time("fm 03:22 NL0MSK-2 to NL0MSK ctl I07^ pid F0", "04:01"),
+            "fm 03:22 NL0MSK-2 to NL0MSK ctl I07^ pid F0"
+        );
+        assert_eq!(insert_monitor_time("   payload", "03:22"), "   payload");
     }
 
     #[test]

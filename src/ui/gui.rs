@@ -293,7 +293,7 @@ impl GpGuiApp {
         install_console_font(&cc.egui_ctx);
         let icon_tex = load_icon_textures(&cc.egui_ctx);
         let status = if icon_tex.is_empty() {
-            "tools/ICONS.GP not found".into()
+            "data/ICONS.GP not found".into()
         } else {
             format!("{} icons", icon_tex.len())
         };
@@ -410,18 +410,7 @@ impl GpGuiApp {
     }
 
     fn editor_load_dialog(&mut self) {
-        // Prefer absolute tools/ so the picker opens there regardless of cwd.
-        let start = [
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools"),
-            std::env::current_dir()
-                .map(|d| d.join("tools"))
-                .unwrap_or_else(|_| PathBuf::from("tools")),
-            PathBuf::from("tools"),
-        ]
-        .into_iter()
-        .find(|p| p.is_dir())
-        .and_then(|p| p.canonicalize().ok().or(Some(p)))
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools"));
+        let start = crate::paths::data_dir();
         let dialog = rfd::FileDialog::new()
             .add_filter("GPI / text", &["gpi", "GPI", "txt", "TXT"])
             .set_title("Load GPI / text")
@@ -616,7 +605,12 @@ impl GpGuiApp {
                     };
                     if !(skip_monitor_dup && idx == 0) {
                         if let Some(pad) = self.pads.get_mut(idx) {
-                            pad.push(kind, line);
+                            let shown = if idx == 0 {
+                                stamp_monitor_fm(&line)
+                            } else {
+                                line
+                            };
+                            pad.push(kind, shown);
                         }
                     }
                     if let Some((action, args)) = remote_cmd {
@@ -888,7 +882,7 @@ impl GpGuiApp {
         let raw = [
             self.session.ctext_path.clone(),
             gpi::default_gtext_path(),
-            PathBuf::from("tools/GTEXT.GPI"),
+            crate::paths::data_file("GTEXT.GPI"),
         ]
         .into_iter()
         .find_map(|p| gpi::read_file(&p))?;
@@ -1311,7 +1305,9 @@ impl GpGuiApp {
         command: bool,
         info_text: Option<&str>,
     ) {
-        let hdr = ax25::monitor_ctl_line(src, dest, via, frame_kind, ns, nr, poll, command);
+        let hdr = stamp_monitor_fm(&ax25::monitor_ctl_line(
+            src, dest, via, frame_kind, ns, nr, poll, command,
+        ));
         self.pads[0].push(kind, hdr);
         if let Some(text) = info_text {
             for line in ax25::monitor_payload_lines(text) {
@@ -2024,7 +2020,7 @@ impl GpGuiApp {
             self.handle_remote(action, &args);
             return;
         }
-        // Unregistered `//verb` → serve matching tools/*.GPI (not ORIGIN).
+        // Unregistered `//verb` → serve matching data/*.GPI (not ORIGIN).
         if let Some(verb) = line.strip_prefix("//").or_else(|| line.strip_prefix("\\\\")) {
             let verb = verb.split_whitespace().next().unwrap_or("");
             if !verb.is_empty() {
@@ -3208,11 +3204,8 @@ impl GpGuiApp {
             .ctext_path
             .parent()
             .map(PathBuf::from)
-            .filter(|p| p.exists())
-            .or_else(|| {
-                let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-                root.canonicalize().ok()
-            });
+            .filter(|p| p.is_dir())
+            .or_else(|| Some(crate::paths::data_dir()));
         let mut dialog = rfd::FileDialog::new()
             .add_filter("Connect text (GPI)", &["gpi", "GPI", "txt"])
             .set_title("Select Connect text (CTEXT)");
@@ -3800,7 +3793,7 @@ impl GpGuiApp {
                 ui.centered_and_justified(|ui| {
                     ui.label(
                         RichText::new(format!(
-                            "No icons — expected tools/ICONS.GP ({}×{})",
+                            "No icons — expected data/ICONS.GP ({}×{})",
                             ICON_WIDTH, ICON_HEIGHT
                         ))
                         .color(Color32::YELLOW),
@@ -3947,15 +3940,34 @@ fn on_off(v: bool) -> &'static str {
     if v { "ON" } else { "OFF" }
 }
 
+/// Local 24-hour `hh:mm` with leading zeros, inserted after `fm`.
+fn stamp_monitor_fm(line: &str) -> String {
+    let hhmm = Local::now().format("%H:%M").to_string();
+    ax25::insert_monitor_time(line, &hhmm)
+}
+
+fn is_hhmm_token(token: &str) -> bool {
+    let Some((h, m)) = token.split_once(':') else {
+        return false;
+    };
+    h.len() == 2
+        && m.len() == 2
+        && h.bytes().all(|b| b.is_ascii_digit())
+        && m.bytes().all(|b| b.is_ascii_digit())
+}
+
 
 /// Best-effort source call from monitor / APRS-ish text (`fm CALL`, `CALL>`).
 fn extract_heard_call(text: &str) -> Option<String> {
     let lower = text.to_ascii_lowercase();
     if let Some(pos) = lower.find("fm ") {
         let after = text[pos + 3..].trim_start();
-        let token = after
-            .split_whitespace()
-            .next()?
+        let mut tokens = after.split_whitespace();
+        let mut token = tokens.next()?;
+        if is_hhmm_token(token) {
+            token = tokens.next()?;
+        }
+        let token = token
             .trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
         if !token.is_empty() {
             return Some(token.to_ascii_uppercase());
@@ -4056,16 +4068,10 @@ fn parse_monitor_set(line: &str) -> Option<String> {
 }
 
 fn load_icon_textures(ctx: &Context) -> Vec<TextureHandle> {
-    let path = [
-        PathBuf::from("tools/ICONS.GP"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/ICONS.GP"),
-    ]
-    .into_iter()
-    .find(|p| p.exists());
-
-    let Some(path) = path else {
+    let path = crate::paths::data_file("ICONS.GP");
+    if !path.is_file() {
         return Vec::new();
-    };
+    }
     tracing::info!(file = %path.display(), "loading ICONS.GP");
     let Ok(lib) = IconLibrary::load(&path) else {
         return Vec::new();

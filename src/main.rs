@@ -1,5 +1,10 @@
 //! Graphic Packet — Tokio serial worker + egui pixel UI (icons + analog clock).
 
+// `--release` does not hide a console by itself. Rust links a CONSOLE-subsystem
+// exe unless told otherwise, and Windows then allocates a terminal on launch.
+// Debug builds stay console apps so `cargo run` still shows logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -12,6 +17,13 @@ use graphic_packet::ui;
 use graphic_packet::version::{self, APP_NAME};
 
 fn main() -> Result<()> {
+    let tui = std::env::args().any(|a| a == "--tui");
+    // WINDOWS-subsystem release builds have no console. The text UI needs one.
+    #[cfg(all(windows, not(debug_assertions)))]
+    if tui {
+        attach_console();
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
@@ -19,8 +31,6 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .with_target(false)
         .init();
-
-    let tui = std::env::args().any(|a| a == "--tui");
 
     info!(
         "{APP_NAME} v{} — {}",
@@ -73,11 +83,26 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Release builds are GUI-subsystem executables, so they start with no console.
+/// `--tui` attaches to the parent terminal, or opens one when launched from Explorer.
+#[cfg(all(windows, not(debug_assertions)))]
+fn attach_console() {
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    unsafe extern "system" {
+        fn AttachConsole(dw_process_id: u32) -> i32;
+        fn AllocConsole() -> i32;
+    }
+    unsafe {
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            let _ = AllocConsole();
+        }
+    }
+}
+
 fn resolve_config_path() -> PathBuf {
     for name in ["Config.toml", "config.toml", "CONFIG.GP", "config.gp"] {
-        let p = PathBuf::from(name);
-        if p.exists() {
-            return p;
+        if let Some(path) = graphic_packet::paths::find_file(name) {
+            return path;
         }
     }
     PathBuf::from("Config.toml")

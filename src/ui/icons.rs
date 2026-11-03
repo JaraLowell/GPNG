@@ -212,15 +212,14 @@ pub fn toolbar_for_channel(linked: bool) -> &'static [usize] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn decodes_stock_library_if_present() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/ICONS.GP");
-        if !path.exists() {
+        let path = crate::paths::data_file("ICONS.GP");
+        if !path.is_file() {
             return;
         }
-        let lib = IconLibrary::load(&path).expect("tools/ICONS.GP");
+        let lib = IconLibrary::load(&path).expect("data/ICONS.GP");
         assert_eq!(lib.icons.len(), 17);
         assert_eq!(lib.icons[0].width, ICON_WIDTH);
         assert_eq!(lib.icons[0].height, ICON_HEIGHT);
