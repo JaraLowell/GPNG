@@ -1,0 +1,238 @@
+@@
+
+  //<n> <Text>           : Odesl n¡ textu na kan l <n>
+  //7+ <ON/OFF>          : P©ep¡na‡ 7+ AutoSave ZAP nebo VYP
+  //Activity             : Dotaz na aktivitu sysopa
+  //Bell                 : Vol n¡ SYSOPa zvonen¡m
+  //CATalog [Filter]     : V˜pis adres ©e s mo‘nost¡ nastaven¡ filtru
+  //CUT                  : P©eru¨en¡ toku dat ze serveru
+  //DELete               : Ru¨en¡ zpr v zapsan˜ch //W s nastevn¡m filtru
+  //DIRectory [Filter]   : Stejn‚ jako //CATalog
+  //DISConnect           : Rychl‚ odpojen¡
+  //Echo <Text>          : Vrat¡ zpˆt <Text>
+  //END                  : Ukon‡eni zpr vy zapsan‚ pomoc¡ //Write
+  //Help [prikaz]        : Podrobnˆj¨¡ napovˆda o <p©¡kazu>
+  //Info                 : Informa‡n¡ text nastven˜ sysopem o stanici
+  //Language <sprache>   : Volba komunika‡n¡ho jazyka s GP serverem
+  //MHeard [‡¡slo ]      : Kdo je na kan lu "‡¡slo" sly¨en‚m GP serverem ?
+  //MHeard <zna‡ka>      : Uk ‘e, kdy byla satnice naposledy sly¨ena
+  //Name <name>          : Vlo‘en¡ identifikace vlastn¡ho jm‚na
+  //NEws                 : Novinky na stanici
+  //PRompt <ON/OFF>      : Nastaven¡
+  //Quit                 : Ukon‡¡ spojen¡ a zaloguje
+  //Read <soubor>        : Odeslat <soubor>
+  //RPrg <soubor>        : Odeslat soubor v AutoBin m¢du
+  //RTt <PortNr>         : Zobraz¡ zaokrouhlen˜ ‡as k ukon‡en¡
+  //RUN <program>        : Spust¡ extern¡ program (//RUN ? ->INFO)
+  //Usage [call]         : Stav kanalu a kr tke info o stanic¡ch !
+  //VERsion              : Zobraz¡ ‡¡slo verze programu
+  //Write <soubor>       : Zap¡¨e d le odeslan˜ text do <souboru>
+  //WPrg <soubor>        : Zap¡¨e odeslan˜ text do <souboru> v AutoBin modu
+
+  V¨echny p©¡kazy mus¡ b˜t zaps ny na za‡ tku © dky a mus¡ b˜t ukon‡eny
+  kl vesou CR (Enter).
+  Zadejte "//h h" pro v¡ce informac¡
+
+@7+,2
+
+  //7+ <ON/OFF>
+      Tento p©¡kaz p©ep¡n  7+ AutoSave na ZAP nebo VYP. P©¡kaz m–‘e b˜t
+      pou‘it jestli‘e chcete zaslat nˆkter‚ 7+ soubory, ale oper tor nen¡
+      u jeho stanice a vy nev¡te ur‡itˆ, zda je 7+ AutoSave zapnut nebo
+      vypnut.
+
+@ACTIVITY,2
+
+  //Activity
+      Tento p©¡kaz uk ‘e ‡as, kdy byla nasposledy zaznamen na sysopova
+      aktivita z kl vesnice nebo my¨i.
+
+@WPRG,2
+
+  //WPrg <soubor>
+     Tento p©¡kaz startuje z pis v AutoBin modu. AutoBin mod je jednoduch˜
+     p©enosov˜ protokol, kter˜ obsahuje CRC kontrolu. Bohu‘el neobsahuje
+     opravu chyb. Tento AutoBin m¢d je kompatibiln¡ s binarn¡mi p©enosov˜mi
+     protokoly programu THP a SP.
+
+
+@WRITE,1
+
+  //Write <soubor>
+     Tento p©¡kaz startuje z pis d le zas¡lan‚ho textu do uveden‚ho <souboru>
+     na disk. Z pis do souboru bude ukon‡en odesl n¡m znaku Ctrl+Z nebo
+     remote p©¡kazu "//END".
+
+@VERSION,3
+
+  //VERsion
+      Zobraz¡ po©adov‚ ‡¡slo verze programu GP.
+
+@USAGE,1
+
+  //Usage [znacka]
+     Tento p©¡kaz bez uveden¡ parametru zobraz¡ aktu ln¡ stav kan lu t‚to
+     stanice. Jestli‘e uvedete k p©¡kazu jako paramater zna‡ku stanice,
+     bude zasl na kr tk  informace o t‚to zna‡ce, jeli zaps na v souboru
+     zna‡ek a cest adresare GP.
+
+@RUN,3
+
+  //RUN <programm>
+     Tato funkce spou¨t¡ extern¡ program a zas¡l  v˜stup na TNC. V¨echny
+     Extern¡ programy mus¡ pou‘¡vat DOS standardn¡ jm‚na v˜stupu jinak
+     nem–‘e pracovat s GP.
+     Uveden¡ parametru "?" zp–sob¡ zasl n¡ zpˆt seznamu spustiteln˜ch
+     extern¡ch program–.
+
+     Volani extern¡ch program– se ©¡d¡ n sleduj¡c¡mi kroky:
+        1.: Otev©e do‡asn˜ soubor na disku.
+        2.: P©esmˆruje DOS za©¡zen¡ CON do tohoto souboru.
+        3.: Spust¡ program. Obrazovkov˜ v˜stup bude nyn¡ zapisov n
+            do tohoto souboru.
+        4.: Po ukon‡en¡ programu ‡te do‡asn˜ soubor a zas¡l  jej do TNC.
+        5.: Ma‘e do‡asn˜ soubor.
+
+     Extern¡ programy mohou b˜t programov ny u‘ivateli GP v jak‚mkoli
+     programovac¡m jazyku. Mus¡ splnit pouze to, ‘e pou‘ij¡ DOS jm‚no 1
+     (standardn¡ v˜stupn¡ za©¡zen¡) pro obrazovkov‚ v˜stupy.
+
+@RPRG,2
+
+  //RPrg <soubor>
+     Tato funkce zas¡l  soubor v Auto/bin m¢du. Mus¡te nejprve nastavit
+     v ¨ vlastn¡ program pro p©¡jem souboru v AutoBin m¢du je¨tˆ p©ed
+     odesl n¡m ©¡d¡c¡ho p©¡kazu tak, aby p©ich zej¡c¡ data byla ji‘ do
+     tohoto souboru zapisov na.
+     AutoBin mod je kompatabiln¡ s THP a SP programy.
+
+@READ,1
+
+  //Read <soubor>
+     Tento p©¡kaz v m za¨le textov˜ soubor. Pro v˜pis mo‘n˜ch souboru
+     ke ‡ten¡ m–‘ete pou‘¡t ©¡d¡c¡ho p©¡kazu "//CATalog".
+
+@QUIT,1
+
+  //Quit
+     Tohoto p©¡kazu by mˆlo b˜t pou‘ito pro ukon‡en¡ spojen¡ narozd¡l
+     od jednoduch‚ho hardwarov‚ho p©eru¨en¡ "disconnect". Jestli‘e pou‘ijete
+     tento p©¡kaz, bude zasl n ukon‡uj¡c¡ text p©ed skute‡n˜m rozpojen¡m.
+     Spojen¡ bude p©¡padnˆ zaevidov no.
+
+@PROMPT,2
+
+  //PRompt <ON/OFF>
+     Tento p©¡kaz zap¡n  nebo vyp¡n  zas¡l n¡ PROMPTU syst‚mu. Jestli‘e je
+     zapnut, prompt bude zas¡l n, jestli‘e bude ka‘d˜ ©id¡c¡ p©¡kaz ukon‡en
+     a syst‚m tak ohl s¡ svoji p©ipravenost k dal¨¡mu pou‘it¡.
+
+@NEWS,2
+
+  //NEws
+      Tento p©¡kaz za¨le soubor novinek na stanici, pokud tento existuje.
+
+@NAME,1
+
+  //Name <jm‚no>
+     Jestli‘e va¨e jm‚no nen¡ uvedeno v souboru cest v adresˆ©i GP, m–‘ete
+     pou‘¡t tohoto p©¡kazu k p©id n¡ sv‚ho jm‚na pro va¨i pozdej¨¡
+     identifikaci. Pozor na oddˆleni mezerou jm‚na od p©¡kazu. Jm‚no m–‘e
+     obsahovat jak‚koli znaky v‡etnˆ mezer.
+
+
+@MHEARD,2
+
+  //MHeard [cislo]
+     Tento p©¡kaz v m zobraz¡ seznam sly¨en˜ch stanic. Jestli‘e p©id te
+     jako parametr ‡¡slo, GP vy¨le uvedeny po‡et naposledy sly¨en˜ch stanic.
+     Bez parametru bude zasl no posledn¡ch dvacet sly¨en˜ch stanic.
+
+@INFO,1
+
+  //Info
+     Zobraz¡ informace o t‚to stanici, zaznamenan‚ v informa‡n¡m souboru
+     sysopem.
+
+@HELP,1
+
+  //Help
+     Obecne informace:
+     V¨echny p©¡kazy mus¡ za‡¡nat jako prvn¡ znaky na © dce a ukon‡eny
+     mus¡ b˜t <CR> (Enter).
+     Ka‘d˜ p©¡kaz za‡¡n  znaky //
+     Parametry mus¡ b˜t oddˆleny mezerou.
+     P©¡kaz i s parametry nesm¡ p©ekro‡it d‚lku 80 znak–.
+
+@END,3
+
+  //END
+     Ukon‡uje z pis p©en ¨en‚ho souboru, kter˜ byl odstarov n p©¡kazem
+     //Writ. Tento p©¡kaz nem–‘e b˜t pou‘it pro ukon‡en¡ AutoBin p©enosu.
+
+@ECHO,1
+
+  //Echo <text>
+     Tento p©¡kaz m–‘ete pou‘¡t pro automatickou odpovˆƒ, V¨echen <Text>
+     je po p©ijet¡ odesl n zpˆt.
+
+@DISCONNECT,4
+
+  //DISConnect
+     Tento p©¡kaz ukon‡uje QSO okam‘itˆ bez odesl n¡ ukon‡ovac¡ho textu.
+
+@DIRECTORY,3
+
+  //DIRectory [sablona]
+      Tato funkce vrac¡ obsah u‘ivatelsk‚ho adres ©e. V¨echny soubory mohou
+      b˜t ‡teny za pomoci //Read nebo //RPrg. Takt‚‘ //Write nebo //WPrg
+      zapsiuj¡ do tohoto adres ©e.
+      M–ete pou‘¡t dodovsk‚ ¨ablony s t¡mto p©¡kazem (nap©. "//DIR *.txt").
+      M–‘ete uv‚st nˆkolik ¨ablon za sebou oddˆlen˜ch st©edn¡kem. Nap©.
+      "//DIR *.txt;*.doc"
+
+@DELETE,3
+
+  //DELete <jmeno souboru>
+     Tento p©¡kaz pou‘ijte k vymaz n¡ souboru z u‘ivatelsk‚ho adres ©e.
+     M–‘ete smazat pouze soubory, kter‚ jste sami vygenerovali p©¡kazem
+     //Write. Ostatn¡ soubory mohou b˜t smaz ny pouze sysopem t‚to stanice.
+
+@CUT,3
+
+  //CUT
+     Jestli‘e m te odstartov n p©enos souboru p©¡kazem //Read, m–‘ete
+     t¡mto p©¡kazem tento p©enos zastavit.
+
+
+@CATALOG,3
+
+  //CATalog [sablona]
+     Tato fukce vrac¡ obsah u‘ivatelsk‚ho adres ©e. V¨echny soubory mohou
+     b˜t ‡teny p©¡kazy //Read nebo //RPrg. Takt‚‘ //Write a //WPrg zapisuj¡
+     do tohoto adres ©e.
+     M–‘ete pou‘¡t standardn¡ dosovsk‚ ¨ablony pro specifikaci seznamu
+     souboru, nap©. "//CAT *.txt". M–‘ete tak‚ uv‚st nˆkolik ¨ablon za sebou
+     oddˆlen˜ch st©edn¡kem.
+
+@BELL,1
+
+  //Bell
+     Tento p©¡kaz aktivuje vyzv nen¡ zvonku k probuzen¡ sysopa. :-)
+
+@LANGUAGE,1
+
+  //Language <jazyk>
+     T¡mto p©¡kazem dos hnete zmˆny jazyka, kter˜m s v mi syst‚m
+     komunikuje. P©¡kaz bez parametru zobraz¡ mo‘n‚ volby jazyk–.
+
+@RTT,2
+
+  //RTt <PortNr>
+     Tento p©¡kaz spo‡¡t  p©ibli‘n˜ ‡as reakce mezi na¨imi stanicemi.
+     K pou‘it¡ mus¡ v ¨ program rozumˆt p©¡kazu //echo, kter˜ k v m
+     GP za¨le. Pou‘¡v te-li Digicom nebo Baycom, p©idejte k p©¡kazu
+     parametr ‡¡sla kan lu, nap©. "//RT 1".
+
+
+@@[EOF]

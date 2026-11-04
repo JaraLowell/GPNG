@@ -1,0 +1,303 @@
+@@
+
+  //<n> <Text>           : Text an Kanal <n> senden
+  //7+ <ON/OFF>          : Schaltet 7+ AutoSave an oder aus
+  //Activity             : Sysop-Aktivitaet abfragen
+  //Bell                 : Sysop rufen
+  //CATalog [Filter]     : Liste der Dateien, die gelesen werden koennen
+  //CD <Verzeichnis>     : Wechselt in ein anderes User-Verzeichnis
+  //CUT                  : Bricht einen Lesevorgang ab
+  //DELete               : Loescht eine mit //Write angelegte Datei
+  //DIRectory [Filter]   : siehe //CATalog
+  //DISConnect           : Schneller Disconnect (ohne Verabschiedung)
+  //Echo <text>          : Sendet "text" zurueck
+  //END                  : Beendet eine mit //Write gestartete Textspeicherung
+  //Help [befehl]        : Diese Meldung bzw. detaillierte Hilfe fuer "befehl"
+  //Info                 : Sendet die Stationsinfo (wenn vorhanden)
+  //Language <sprache>   : Wechselt die Sprache der Meldungen
+  //MHeard [anzahl]      : Zeigt eine Liste von gehoerten Stationen
+  //MHeard <call>        : Gibt aus, in wann <call> zuletzt gehoert wurde
+  //Name <name>          : Speicherung des eigenen Namens in die Namensdatei
+  //NEws                 : Aktuelle Neuigkeiten (wenn vorhanden)
+  //PARameters           : Zeigt die Einstellungen einiger TNC-Parameter an
+  //PRompt <ON/OFF>      : Schaltet das Prompt an oder aus
+  //Quit                 : Beendet die Verbindung
+  //Read <datei>         : Sendet die Datei "datei"
+  //RPrg <datei>         : Sendet eine Binaerdatei im Automodus
+  //RTt <PortNr>         : Laufzeitmessung der Verbindung
+  //RUN <programm>       : Startet ein externes Programm
+  //Usage [rufzeichen]   : Liste der connecteten Stationen
+  //VERsion              : Zeigt die Versionsnummer dieser Software
+  //Write <datei>        : Speichert den folgenden Text in die Datei "datei"
+  //WPrg <datei>         : Speichert eine Binaerdatei im Automodus
+
+  Alle Befehle muessen am Anfang der Zeile beginnen und mit <CR> beendet
+  werden.
+  Weiteres mit //Help Help
+
+@7+,2
+
+  //7+ <ON/OFF>
+      Dieser Befehl schaltet 7+ AutoSave an bzw. aus. Dies ist dann praktisch,
+      wenn man einer Station eine Reihe von 7Plus-Dateien uebertragen will,
+      Operator aber gerade nicht da ist und man nicht sicher ist, ob er die
+      AutoSave-Funktion eingeschaltet hat oder nicht. Anstatt die Dateien
+      einzeln mit //W zu uebertragen oder auf der OP zu warten, kann man nun
+      einfach die AutoSave-Funktion per Fernsteuerung einschalten und dann
+      die Dateien einfach senden.
+
+@ACTIVITY,1
+
+  //Activity
+      Zeigt an, wann der Sysop das letzte Mal eine Taste gedrueckt bzw. die
+      Maus bewegt hat. Dadurch kann man feststellen, ob er sich ueberhaupt
+      an der Station befindet.
+
+@WPRG,2
+
+  //WPrg <dateiname>
+      Mit diesem Befehl wird eine Datei im Automodus empfangen und auf
+      Diskette/Festplatte gespeichert.
+      Der Automodus benutzt ein kleines Uebertragungsprotokoll und eine
+      Pruefsumme, so dass es so moeglich ist, eine Binaerdatei 1:1 zu
+      uebertragen. Der Automodus ist kompatibel zu THP und SP.
+
+@WRITE,1
+
+  //Write <dateiname>
+      Diese Funktion dient zum Speichern von Nachrichten auf Diskette
+      bzw. Festplatte. Der nachfolgende Text wird so lange in diese Datei
+      geschrieben, bis die Speicherung mit "//END" oder Ctrl-Z beendet wird.
+
+@VERSION,3
+
+  //VERsion
+      Gibt die Versionsnummer dieser Software aus.
+
+@USAGE,1
+
+  //Usage [rufzeichen]
+      Diese Funktion liefert den augenblicklichen Connect-Status dieser
+      Station zururck.
+      Der Parameter rufzeichen ist optional und liefert den Namen und
+      Pfad von "rufzeichen", falls dieser in der Namensliste gespeichert
+      ist. Die Speicherung des eigenen Namens erfolgt mit dem Name-Befehl.
+
+@RUN,3
+
+  //RUN <programm>
+      Diese Funktion ruft externe Programme auf und leitet deren Ausgabe
+      zum TNC um.
+      Es sind zwei Arten von Remote-Programmen moeglich:
+      a) herkoemmliche Remote-Programme:
+        Diese Programme muessen die DOS Standardausgabe benutzen. Dies hat den
+        Effekt, dass diese Programme auch unter DOS zu benutzen sind und somit
+        auch die Programmerstellung wesentlich erleichtert wird. Der komplette
+        Funktionsablauf des Befehls erfolgt in fuenf Schritten:
+             1.: Oeffnen einer temporaeren Datei auf Diskette/Festplatte.
+             2.: Umleiten des DOS-Geraets "CON" in die temporaere Datei mit
+                 Hilfe von DOS-Funktionen.
+             3.: Aufruf des externen Programms, alle Ausgaben ueber "CON"
+                 landen in der temporaeren Datei.
+             4.: Temporaere Datei lesen und den Inhalt zum TNC senden.
+             5.: Temporaere Datei loeschen.
+        Externe Programme koennen nachtraeglich von jedem Benutzer von GP
+        programmiert werden, egal in welcher Programmiersprache.
+        Es ist nur zu beachten, dass die Bildschirmausgabe nicht ueber das
+        BIOS oder in den Bildschirmspeicher erfolgen darf, sondern ueber
+        die DOS-Standardausgabe. Ausserdem darf das Programm keine Tastatur-
+        eingaben verlangen, sondern alle Eingaben ueber die Kommandozeilen-
+        parameter erhalten.
+        Bei diesen Programmen sind jedoch keine interaktive Kommunikation mit
+        dem Remote-User moeglich, ausserdem wird GP waehrend der Ausfuehrung
+        dieser Programme angehalten.
+
+      b) GPRI-Programme
+        Diese Programme nutzen eine spezielle Programmierschnittstelle von
+        GP ab Version 1.50. Dadurch laufen diese Programme im quasi
+        "Multitasking"-Betrieb und machen zum einen eine interaktive
+        Kommunikation mit dem Remote-User moeglich und zum anderen kann GP
+        waehrend der Ausfuehrung des Programms normal weiterlaufen. Dadurch
+        koennen auch mehrere GPRI-Programme auf unterschiedlichen Kanaelen
+        gleichzeitig laufen.
+
+      Der Parameter <?> sendet eine Liste von Programmen, die aufgerufen
+      werden koennen, zurueck.
+
+@RPRG,2
+
+  //RPrg <dateiname>
+      Mit diesem Befehl wird eine Datei im Automodus gesendet.
+      Der Automodus benutzt ein kleines Uebertragungsprotokoll und eine
+      Pruefsumme, so dass es so moeglich ist, eine Binaerdatei 1:1 zu
+      uebertragen. Der Automodus ist kompatibel zu THP und SP.
+
+@READ,1
+
+  //Read <dateiname>
+      Dieses Kommando dient zum Lesen von Textdateien, die mit //CATalog
+      oder //DIRectory aufgelistet werden koennen. Der Dateiname muss
+      durch ein Leerzeichen getrennt direkt hinter dem Befehl angegeben
+      werden, und zwar in der Form "name.ext", wie z.B. TESTDATEI.TXT
+
+@QUIT,1
+
+  //Quit
+      Dient zum Trennen der Verbindung. Vorher wird noch ein
+      Verabschiedungstext gesendet und anschliessend ein
+      Disconnect ausgeloest.
+
+@PARAMETERS,3
+
+  //PARameters
+      Fragt einige Timing-Parameter des TNC ab.
+
+@PROMPT,2
+
+  //PRompt <ON/OFF>
+      Mit diesem Befehl laesst sich ein Systemprompt ein- bzw. ausschalten.
+      Wenn das Prompt eingeschaltet ist, erscheint es nach jedem
+      ausgefuehrten Befehl und signalisiert damit, dass das System
+      auf die naechste Eingabe wartet.
+
+@NEWS,2
+
+  //NEws
+      Gibt Auskunft ueber aktuelle Neuigkeiten.
+
+@NAME,1
+
+  //Name <name>
+      Mit diesem Befehl teilt man dem System seinen Namen mit. Dieser
+      wird zusammen mit dem Connect-Pfad in eine Liste gespeichert.
+      Der Name muss durch ein Leerzeichen getrennt direkt hinter dem
+      Befehl angegeben werden.
+      Der Name selbst kann alle Zeichen, auch Leerzeichen, enthalten.
+
+@MHEARD,2
+
+  //MHeard [anzahl]
+      Diese Funktion liefert eine Liste von Rufzeichen, die von dieser
+      Station gehoert wurden. Wird hinter dem Befehl eine Zahl angegeben,
+      wird die eintsprechende Anzahl der zuletzt gehoerten Stationen
+      ausgegeben. Der Defaultwert ist 20.
+
+@INFO,1
+
+  //Info
+      Gibt Auskunft ueber diese Station. (wenn vorhanden)
+
+@HELP,1
+
+  //Help
+      Allgemeine Informationen:
+      Allen Fernsteuerbefehlen muessen zwei Schraegstriche vorangestellt
+      werden, damit GP diese auch als Fernsteuerbefehle interpraetiert.
+      Die Befehle koennen abgekuerzt werden, indem man nur die Gross-
+      buchstaben der Befehlsnamen verwendet, wie sie in den Hilfetexten
+      vorkommen. Parameter der Befehle sind in Kleinschrift geschrieben
+      und in spitze Klammern gesetzt. Diese Parameter muessen direkt hinter
+      dem Befehl angegeben werden (ohne Klammern). Parameter in eckigen
+      Klammern sind optional und koennen weggelassen werden.
+      Ist ein Parameter in den Hilfetexten in Grossbuchstaben geschrieben,
+      muss dieser in voller Laenge angegeben werden. Die Gesamtlaenge des
+      Fernsteuerbefehls inclusive Uebergabeparameter darf 80 Zeichen nicht
+      ueberschreiten.
+
+@END,3
+
+  //END
+      Beendet einen mit //Write gestarteten Schreibvorgang. Bei einer
+      Binaerfile-Uebertragung wird der Befehl ignoriert.
+
+@ECHO,1
+
+  //Echo <text>
+      Diese Funktion hat die Wirkung eines Echos. Sie sendet einen
+      durch ein Leerzeichen abgetrennten nachfolgenden Text wieder
+      zurueck.
+
+@DISCONNECT,4
+
+  //DISConnect
+      Dient zum sofortigen Trennen der Verbindung. (ohne Verabschiedung)
+
+@DIRECTORY,3
+
+  //DIRectory
+      Mit diesem Befehl wird eine Liste von Dateien ausgegeben,
+      die fuer jeden User zugaenglich sind. Alle angezeigten
+      Dateien koennen mit //Read gelesen werden. Mit //Write
+      angelegte Dateien werden ebenfalls in dieses Directory
+      geschrieben. Die Angabe von Wildcards sind erlaubt, also
+      z.B. "//DIRectory *.txt". Es koennen auch mehrere Wildcards an-
+      gegeben werden, die dann durch ein Semikolon getrennt
+      werden muessen, z.B. "//DIRectory *.txt;*.doc".
+
+@DELETE,3
+
+  //DELete <dateiname>
+      Dieser Befehl dient zum Loeschen von Textdateien im Userdirectory.
+      Es koennen jedoch nur Dateien geloescht werden, die das eigene Call
+      als Namen bilden oder die mit //Write selbst angelegt wurden. Hierbei
+      wird ein Header, der beim Speichern automatisch angelegt wird, auf
+      das Rufzeichen untersucht. Stimmen die Rufzeichen nicht ueberein,
+      kann die Datei nicht geloescht werden. Aus diesem Grund koennen auch
+      keine Binaerdateien geloescht werden, da sie keinen Header enthalten.
+
+@CD,2
+
+  //CD <directory>
+      Mit diesem Befehl ist es moeglich, das aktuelle Userdirectory zu
+      wechseln, sofern mehrere existieren. Es kann nur in Unterverzeichnisse
+      des vom Sysop festgelegten Remote-Verzeichnisses gewechselt werden.
+      Die Bedienung des Befehls entspricht ansonsten dem DOS-Befehls CD.
+      "//CD .." wechselt in das uebergeordnete Verzeichnis.
+      Der Aufruf von "//CD" ohne Parameter zeigt das aktuelle Verzeichnis an.
+
+@CUT,3
+
+  //CUT
+      Mit diesem Befehl wird ein mit //Read gestarteter Lesevorgang
+      abgebrochen. Bei Digipeater-Verbindungen kann es zu Verzoegerungen
+      kommen, so dass nach Aufruf dieses Befehls dennoch einige Pakete
+      empfangen werden, in der Regel sind jedoch maximal drei Pakete
+      ohne Bestaetigung unterwegs, so dass nach Ausfuehrung des Befehls
+      noch maximal drei Pakete empfangen werden koennen.
+
+@CATALOG,3
+
+  //CATalog
+      Mit diesem Befehl wird eine Liste von Dateien ausgegeben,
+      die fuer jeden User zugaenglich sind. Alle angezeigten
+      Dateien koennen mit //Read gelesen werden. Mit //Write
+      angelegte Dateien werden ebenfalls in dieses Directory
+      geschrieben. Die Angabe von Wildcards sind erlaubt, also
+      z.B. "//CATalog *.txt". Es koennen auch mehrere Wildcards an-
+      gegeben werden, die dann durch ein Semikolon getrennt
+      werden muessen, z.B. "//CATalog *.txt;*.doc".
+
+@BELL,1
+
+  //Bell
+      Dieser Befehl loest einen Gong aus, um den Sysop zu rufen.
+
+@LANGUAGE,1
+
+  //Language <Sprache>
+      Mit Hilfe dieses Befehls kann die Prache der Fernsteuer-Meldungen
+      geaendert werden, soweit die gewuenschte Sprache von GP unterstuetzt
+      wird. Der Aufruf von //L ohne Parameter liefert eine Liste aller
+      verfuegbaren Sprachen.
+
+@RTT,2
+
+  //RTt <PortNr>
+      Dieser Befehl aktiviert eine Messung der Laufzeit. Dazu muss jedoch
+      die eigene Station Fernsteuerbefehle ausfuehren koennen.
+      Ist das eigene Terminalprogramm in der Lage, den Befehl //Echo zu
+      verarbeiten, so reicht der Aufruf von /RTt ohne zusaetzlichen Parameter.
+      BayCom- oder Digicom-User muessen die Portnummer, auf dem dieses QSO
+      laeuft, angeben, z.B. //RT 1
+
+@@[EOF]

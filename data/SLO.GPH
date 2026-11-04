@@ -1,0 +1,218 @@
+@@
+
+  //<n> <Text>           : Posljes tekst na kanal <n>
+  //7+ ON/OFF            : Vklop-izklop 7+ shranjevanja
+  //Activity             : Pove o sysopovi aktivnosti
+  //Bell                 : Poklices Sysopa z zvonenjem zvonca
+  //CATalog [wildcard]   : Pokaze listo datotek za citanje
+  //CD                   : Prikaze direktorij
+  //CUT                  : Prekines oddajo datoteke
+  //DELete               : Zbrises datoteko napisano z //Write
+  //DIRectory [wildcard] : kot //CATalog
+  //DISConnect           : Hiter Disconnect
+  //Echo <text>          : Po{ilja nazaj echo <text>
+  //END                  : Zakljucitev pisanja teksta,ki si ga zacel z //Write
+  //Help [ukaz]          : To sporocilo ali vec detaljev o "command"
+  //Info                 : Poslje informacije o tej postaji
+  //Language <jezik>     : Spremeni pogovorni jezik sporocil
+  //MHeard [stevilka]    : Pokaze listo slisanih postaj
+  //MHeard [znak]        : Pokaze kdaj je bil znak nazadnje connectiran
+  //Name <ime>           : Shrani tvoje ime,ce se ga ne ve
+  //NEws                 : Pokaze novice,ce te obstajajo
+  //PRompt <ON/OFF>      : Vkljuci/izkljuci prompt
+  //Quit                 : Konec zveze
+  //Read <imedatoteke>   : Poslje datoteko "imedatoteke"
+  //RPrg <imedatoteke>   : Poslje datoteko "imedatoteke" v AutoBinarnem nacinu
+  //RTt <portnr>         : Pokaze cas krozenja med postajama
+  //RUN <program>        : Pozene external programe
+  //Usage [znak]         : Kanal status ali majhna informacija o "znaku"
+  //VERsion              : Pokaze stevilko verzije tega softwera
+  //Write <imedatoteke>  : Shrani sprejeti tekst v datoteko "imedatoteke"
+  //WPrg <imedatoteke>   : Shrani datoteko v AutoBinarnem nacinu
+
+  Vsi ukazi se morajo zaceti v prvi vrsti,prvi koloni.
+  Napisi "//h h" za vec informacij o ukazih  ali "//h <ukaz> o tem ukazu.
+
+@7+,2
+
+   //7+ ON/OFF
+   Vkljuci oz.izkljuci 7+ autoshranjevanje.Ta ukaz lahko uporabimo,ko nismo 
+   prepricani,da je opcija vkljucena,sysop pa ni prisoten,mi bi mu pa  radi
+   poslali nek kodiran tekst.
+
+@ACTIVITY,2
+
+   Ukaz nam pove,kdaj je sysop postaje nazadnje pritisnil na kaksno tipko ali 
+   premaknil  misko.
+
+@WPRG,2
+
+  //WPrg <imedatoteke>
+      S tem ukazom napises datoteko v AutoBinarnem nacinu.
+      Ta AutoBinarni nacin je compatibilen z THP in SP.
+
+@WRITE,1
+
+  //Write <imedatoteke>
+      S tem ukazom napises datoteko v tekstovnem nacinu.
+      Zakljucis jo tako,da za konec napises "//END" ali pritisnes
+      CTRL-Z.
+
+@VERSION,3
+
+  //VERsion
+      Pokaze verzijo tega programa (softwera).
+
+@USAGE,1
+
+  //Usage [znak]
+      Pokaze vse prikljucene postaje,nekaj parametrov,ki pripadajo tem
+      podatkom....
+      Ce dodas se znak,dobis se nekaj informacij  o "znaku",
+      ce jih seveda program pozna.
+
+@RUN,3
+
+  //RUN <program>
+      Ta ukaz pozene programe,ki se obicajno izvrsujejo v DOS-u.
+      Primeri: "QTH"pokaze oddaljenost med postajama,SEARCHE ti poisce
+      podatke  (ce seveda obstajajo) o znaku,imenu,preberes lahko posto,
+      ki je za tebe (ukazi LM,LN,RM,RN),itd...
+      Parameter "?" poslje listo programov,ki se lahko izvajajo, lahko pa
+      napises tudi datoteko RUN.GPI, v katero napises se kaj vec o programih, 
+      ki se nahajajo v EXTERNAL oz.RUN direktoriju.
+      Pri novejsih verzijah GP-ja lahko programe poganjas tudi tako,
+      da ne napises //RUN ime_programa,  dovolj je ze // ime_programa.
+                      
+ 
+@RPRG,2
+
+  //RPrg <imedatoteke>
+      Ta ukaz poslje datoteko v AutoBinarnem nacinu.
+      Ta AutoBinarni nacin je kompatibilen z THP and SP.
+
+@READ,1
+
+  //Read <imedatoteke>
+      Ta ukaz ti poslje tekstovno datoteko.Najprej prelistaj listo datotek
+      z ukazom  "//CATalog"  oz. "//CAT *.doc; *.txt  ...
+
+@QUIT,1
+
+  //Quit
+      To je ukaz za zakljucitev zveze pri katerem dobis se preprost
+      QRT  tekst z pozdravi...      
+
+@PROMPT,2
+
+  //PRompt <ON/OFF>
+      Vklopi ali izklopi prompt.
+      Ta ti pokaze ,kdaj je sistem pripravljen za sprejem novega ukaza.
+
+@NEWS,2
+
+  //NEws
+      Ta ukaz poslje novice,ce te obstajajo.
+
+@NAME,1
+
+  //Name <ime>
+      Ce tvoje ime se ni zabelezeno v progranu uporabis ta ukaz.
+      Med ukazom in imenom obvezno uporabi presledek,ime pa napisi
+      z veliko zacetnico.Uporabis lahko vse znake,tudi presledek(SPACE).     
+
+@MHEARD,2
+
+  //MHeard [stevilka]
+      Ta ukaz ti poslje listo "slisanih"postaj.Z uporabo stevilke dobis
+      zeljeno stevilo (nazadnje) konektiranih postaj..doda pa ti tudi
+      stevilo skupno slisanih postaj.Npr.//MH 10  prikaze  listo 10-tih
+      nazadnje slisanih postaj.
+  //MHeard [znak]
+      pa ti pove,kdaj je nazadnje (po njegovih podatkih) slisal "znak"  
+
+@INFO,1
+
+  //Info
+      Pokaze informacije o tej postaji,ime..telefon..kraj,
+      podatke o hardweru , itd...Te podatke je treba napisati
+      v datoteko  INFO.GPI ali tvoj_znak.GPI.
+
+@HELP,1
+
+  //Help
+      Informacije o ukazih:
+      Vsi ukazi se morajo zaceti v prvi koloni in morajo biti popolni, 
+      v nasprotnem primeru bo racunalnik javljal napako.Vsi ukazi se
+      zacnejo z "//" vendar je treba dodati se parametre,drugace se ne 
+      zgodi nic.Parametri ne smejo presegati 80 znakov.
+
+@END,3
+
+  //END
+      Prekine pisanje datoteke, ki smo jo zaceli pisati z "//Write" .
+      V AutoBinarnem nacinu je ne moremo uporabiti!!!
+
+@ECHO,1
+
+  //Echo <text>
+      To je preprosti echo (odmev) in poslje nazaj sprejeti tekst.
+      
+@DISCONNECT,4
+
+  //DISConnect
+      Hitra prekinitev QSO,brez poslovilnega pozdravnega teksta.
+
+@DIRECTORY,3
+
+  //DIRectory [wildcard]
+      Prikaze direktorij,iz katerega lahko citamo ali kopiramo datoteke.
+      Lahko uporabimo tudi "Yoker" in sicer npr. "//dir *.txt"
+      ,ki prikaze vse datoteke s koncnico "txt" v tem direktoriju.
+      V isto vrstico lahko napisemo vec iskanih datotek,ki jih locimo
+      z ";"..npr.//DIR *.txt;*.doc"
+
+@DELETE,3
+
+  //DELete <imedatoteke>
+       Ta ukaz zbrise datoteko "imedatoteke" iz direktorija,ki si jo
+       napisal z //Write.
+       Vse ostale datoteke lahko zbrise samo Sysop te postaje.
+
+@CUT,3
+
+  //CUT
+      Ce si zacel citati datoteko z //Read ,lahko prekines citanje
+      s tem ukazom.
+
+@CATALOG,3
+
+  //CATalog [wildcard]
+
+      Enako kot ukaz "//DIR".
+      Vse kar napises,lahko najdes v tem direktoriju,pa tudi kar je
+      kdo drug napisal.
+
+@BELL,1
+
+  //Bell
+      Ta ukaz "zbudi" operaterja,ce je slucajno zaspal. :-)
+
+@LANGUAGE,1
+
+  //Language <jezik>
+      S tem ukazom spremenis pogovorni jezik z racunalnikom,ki ti
+      sporocila vraca v izbranem jeziku.Ukaz "//l" ti da seznam
+      moznih pogovornih jezikov, npr:
+      //l dl   nemski jezik ; //l g   angleski jezik
+      //l slo  slovenski jezik  ...
+
+@RTT,2
+
+  //RTt <portnr>
+      Ta ukaz preracuna cas ,ki pretece za protokol med najinima postajama.
+      Tvoj program mora imeti vklopljen ECHO , drugace zadeva ne dela.
+      Lahko se vklopi z "//ECHO". Ce imas BayCom ali Digicom,vstavi v ukaz
+      se stevilko aktivnega porta npr. "//RT 1".
+
+@@[EOF]

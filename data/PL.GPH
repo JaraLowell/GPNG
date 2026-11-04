@@ -1,0 +1,242 @@
+@@
+
+  //<n> <Tekst>          : Wysyla tekst do kanalu <n>
+  //7+ <ON/OFF>          : Wlacza lub wylacza Autozapis 7+
+  //Activity             : Pytanie o aktywnosc sysop'a
+  //Bell                 : Wola Sysop'a dzwonkiem
+  //CATalog [nazwa]      : Pokazuje liste dostepnych plikow
+  //CUT                  : Przerywa transfer pliku
+  //DELete               : Usuwa plik, utworzony przez //Write
+  //DIRectory [nazwa]    : Tak jak //CATalog
+  //DISConnect           : Szybkie rozlaczenie
+  //Echo <tekst>         : Wysyla <tekst> z powrotem
+  //END                  : Konczy zapis tekstu utworzonego przez //Write
+  //Help [polecenie]     : Ten komunikat, lub wiecej danych o "poleceniu"
+  //Info                 : Wysyla informacje o tej stacji
+  //Language <jezyk>     : Znienia jezyk komunikatow
+  //MHeard [numer]       : Pokazuje liste slyszanych stacji
+  //MHeard <znak>        : Pokazuje czas, kiedy <znak> byl slyszany
+  //Name <imie>          : Zapisuje Twoje imie, jesli jeszcze nie bylo.
+  //NEws                 : Pokazuje news (jesli jakis istnieje)
+  //PRompt <ON/OFF>      : Wlacza/wylacza <on/off> zdalna podpowiedz
+  //Quit                 : Konczy lacznosc
+  //Read <nazwa pliku>   : Wysyla plik "nazwa pliku"
+  //RPrg <nazwa pliku>   : Wysyla plik "nazwa pliku" w trybie AutoBin
+  //RTt <nr portu>       : Pokazuje czas przebiegu sygnalu
+  //RUN <program>        : Uruchamia zewnetrzny program
+  //Usage [znak]         : Stan kanalu lub krotka informacja o "znaku"
+  //VERsion              : Pokazuje wersje tego programu
+  //Write <nazwa pliku>  : Zapisuje tekst do pliku "nazwa pliku"
+  //WPrg <nazwa pliku>   : Zapisuje plik w trybie AutoBin
+
+  Wszystkie polecenia musza sie zaczynac "//" i konczyc <ENTER>.
+  Napisz "//h h" aby otrzymac wiecej szczegolow.
+
+@7+,2
+
+  //7+ <ON/OFF>
+      To polecenie wlacza lub wylacza Autozapis 7+. Polecenie moze byc
+      uzyte, jesli chcesz wyslac pliki 7+, ale nie ma operatora na stacji
+      i nie jestes pewien, czy 7+ jest wlaczony, czy nie.
+
+@ACTIVITY,2
+
+  //Activity
+      To polecenie pokazuje czas, jaki minal kidey sysop ostatnio nacisnal
+      klawisz lub poruszyl mysz.
+
+@WPRG,2
+
+  //WPrg <nazwa pliku>
+      Polecenie to zaczyna zapis pliku w trybie AutoBin.
+      Tryb AutoBin jest prostym protokolem transmisji zawierajacym
+      kontrole CRC. Niestety nie koryguje bledow.
+      Tryb AutoBin jest kompatybilny z THP i SP.
+
+@WRITE,1
+
+  //Write <nazwa pliku>
+      To polecenie zaczyna zapisywac tekst. Wszystkie teksty zapisywane
+      beda do pliku "nazwa pliku" tak dlugo az wyslesz Ctrl-Z lub
+      polecenie //END.
+
+@VERSION,3
+
+  //VERsion
+      Pokazuje numer wresji tego programu.
+
+@USAGE,1
+
+  //Usage [znak]
+      Polecenie to bez dodatkowych parametrow pokazuje aktualny stan
+      kanalow tej stacji.
+      Jesli dodasz znak do polecenia, otrzymasz krotka informacje o znaku,
+      jesli tylko byl wapisany na dysku wczesniej.
+
+@RUN,3
+
+  //RUN <program>
+      Ta funkcja uruchamia zewnetrzny program i wysyla efekt do TNC.
+      Wszystkie programy zewnetrzne musza uzywac standardowych wyprowadzen
+      DOS, w przeciwnym razie nie beda pracowaly z GP.
+      Parametr "?" pokaze liste dostepnych programow.
+
+      Moga byc uruchamiane dwa typy zdalnych programow:
+
+      a) Standardowe programy zdalne
+        Na wywolanie tych programow sklada sie 5 krokow:
+             1.: Otwarcie tymczasowego pliku na dysku.
+             2.: Przeadresowanie CON do tego pliku.
+             3.: Uruchomienie programu. Wyprowadzany ekran bedzie zapisywany
+                 do pliku.
+             4.: Odczytanie pliku tymczasowego i wyslanie go do TNC.
+             5.: Kasowanie pliku tymczasowego.
+        Programy moga byc pisane przez wszystkich uzytkownikow GP w dowolnym
+        jezyku. Tylko musza spelniac jeden warunek: musza zawierac standar-
+        dowe procedury DOS obslugi ekranu.
+
+      b) Programy GPRI
+        Od wersji 1.50, GP program sprzegajacy nazwany GPRI (Graphic
+        Packet Remote Interface). Ten interface pozwala na interakcyjna
+        komunikacje pomiedzy programem a uzytkownikiem. Programy GPRI
+        sa rodzaju wielozadaniowego, wiec wielu polaczonych uzytkownikow
+        moze uruchamiac te same programy w tym samym czasie.
+
+@RPRG,2
+
+  //RPrg <nazwa pliku>
+      Funkcja ta wysyla programy wtrybie AutoBin. Musisz najpierw ustawic
+      Twoj program w gotowosc do odbioru pliku w trybie AutoBin, przed
+      wyslaniem zdalnej komendy.
+      Tryb AutoBin jest kompatybilny z THP i SP.
+
+@READ,1
+
+  //Read <nazwa pliku>
+      Ta komenda wysyla do Ciebie plik tekstowy. Mozesz najpierw uzyskac
+      liste plikow dzieki poleceniu "//CATalog".
+
+@QUIT,1
+
+  //Quit
+      Polecenie to moze byc uzyte do przerwania QSO zamiast prostego
+      twardego rozlaczenia. Jesli uzyjesz tego polecenia, otrzymasz tekst
+      pozegnalny nim QSO zostanie rozlaczone.
+
+@PROMPT,2
+
+  //PRompt <ON/OFF>
+      Wlacza lub wylacza znak "zachety". Jesli jest wl, zacheta bedzie
+      podpowiadac, kiedy zdalne polecenie jest wykonane i system jest
+      gotowy do przyjecia nastepnego polecenia.
+
+@NEWS,2
+
+  //NEws
+      Jesli sa jakies nowosci, zistana Ci wyslane.
+
+@NAME,1
+
+  //Name <imie>
+      Jesli Twoje imie jeszcze nie jest zapisane przez GP, mozesz je
+      wpisac dodajac swoje imie do polecenia. Musisz uzyc <SPACJI>
+      aby oddzielic imie od polecenia. Imie moze zawierac jakiekolwiek
+      znaki, z wyjatkiem <SPACJI>.
+
+@MHEARD,2
+
+  //MHeard [numer]
+      To polecenie pokazyje liste slyszanych stacji. Jesli dolaczysz
+      numer do polecenia (oddzielony pojedyncza <SPACJA>), GP wysle Ci
+      taka ilosc ostatnio slyszanych stacji. Podanie polecenia bez numeru
+      pokaze ostatnich 20 stacji.
+
+@INFO,1
+
+  //Info
+      Pokazuje tekst informacyjny o tej stacji.
+
+@HELP,1
+
+  //Help
+      Glowne informacje:
+      Wszystkie polecenia musza byc w pierwszej kolumnie i konczyc sie <CR>.
+      Musisz kazde polecenie zaczynac "//" lub nic sie nie wydarzy.
+      Wszystkie polecenia moga byc skracane. Jesli dodajesz parametr do
+      polecenia, musisz oddzielic go <SPACJA>. Jesli polecenie wymaga
+      wiecej niz jednego parametru, wszystkie parametry musza byc oddzielane
+      pojedynczymi <SPACJAMI> rowniez.
+      Polecenia lacznie z parametrami nie moga przekraczac 80 znakow
+      dlugosci.
+
+@END,3
+
+  //END
+      Przerywa transfer pliku, ktory zaczynal sie od //Write. Polecenie to
+      nie moze byc uzyte do przerwania transferu w trybie AutoBin.
+
+@ECHO,1
+
+  //Echo <tekst>
+      To polecenie powoduje powrotne wyslanie podanego tekstu.
+      Oddziel tekst od polecenia <SPACJA>.
+
+@DISCONNECT,4
+
+  //DISConnect
+      Polecenie przerywa QSO bez tekstu pozegnalnego.
+
+@DIRECTORY,3
+
+  //DIRectory [nazwa wieloznaczna]
+      Ta funkcja wyswietla zawartosc katalogu uzytkownika. Wszystkie
+      pliki moga byc czytane polecenieme //Read lub //RPrg.Do tego
+      katalogu mozna rowniez zapisac plik poleceniem //Write lub //WPrg.
+      Mozesz rowniez uzyc nazwy wieloznacznej, np. "//DIR *.txt". Mozesz
+      uzywac wielu nazy wieloznacznych oddzielonych ";".
+      np. "//DIR *.txt;*.doc"
+
+@DELETE,3
+
+  //DELete <nazwa pliku>
+      To polecenie pozwala usunac plik z katalogu uzytkownika. Mozesz
+      usuwac tylko te pliki, ktore sam wprowadziles poleceniem //Write.
+      Inne pliki moga byc usuwane tylko przez sysop'a tej stacji.
+
+@CUT,3
+
+  //CUT
+      Jesli zaczales transfer poleceniem //Read, mozesz go przerwac
+      uzywajac tego polecenia.
+
+@CATALOG,3
+
+  //CATalog [nazwa wieloznaczna]
+      Ta funkcja wyswietla zawatrosc katalogu uzytkownika. Wszystkie pliki
+      moga byc czytane //Read lub //RPrg oraz zapisywane //Write lub //WPrg
+      z i do tego katalogu.
+      Mozesz uzywac nazw wieloznacznych, np. "//CAT *.txt". Mozesz
+      uzywac kilku nazw wieloznacznych oddzielonych ";".
+      np. "//CAT *.txt;*.doc"
+
+@BELL,1
+
+  //Bell
+      Polecenie to uruchamia dzwonek by zbudzic operatora. :-)
+
+@LANGUAGE,1
+
+  //Language <jezyk>
+      Poleceniem tym mozesz zmienic jezyk komunikatow zdalnego sterowania.
+      Wywolanie bez parametru wyswietla pelna liste dostepnych jezykow.
+
+@RTT,2
+
+  //RTt <nr portu>
+      To polecenie oblicza czas przebiegu informacji pomiedzy naszymi
+      stacjami.Twoj program musi wykonac polecenie "//Echo", w przeciwnym
+      razie polecenie to nie zadziala. Jesli uzywasz BayComa lub Digicoma,
+      dodaj numer aktualnego portu do polecenia, np. "//RT 1".
+
+@@[EOF]
+

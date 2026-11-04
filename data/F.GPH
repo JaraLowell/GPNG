@@ -1,0 +1,256 @@
+@@
+   //<n> <texte>         : Envoie un texte au canal <n>
+   //7+ <ON/OFF>         : Commute 7+ AutoSave ON ou OFF
+   //Bell                : Appelle le Sysop par un coup de sonnette
+   //CATalog [joker]     : Affiche une liste de fichiers lisibles
+   //CUT                 : Arrete un transfert de fichiers
+   //DELete              : Efface un fichier qui a ete genere par //Write
+   //DIRectory [joker]   : Equivalent a //CATalog
+   //DISConnect          : Deconnection rapide et totale
+   //Echo <texte>        : Renvoie le <texte> en echo
+   //END                 : Arrete la sauvegarde du texte envoye par //Write
+   //Help [commande]     : Ce message ou plus de details sur les [commande]
+   //Info                : Envoie des infos au sujet de cette station
+   //Language <langue>   : Change la langue des messages 
+   //MHeard [nombre]     : Affiche la liste des stations entendues
+   //MHeard <indicatif>  : Affiche l'heure … laquelle <indicatif> a ‚t‚ entendu
+   //Name <pr‚nom>       : Memorise votre nom s'il n'est pas encore connu
+   //NEws                : Affiche le menu (s'il existe)
+   //PARameter           : Envoie les parametres du syteme
+   //PRompt <ON/OFF>     : Commute le prompt de commande a distance
+   //Quit                : Termine le contact
+   //Read <fichier>      : Vous envoie le fichier [nom de fichier]
+   //RPrg <fichier>      : Vous envoie le ficher [nom fichier] en mode AutoBin
+   //RTt <No de port>    : Affiche la duree de connection sur le port <n>
+   //RUN <programme>     : Lance un programme externe
+   //Usage [indicatif]   : Etat du canal ou courte info au sujet de [indicatif]
+   //VERsion             : Affiche la version de ce programme
+   //Write <fichier/nom> : Ecrit le texte qui va suivre dans le fichier <nom> 
+   //WPrg <fichier>      : Ecrit un fichier en mode Autobin
+
+   NOTE : Toutes les commandes doivent etre precedees de // , commencer en 
+	  debut de ligne et se terminer par un CR.
+
+   Pour plus de details tapez "//H <cmd>". (<cmd>=commandes ci dessus sans //)
+
+@7+,2
+
+   //7+ <ON/OFF>
+       Cette commande commute 7+ AutoSave ON ou OFF. Cette commande est
+       utilis‚e pour envoyer des fichiers 7+
+
+@WPRG,2
+   
+   //WPrg <fichier>
+      Cette commande lance la memorisation d'un fichier en mode Autobin.
+      Le mode AutoBin est un simple protocole de transfert qui contient un 
+      controle de CRC. Malheureusement, il ne corrige pas les erreurs.
+      Ce mode AutoBin est compatible avec THP et SP.
+
+@WRITE,1
+
+   //Write <fichier>
+      Cette commande lance la memorisation d'un texte. Tout le texte aprŠs 
+      cette commande sera memorise dans le fichier [nom de fichier" jusqu'a 
+      ce que vous envoyiez un Ctrl-Z ou la commande //END.
+
+@VERSION,3
+
+    //VERsion
+       Affiche le numero de version de ce programme.
+
+@USAGE,1
+
+    //Usage [indicatif]
+       Cette commande sans autres parametres affiche l'etat du canal actuel ou 
+       de cette station. 
+       Si vous ajoutez un indicatif a cette commande, vous aurez une courte 
+       information au sujet de cet indicatif s'il est memorise dans le fichier 
+       des chemins de GP.
+
+@RUN,3
+
+    //RUN <programme>
+       Cette fonction lance un programme externe et en envoie le resultat
+       vers le TNC.
+       Tous les programmes externes doivent etre au standard des sorties DOS 
+       ou ils ne fonctionneront pas avec GP.
+       Le parametre "?" vous renverra une liste des programmes disponibles. 
+
+       Il y a deux types de programmes qui peuvent ˆtre lanc‚s en commande 
+       … distance :
+
+       a)  Les programmes standards
+	 L'appel de ces programmes comporte cinq etapes :
+	   1.: Ouvrir un fichier temporaire sur le disque.
+	   2.: Rediriger le device "CON"  du DOS vers ce fichier.
+	   3.: Lancer le programme. La sortie sur l'ecran alors ecrite dans ce
+	       fichier.
+	   4.: Lisez ce fichier temporaire.
+	   5.: Effacez ce fichier temporaire.
+       Les programmes externes peuvent etre ecrits en n'importe quel langage 
+       par n'importe quel utilisateur de GP. La seule chose que vous devez 
+       considerer est d'utiliser la sortie standard du DOS pour l'ecran.
+
+       b) Les programmes GPRI
+	 Depuis la version 1.5, GP comporte une interface sp‚ciale appell‚e 
+	 GPRI (Graphic Packet Remote Interface).  Cette interface permet  une 
+	 communication interactive entre le programme command‚ … distance 
+	 et l'utilisateur. Les programmes GPRI fonctionnent en quelque sorte 
+	 en multitache et admettent ainsi plusieurs utilisateurs en mˆme temps.
+
+@RPRG,2
+
+    //RPrg <fichier>
+       Cette fonction envoie un fichier en mode "Autobin". Vous devez d'abord 
+       preparer votre propre programme pour la reception en mode "Autobin" 
+       avant d'envoyer la commande.
+       Le mode "AutoBin" est compatible avec THP et SP.
+
+@READ,1
+
+    //Read <fichier>
+       Cette commande vous envoie un fichier texte. Vous pouvez obtenir une 
+       liste des fichiers que vous pouvez lire en lancant la commande 
+       "//CATalog".
+
+@QUIT,1
+
+    //Quit
+       Cette commande est employee pour terminer le QSO plutot que par une 
+       simple deconnection. Vous recevrez alors un message de cloture de 
+       QSO avant la deconnection et vous retournerez a l'etape precedente 
+       de la chaine de connection.
+
+@PAR,3
+
+   //PAR
+       Cette commande vous envoie les parametres du system.
+ 
+@PROMPT,2
+
+    //PRompt <ON/OFF>
+       Cette commande enclenche ou declenche le prompt de commande a distance 
+       S'il est "ON", le prompt apparaitra apres qu'une commande ait ete 
+       accomplie pour vous montrer qu'elle a ete executee et que le systeme 
+       est pret a executer la suivante.
+
+@NEWS,2
+
+    //NEws
+       Cette commande affiche les nouvelles s'il y en a.
+
+@NAME,1
+
+    //Name <nom>
+       Si votre nom n'est pas encore memorise dans le fichier des chemins 
+       de GP, vous pouvez utiliser cette commande pour l'y inscrire. Vous 
+       devez inserer un espace pour separer votre nom de cette commande. 
+       Le nom peut, par contre, comporter n'importe quel caractere y compris 
+       des espaces. Le chemin pour arriver jusqu'a vous sera alors disponible 
+       aux autres utilisateurs et sera acessible par la commande "//Usage".
+
+@MHEARD,2
+
+    //MHeard [nombre]
+       Cette commande affiche la liste des stations entendues. Si vous 
+       ajoutez un nombre a cette commande (separee par un espace), 
+       GP vous limitera la liste a ce nombre, en commencant par la 
+       derniere station entendue. La commande seule donnne les vingt 
+       dernieres stations.
+
+@INFO,1
+
+    //Info
+	   Affiche un texte d'information au sujet de cette station.
+
+@HELP,1
+
+    //Help
+	   Informations generales :
+	   Toutes les commandes doivent commencer a la premiere colonne par un 
+	   "//" et se terminer par un "C.R." ou rien ne se produira.
+	   Toutes les commandes peuvent etre abreviees. Si vous y ajoutez un 
+	   parametre, il doit etre separe de la commande par un seul espace.
+	   Si une commande comporte plusieurs parametres, ils doivent tous  
+	   etre separes par des espaces. L'ensemble ne peut neanmoins compter 
+	   plus de 80 caracteres.
+
+@END,3
+
+    //END
+	   Arrete le transfert d'un fichier qui a ete lance par //Write. 
+	   Cette commande ne peut etre utilisee pour arreter le transfert d'un 
+	   fichier Autobin.
+
+@ECHO,1
+
+    //Echo <texte>
+       Cette commande est un simple echo et envoie en retour le texte qui 
+       est emis. Le texte doit etre separe de la commande par un espace.
+
+@DISCONNECT,4
+
+    //DISConnect
+       Cette commande termine un QSO immediatement sans l'envoi d'un texte
+       de cloture de QSO et sans retourner a l'etape precedente de la chaine 
+       de connection.
+
+@DIRECTORY,3
+
+    //DIRectory [joker]
+       Cette fonction renvoie le contenu du directory utilisateur. 
+       Tous les fichiers peuvent etre lus par "//Read" ou "//RPrg". 
+       "//Write" et "//WPrg" ecrivent des fichiers dans ce directory. 
+       Vous pouvez utiliser les jokers avec cette commande. 
+       Par ex. : "//DIR *.txt". Vous pouvez meme utiliser plusieurs 
+       jokers en les separant par un point-virgule. Par ex. : 
+       "//DIR *.txt;*.doc". Elle est identique a //CAT.
+
+@DELETE,3
+
+    //DELete <fichier>
+       Cette commande vou permet d'effacer un fichier du directory 
+       utilisateur. Vous ne pouvez effacer que des fichiers que vous 
+       avez ecrits vous-meme avec //Write. Les autres fichiers ne peuvent 
+       etre effaces que par le sysop de cette station.
+
+@CUT,3
+
+    //CUT
+       Si vous avez lance le transfert d'un fichier avec //Read, vous 
+       pouvez l'arreter avec cette commande.
+
+@CATALOG,3
+
+    //CATalog [joker]
+       Cette fonction renvoie le contenu du directory utilisateur. 
+       Tous les fichiers peuvent etre lus par //Read ou //RPrg.  
+       //Write et //WPrg ecrivent des fichiers dans ce directory. Vous pouvez 
+       pouvez utiliser les jokers avec cette commande. Par ex. : "//CAT *.txt". 
+       Vous pouvez meme utiliser plusieurs jokers en les separant par un 
+       point-virgule.
+       Par ex. : "//CAT *.txt;*.doc". Elle est identique a "//DIR"
+
+@BELL,1
+
+    //Bell
+       Cette commande active une sonnerie pour prevenir le sysop.
+
+@LANGUAGE,1
+
+    //Language <langue>
+       Avec cette commande, vous pouvez choisir la langue des messages qui 
+       vous sont envoyes. Une commande sans parametres provoque l'envoi 
+       de la liste des langues disponibles.
+
+@RTT,2
+
+    //RTt <No de port>
+       Cette commande calcule le temps du QSO entre nos deux stations. 
+       Votre programme doit neanmoins etre capable d'executer la commande 
+       "//Echo", Autrement, elle ne fonctionnera pas. Si vous utilisez BayCom 
+       ou Digicom, ajoutez le numero du canal du port actuel a la commande, 
+       par ex. : "//RT 1".
+
+@@[EOF]

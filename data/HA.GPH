@@ -1,0 +1,273 @@
+@@
+
+  A GraficPacket V1.52 verziojanak tavvezerelheto utasitasai:
+  -----------------------------------------------------------
+
+  //<n> <szoveg>         : A <szoveg> atkuldese az <n> csatornara.
+  //7+ <on/off>          : Automatikus 7+ file mentes be/ki kapcsolasa.
+  //Bell                 : Csengetes a kezelonek.
+  //CATalog              : Lemezlista lekerdezese.
+  //CUT                  : A //Read-el inditott fileatvitel leallitasa.
+  //DELete               : A //Write-al megnyitott file torlese.
+  //DIRectory            : (Lasd //CATalog).
+  //DISConnect           : Osszekottetes lebontasanak kerese.
+  //Echo <szoveg>        : Az elkuldott <szoveg>-et visszakuldi.
+  //END                  : A //Write-al inditott fileatvitel leallitasa.
+  //Help [parancs]       : Ssegitseg kerese. (H [parancs] eseten, a
+                           megnevezett parancsot ismerteti).
+  //Info                 : Az allomas-informacio lekerdezese.
+  //Language [prefix]    : A kommunikacios nyelv lekerdezese es kivalasztasa.
+  //MHeard [n]           : A heard-lista lekerdezese. (MH [szam] megadasa
+                           eseten, az utolso [n] darabot kuldi ki).
+  //Name <Nev>           : Keresztnev megadasa es feliratkozas a path listaba.
+  //NEws                 : Az aktualis informacios file lekerdezese.
+  //PRompt <ON/OFF>      : Promt <ki/be> kapcsolasa.
+  //Quit                 : A QSO-t lebontja, ha mindent visszaigazolt.
+  //Read <filenev.kit>   : A <filenev.kit> cimu text-file lekerdezese.
+  //RIng                 : Csengetes a kezelonek.(U.a.m. //Bell).
+  //RPrg <filenev.kit>   : A <filenev.kit> cimu binaris-file lehivasa,
+                           AutoBin filetransfer-el.
+  //RTt <portszam>       : Az allomas eleresi idejet kuldi vissza sec.-ban.
+  //RUN <prgnev.kit>     : Program inditasa az EXTERNAL.dir-bol.
+  //Usage [call]         : A csatornak allapotanak lekerdezese.
+  //VERsion              : Az alkalmazott software verziojanak lekerdezese.
+  //Write <filenev.kit>  : A <nev.kit> cimu text-file kuldese
+  //WPrg <filenev.kit>   : Binaris file kuldese AutoBin filetransfer-el.
+
+  Ha egy parancs reszletesebb ismertetesere van szukseged, akkor
+  azt a //H [parancs] megadasaval kerheted.
+  Peldaul: "//h wp" megadasara a //WPrg parancs ismerteteset kapod meg.
+
+@7+,2
+
+  //7+ <ON/OFF>
+      Ha 7+ programmal darabolt file-t akarsz kuldeni, akkor ezzel a parancs-
+      csal be/ki kapcsolhatod a 7+ filek automatikus menteset.
+      Ha be van kapcsolva (//7+ ON), akkor nem kell egyebet tenned, mint a
+      *.7pl, *.p?? *.err, *.cor, vagy *.c?? kitejesztesu file-kat folyama-
+      tosan adasba kuldeni.
+      A program a "go.....stop" kozotti fileteruleteket automatikusan, az
+      erre kijelolt lemezkonyvtarban rogziti.
+
+@WPRG,2
+
+  //WPrg <filenev.kit>
+      Ez a parancs elinditja a FILENEV.KIT - ben meghatarozott binaris file
+      atkuldeset AutoBin filetransferrel.
+      (AutoBin filetransfer = Automatikus Binaris fileatvitel).
+
+      (Ez az uzemmod kompatibilis a THP es SP packettprogramokeval).
+
+@WRITE,1
+
+  //Write <filenev.kit>
+      Text-file - k (pl.:szemelyre szolo uzenetek) kuldese elott, ezzel a
+      paranccsal kell megnyitni az aktualis meghajton egy txt-file-t, ahova
+      az uzenet felirodik. A file lezarasat - a szokasos modon - a CTRL+Z,
+      vagy a //W off paranccsal kell jelezni.
+
+@VERSION,3
+
+  //VERsion
+      Az allomason uzemelo GraficPackett program verzioszamat kuldi vissza.
+
+@USAGE,1
+
+  //Usage [call]
+      Lekerdezi a hasznalt csatornak allapotat.
+      Ha az allomas tobb hivojellel dogozik, akkor a [call] hivojel megada-
+      saval csak a kert hivojelu csatornak allapotat adja vissza.
+
+@RUN,3
+
+  //RUN <prgnev>
+      Ezzel a paranccsal egy programot indithatsz el, amelynek a futtata-
+      saval kapott adatokat a gep a TNC-re kuldi.
+      Minden kulso program futtatasahoz szukseges a DOS jelenlete, ezert
+      csak olyan lemezrol lehetseges a programok futtatasa, amelyek tar-
+      mazzak a rendszerprogramot is.
+      Ha a paranccsal parameterekent egy "?" jelet kuldesz, egy listat
+      kapsz a kulso felhasznaloi programokrol.
+
+      A  kulso program futtatasakor a gep 5 muveletet vegez el:
+           1.: Megnyit az aktualis lemezegysegen egy ideiglenes file-t;
+           2.: Kilep a DOS-ba es kapcsolatba lep az ideiglenes file-al;
+           3.: Elinditja a meghivott programot es az abbol erkezo adatokat
+               az ideiglenes file-ba elmenti;
+           4.: Kilep a DOS-bol es az ideiglenes file tartalmat a TNC-re ki-
+               kuldi;
+           5.: Vegul torli az ideiglenes file-t.
+
+      Barmely programnyelven irt kulso programot lehet futtatni a GP barmely
+      portjan, de csak akkor, ha a futtatas a DOS rendszerfile-kat is tartal-
+      mazo lemezrol tortenik.
+
+      Peldak:
+
+      Parancs (parameter)              Valsz
+      ---------------------------------------------------------------------
+      //run checkems     -      Tajekoztat a memoria foglaltsagarol.
+      //run sysinfo      -      Megkapod a gep fontosabb parametereit.
+      //run name      HIVOJEL   Megkapod a kert allomas operatoranak nevet.
+      //run virc         -      Egy hetre elorejelzest ad a varhatoan aktiv
+                                virusokrol (VIRUS-NAPTAR).
+        
+      Megjegyzes.: Kerdezd le a listat (//run ?), mert a valasztek folyama-
+                   tosan bovul.)
+
+@RPRG,2
+
+  //RPrg <filenev.kit>
+      Ez a parancs elinditja a FILENEV.KIT - ben meghatarozott binaris file
+      lehivasat AutoBin filetransferrel.                                 
+      (Ez az uzemmod kompatibilis a THP es SP packettprogramokeval).
+
+@READ,1
+
+  //Read <filenev.kit>
+      Ez a parancs elinditja a FILENEV.KIT cimu text-file (pld.:szemelyre
+      szolo uzenetek) lehivasat.
+
+@QUIT,1
+
+  //Quit
+      Az osszekottetes lebontasanak kezdemenyezese. Az allomas elobb vegre-
+      hajtja, ill. visszaigazolja a korabban kapott parancsokat, kikuldi
+      a QRT.GP fileben tarolt elkoszono szoveget majd disconnect-al.
+
+@PROMPT,2
+
+  //PRompt <ON/OFF>
+      A prompt kikuldesenek engedelyezeset/tiltasat lehet a parnccsal kerni.
+
+@NEWS,2
+
+  //NEws
+      Lekeri az allomastol a NEWS.GP file-ban tarolt aktualis - altalaban
+      mindenkinek szolo - informaciokat.
+
+@NAME,1
+
+  //Name <Nev>
+      Ha az allomas meghivasakor az a hivojeleden szollit meg, akkor add
+      meg a nevedet a //N <Operator nev> parancsal. Igy felkerulsz az ismert
+      allomasok listajara, amit a GP a NAMES.GP file-ban tarol. Itt a neveddel
+      egyutt az eleresi utvonalad is tarolodik, amit a program kesobb
+      path-listakent is hasznal.
+
+@MHEARD,2
+
+  //MHeard [n]
+      A hallott allomasok listajat adja vissza. Ha a parancs utan egy darab-
+      szamot [n] is megadsz, akkor az utoljara hallott allomasokbol csak
+      az igy kert mennyiseget sorolja fel.
+
+@INFO,1
+
+  //Info
+      Kikuldi a porton aktualis allomasinfot, amit a program a MYCALL.GPI
+      file(k)-ben tarol.
+
+@HELP,1
+
+  //Help
+      Alltalanos segitseg:
+      Erre az utasitasra a program rovid ismertetest ad a hasznalhato paran-
+      csokrol es azok jelenteserol.
+      Ha a kerestt parancsrol reszletes tajekoztatast kersz, akkor a //H-t
+      egeszitsd ki a parancs kodjaval (a parancsok felsorolasanal nagybetuvel
+      irt resz), az alabbi pelda szerint:
+          
+          //H WP  (segitseg a WPrg parancshoz)
+
+@END,3
+
+  //END
+      A //Write-al inditott fileatvitel megszakitasa.
+
+@ECHO,1
+
+  //Echo <szoveg>
+      A //E utan irt <szoveg>-et visszakuldi a feladonak.
+      (A <szoveg> lehet egy neked szolo tavvezerlo parancs is).
+
+      Peldak: 1.   //E //RP filenev.prg
+              2.   //E //I
+
+      1. Ezzel a paranccsal peldaul elindithatod egy nalad levo binaris
+         file atvitelet AutoBin filetransfer-el.
+      2. A masodik pelda azt mutatja, hogyan kuldheted el hozzam az
+         allomasinfodat, ha nem vagyok a gepnel (azaz nem kuldhetek Hozzad
+         egy //I parancsot), de errol tajekoztatni szeretnel.
+
+@DISCONNECT,4
+
+  //DISConnect
+      A QSO megszakitasanak kerese.
+
+@DIRECTORY,3
+
+  //DIRectory [*.filekiterjesztes]
+      Az allomason, a USER konyvtarban tarolt file-k listajanak lekerdezese.
+
+      Mielott a //Read, //RPrg, //Write, vagy //WPrg parancsokat kiadnad,
+      feltetlen kerd le a DIRectoriban tarolt file-k listajat, egyreszt
+      azert, hogy tajekozodj arrol, nincs-e olyan nevu file a lemezen,
+      amilyen neven Te kuldeni akarsz valamit, masreszt arrol, hogy a megfelelo
+      nevet adhasd meg egy file lehivasahoz. A valaszban megtalalod meg
+      a lemezemen rendelkezesre allo szabat bajtok mennyiseget (Byts free) is.
+
+      Ha csak bizonyos tipusu file-k erdekelnek akkor a //DIR parancs utan
+      a kiterjesztest is megadhatod az alabbi peldak szerint:
+
+         //DIR vagy //D *.*         Az osszes file listazasa
+         //DIR *.txt                Text file-k listazasa
+         //DIR *.txt;*.usr;*.doc    Egyszerre tobb file-tipus listazasa
+
+@DELETE,3
+
+  //DELete <filenev.kit>
+      Ezzel a paranccsal torolheted a neked cimzett, vagy altalad beirt
+      file-kat a USER konyvtarbol.                                  
+
+@CUT,3
+
+  //CUT
+      Ha mar a //Read paranccsal elinditottad egy file lehivasat, akkor
+      ezzel a paranccsal megszakithatod az atvitelt.
+
+@CATALOG,3
+
+  //CATalog [*.filekiterjesztes]
+      Ez a parancs megegyezik a //DIR [*.filekiterjesztes] utasitassal.
+
+@BELL,1
+
+  //Bell
+      A parancs kiadasakor a program csenget az operatornak.
+      A parancs vegrehajtasat a prg visszajelzi.
+
+      Megj.: a //RIng parancs is hasznalhato.
+
+@LANGUAGE,1
+
+  //Language <prefix>
+      A program kommunikacios nyelvenek lekerdezese, ill. kivalasztasa.
+
+      Peldak:
+             //L            Valaszkent megkapd a program altal ismert
+                            nemzeti nyelvek listajat.
+             //L HA         A program a tovabbiakban magyarul fog Neked
+                            valaszolgatni.
+
+@RTT,2
+
+  //RTt <portszam>
+      Ezzel a paranccsal lekerdezheto a ket allomas kozotti csomagvaltasi
+      ido, amit a program sec.-ban kuld vissza. (A funkcio csak akkor mu-
+      kodik, ha a //Echo-val torteno vezerles engedelyezve van).
+      Ha a parancsot Baycom, vagy DIGICOM programbol adod ki, meg kell
+      adnod az aktualis portszamodat is. Pl.: "//RT 1" .
+
+@@[EOF]
+

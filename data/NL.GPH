@@ -1,0 +1,236 @@
+@@
+
+  //<n> <Tekst           : Stuurt een tekst naar poort nummer <n>
+  //7+ <ON/OFF>          : Schakelt de 7+ AutoSave aan of uit
+  //Activity             : Laat U de laatste toets muis handeling zien
+  //Bell                 : Roept Han door te bellen
+  //CATalog [wildcard]   : Laat U de inhoud van de User dir zien
+  //CUT                  : Stopt een file transfer
+  //DELete               : Verwijdert een bestand dat door U met //Write is gemaakt
+  //DIRectory [wildcard] : Zie //CATalog
+  //DISConnect           : Disconnect zonder QRT tekst
+  //Echo <tekst>         : Stuurt de door U gezonden tekst terug aan U <text>
+  //END                  : Stopt tekst save die gestart is met //Write
+  //Help [commando]      : Deze Helpfile meer details met "//H H commando"
+  //Info                 : Stationsbeschrijving van NL0MSK
+  //Language <taal>      : Verandert de te gebruiken taal in GP
+  //MHeard [nummer]      : Geeft de lijst van gehoorde stations door NL0MSK
+  //MHeard <call>        : Geeft aan waneer een station het laatst gehoord is <call>
+  //Name <naam>          : Schrijft Uw naam in het GP bestand
+  //NEws                 : Laat U het laatste nieuws zien (vernieuwd elke 3 uur)
+  //PRompt <ON/OFF>      : Zet de Remote Prompt aan of uit
+  //Quit                 : Disconnect met QRT tekst
+  //Read <filenaam>      : Stuurt U een bestand "filenaam"
+  //RPrg <filenaam>      : Stuurt U een BEstand in de AutoBin mode "filenaam"
+  //RTt <poortnr>        : Laat U de looptijd tussen NL0MSK en Uw station zien
+  //RUN <programma>      : Runt een extern programma
+  //Usage [call]         : Poort status met korte info over geconnecte "calls"
+  //VERsion              : Geeft het versie nummer van dit GP programma
+  //Write <filenaam>     : Schrijft de volgende tekst weg "filenaam"
+  //WPrg <filename>      : Schrijft een bestand weg in de AutoBin mode
+
+  Alle commando,s moeten vooraan een regel beginnen gevolgd door een enter <CR>.
+
+  Type "//h h" voor meer details.
+
+@7+,2
+
+  //7+ <ON/OFF>
+       Dit commando zet de 7+ AutoSave aan of uit.
+       U mag dit gebruiken al U denkt dat het uitstaat en een 7+ file
+       wilt zenden aan mij.
+
+@ACTIVITY,2
+
+  //Activity
+      Dit commando laat U de laatste toets of muis handeling van de sysop zien.
+
+@WPRG,2
+
+  //WPrg <filenaam>
+      Dit commando start de opslag van een file in AutoBin mode.
+      De AutoBin mode is een simpel protocol dat een CRC bevat.
+      Helaas worden fouten niet verbeterd.
+      Deze AutoBin mode is compatible met THP en SP.
+
+@WRITE,1
+
+  //Write <filenaam>
+      Dit commando start de opslag vaneen tekst file.
+      Alle tekst na dit commando wordt opgeslagen in de file "filenaam"
+      Afsluiten met het commando CTRL-Z of //END.
+
+@VERSION,3
+
+  //VERsion
+      Laat U de versie van het gebruikte GP programma zien.
+
+@USAGE,1
+
+  //Usage [call]
+      Dit commando zonder parameters geeft U de poort status van NL0MSK
+      Als U er een call aan toevoegd wordt een korte info van de geconnecte
+      stations zien mits deze in het systeem bekent is.
+@RUN,3
+
+  //RUN <program>
+      Er zijn Twee soorten externe programma,s:
+
+      (A) Standaard externe programma,s
+
+       Het aanroepen hiervan verzorgt de volgende 5 stappen:
+
+       1.: Opent een tijdelijke file op de HD
+       2.: Stuurt het programma daar naar toe
+       3.: Runt het programma de schermoutput verdwijnt in het bestand
+       4.: Leest het tijdelijke prorgamma en stuurt het naar de TNC
+       5.: Verwijdert de tijdelijke file uit het bestand
+
+Deze programma,s kunnen geprogrammeerd zijn door iedereen in iedere taal
+Het enige belangrijke punt is de DOS HANDLE 1 te gebruiken
+(standaard output device) voor de scherm uitvoer.
+
+       (B) GPRI programma,s
+
+       Vanaf versie 1.50 heeft GP een speciaal programma interface
+       GPRI (graphic packet remote interface) genaamd
+       Deze interface staat een interactieve comunicatie toe tussen
+       externe programma,s en de gebruiker.
+       GPRI programma,s worden in een soort MULTITASKING gedraaid.
+       Zodat verschillende gebruikers tegelijkertijd deze
+       programma,s kunnen gebruiken.
+
+
+@RPRG,2
+
+  //RPrg <filenaam>
+      Deze functie haalt een file in AutoBin mode.
+      Eerst moet Uw eigen programma klaar staan om AutoBin mode
+      te kunnen ontvangen in de Autobin mode.
+      Voordat het commando wordt gegeven.
+      De AutoBin mode is compatible met THP en SP.
+
+@READ,1
+
+  //Read <filenaam>
+      Dit commando zend een text file.
+      Een lijst van alle leesbare files krijgt U met het commando //CAT.
+
+
+@QUIT,1
+
+  //Quit
+      Dit commando gebruikt U om het QSO te beeindigen.
+      Met een QRT text van NL0MSK
+
+@PROMPT,2
+
+  //PRompt <ON/OFF>
+      Dit commando zet de remote prompt aan of uit.
+      Als het aanstaat zal de prompt verschijnen op het scherm.
+      als een commando is afgesloten om aan te geven dat het
+      systeem klaar is om verder te gaan.
+
+@NEWS,2
+
+  //NEws
+      Dit commando laat U het nieuws van NL0MSK zien..
+
+@NAME,1
+
+  //Name <naam>
+      Met dit commando zet U uw naam in de path file van GP
+      Er moet wel een spatie <SPACE> tussen Uw naam en het commado staan.
+      De naam achter het commando mag meerdere woorden bevatten.
+      b.v. WILL in Kaatsheuvel.
+
+@MHEARD,2
+
+  //MHeard [nummer]
+      Dit commando geeft een lijst van gehoorde stations door NL0MSK.
+      Door toevoeging van een nummer (voorafgaand van een spatie <SPACE>,
+      zal GP dit aantal laatst gehoorde stations aan U laten zien.
+      Zonder nummer laat GP U de laatste 20 stations zien.
+
+@INFO,1
+
+  //Info
+      Laat U de  stations-informatie van NL0MSK zien
+
+@HELP,1
+
+  //Help
+      Algemene informatie van GP:
+      Alle commando's moeten vooraan een regel beginnen gevolgd door enter <CR>.
+      Het commando moet altijd beginnen met "//" anders gebeurt er niets.
+      Deze commando's mogen gevolgd worden door een parameter.
+      Meerdere parameters moeten gescheiden worden door een spatie <SPACE>.
+      E commando plus parameter mag noot langer zijn dan 80 karakters.
+
+@END,3
+
+  //END
+      Stopt een file transfer welke was gestart met //Write.
+      Dit werkt echter niet bij AutoBin mode transfer.
+
+@ECHO,1
+
+  //Echo <text>
+      Dit commando is een simpele echo en stuurt de door U gezonden text
+      aan U terug.
+
+@DISCONNECT,4
+
+  //DISConnect
+      Dit commando stopt het QSO direckt zonder QRT tekst.
+
+@DIRECTORY,3
+
+  //DIRectory [wildcard]
+      Dit commando stuurt U de inhoud lijst van de User-dir
+      U kunt iets lezen uit deze dir met //Read of //RPrg.
+      Iets weg schrijven in deze dir doet U met //Write of //WPrg.
+      DE zogenaamde wildcards kunnen hier gebruikt worden
+      b.v.. "//DIR *.txt".
+      Zelfs verschillende wildcards kunnen gebruikt worden.
+      b.v.  "//DIR *.txt:*.doc"
+
+@DELETE,3
+
+  //DELete <filenaam>
+      Dit commando staat toe dat U een door u ingebrachte file in de User dir
+      Echter aleen een file die met //Write door U is geplaatst is te wissen.
+      Alle andere files zijn aleen te wissen door de Sysop.
+
+@CUT,3
+
+  //CUT
+      Dit commando stopt een file transfer die gestart is met //Read
+
+
+@CATALOG,3
+
+  //CATalog [wildcard]
+      Dit heeft dezelfde fuctie als //DIRectory.
+
+@BELL,1
+
+  //Bell
+      Met dit commando activeert U de bell om de Sysop te wekken (HI). :-)
+
+@LANGUAGE,1
+
+  //Language <taal>
+      Met dit commande kunt U de taal van de mededelingen veranderen
+      Indien er geen parameter aan toegevoegd is worden de beschikbare,
+      talen gegeven.
+
+@RTT,2
+
+  //RTt <poortnr>
+      Dit commando berekent de tooptijd tussen Uw station en NL0MSK.
+      Echter Uw programma moet in staat zijn een "//ECHO" te kunnen,
+      uitvoeren anders werkt helaas dit commando niet.
+      Voor BayCom of Digicom gebruikers is het commando "//RT 1".
+
+@@[EOF]

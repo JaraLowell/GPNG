@@ -1,0 +1,2398 @@
+<body>
+<header>
+<nav class="flrima">
+<a href="https://www.qsl.net/ok1cfp/">Petr Faltus OK1CFP</a>
+</nav>
+<h1 _msttexthash="1969201" _msthash="2">Czech manual for Graphic Packet v1.61 modified in HTML form</h1>
+<h2 _msttexthash="1255787" _msthash="3">Czech manual for the Graphic Packet program</h2>
+</header>
+<main>
+<p class="cete" _msttexthash="663897" _msthash="4"> Translation: OK1DNH, OK1BY, OK1DLE </p><p>
+<b _msttexthash="110448546" _msthash="5">I'm sorry and I know it's embarrassing to stick to someone
+work, but the whole text had to be re-written and in some places
+Correct or finish the translation, because unfortunately some passages were wrong.
+If you have the original text file, be careful, there are terms confused
+a memory or data file. At the same time, I tried to create a more suitable format.
+And it took me quite a bit of work, so I hope it doesn't appear under a different name
+on some other page... <br _istranslated="1">Petr Faltus OK1CFP</b>
+
+<br>&nbsp;
+</p><hr>
+
+<h1 _msttexthash="117728" _msthash="6">Contents</h1>
+
+
+<h4><a href="#Odk432" _msttexthash="409799" _msthash="7">1 General Information</a></h4>
+<a href="#Odk433" _msttexthash="1022957" _msthash="8">1.1 Difference Between GP.EXE and GP286.EXE</a>
+
+<h4><br><a href="#Odk434" _msttexthash="228982" _msthash="9">2 Installation</a></h4>
+<font _mstmutation="1" _msttexthash="1795625" _msthash="10"><a href="#Odk435" _mstmutation="1" _istranslated="1">2.1 Installation</a> <br _mstmutation="1" _istranslated="1"> Examples <a href="#Odk436" _mstmutation="1" _istranslated="1">2.2 Multi-Caller Operation</a></font>
+
+<h4><br><a href="#Odk437" _msttexthash="528866" _msthash="11">3 Additional information</a></h4>
+<font _mstmutation="1" _msttexthash="17124224" _msthash="12"><a href="#Odk438" _mstmutation="1" _istranslated="1">3.1 CONFIG file. </a> <br _mstmutation="1" _istranslated="1"> GP <a href="#Odk439" _mstmutation="1" _istranslated="1">3.2 File *. GPI</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk440" _mstmutation="1" _istranslated="1">3.3 Call file. GPC</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk441" _mstmutation="1" _istranslated="1">3.4 Call File. GPM</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk442" _mstmutation="1" _istranslated="1">3.5 MHEARD file. </a> <br _mstmutation="1" _istranslated="1"> GP <a href="#Odk443" _mstmutation="1" _istranslated="1">3.6 NAMES file. </a> <br _mstmutation="1" _istranslated="1"> GP <a href="#Odk444" _mstmutation="1" _istranslated="1">3.7 File *. GPB</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk445" _mstmutation="1" _istranslated="1">3.8 BINDATA file. </a> <br _mstmutation="1" _istranslated="1"> GP <a href="#Odk446" _mstmutation="1" _istranslated="1">3.9 ICONS file. </a> <br _mstmutation="1" _istranslated="1"> GP <a href="#Odk447" _mstmutation="1" _istranslated="1">3.10 The mycall file. GPL</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk448" _mstmutation="1" _istranslated="1">3.11 File *. GPI</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk449" _mstmutation="1" _istranslated="1">3.12 File *. GPH</a></font>
+
+<h4><br><a href="#Odk450" _msttexthash="343837" _msthash="13">4 Keyboard commands</a></h4>
+<font _mstmutation="1" _msttexthash="18363449" _msthash="14"><a href="#Odk451" _mstmutation="1" _istranslated="1">4.1 Commands Valid for All Channels</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk452" _mstmutation="1" _istranslated="1">4.2 Commands Valid for Channels 1 to 10</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk453" _mstmutation="1" _istranslated="1">4.3 Editor</a> <br _mstmutation="1" _istranslated="1"> Commands <a href="#Odk454" _mstmutation="1" _istranslated="1">4.4 BBS Menu and List Menu</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk455" _mstmutation="1" _istranslated="1">Commands 4.5 Cursor Movement on the</a> <br _mstmutation="1" _istranslated="1"> Screen <a href="#Odk456" _mstmutation="1" _istranslated="1">4.6 Entering ASCII Characters 1 to 31</a></font>
+
+<h4><br><a href="#Odk457" _msttexthash="219206" _msthash="15">5 QSO Operation</a></h4>
+<font _mstmutation="1" _msttexthash="47198450" _msthash="16"><a href="#Odk458" _mstmutation="1" _istranslated="1">5.1 General Information</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk459" _mstmutation="1" _istranslated="1">5.2 Filetransfer (ALT-T)</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk460" _mstmutation="1" _istranslated="1">5.3 Saving Connections (ALT-S)</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk461" _mstmutation="1" _istranslated="1">5.4 Copying Text in the</a> <br _mstmutation="1" _istranslated="1"> Editor <a href="#Odk462" _mstmutation="1" _istranslated="1">5.5 Remotely Controlled Operation</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk463" _mstmutation="1" _istranslated="1">5.6 External Programs</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk464" _mstmutation="1" _istranslated="1">5.7 Splitscreen</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk465" _mstmutation="1" _istranslated="1">5.8 Scroll-Lock</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk466" _mstmutation="1" _istranslated="1">5.9 TNC</a> <br _mstmutation="1" _istranslated="1"> Commands <a href="#Odk467" _mstmutation="1" _istranslated="1">5.10 Journaling</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk468" _mstmutation="1" _istranslated="1">5.11 Miscellaneous Connectt Texts</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk469" _mstmutation="1" _istranslated="1">5.12 Sysop Function</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk470" _mstmutation="1" _istranslated="1">5.13 DieBox AutoBin Transfer</a></font>
+
+<h4><br><a href="#Odk471" _msttexthash="440180" _msthash="17">6 MailBox Usage Options</a></h4>
+<font _mstmutation="1" _msttexthash="7839052" _msthash="18"><a href="#Odk472" _mstmutation="1" _istranslated="1">6.1 BBS menu</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk473" _mstmutation="1" _istranslated="1">6.2 DieBox List</a> <br _mstmutation="1" _istranslated="1"> function <a href="#Odk474" _mstmutation="1" _istranslated="1">6.3 Find</a> <br _mstmutation="1" _istranslated="1"> function <a href="#Odk475" _mstmutation="1" _istranslated="1">6.4 Problems recognizing a list</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk476" _mstmutation="1" _istranslated="1">6.5 Importing a list from the editor</a></font>
+
+<h4><br><a href="#Odk477" _msttexthash="123435" _msthash="19">7 GP Editor</a></h4>
+
+<h4><br><a href="#Odk478" _msttexthash="223730" _msthash="20">8 List of MH (ALT-H)</a></h4>
+
+<h4><br><a href="#Odk479" _msttexthash="83382" _msthash="21">9 QSO Spy</a></h4>
+<font _mstmutation="1" _msttexthash="4640818" _msthash="22"><a href="#Odk480" _mstmutation="1" _istranslated="1">9.1 Invoking a Joint Read</a> <br _mstmutation="1" _istranslated="1"> Connection <a href="#Odk481" _mstmutation="1" _istranslated="1">9.2 Spy Window</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk482" _mstmutation="1" _istranslated="1">9.3 Automatic QSO Spy</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk483" _mstmutation="1" _istranslated="1">9.4 Possible Problems</a></font>
+
+<h4><br><a href="#Odk484" _msttexthash="201578" _msthash="23">10 Autorouter</a></h4>
+<font _mstmutation="1" _msttexthash="34635575" _msthash="24"><a href="#Odk485" _mstmutation="1" _istranslated="1">10.1 Recursive Path</a> <br _mstmutation="1" _istranslated="1"> Entries <a href="#Odk486" _mstmutation="1" _istranslated="1">10.2 Autorouting via SP Gateway</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk487" _mstmutation="1" _istranslated="1">10.3 A Few Notes on the AUTOROUTER</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk488" _mstmutation="1" _istranslated="1">10.4 QRG Management (for TNC Multiport Only)</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk489" _mstmutation="1" _istranslated="1">10.5 Autoconnect Frequency-Dependent Conditions</a> <a href="#Odk490" _mstmutation="1" _istranslated="1">10.6 %DIGI%</a> <br _mstmutation="1" _istranslated="1"> Macro <a href="#Odk491" _mstmutation="1" _istranslated="1">10.7 Registering Callers to the List During the Connection (ALT-N)</a> <br _mstmutation="1" _istranslated="1"></font>
+
+<h4><br><a href="#Odk492" _msttexthash="420303" _msthash="25">11 Setup Function (ALT-U)</a></h4>
+<font _mstmutation="1" _msttexthash="34709662" _msthash="26"><a href="#Odk493" _mstmutation="1" _istranslated="1">11.1 Changing Colors</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk494" _mstmutation="1" _istranslated="1">11.2 Remote-Controlled Prompt</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk495" _mstmutation="1" _istranslated="1">11.3 Remote Control On/Off</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk496" _mstmutation="1" _istranslated="1">11.4 Inserting Text Buffer</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk497" _mstmutation="1" _istranslated="1">11.5 Echo</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk498" _mstmutation="1" _istranslated="1">11.6 RX Clicker</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk499" _mstmutation="1" _istranslated="1">11.7 Line</a> <br _mstmutation="1" _istranslated="1"> Break <a href="#Odk500" _mstmutation="1" _istranslated="1">11.8 Packet</a> <br _mstmutation="1" _istranslated="1"> Length <a href="#Odk501" _mstmutation="1" _istranslated="1">11.9 Softscroll</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk502" _mstmutation="1" _istranslated="1">11.10 Code AutoSave</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk503" _mstmutation="1" _istranslated="1">11.11 Beacon Menu</a> <br _mstmutation="1" _istranslated="1"><a href="#Odk504" _mstmutation="1" _istranslated="1">11.12 Dividing Line Between QSO Window and Monitor Window</a></font>
+
+<h4><br><a href="#Odk505" _msttexthash="132184" _msthash="27">12 DOS Shell</a></h4>
+
+<h4><br><a href="#Odk506" _msttexthash="276003" _msthash="28">13 Using the Mouse</a></h4>
+<a href="#Odk507" _msttexthash="561613" _msthash="29">13.1 Scroll Bar (ScrollLock)</a>
+
+<h4><br><a href="#Odk508" _msttexthash="545571" _msthash="30">14 Command Line Parameters</a></h4>
+<font _mstmutation="1" _msttexthash="14571323" _msthash="31"><a href="#Odk509" _mstmutation="1" _istranslated="1">14.1 <b _istranslated="1">/e</b> a <b _istranslated="1">/v</b></a> <br _mstmutation="1" _istranslated="1"><a href="#Odk510" _mstmutation="1" _istranslated="1">parameters 14.2 <b _istranslated="1">/h</b></a> <br _mstmutation="1" _istranslated="1"> parameter <a href="#Odk511" _mstmutation="1" _istranslated="1">14.3 <b _istranslated="1">/NOXMS</b> a <b _istranslated="1">/NOEMS</b></a> <br _mstmutation="1" _istranslated="1"><a href="#Odk512" _mstmutation="1" _istranslated="1">parameters 14.4 <b _istranslated="1">/XTBO</b> a <b _istranslated="1">/ATKBO</b></a> <br _mstmutation="1" _istranslated="1"><a href="#Odk513" _mstmutation="1" _istranslated="1">parameters 14.5 /<b _istranslated="1">3MOUSE</b></a> <br _mstmutation="1" _istranslated="1"><a href="#Odk514" _mstmutation="1" _istranslated="1">14.6 /<b _istranslated="1">NOFIFO</b></a> <br _mstmutation="1" _istranslated="1"><a href="#Odk515" _mstmutation="1" _istranslated="1">parameter 14.7 /<b _istranslated="1">CHECK</b></a> <br _mstmutation="1" _istranslated="1"> parameter <a href="#Odk516" _mstmutation="1" _istranslated="1">14.8 /<b _istranslated="1">KISSOFF</b> parameter</a></font>
+
+<h4><br><a href="#Odk517" _msttexthash="198705" _msthash="32">15 Softscroll</a></h4>
+
+<h4><br><a href="#Odk518" _msttexthash="447746" _msthash="33">16 What is HOST mode on TNC2</a></h4>
+
+<h4><br><a href="#Odk519" _msttexthash="569738" _msthash="34">17 Synchronization Errors</a></h4>
+
+<h4><br><a href="#Odk520" _msttexthash="255658" _msthash="35">18 Several types</a></h4>
+
+<h4><br><a href="#Odk521" _msttexthash="127387" _msthash="36">Appendix A</a></h4>
+<a href="#Odk522" _msttexthash="168233" _msthash="37">1 License Law</a>
+
+<h4><br><a href="#Odk523" _msttexthash="127582" _msthash="38">Appendix B</a></h4>
+<a href="#Odk524" _msttexthash="340041" _msthash="39">1 Contact Addresses</a>
+
+<h4><br><a href="#Odk525" _msttexthash="127777" _msthash="40">Appendix C</a></h4>
+<a href="#Odk526" _msttexthash="456872" _msthash="41">1 Authors of the program</a>
+
+<br>&nbsp;
+<hr>
+
+<h1 id="Odk432" _msttexthash="409799" _msthash="42">1 General Information</h1>
+
+<p _msttexthash="464140326" _msthash="43">GP is a terminal program using Host-Mode software
+WA8DED, or another. However, other TNC software can also be used if it supports
+KISS mode. In this case, however, the TFPCR program from DL1MEN and a suitable modem are required.
+GP differs from other terminal programs in that it uses a graphical
+user interface, which makes it very easy to operate. For everyone
+Important features here are icons that can be entered with the mouse. If the mouse is not connected,
+These functions can be activated using the keyboard (hotkeys). GP offers a maximum of 10
+QSO channels, but you can set fewer of them if desired. However, for Mailbox traffic
+There are two more useful features. After <b _istranslated="1">the (C)heck</b> command, the following is stored
+overview in a special buffer, which can then be called up using F11. Likewise, after
+<b _istranslated="1">(L)ist</b> command, invoke it using F12. From version 1.20 onwards,
+other BBS systems. In addition, there is a small editor built into GP, allowing
+text editing, but also e.g. configuration data. </p><p _msttexthash="140186722" _msthash="44">To work with GP, you need an IBM-compatible computer, at least
+1MB, EGA or VGA graphics card and DOS 2.0 or higher DOS version. GP works
+also in the DOS window under OS/2. In conjunction with standard VGA, it can be run at full capacity
+screen or as WINDOWS, or can be switched via ALT-Home. Whether he works and
+with SVGA, XGA, etc., unfortunately, I can't say. However, full-screen mode will work
+Anyway. If EMS or XMS memory is built into the PC used, then
+GP stores Scroll-Back-buffers and there is still about 380K left for further use
+normal DOS memory. </p><h2 id="Odk433" _msttexthash="1022957" _msthash="45">1.1 Difference Between GP.EXE and GP286.EXE</h2>
+
+<ul>
+<li _msttexthash="2739633" _msthash="46">- GP is designed in two variants, for different types of processors.</li>
+<li _msttexthash="2052154" _msthash="47">- GP.EXE works with all 80x86 processors, i.e. 8088, 8086, 80286, etc</li>
+<li _msttexthash="76105731" _msthash="48">- GP286.EXE supports the extended 80286 command set, and therefore
+It does NOT run on 8088 or 8086, but ONLY on 80286 and its successors. If the
+If you try to run this program on 8088 or 8086, the system crashes.
+(Experiments have shown that GP286.EXE also runs on the XT if it is equipped with an NEC V20 processor) Z
+lack of memory space, the QSO spy function was abandoned in GP.EXE, which
+occurs only in GP286.EXE.</li>
+</ul>
+
+<h1 id="Odk434" _msttexthash="228982" _msthash="49">2 Installation</h1>
+
+<p _msttexthash="409790537" _msthash="50">HD is required to operate GP. Installing GP on HD is very
+simple. Just call up the INSTALL.BAT after which the desired
+GP directory and copying all the necessary files. Then it is necessary to file
+CONFIG. GP to adapt to personal needs, i.e. setting your own CALL, etc. For
+remote control, an additional subdirectory needs to be compiled, which they can then access
+all foreign stations. The path to this subdirectory must then be in the configuration
+files are adjusted accordingly. For the remote <b _istranslated="1">RUN</b> command, another must be taken
+subdirectory, because this command
+it is a call to external programs whose output is directed to TNC, i.e. back
+to the counterstation. However, these external programmes should be included in another
+directory than GP, because GP itself can be invoked as an external program, which would
+led to inevitable complications. The commands for the configuration file are
+explained in Chapter 3.1. </p><h2 id="Odk435" _msttexthash="549601" _msthash="51">2.1 Installation Examples</h2>
+
+<p _msttexthash="50765585" _msthash="52">To operate GP, we need the following files: GP.EXE and
+GP. OVR or GP286.EXE and GP286. OVR (own program and its Overlay), BINDATA. GP
+(file for the greetings window), ICONS. GP (Icon Image File), CONFIG. GP
+(configuration file), ????????. GPT (e.g. DL.GPT) (texts for system and remote
+control), ????????. GPH (e.g. DL.GPH) (texts for remote help). </p><p _msttexthash="112585135" _msthash="53">The remaining files are not strictly necessary for GP operation.
+Using CTEXT. GPI and QRT. GPI can compose texts for both greeting and
+farewell according to your wishes. To the NAMES file. GP are used to write the names of the stations,
+that used the <b _istranslated="1">Name</b> statement as well as the paths to them. List of these
+stations can also be replenished manually. If a station is already in the list, just enter
+when connecting only her caller and GP will find the way to her in the overview himself. </p><p><font _mstmutation="1" _msttexthash="284900148" _msthash="54">Example: <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1"> - GP must be installed on C<b _istranslated="1">:\GP</b></i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1"> - upload all remote control functions to <b _istranslated="1">the C:\GP\USER directory. </b></i> <br _mstmutation="1" _istranslated="1"> GP <i _mstmutation="1" _istranslated="1"> - external programs that can be invoked using <b _istranslated="1">RUN</b> must be located in the <b _istranslated="1">C:\GP\EXTERNAL directory. </b></i> <br _mstmutation="1" _istranslated="1"> GP <i _mstmutation="1" _istranslated="1"> - data storage must be done in <b _istranslated="1">the C:\GP\SAVE directory. </b></i> <br _mstmutation="1" _istranslated="1"> GP <i _mstmutation="1" _istranslated="1"> - the original floppy disk with GP is in the drive A:</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">C:\&gt;cd and:</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">A:\&gt;install a: c:\gp</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">(the installer starts and saves automatically to C:\GP)</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">C:\GP&gt;md external.gp</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">C:\GP&gt;md user.gp</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">C:\GP&gt;md save.gp</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">C:\GP&gt;copy sysinfo.exe external.gp</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">(1 file copied)</i>  <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">C:\GP</i><br _mstmutation="1" _istranslated="1">&gt; Now the CONFIG must be changed. GP, namely the path setting for remote control and text storage: <br _mstmutation="1" _istranslated="1">UserDir = C:\GP\USER. <br _mstmutation="1" _istranslated="1">GP ExternalDir = C:\GP\EXTERNAL. <br _mstmutation="1" _istranslated="1">GP SaveDir = C:\GP\SAVE. <br _mstmutation="1" _istranslated="1">GP LogDir = C:\GP <br _mstmutation="1" _istranslated="1">In addition, the call sign must be changed: <br _mstmutation="1" _istranslated="1">MyCall = xxxxxx <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">(e.g.: MyCall = OK1KQJ)</i></font>
+
+</p><p _msttexthash="273125736" _msthash="55">Until now, only NOCALL has been used instead of CALL and therefore
+we need to replace it with our own CALL. The data for the serial port is still
+set to 9600baud and COM1. If we set the TNC to a different number of baud or
+we will operate it on another port, we must adjust the individual parameters accordingly
+change (<b _istranslated="1">SerBaud</b> and <b _istranslated="1">SerNr</b>). If you would like to operate a GP on
+third or fourth port, then you need to add the port number and the IRQ port number,
+because they are not standardized. You can get the necessary information in the manual of the PC you are using.
+The next one is to add to the NAMES file. GP insert custom CALL, NAME and LINK
+the way to well-known stations. The syntax of these notations can be found in Chapter 3.6,
+or in NAMES. GP of the original floppy disk. </p><h2 id="Odk436" _msttexthash="572078" _msthash="56">2.2 Multi-Caller Operation</h2>
+
+<p _msttexthash="69600882" _msthash="57">If we run GP on a computer under different tags (CALL),
+We have the opportunity to compile separate contact texts, info texts for each caller
+and farewell texts. Installation is very simple and we need it for every
+CALL file to compile a separate file and store the necessary data in it. Names then
+correspond to the given CALL. The directory can then contain the following files: </p><p>
+<font _mstmutation="1" _msttexthash="49332114" _msthash="58"><i _mstmutation="1" _istranslated="1">CTEXT???. GPI - General
+Connectt texts (see 5.11)</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">&lt;call&gt;. GPC - Personal Connect Texts for &lt;Call&gt;</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">&lt;Call&gt;. GPM – mail file for &lt;call&gt;</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">&lt;mycall&gt;. GPI (or INFO. GPI) – an info file called up using <b _istranslated="1">I</b></i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">QRT. GPI - farewell texts, called up by <b _istranslated="1">Q</b></i></font>
+
+</p><p _msttexthash="16625557" _msthash="59">Each of these data is first searched in the MYCALL file.
+If it is not there, it is searched in the GP file. This gives the possibility to use
+part of the MYCALL texts, common to other CALLs. </p><h1 id="Odk437" _msttexthash="528866" _msthash="60">3 Additional information</h1>
+
+<h2 id="Odk438" _msttexthash="235157" _msthash="61">3.1 CONFIG file. GP</h2>
+
+<p _msttexthash="38076233" _msthash="62">In the CONFIG. GP stores the necessary parameters for
+GP operation. These need to be set to the appropriate values right away, especially then
+parameters for the V24 interface, graphics and data for remote control. Syntax
+determining variables always has the same form, e.g.: </p><p _msttexthash="63414" _msthash="63">Zoom = 2
+
+</p><p _msttexthash="14049269" _msthash="64">It is also possible to include comments in the file if it is preceded by
+We put a semicolon. However, they can always be only at the end of the line after the command, e.g.: </p><p _msttexthash="387777" _msthash="65">Zoom = 2 ; Zoom is set to 2 </p><h3 _msttexthash="420368" _msthash="66">3.1.1 Color Adjustment</h3>
+
+<p _msttexthash="17183023" _msthash="67">The GP screen is divided into several windows, the color of which can be
+set completely individually according to your own wishes. Screen color options
+reveals the following list: </p><p>
+<font _mstmutation="1" _msttexthash="40426633" _msthash="68"><i _mstmutation="1" _istranslated="1">Black = Black</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">Blue = Blue</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">Green =</i> <br _mstmutation="1" _istranslated="1"> Green <i _mstmutation="1" _istranslated="1">Cyan = Turquoise</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">Red = Red</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">Magenta = Purple</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">Orange =</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">Orange LightGray = Light Grey</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">DarkGray = Dark Grey</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">LightBlue = Light Blue</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">LightGreen = Light Green</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">LightCyan = Light Turquoise</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">LightRed = Light Red</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">LightMagenta = Light Purple</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">Yellow = Yellow</i> <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">White = White</i></font>
+
+</p><p _msttexthash="1720576" _msthash="69">There are the following variables for setting them: </p><table class="nobor">
+<tbody><tr>
+<td class="info">
+<b _msttexthash="340340" _msthash="70">MonitorBackGround</b>
+</td>
+<td class="info" _msttexthash="804778" _msthash="71"> Monitor window background color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="345592" _msthash="72">MonitorForeGround</b>
+</td>
+<td class="info" _msttexthash="551382" _msthash="73"> Monitor window text color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="352482" _msthash="74">MonitorInverzAttr</b>
+</td>
+<td class="info" _msttexthash="895648" _msthash="75"> Monitor window text color, inverse </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="306904" _msthash="76">EditorBackGround</b>
+</td>
+<td class="info" _msttexthash="496249" _msthash="77"> Editor background color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="311805" _msthash="78">EditorForeGround</b>
+</td>
+<td class="info" _msttexthash="297726" _msthash="79"> Editor text color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="318305" _msthash="80">EditorInverzAttr</b>
+</td>
+<td class="info" _msttexthash="980473" _msthash="81"> cursor color and EOL tags in the editor </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="273208" _msthash="82">CheckBackGround</b>
+</td>
+<td class="info" _msttexthash="770653" _msthash="83"> background color BBS Menu window </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="277758" _msthash="84">CheckForeGround</b>
+</td>
+<td class="info" _msttexthash="500682" _msthash="85"> Text Color BBS Window Menu </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="283868" _msthash="86">CheckInverzAttr</b>
+</td>
+<td class="info" _msttexthash="827008" _msthash="87"> Selection color and data labeling </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="249782" _msthash="88">ListBackGround</b>
+</td>
+<td class="info" _msttexthash="915031" _msthash="89"> DieBox List Window Background Color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="253981" _msthash="90">ListForeGround</b>
+</td>
+<td class="info" _msttexthash="640614" _msthash="91"> DieBox List Window Text Color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="285909" _msthash="92">ListInverseAttr</b>
+</td>
+<td class="info" _msttexthash="1367197" _msthash="93"> Color of data selection and labeling, inverse </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="336401" _msthash="94">ConnectBackGround</b>
+</td>
+<td class="info" _msttexthash="1760382" _msthash="95"> Background color of the Connect window (channel 1 to 10) </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="341653" _msthash="96">ConnectForeGround</b>
+</td>
+<td class="info" _msttexthash="1473784" _msthash="97"> Color of the received text in the Connect window </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="348543" _msthash="98">ConnectInverzAttr</b>
+</td>
+<td class="info" _msttexthash="1540370" _msthash="99"> Color of the broadcast text in the Connect window </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="249002" _msthash="100">MenuBackGround</b>
+</td>
+<td class="info" _msttexthash="533013" _msthash="101"> Top Menu background color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="253201" _msthash="102">MenuForeGround</b>
+</td>
+<td class="info" _msttexthash="496145" _msthash="103"> Text color of the top Menu </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="258921" _msthash="104">MenuInverzAttr</b>
+</td>
+<td class="info" _msttexthash="11534055" _msthash="105"> If we receive text on one channel, we can see at the same time
+activity on another channel, this will be reflected in the change in the color of the text </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="276796" _msthash="106">StateBackGround</b>
+</td>
+<td class="info" _msttexthash="741819" _msthash="107"> Background Color Status Window </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="281346" _msthash="108">StateForeGround</b>
+</td>
+<td class="info" _msttexthash="507962" _msthash="109"> Text color Window status </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="279292" _msthash="110">InputBackGround</b>
+</td>
+<td class="info" _msttexthash="870207" _msthash="111"> Receiving Window Background Color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="283842" _msthash="112">InputForeGround</b>
+</td>
+<td class="info" _msttexthash="546312" _msthash="113"> Receive window text color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="192114" _msthash="114">MHBackGround</b>
+</td>
+<td class="info" _msttexthash="511056" _msthash="115"> MH Sheet Background Color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="195611" _msthash="116">MHForeGround</b>
+</td>
+<td class="info" _msttexthash="195039" _msthash="117"> MH Sheet Color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="200551" _msthash="118">MHInverzAttr</b>
+</td>
+<td class="info" _msttexthash="851110" _msthash="119"> Inverted Color MH Sheet (Selection) </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="223873" _msthash="120">SpyBackGround</b>
+</td>
+<td class="info" _msttexthash="493636" _msthash="121"> QSO spy background color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="227721" _msthash="122">SpyForeGround</b>
+</td>
+<td class="info" _msttexthash="498537" _msthash="123"> QSO spy foreground color </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="258037" _msthash="124">SpyInverseAttr</b>
+</td>
+<td class="info" _msttexthash="449163" _msthash="125"> inverse color of QSO spy </td>
+</tr>
+</tbody></table>
+
+<h3 _msttexthash="868517" _msthash="126">3.1.2 Setting the Scroll Back Buffer</h3>
+
+<p><font _mstmutation="1" _msttexthash="251167293" _msthash="127">In GP, there is a text buffer for each channel, into which
+data is stored and can be browsed if you view the data
+on the screen. The size of the text buffer is individually adjustable and is
+given by the number of 80 character lines. Therefore, if we want the size of the text buffer
+expressed in bytes needed for RAM, we need to multiply the number of rows by 84,
+because we need 80 bytes on the line (80 bytes for the actual text and 4 bytes for
+color settings). The number of rows can fluctuate between 40 and 780, with 40
+lines is the minimum that can be displayed in the image, and 780 is the maximum that can be
+one segment of memory of the 80x86 processor to address because its maximum
+the capacity is 64KB, which is equivalent to about 780 rows. </font><br>&nbsp;
+
+</p><table class="nobor">
+<tbody><tr>
+<td class="info">
+<b _msttexthash="171626" _msthash="128">CheckBuffer</b>
+</td>
+<td class="info" _msttexthash="514852" _msthash="129"> buffer for BBS Menu window </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="150943" _msthash="130">EditBuffer</b>
+</td>
+<td class="info" _msttexthash="281164" _msthash="131"> Buffer Pro Editor </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="154167" _msthash="132">TextBuffer</b>
+</td>
+<td class="info" _msttexthash="19708455" _msthash="133"> buffer for monitor and channels 1-10, the number of channels can be selected and
+according to their number, also the size of the monitoring window. Entered in order
+Monitor, Channel 1, Channel 2, Up to </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="177710" _msthash="134">InputBuffer</b>
+</td>
+<td class="info" _msttexthash="13131534" _msthash="135"> buffer for channel 1-10 and monitor writes window. Applications
+This command is analogous to the TextBuffer command, but you can insert a maximum of 199
+lines. </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="132431" _msthash="136">SpyBuffer</b>
+</td>
+<td class="info" _msttexthash="493948" _msthash="137"> buffer for QSO spy window </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="105742" _msthash="138">MHBuffer</b>
+</td>
+<td class="info" _msttexthash="309712" _msthash="139"> buffer for MH sheet </td>
+</tr>
+</tbody></table>
+
+<h3 _msttexthash="349089" _msthash="140">3.1.3 Setting Timers</h3>
+
+<p _msttexthash="1044332939" _msthash="141">GP also includes a screensaver, which after a certain period of time,
+If no key has been pressed, it will darken. This time can be set
+configuration data. The command is <b _istranslated="1">Screensave</b> and is given in minutes, i.e. the <b _istranslated="1">Screensave command
+= 5</b> darkens the screen after 5 minutes of inactivity. Next we can set
+the time for which the data of the Pop-Up window, connection messages, etc. should be displayed.
+There is also a <b _istranslated="1">PopUpTime</b> command, where
+but the time is given in seconds. <b _istranslated="1">PopUpTime command
+= 5</b> means that the command will be displayed for 5 seconds. Also, the internal time of GP is
+adjustable in relation to the computer. The change is made by using the <b _istranslated="1">Time</b> and <b _istranslated="1">Zone</b> command. The <b _istranslated="1">Time</b> statement defines the GP program time in the relation
+to the computer in minutes. <b _istranslated="1">Time = -60</b> is used to achieve a delay
+GP time against computer time by 60 minutes. The <b _istranslated="1">Zone</b> statement affects the MACRO <b _istranslated="1">%z</b>, specifying in
+zone time. However, for automatic journaling, in addition to
+system GP time still needed universal time (UTC). This can be determined by <b _istranslated="1">the UTC</b> command. A time shift is also possible here
+compared to the system GP time by commanding e.g.: <b _istranslated="1">UTC = -120</b>. This will achieve
+computer time delay compared to system time by 2 hours = CEST (daylight saving time).
+The <b _istranslated="1">ConnectBell</b> command indicates the number of times to ring if the
+is connected by another station. In this case, the GP produces a signal that sounds like
+three-voice phone ringtone. <b _istranslated="1">ConnectBell command
+= 5</b> means that the bell will ring 5 times. </p><h3 _msttexthash="1062477" _msthash="142">3.1.4 Configuring the serial interface</h3>
+
+<p _msttexthash="177375783" _msthash="143">GP is capable of handling any combination of address and IRQ
+for the serial port. IRQs can also have AT-specific values, i.e. values between
+8 to 15. If we use the first or second interface, there are both port numbers and IRQs
+is standardized and GP is known, so you only need to enter the port number. All values may
+be entered in decimal or hexadecimal. However, in the case of hexadecimal numbers,
+the dollar must come first, e.g. $3F8. Number of data, traces, and bit parities cannot be
+change. These are set to 8 data bytes, 1 stop bit and no parity in GP.
+The following commands exist for serial interface settings: </p><p>
+<font _mstmutation="1" _msttexthash="4473118" _msthash="144"><i _mstmutation="1" _istranslated="1">SerNr - Port</i> <br _mstmutation="1" _istranslated="1"> Number <i _mstmutation="1" _istranslated="1">SerBaud - Transfer</i> <br _mstmutation="1" _istranslated="1"> Rate <i _mstmutation="1" _istranslated="1">SerPort - SerIRQ Interface</i> <br _mstmutation="1" _istranslated="1"> Port <i _mstmutation="1" _istranslated="1">Address - Port IRQ</i></font>
+
+</p><h3 _msttexthash="315536" _msthash="145">3.1.5 Path Settings</h3>
+
+<p _msttexthash="251351321" _msthash="146">For remote control by <b _istranslated="1">Dir</b>, <b _istranslated="1">Write</b>, <b _istranslated="1">Read</b> and <b _istranslated="1">DELete</b> from the terminated counterpart, directory
+Roads. All foreign stations have the same priority, i.e. they can read all files and
+add other files as you wish. For this purpose, it is advisable to have your own overview.
+The command to set the data path is in CONFIG. GP <b _istranslated="1">UserDir</b>. Another way is needed
+<b _istranslated="1">for the RUN</b> statement. This directory will contain externally executable programs,
+the path is set by the <b _istranslated="1">ExternalDir</b> command. You can also set the path to
+saving texts to memory with the <b _istranslated="1">SaveDir</b> command.
+In order to achieve greater insight in the recording of QSOs, the spy for the QSO was
+Version 1.50 introduced <b _istranslated="1">the SpyDir</b> command.
+This serves as a standard for listening to QSOs. </p><h3 _msttexthash="1609400" _msthash="147">3.1.6 Initialization and deinitialization of TNC.</h3>
+
+<p _msttexthash="9449297" _msthash="148">At the start and end of work with GP, TNC can be used according to your own wishes
+initialize. The syntax for initialization is always: </p><p _msttexthash="424021" _msthash="149">TNCINI = &lt; TNC &gt; Statement </p><p _msttexthash="103913875" _msthash="150">As a &lt;TNC command&gt; you can use all the commands used
+TNC. Any number of initialization data can be included in the configuration data
+commands. For example, if we want to insert TNC computer time, we use <b _istranslated="1">the TNCINI = Date Time</b> command, which is not
+in fact, the right TNC command, but only the GP program password. GP then this
+turns the password into TNC setup commands. The same applies to deinitialization
+rules as for initialization, except that the command
+TNCDEI: </p><p _msttexthash="422084" _msthash="151">TNCDEI = &lt; TNC &gt; Statement </p><p _msttexthash="78787579" _msthash="152">If we want to invoke the DOS shell during GP work, it is advantageous
+disable the TNC monitor so that its buffer does not overflow due to other data,
+while we work in DOS. For example, there is a TNCDOS command for this case,
+which specifies which TNC parameters will be set to call the DOS shell and
+what value. After the shell exits, the TNCINI values are set to
+original condition. The syntax of the command is: </p><p _msttexthash="341991" _msthash="153">TNCDOS = &lt; TNC &gt; Command </p><h3 _msttexthash="594139" _msthash="154">3.1.7 Setting Up the Printer.</h3>
+
+<p _msttexthash="122945433" _msthash="155">If we want to record the progress of the connection with the printer, we have
+the ability to distinguish the received text from the sent text by different types of font. However, this is only in
+in case the printer can do it. EPSON-compatible printers offer
+Various options. Up to 10 decimal characters can be used for setting,
+separated by commas. The <b _istranslated="1">DefaultPrint</b> command sets the EPSON printer to print the received text, while <b _istranslated="1">the InvertPrint</b> command will print it on the EPSON
+text sent by you. Syntax: </p><p _msttexthash="6526546" _msthash="156">DefaultPrint = character 1, character 2 to .. character 10 <br _istranslated="1">InverzPrint = character 1, character 2 to .. Character 10 </p><h3 _msttexthash="511511" _msthash="157">3.1.8 Remaining Settings.</h3>
+
+<p _msttexthash="127897003" _msthash="158">The number of channels actually used is determined by the <b _istranslated="1">Channels</b> command, the maximum is 10. Must not be
+more channels are specified than TNC is capable of processing. Otherwise, it will be permanently reported
+I guess. The GP has no way of knowing how many channels the TNC can process and
+therefore, PRG is only dependent on the correct settings. However, problems can also arise in
+in the event that fewer channels are set than the TNC is able to handle,
+if a channel that is not served by the GP is connected. Syntax: </p><p><font _mstmutation="1" _msttexthash="955916" _msthash="159">Channels = &lt; number of &gt; <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">(e.g. Channels = 4)</i></font>
+
+</p><p _msttexthash="65249509" _msthash="160">The MYCALL command will reveal your caller and accordingly
+I'm going to start TNC. It is possible to use a separate caller for each channel. Channels
+Without a set caller, they are automatically placed by the monitor caller. The callers are
+given in the following order: monitor, channel 1 to .10 and are separated by a comma.
+Two lines in a row omit one channel. Syntax: </p><p _msttexthash="1948934" _msthash="161">MYCALL = monitorcall, channel1call, channel2call, up to . </p><p>
+<font _mstmutation="1" _msttexthash="29755154" _msthash="162"><i _mstmutation="1" _istranslated="1">Example: OK1KQJ, , OK1KQJ-2, , OK1KQJ-4</i> <br _mstmutation="1" _istranslated="1">In this case, the monitor has been set to the OK1KQJ caller,
+Channels 1 and 3 have been omitted, i.e. they will take over the settings from the monitor and on channel 2
+will be OK1KQJ-2 and on channel 4 will be OK1KQJ-4. </font></p><p _msttexthash="12860029" _msthash="163">With the NoName command, we set both the stations (whose names
+are not yet entered into the namefile) to be addressed by the system (macro %N
+in the *. GPI). Syntax: </p><p _msttexthash="379561" _msthash="164">NoName = (salutation) </p><p _msttexthash="8999354" _msthash="165">In the monitor window, you can optionally insert a blank line between
+displayed packets with the <b _istranslated="1">InsertMonLine</b> command.
+Syntax: </p><p _msttexthash="399620" _msthash="166">InsertMonLine = (ON/OFF)
+
+</p><p _msttexthash="5508477" _msthash="167">Automatic station-journal management can be switched off on request
+with the <b _istranslated="1">Log</b> command. Syntax: </p><p _msttexthash="133952" _msthash="168">LOG = &lt;ON/OFF&gt;
+
+</p><p _msttexthash="12666784" _msthash="169">When automatic journaling is turned on, the frequency must be specified
+or at least a band, e.g. 430.625 or 70cm. This length is a maximum of 7 characters.
+Syntax: </p><p _msttexthash="340821" _msthash="170">QRG = Frequency/Band </p><p _msttexthash="82954053" _msthash="171">However, this command is only effective if we do not use
+multiport TNC. However, we need to include QRG in the NAMES data when using it. GP.
+You can find out more in Chapter 9. The Backup command allows GP to exit
+stored the information in a text buffer, from where it retrieves it after the restart, so that
+in the event that the GP's work is interrupted during the connection, the QSO data shall be
+will not lose. Syntax: </p><p _msttexthash="209937" _msthash="172">Backup = &lt;ON/OFF&gt;
+
+</p><p><font _mstmutation="1" _msttexthash="16017664" _msthash="173">The receipt of each data packet can also be announced
+acoustically by tapping, i.e. when another packet arrives, a signal is heard. The command is <b _mstmutation="1" _istranslated="1">RXClick</b> and can take the form of: </font><br>&nbsp;
+
+</p><table class="nobor">
+<tbody><tr>
+<td class="info" _msttexthash="4368" _msthash="174">
+0
+</td>
+<td class="info" _msttexthash="113685" _msthash="175"> No signal </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="4459" _msthash="176">
+1
+</td>
+<td class="info" _msttexthash="2990689" _msthash="177"> signal only when a packet arrives in a window other than the current one </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="4550" _msthash="178">
+2
+</td>
+<td class="info" _msttexthash="1181609" _msthash="179"> Signal when a packet arrives in any window </td>
+</tr>
+</tbody></table>
+
+<p _msttexthash="90480" _msthash="180">Syntax: </p><p _msttexthash="199901" _msthash="181">RXClick = &lt;0 to 2&gt; </p><p _msttexthash="11224759" _msthash="182">The language when remote control of the counter station can be set.
+However, only those languages about which there are * can be selected. GPT files. </p><p _msttexthash="90480" _msthash="183">Syntax: </p><p _msttexthash="418210" _msthash="184">RemoteLanguage = &lt;xxx&gt;
+
+</p><p>
+<font _mstmutation="1" _msttexthash="15011633" _msthash="185"><i _mstmutation="1" _istranslated="1">Example: RemoteLanguage = G</i> <br _mstmutation="1" _istranslated="1">In this case, English will be set. If this
+If you skip the command, the currently set language will be selected for the counter station as well. </font></p><p _msttexthash="47172242" _msthash="186">The <b _istranslated="1">REMOTE</b> command can be used to define the allowed remote control commands that can be used by the counter station
+use. <b _istranslated="1">Setting REMOTE = *</b> means any remote control command. If we want to use only
+some, we need to list the individual commands separated by a comma. It is enough to state only
+Their abbreviations: </p><p>
+<font _mstmutation="1" _msttexthash="10296884" _msthash="187"><i _mstmutation="1" _istranslated="1">Example: REMOTE = VER, I, NE, N, #</i> <br _mstmutation="1" _istranslated="1">In this case, the VERsion, Info, NEws commands are allowed,
+Name and language. All other commands are disabled. </font></p><p _msttexthash="14315483" _msthash="188">The exact opposite of REMOTE is <b _istranslated="1">NOREMOTE.</b>
+Here it is possible to define remote control commands that must not be used in
+No way. Otherwise, use as with the REMOTE command. </p><p _msttexthash="1964256658" _msthash="189">If we are bothered by GP questions such as YES/NO/interruption, we can
+replace with <b _istranslated="1">Questions =
+&lt;ON/OFF</b>&gt; where ON turns the query on, OFF turns it off. But be careful, when
+disabling the query until the <b _istranslated="1">FastPol</b> command affects the GP query method on TNC. <b _istranslated="1">FastPol
+= ON</b> leads GP to query TNC at optimized speed and is fully utilized here
+interruptible operation V24. However, this method can lead to <b _istranslated="1">Resync</b> errors, i.e.
+character failure when receiving V24. It depends entirely on the PC used,
+installed driver and programs that are running at the same time as GP. If
+if the problems just described occur, set <b _istranslated="1">FastPol = OFF.</b> <b _istranslated="1">FastPol=AUTO</b> is set, in which the query method depends on whether we use
+16550A UART, or not. If we use it, the query will be optimized. Otherwise, it will be
+program should behave as <b _istranslated="1">FastPol=OFF.</b> <b _istranslated="1">PopUnableKeyboad</b> sounds terrible,
+but it actually decides whether the windows
+PopUp will be closed by keyboard, mouse or only mouse before
+<b _istranslated="1">PopUpTime</b> expires. Premature
+closure allows <b _istranslated="1">the PopUnableKeyboard command
+= ON</b> along with ENTER or ESC. On the other keys if there are windows
+open, does not respond. Copying the text as it used to be is no longer
+possible. <b _istranslated="1">PopUnEnableKeyboard = OFF</b> allows the keyboard query if at least one window is still open. During
+of this time, we can prescribe, for example, a text that, after closing the window,
+will be in the transcript window. The window may be <b _istranslated="1">PopUpTime</b> over time in this case
+closed with the mouse. <b _istranslated="1">The MultiPort</b> command determines whether TNC should work in a standard,
+or DRSI mode. Normally, the GP recognizes completely automatically whether the TNC mode supports DRSI or
+No. Nevertheless, it may happen that, depending on the TNC SW, this automatic
+Recognition does not work. Therefore, when using MULTIPORT TNC, such as:
+FALCon/TNC4 or TNC3, <b _istranslated="1">the MultiPort = ON</b> command must be used. When using
+TFPCX from version 2.0 onwards, we have the option to use
+<b _istranslated="1">MultiPort command = AUTO</b> &lt;default settings&gt;. If we do not want to use the advantages of MultiPort,
+we will use <b _istranslated="1">the MultiPort = OFF</b> command. </p><h3 _msttexthash="888277" _msthash="190">3.1.9 Conditional configurations.</h3>
+
+<p _msttexthash="49774868" _msthash="191">In some situations, it is advantageous to be able to configure
+GP operatively according to the situation. In addition, the program offers the option of
+Edit <b _istranslated="1">IF</b> Condition Configuration
+data and then control them using the command line. The function is simple, preferably
+The explanation will be given on an example: </p><p _msttexthash="4889677" _msthash="192">Let's have two TNCs, one works with
+9600 baudy and is controlled by V24, the second with 38400 baudy. </p><p _msttexthash="1644487" _msthash="193">We can do CONFIG. GP to write the following commands: </p><p _msttexthash="1220531" _msthash="194">&lt;IF 38400&gt;
+<br>SerBaud = 38400
+<br>&lt;ELSE&gt;
+<br>SerBaud = 9600
+<br>&lt;END&gt;
+
+</p><p _msttexthash="17708002" _msthash="195">If GP is called <b _istranslated="1">gp
+38400</b> or <b _istranslated="1">GP286 38400</b>, will be
+installed V24 with 38400 bauds. Otherwise, V24 with 9600 baud will be installed. They are
+For example, the following alternatives are possible: </p><p _msttexthash="3273920" _msthash="196">&lt;IF 38400&gt;
+<br>SerBaud = 38400
+<br>&lt;END&gt;
+<br>&lt;IF 19200&gt;
+<br>SerBaud = 19200
+<br>&lt;END&gt;
+<br>&lt;IF 9600&gt;
+<br>SerBaud = 9600
+<br>&lt;END&gt;
+
+</p><p _msttexthash="6179875" _msthash="197">The ELSE condition is not always necessary. There is also a logical use
+using <b _istranslated="1">the NOT</b> function. For example: </p><p _msttexthash="1325987" _msthash="198">&lt;IF NOT 9600&gt;
+<br>SerBaud = 38400
+<br>&lt;ELSE&gt;
+<br>SerBaud = 9600
+<br>&lt;END&gt;
+
+</p><p _msttexthash="6264752" _msthash="199">Here, GP works with the 9600 baud interface if the user
+He called 9600. In all other cases, 38400 baud is installed. </p><p _msttexthash="379834" _msthash="200">What to watch out for: </p><ul>
+<li _msttexthash="6406868" _msthash="201"><b _istranslated="1">key commands &lt;IF
+(NOT) xxx&gt;</b>, <b _istranslated="1">&lt;ELSE</b>&gt; and <b _istranslated="1">&lt;END</b>&gt; must be themselves on the line and
+must start in the first column.</li>
+
+<li _msttexthash="9305816" _msthash="202">the use of multiple nested IF conditions is not allowed. The new IF
+condition can be defined if the preceding one is closed by using END.</li>
+</ul>
+
+<h4 _msttexthash="552123" _msthash="203">3.1.9.1 Reserved keywords:</h4>
+
+<p _msttexthash="19839950" _msthash="204">Previously, GP only had one <b _istranslated="1">keyword to use, %TFPCX200</b>.
+Its use is similar
+Use the command-line parameter. However, it depends on whether (from version 2.0 onwards)
+TFPCX installed or not. For example: </p><p _msttexthash="691457" _msthash="205">&lt;IF %TFPCX200&gt;
+<br>TNCINI = @L 0:DB0FN
+<br>&lt;END&gt;
+
+</p><p _msttexthash="8947302" _msthash="206">The <b _istranslated="1">command @L 0:DB0FN</b> can be used if TFPCX 2.0 is installed. When using TNC, TFPCR or earlier
+version of TFPCX, this command is ignored. </p><h2 id="Odk439" _msttexthash="139451" _msthash="207">3.2 File *. GPI</h2>
+
+<p><font _mstmutation="1" _msttexthash="42917485" _msthash="208">Files can be supplemented with GPI = Graphic Packet Infofile.
+Files with this extension contain informational texts that can be read
+other stations, e.g. by means of remote commands. In all files of this
+Extensions can be used macros. There are a total of 15 of them available. They are
+following: </font><br>&nbsp;
+
+</p><table class="nobor">
+<tbody><tr>
+<td class="info" _msttexthash="12311" _msthash="209">
+%V
+</td>
+<td class="info" _msttexthash="2041364" _msthash="210"> The version number of this software (in this case, it is <b _istranslated="1">1.61</b>.) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="10335" _msthash="211">
+%C
+</td>
+<td class="info" _msttexthash="444743" _msthash="212"> Counter Station Caller </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="11479" _msthash="213">
+%N
+</td>
+<td class="info" _msttexthash="389064" _msthash="214"> Counterstation name </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="12623" _msthash="215">
+%Y
+</td>
+<td class="info" _msttexthash="206583" _msthash="216"> Custom caller </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="11167" _msthash="217">
+%K
+</td>
+<td class="info" _msttexthash="351858" _msthash="218"> Channel number used </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="12103" _msthash="219">
+%T
+</td>
+<td class="info"><font _mstmutation="1" _msttexthash="1155115" _msthash="220"> Current GP time in HH:MM:SS format (e.g. <b _mstmutation="1" _istranslated="1">10:41:32</b></font>)
+</td>
+</tr>
+<tr>
+<td class="info" _msttexthash="10439" _msthash="221">
+%D
+</td>
+<td class="info"><font _mstmutation="1" _msttexthash="536705" _msthash="222"> Current GP date (e.g.: <b _mstmutation="1" _istranslated="1">25.03.1991</b></font>)
+</td>
+</tr>
+<tr>
+<td class="info" _msttexthash="10231" _msthash="223">
+%B
+</td>
+<td class="info" _msttexthash="743093" _msthash="224"> Corresponds to the beep sign (07h) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="10959" _msthash="225">
+%I
+</td>
+<td class="info" _msttexthash="2576873" _msthash="226"> If available NEWS. GPI, a link to its
+existence, otherwise nothing </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="12727" _msthash="227">
+%Z
+</td>
+<td class="info" _msttexthash="969735" _msthash="228"> Indicates the time zone of the GP clock </td>
+</tr>
+<tr>
+<td class="info">
+%_
+</td>
+<td class="info" _msttexthash="1119937" _msthash="229"> End a line and jump the cursor to a new line </td>
+</tr>
+<tr>
+<td class="info">
+%%
+</td>
+<td class="info" _msttexthash="182338" _msthash="230"> Percent sign </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="11583" _msthash="231">
+%O
+</td>
+<td class="info" _msttexthash="3077334" _msthash="232"> Reads a line from the ORIGIN file. GPI (Generator Selector
+random numbers) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="9919" _msthash="233">
+%?
+</td>
+<td class="info" _msttexthash="5104437" _msthash="234"> prompts the connected counter station to report its
+name, if it is not already in the NAMES file. GP </td>
+</tr>
+<tr>
+<td class="info">
+%
+</td>
+<td class="info" _msttexthash="1454375" _msthash="235"> Turns on prompt, recommended only for CTEXT file </td>
+</tr>
+</tbody></table>
+
+<p _msttexthash="83274126" _msthash="236">Additionally, it is possible to add formatting information that
+Specifies the total length of the macro text. This is necessary because macros do not have a defined
+length when it changes according to the situation, e.g. %N macro. The formatting is determined after
+double cross with a two-digit number. If the actual MACRO TEXT is shorter than
+is the given format, the rest is filled with white space. For example: </p><p>
+<font _mstmutation="1" _msttexthash="5706480" _msthash="237"><b _mstmutation="1" _istranslated="1"><i _istranslated="1">%N 20</i></b><i _mstmutation="1" _istranslated="1"> will add a name
+connected stations, but the total length of the macro is always only 20 characters.</i></font>
+
+</p><p _msttexthash="14059695" _msthash="238">The formatting information is especially important if we want to
+text that contains a macro to frame. As an example for using a macro, we can
+specify the CTEXT file. GPI. </p><h3 _msttexthash="344292" _msthash="239">3.2.1 CTEXT file???. GPI</h3>
+
+<p _msttexthash="34645221" _msthash="240">This file contains a general greeting text that is
+sent when another station connects. The standard connection text is called <b _istranslated="1">CTEXT. GPI,</b> but may also be included
+alternative. These texts can be switched as required during operation. Closer
+This is in Chapter 5.11. </p><h3 _msttexthash="254943" _msthash="241">3.2.2 NEWS file. GPI</h3>
+
+<p _msttexthash="8781461" _msthash="242">This file is used to publish current news. Text
+can be read via the <b _istranslated="1">NEWS</b> remote command. The file can be canceled,
+if there is no news. </p><h3 _msttexthash="301600" _msthash="243">3.2.3 MYCALL file. GPI</h3>
+
+<p _msttexthash="37698713" _msthash="244">This file is sent by the <b _istranslated="1">remote Info</b> command. It contains a short information about
+own station. A call sign (e.g. OK1XXX. GPI).
+Thus, information about multiple users of the computer can be included if more than one
+users. If the caller file is not available
+user, INFO is used<b _istranslated="1">. GPI.</b> </p><h3 _msttexthash="422396" _msthash="245">3.2.4 F1 file. GPI to F12. GPI</h3>
+
+<p _msttexthash="43584086" _msthash="246">These files may contain text macros. These texts can
+be invoked from GP using SHIFT+F1 to F12. The file name matches the functional number
+keys, e.g. <b _istranslated="1">the F5 file. GPI</b>
+invoked by SHIFT+F5. Macros F11. GPI and F12. GPI can be used on a computer,
+that has an extended keyboard with F11 and F12 function keys attached. </p><h3 _msttexthash="232388" _msthash="247">3.2.5 QRT file. GPI</h3>
+
+<p _msttexthash="13493142" _msthash="248">This file is sent at the end of the connection if
+The counterstation sends a remote <b _istranslated="1">command Q</b>. After sending the text you are sent,
+the connection is interrupted. </p><h3 _msttexthash="232102" _msthash="249">3.2.6 RUN file. GPI</h3>
+
+<p _msttexthash="23858107" _msthash="250">If a remote <b _istranslated="1">RUN</b> command is invoked by any of the counterstations,
+sends the GP the text contained in this
+file. The file should contain a brief description of all external programs that
+can be invoked by <b _istranslated="1">the RUN</b> command. </p><h3 _msttexthash="303381" _msthash="251">3.2.7 ORIGIN file. GPI</h3>
+
+<p _msttexthash="26532155" _msthash="252">In this file, the user can collect original quotes
+and messages, and these using the %O macro can be used, for example, in CTEXT for random
+generating one of them. For each quote or phrase, only
+One line with a maximum of 255 characters. </p><h3 _msttexthash="780130" _msthash="253">3.2.8 Instructions for using *. GPI</h3>
+
+<p _msttexthash="3746600" _msthash="254">Since GPI files can be read by any station, it is
+The following things to consider: </p><ul>
+<li _msttexthash="25509276" _msthash="255">Be careful to use diacritics and graphic accents in these texts.
+IBM characters. These may look nice on a given computer, but the opposite station on the
+They can show all sorts of other signs, which doesn't look nice anymore.</li>
+
+<li _msttexthash="19997926" _msthash="256">In the text of remote commands, make sure that these commands
+they didn't start right at the beginning of the lines, because they could be the program of the counterstation
+evaluated incorrectly.</li>
+</ul>
+
+<h2 id="Odk440" _msttexthash="126737" _msthash="257">3.3 Call. GPC</h2>
+
+<p _msttexthash="55038425" _msthash="258">Personal connections may be collected in these files
+texts for selected callers - this means that station A can be greeted differently
+than station B. If we are connected to a station and there is a
+corresponding to the GPC file, then the default is CTEXT. GPI ignored and the given
+GPC file. Personal connects texts can contain all macros. </p><h2 id="Odk441" _msttexthash="129064" _msthash="259">3.4 Call. GPM</h2>
+
+<p _msttexthash="121648384" _msthash="260">This suffix stands for Graphic Packet Mail. With the help of these
+files, we have the ability to direct personal messages to a specific caller. If we are this
+connected to the station, this file is sent instead of the normal greeting text.
+There can be only one GPM file for each caller. May contain the same
+macros as GPI files. The GPM file can be deleted by the remote
+<b _istranslated="1">Kill</b> or <b _istranslated="1">DEL</b> command without specifying the file name. This should
+be credited at the end. A GPM file always has a higher priority than a GPC file. </p><h2 id="Odk442" _msttexthash="228072" _msthash="261">3.5 MHEARD File. GP</h2>
+
+<p _msttexthash="68453268" _msthash="262">The GP has a built-in MH list inside, in which they are collected
+all the calls I heard. The size of the MH list can be found in the configuration data
+set using <b _istranslated="1">the MH Buffer</b> command. The MH list serves as a menu for
+QSO spy (see Chapter 9) and can also be summoned by connected stations
+<b _istranslated="1">by the MHeard</b> remote command. After the end of the GP, the MH list is again stored in the
+file MHeard.GP. </p><h2 id="Odk443" _msttexthash="214851" _msthash="263">3.6 NAMES file. GP</h2>
+
+<p _msttexthash="66589848" _msthash="264">Names and frequencies are collected in this file
+(bands) of other stations. In addition, QRG leadership takes place here
+through GP. Connected stations can be entered into the list themselves,
+if they use the <b _istranslated="1">Name</b> statement. Because the
+for the list of names it is normal ASCII-Text, we can edit or change it.
+More detailed information on syntax can be found in Chapter 10. </p><h2 id="Odk444" _msttexthash="138398" _msthash="265">3.7 File *. GPB</h2>
+
+<p _msttexthash="45010082" _msthash="266">GPB stands for Graphic Packet Backup and refers to a file that
+GP established the program so that it would not forget its internal data by terminating it. It is not possible to
+manipulate. Thanks to this file, it is possible to end the GP during the QSO and again
+start without having to disconnect first. </p><h2 id="Odk445" _msttexthash="257218" _msthash="267">3.8 BINDATA file. GP</h2>
+
+<p _msttexthash="13655590" _msthash="268">This file contains data for the greetings window (introductory
+greeting) - in EGA mode, the greeting window cannot be displayed due to the small
+Discrimination. </p><h2 id="Odk446" _msttexthash="216671" _msthash="269">3.9 ICONS file. GP</h2>
+
+<p _msttexthash="111553650" _msthash="270">In this file there are icons from the program. This file is
+taken from HD, even if we have EMS or XMS memory installed in our PC. But in this
+In this case, the data is completely loaded into this memory at startup and for GP there are
+still available without having to go back to HD. The file must be in the same
+directory as GP. If it is missing or has been tampered with, GP will not start.
+The appearance of the icons can be edited according to your own wishes by the GPpaint program from DL1ELY. </p><h2 id="Odk447" _msttexthash="314314" _msthash="271">3.10 mycall file. GPL</h2>
+
+<p _msttexthash="55499899" _msthash="272">The GPL suffix stands for Graphic Packet Logfile and refers to a
+A daily newspaper founded by the manager of the newspaper. For each caller who uses the program,
+creates your own file to get a better overview. For different SSIDs,
+however, it does not create any new file. The journal file format is compatible with
+the SP program diaries. </p><h2 id="Odk448" _msttexthash="154752" _msthash="273">3.11 File *. GPI</h2>
+
+<p _msttexthash="22179079" _msthash="274">This file contains the GP system and remote texts. Therefore, it is
+it is possible to use different languages in GP, up to eight. For the sake of quick search, they are
+collected these texts each in a special file. </p><h2 id="Odk449" _msttexthash="154635" _msthash="275">3.12 File *. GPH</h2>
+
+<p _msttexthash="129917203" _msthash="276">These files store texts for control help
+programme. These are broadcast when a station invokes the <b _istranslated="1">Help</b> command.
+Since high speed does not matter here, another one was chosen for this file
+format than for a GPT file. Each text is listed with a <b _istranslated="1">CD</b> tag and then
+assigned a certain order as well as the number of
+significant letters, i.e. how many first letters can be the maximum
+shortened. The exception is the general help text, i.e. when no other parameter is specified after the <b _istranslated="1">Help</b> statement. This text is marked with <b _istranslated="1">@@</b>. </p><h1 id="Odk450" _msttexthash="343837" _msthash="277">4 Keyboard commands</h1>
+
+<h2 id="Odk451" _msttexthash="867204" _msthash="278">4.1 Commands valid for all channels</h2>
+
+<table class="nobor">
+<tbody><tr>
+<td class="info" _msttexthash="65234" _msthash="279"> F1 to F10 </td>
+<td class="info" _msttexthash="636467" _msthash="280"> Switch between channels 1 to 10 </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="120367" _msthash="281"> F11 or ALT-F1 </td>
+<td class="info" _msttexthash="88127" _msthash="282">
+BBS menu
+</td>
+</tr>
+<tr>
+<td class="info" _msttexthash="120705" _msthash="283"> F12 or ALT-F2 </td>
+<td class="info" _msttexthash="388050" _msthash="284"> DieBox list function </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="40508" _msthash="285">
+ALT-M
+</td>
+<td class="info" _msttexthash="644215" _msthash="286"> Switching to Monitor Channel </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="39364" _msthash="287">
+ALT-E
+</td>
+<td class="info" _msttexthash="357188" _msthash="288"> Switch to the editor </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="40794" _msthash="289">
+ALT-O
+</td>
+<td class="info" _msttexthash="107601" _msthash="290">
+DOS shell
+</td>
+</tr>
+<tr>
+<td class="info" _msttexthash="41223" _msthash="291">
+ALT-R
+</td>
+<td class="info" _msttexthash="2254031" _msthash="292"> Enables/disables the softscroll of the respective channel </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="41652" _msthash="293">
+ALT-U
+</td>
+<td class="info" _msttexthash="212186" _msthash="294"> Program setup </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="42081" _msthash="295">
+ALT-X
+</td>
+<td class="info" _msttexthash="578175" _msthash="296"> Termination of the program </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="42367" _msthash="297">
+ALT-Z
+</td>
+<td class="info" _msttexthash="362726" _msthash="298"> On/off zoom (VGA only) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="47619" _msthash="299">
+ALT-F4
+</td>
+<td class="info" _msttexthash="504374" _msthash="300"> Clear the current window </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="47931" _msthash="301">
+ALT-F6
+</td>
+<td class="info" _msttexthash="1028404" _msthash="302"> Display of the last link status report </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="48087" _msthash="303">
+ALT-F7
+</td>
+<td class="info" _msttexthash="708487" _msthash="304"> Display the last error message </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="49738" _msthash="305">
+&lt;Ins&gt;
+</td>
+<td class="info" _msttexthash="3589183" _msthash="306"> Switch between insertion and overwrite mode (only in editor and
+channels 1 to 10) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="39650" _msthash="307">
+ALT-G
+</td>
+<td class="info" _msttexthash="4594148" _msthash="308"> Clock chime switch (when using the mouse, you can click
+to the double note mark on the clock) </td>
+</tr>
+</tbody></table>
+
+<h2 id="Odk452" _msttexthash="898066" _msthash="309">4.2 Commands valid for channels 1 to 10</h2>
+
+<table class="nobor">
+<tbody><tr>
+<td class="info" _msttexthash="38935" _msthash="310">
+ALT-B
+</td>
+<td class="info" _msttexthash="305682" _msthash="311"> Scroll lock on/off </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="39078" _msthash="312">
+ALT-C
+</td>
+<td class="info" _msttexthash="546793" _msthash="313"> Konekt, Build a Connection </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="39221" _msthash="314">
+ALT-D
+</td>
+<td class="info" _msttexthash="1334840" _msthash="315"> Disconekt, disconnection of the connection </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="42224" _msthash="316">
+ALT-Y
+</td>
+<td class="info" _msttexthash="1903187" _msthash="317"> Inserting a custom call (only in the unconnected state) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="41366" _msthash="318">
+ALT-S
+</td>
+<td class="info" _msttexthash="907465" _msthash="319"> Continuous storage of connections </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="39507" _msthash="320">
+ALT-F
+</td>
+<td class="info" _msttexthash="943826" _msthash="321"> Sending data (connected state only) *) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="48243" _msthash="322">
+ALT-F8
+</td>
+<td class="info" _msttexthash="537641" _msthash="323"> Splitscreen On/Off Switch </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="48399" _msthash="324">
+ALT-F9
+</td>
+<td class="info" _msttexthash="587964" _msthash="325"> Splitscreen split shift up </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="55263" _msthash="326">
+ALT-F10
+</td>
+<td class="info" _msttexthash="672139" _msthash="327"> Splitscreen split shift down </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="41509" _msthash="328">
+ALT-T
+</td>
+<td class="info" _msttexthash="1013155" _msthash="329"> Artificially invoke connective text </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="41080" _msthash="330">
+ALT-Q
+</td>
+<td class="info" _msttexthash="907361" _msthash="331"> Inserting a frequency or band for QRG </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="40651" _msthash="332">
+ALT-N
+</td>
+<td class="info" _msttexthash="1687907" _msthash="333"> Saving the name of the currently connected station </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="326118" _msthash="334"> Shift-F1 to Shift-F12 </td>
+<td class="info" _msttexthash="2112669" _msthash="335"> Send text macros 1 through 12 to the counter (F1. GPI up to
+F12. GPI) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="62582" _msthash="336">
+Ctrl-D
+</td>
+<td class="info" _msttexthash="351429" _msthash="337"> Write data to buffer </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="65078" _msthash="338">
+Ctrl-T
+</td>
+<td class="info" _msttexthash="354783" _msthash="339"> Write time to buffer </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="65858" _msthash="340">
+Ctrl-Y
+</td>
+<td class="info" _msttexthash="4900337" _msthash="341"> Deleting rows in the buffer (can be copied to
+buffer and Ctrl-P to return to the original state) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="62426" _msthash="342">
+Ctrl-C
+</td>
+<td class="info" _msttexthash="1264900" _msthash="343"> Copy rows from an intermediate buffer (Copy) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="64454" _msthash="344">
+Ctrl-P
+</td>
+<td class="info" _msttexthash="1255423" _msthash="345"> Copy an intermediate buffer to a line (Paste) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="64298" _msthash="346">
+Ctrl-O
+</td>
+<td class="info" _msttexthash="5048394" _msthash="347"> Selecting a random line from the message generator (file
+ORIGIN. GPI) and copying it to the buffer </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="151983" _msthash="348"> Ctrl-K or INS </td>
+<td class="info" _msttexthash="2038075" _msthash="349"> Copying Selected Text from the Join Window to the GP Editor </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="121719" _msthash="350">
+Ctrl-ENTER
+</td>
+<td class="info" _msttexthash="4457934" _msthash="351"> Send lines without CR at the end, which can set the length
+rows to a larger required length </td>
+</tr>
+</tbody></table>
+
+<h2 id="Odk453" _msttexthash="326300" _msthash="352">4.3 Editor Commands</h2>
+
+<table class="nobor">
+<tbody><tr>
+<td class="info" _msttexthash="40365" _msthash="353">
+ALT-L
+</td>
+<td class="info" _msttexthash="278031" _msthash="354"> Loading the file *) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="41366" _msthash="355">
+ALT-S
+</td>
+<td class="info" _msttexthash="178698" _msthash="356"> Save to a file </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="65858" _msthash="357">
+Ctrl-Y
+</td>
+<td class="info" _msttexthash="5869760" _msthash="358"> Delete rows (can be copied to the buffer and Ctrl-P can be reverted to the original state at the same time) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="62426" _msthash="359">
+Ctrl-C
+</td>
+<td class="info" _msttexthash="1264900" _msthash="360"> Copy rows from an intermediate buffer (Copy) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="64454" _msthash="361">
+Ctrl-P
+</td>
+<td class="info" _msttexthash="1255423" _msthash="362"> Copy an intermediate buffer to a line (Paste) </td>
+</tr>
+</tbody></table>
+
+<p _msttexthash="666341" _msthash="363">and all other cursor commands </p><h2 id="Odk454" _msttexthash="810498" _msthash="364">4.4 BBS menu and List menu commands</h2>
+
+<table class="nobor">
+<tbody><tr>
+<td class="info" _msttexthash="41366" _msthash="365">
+ALT-S
+</td>
+<td class="info" _msttexthash="769184" _msthash="366"> Sorting Checklist (BBS menu only) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="80210" _msthash="367"> Cursor </td>
+<td class="info" _msttexthash="1436396" _msthash="368"> Selection in the list according to your wishes </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="62725" _msthash="369">
+&lt;SPACE&gt;
+</td>
+<td class="info" _msttexthash="772681" _msthash="370"> Mark/Cancel Current Enrollment </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="65819" _msthash="371">
+&lt;ENTER&gt;
+</td>
+<td class="info" _msttexthash="1630369" _msthash="372"> Sending a <b _istranslated="1">Mailbox READ</b> command for the current item </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="39923" _msthash="373">
+&lt;ESC&gt;
+</td>
+<td class="info" _msttexthash="399698" _msthash="374"> Leaving the Check Menu </td>
+</tr>
+</tbody></table>
+
+<h2 id="Odk455" _msttexthash="836342" _msthash="375">4.5 Moving the cursor on the screen</h2>
+
+<table class="nobor">
+<tbody><tr>
+<td class="info" _msttexthash="114959" _msthash="376">
+CursorUp
+</td>
+<td class="info" _msttexthash="32292" _msthash="377"> Top </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="157989" _msthash="378">
+CursorDown
+</td>
+<td class="info" _msttexthash="45955" _msthash="379"> Down </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="180531" _msthash="380">
+CursorRight
+</td>
+<td class="info" _msttexthash="60541" _msthash="381"> Right </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="155454" _msthash="382">
+CursorLeft
+</td>
+<td class="info" _msttexthash="44434" _msthash="383"> Left </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="72176" _msthash="384">
+PageUp
+</td>
+<td class="info" _msttexthash="136214" _msthash="385"> One side up </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="109720" _msthash="386">
+PageDown
+</td>
+<td class="info" _msttexthash="181987" _msthash="387"> One side down </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="161720" _msthash="388">
+Ctrl-PageUp
+</td>
+<td class="info" _msttexthash="141076" _msthash="389"> Skip to top </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="212979" _msthash="390">
+Ctrl-PageDown
+</td>
+<td class="info" _msttexthash="296608" _msthash="391"> Skip to end of text </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="307125" _msthash="392">
+Ctrl-CursorRight
+</td>
+<td class="info" _msttexthash="2474485" _msthash="393"> Jump to the beginning of the first word to the right of the cursor </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="274573" _msthash="394">
+Ctrl-CursorLeft
+</td>
+<td class="info" _msttexthash="2387411" _msthash="395"> Jump to the beginning of the first word to the left of the cursor </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="43979" _msthash="396">
+Home
+</td>
+<td class="info" _msttexthash="513669" _msthash="397"> Jump to the first column**) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="29419" _msthash="398">
+End
+</td>
+<td class="info" _msttexthash="540176" _msthash="399"> Jump to the end of the line **) </td>
+</tr>
+</tbody></table>
+
+<ul>
+<li _msttexthash="127396321" _msthash="400">*) <b _istranslated="1">Upload text</b> and <b _istranslated="1">Save text</b> are expected
+Enter a file name. If * or ? appears in the assignment, the so-called
+File Select Box, where we can select the file. If <b _istranslated="1">*.*</b> has been specified, we can
+navigate through directories.
+An overview always starts with a subreport, followed by the file itself. Subreports
+can be recognized by the fact that the name is immediately followed by the backslash (<b _istranslated="1">\</b>) character.
+Selecting a subreport sets a new path and prints the subreport.
+Press. <b _istranslated="1">.\</b> to return to the previous overview.</li>
+
+<li _msttexthash="17219553" _msthash="401">**) <b _istranslated="1">The Home</b> and <b _istranslated="1">End</b> keys were due to the lack of others
+The appropriate keys in the monitor windows and channels 1 through 10 are occupied differently. Performed by
+Move up or down a row.</li>
+</ul>
+
+<h2 id="Odk456" _msttexthash="805831" _msthash="402">4.6 Entering ASCII characters 1 to 31</h2>
+
+<p _msttexthash="137713056" _msthash="403">By default, ASCII characters can be produced with 1 to 31 key combinations
+Ctrl-A to Ctrl-Z, or other Ctrl combinations. Some of the functions of Ctrl are
+but occupied by GP control, e.g. Ctrl-D. In this case, we do not write ASCII
+character 4, but we substitute the date into the input buffer. If a combination is needed for
+The ASCII character, which is covered with a macro in GP, can be made classically using
+ALT keys and numeric keypads. Press the ALT key and hold it down,
+then we can type any number from 1 to 255 and finally release the ALT key. </p><h1 id="Odk457" _msttexthash="219206" _msthash="404">5 QSO Operation</h1>
+
+<h2 id="Odk458" _msttexthash="469040" _msthash="405">5.1 General Information</h2>
+
+<p _msttexthash="467356682" _msthash="406">GP contains ten communication windows in which you can
+Connect to up to 10 stations. These channels are switched with the F1 function keys
+to F10. For each channel, you can choose a different call button via ALT-Y.
+If we want to connect to another station, we must first select a free channel and then
+press ALT-C and type the destination station caller. If the station is registered in
+list of names, just enter the caller without a path. For example, if we want to connect
+DH1DAE via DB0NWS and DB0FN, when DH1DAE is not yet listed,
+we need to enter <b _istranslated="1">DH1DAE DB0NWS DB0FN</b> (see TNC-2 manual). However, if DH1DAE is written in the list, you only need to write DH1DAE
+and the others will be arranged by the GP. To interrupt the connection, press ALT-D. If we
+simultaneously connected on multiple channels (in multiple windows), it will be shown on the top edge of the
+color if there is a new text on a channel that has not yet been read.
+We have the option of backing up the packet reception with an acoustic signal (see 3.1.8). </p><p _msttexthash="439393578" _msthash="407">If we are connected to a station, we simply write to
+keyboard. The text is shown in the top window and can be edited with the cursor. K
+To send a text line, press Enter. The input editor is equipped with an automatic
+by interrupting
+line, so when you finish a line, a word that has not yet been completed
+moves to the next line and the last line is automatically sent
+(broadcast). This prevents uncontrolled division of words into
+end of lines and we no longer have to press ENTER, but longer texts can be typed and tapped without
+we would worry about sending a line. We just have to press Enter
+in that case, if the line should be less than 80 characters. This value can be changed
+in SETUP, which is important for cases where, for example, we are
+in CONVERS node mode. There, the node pre-orders the call characters before the lines
+senders and thus the length of the line is limited. Therefore, it is better to use CONVERSE, for example,
+Set line breakers to 65 characters per line. </p><h2 id="Odk459" _msttexthash="412308" _msthash="408">5.2 Filetransfer (ALT-T)</h2>
+
+<p _msttexthash="8774688" _msthash="409">This function sends the HD file to the counterpart,
+macros used for GPI files are ignored. There are 3 types of data transmission: </p><ol>
+<li _msttexthash="723268" _msthash="410">Text transfer (text files only)</li>
+
+<li _msttexthash="5333510" _msthash="411">Binary data transfer (similar to text transfer, but
+does not appear in the window at the same time)</li>
+
+<li _msttexthash="3291431" _msthash="412">Auto Bin Transfer (File Transfer including Check, File Name
+and attributes)</li>
+
+<li _msttexthash="917826" _msthash="413">Transfer editor content (text only)</li>
+</ol>
+
+<p _msttexthash="989373970" _msthash="414">When transferring text files, the data is read sequentially and is
+transmitted to the counter station. However, certain signs are ignored, e.g. LF or
+EOF, which means a slight modification of the text. It doesn't matter with the text.
+However, if we want to transmit data that must not be altered, it must be sent
+exact content as a binary transfer. Auto Bin Transmission is an extension of the transmission
+binary data, where a simple protocol is used for transmission, which can be
+Any errors were also detected during the transfer. Before the actual transmission, first
+sends information about the file length to the counterpart and the counterpart confirms receipt
+of this information. This is followed by the actual data transfer and after the end it is sent to the counter station
+checksum that was calculated during the transfer. So it is possible to compare
+with the partner and if they have a different value, there was an error during the transfer and the data,
+which was received by the counter station are erroneous. This method of transmission is
+compatible with Turbo Packet, TOP, SP, etc. Of course, only
+if the partner uses such a program. To receive data, there must be
+<b _istranslated="1">7+ Auto Save</b> is enabled in the program, otherwise it will not appear at the beginning of the transmission
+The header does not decode and acknowledge, and the transmission cannot occur. GP detects when switched on
+7+ AutoSave AutoBin header automatically. </p><p _msttexthash="110774482" _msthash="415">The DieBox system offers the ability to upload and read
+file using AutoBin mode. More on this in Chapter 5.13. Broadcast content
+editor corresponds to the transfer of text data, only the content is broadcast instead of the file
+built-in text editor, and when the editor is broadcast, a check is performed
+maker. Therefore, care must be taken to avoid accidental macro evaluation.
+Therefore, there must be no such characters in the editor, any percentages must be manually
+to <b _istranslated="1">%%.</b> </p><p _msttexthash="31195476" _msthash="416">All methods of data transfer can be interrupted at any time and then
+the respective function can be repeated. If the GP during any data transmission
+we end ALT-X, then at the new start the transmission will start at the place where it was
+interrupted. </p><p _msttexthash="144638013" _msthash="417">Since version 1.50, an additional status message is displayed when sending data.
+A window with some interesting data. Next to the file name and size, you can see
+how much has already been broadcast and the graphic percentage of the total length of the file.
+In addition, the effective transfer speed is also calculated, how long the transmission has been going on
+(ELAPSED TIME) and how long it is likely to last (ESTIMATED TIME).
+However, this estimate is quite rough, it depends a lot on the quality of traffic, which is
+relatively large fluctuations. </p><h2 id="Odk460" _msttexthash="604344" _msthash="418">5.3 Saving Connections (ALT-S)</h2>
+
+<p _msttexthash="119275403" _msthash="419">The connection to another station can be stored by different
+ways. If activated, the corresponding menu changes. During storage, it may be
+GP ALT-X is terminated, saving will continue at a new start. The same as when
+file transfer is shown for saving from Version 1.50 status box. Preliminary
+Calculation of transmission time and graphical display are only possible if the
+known overall size. This applies to Autobin and 7+ Autosave. The following is a description
+different storage options. </p><h3 _msttexthash="643864" _msthash="420">5.3.1 Text file continuously</h3>
+
+<p _msttexthash="27772511" _msthash="421">Text is written to a floppy disk or disk at the moment when it is
+received and shown on the screen. And that is as long as there is no saving
+cancelled. Only text is saved since the save function is activated. It also imposes
+broadcast text. </p><h3 _msttexthash="645554" _msthash="422">5.3.2 Printing continuously</h3>
+
+<p _msttexthash="157719861" _msthash="423">This saving option works the same as on a floppy disk or
+HD, only the printer is specifically addressed and the transmitted text is provided with a different
+print attribute, so that the appearance of the received text is different from that of the transmitted text
+(similar to the screen). Print attributes can be set in the configuration
+file commands <b _istranslated="1">DefaultPrint</b> and <b _istranslated="1">InverzPrint</b>. Because DOS is being built
+parallel ports of printers as files, the data can also be
+printed. This happens if we specify <b _istranslated="1">LPT1</b> to <b _istranslated="1">LPT4</b> (or <b _istranslated="1">PRN)</b> instead of the file name as the save destination. </p><h3 _msttexthash="506857" _msthash="424">5.3.3 Saving a part of text</h3>
+
+<p _msttexthash="536148379" _msthash="425">Any part of windows 1 to 10 can be saved to HD. It is
+useful if, for example, we want to pull an interesting text from the Mailbox and we have
+They didn't turn on continuous saving. We can decide in this way only after the
+read the message. However, only text that is still in HD can be saved
+in the window buffer. If a small buffer is selected, it may happen that part of the text
+has already been rewritten and thus this part of the text is lost. Therefore, we should always have one for one
+channel to choose a relatively large buffer (e.g. 500 line), to which
+we connect Mailbox. Large GIF images, etc., if they have been encoded into text
+format via 7Plus, should always be saved continuously. It is best to
+7Plus data can be saved using the Code Autosave function (see 5.3.5). As a goal
+Saving we will write some text file. If saving is performed on a printer,
+corresponds to the printed image of point 5.3.2. To print a part of the text, we need to enter
+corresponding print port, e.g. LPT 1. If we choose as the lower limit
+last line, we have the option to continue with continuous saving. </p><h3 _msttexthash="554827" _msthash="426">5.3.4 Saving to HD at Autobin</h3>
+
+<p _msttexthash="307658923" _msthash="427">This function stores a binary file with a transfer file on the HD
+protocol that is compatible with Turbo Packet, SP and AHP
+(Car mode). A more detailed description is provided in Chapter 5.2. To receive from a partner
+some binary file, we must first activate binary storage with us, namely
+before the transmission is started at the opposite station. To save to HD
+some binary data that has been encoded with 7Plus, we can store it as
+normal text, i.e. continuously (see 5.3.1). From version 1.50 onwards, we don't need to receive
+Autobin can be started manually and we can leave it only to the GP. However, the prerequisite is
+activated switch for 7+ AutoSave and receiving Autobin headers from the opposite station
+filename. This applies, for example, to SP from version 6.0 and DieBox from version 6.0 onwards.
+1.9. </p><p _msttexthash="96453851" _msthash="428">NOTE: A file that is saved to the Mailbox in AutoBin format,
+is identified by <b _istranslated="1">the (BIN) </b>before the title
+contribution. If the counter station does not use the extended Autobin header, they are
+data stored in memory under the name of the sender's call card file with the extension
+serial number between 000 and 999. For example, if the DB0SGL.000 file already exists,
+the name DB0SGL.001 will be generated next time if the extended Autobin is not used
+header. </p><h3 _msttexthash="310505" _msthash="429">5.3.5 Code Autosave</h3>
+
+<p _msttexthash="535311673" _msthash="430">Code Autosave is a useful feature to store encoded data
+7Plus to disk. GP organizes them automatically and the user does not have to worry about
+correct file names. The program recognizes all 7Plus files, including <b _istranslated="1">ERR</b> and <b _istranslated="1">COR</b>. This is especially practical if the file is divided into
+more episodes. Because the GP chooses the correct names for the files in question automatically,
+we don't have to worry about anything at all, just enter e.g. <b _istranslated="1">r 10-20</b> in the Mailbox and after
+to have a cup of coffee.
+The operation is simple. Once a 7Plus header is detected, then GP
+automatically activates saving and announces it in the information window. Next
+The file is stored until the appropriate end label is accepted. This is how
+the resulting HD files do not contain other text, such as the Mailbox header.
+This function is activated (or deactivated) in the SETUP menu, closer to the
+Chapter 10. Since version 1.50, autosave has also been extended to Autobin
+mode, see 5.3.4. From version 1.60 onwards, it is also possible to use the Autosave function during
+Text saving turned on. </p><h2 id="Odk461" _msttexthash="649753" _msthash="431">5.4 Copying text in the editor</h2>
+
+<p _msttexthash="300008826" _msthash="432">Since version 1.20, there is an option to just receive text
+From the connection windows 1 to 10, copy it to the editor for further processing. For
+However, this feature is required by the mouse. To be able to copy to any editor
+text clipping, we need to cut it out (mark). To do this, press the initial line
+paragraphs and keep the mouse button pressed, do not let go and move the mouse up
+or down until all the required lines of text are marked with an inverse color. Then
+then release the mouse button and press Ctrl-Ins or Ctrl-K.
+editor some earlier text that is not saved on HD, the corresponding
+question. If we choose <b _istranslated="1">Interruption</b>, then
+It does not copy the selected text into the editor. However, it remains marked. New marking on
+of the same channel deletes the old designation (color marking). </p><h2 id="Odk462" _msttexthash="868699" _msthash="433">5.5 Remotely Controlled Operation</h2>
+
+<p _msttexthash="265270031" _msthash="434">GP offers a variety of remote commands that it can execute
+connected counterstation. Each remote-controlled command must be preceded by two
+slashes so that the GP can recognize them. This can lead to a mistake when, for example, at the beginning
+of the new paragraph, there happens to be a sentence that begins with two slashes. This
+may be the case, in particular, when using Mailbox, if the author in his or her contributions from
+for some reason, he used remotely controlled commands. For this reason, it is advisable to
+connection to Mailbox remote control on the respective channel can be turned off or credited
+given Mailbox to the NAMES file. GP as type <b _istranslated="1">B</b>.
+For<b _istranslated="1"> these </b>callers, GP blocks remote
+control during the connection automatically. </p><p _msttexthash="395912621" _msthash="435">For commands that are used to manipulate files, they must be
+path specified in the configuration file. All users have the same
+priority and are thus allowed to use the same commands. For this reason, he should be elected
+directory other than the GP directory. Command to set the path in CONFIG. GP is <b _istranslated="1">UserDir=road</b>.
+If GP is installed on a
+other HD, the path settings must be changed, because otherwise it is not possible to
+Use all of these commands. Remotely controlled commands can be executed by the user himself,
+when the result is sent to the counter station as if it had executed the command. That's what is done
+Esc key and in the window by entering a remote-controlled command. Attention should be paid to
+to enclose the command with two slashes (<b _istranslated="1"></b>),
+to be recognized as remotely controlled (e.g. <b _istranslated="1">ESC //h</b> broadcasts the full text of the Help
+to the counterstation), otherwise it may be
+interpreted as a TNC command. </p><h2 id="Odk463" _msttexthash="400309" _msthash="436">5.6 External Programs</h2>
+
+<p _msttexthash="528949941" _msthash="437">By remote <b _istranslated="1">command RUN
+name of the program</b>, or <b _istranslated="1">name
+program</b>, the counter station can start programs that are not in the basic
+GP equipment. There are two kinds of programs for GP from version 1.50 onwards. First, they can be
+existing programs (utilities) can be used, secondly, the so-called GPR can be used
+And programs. GPR I stands for Graphic Packet Remote Interface, and it's completely
+a new type of program. In relation to the existing programmes, GPR I programmes
+able to interact with the user. This gives us many more options
+use. At the same time, we can use GP quite normally, even if a GPR I is running
+program. Due to the structure of GPR I, the method of Multitasking is possible, that is,
+that multiple GPR I programs can run at the same time, but only one on each channel.
+More information about GPR I for programmers can be found in file GPRI.DOC,
+as examples for GPRI programming, it is possible to use the PASCAL sources supplied by the
+GPRI programs. Programs must be installed in a subdirectory that is in the
+CONFIG. GP declared by the <b _istranslated="1">ExternalDir</b> command. </p><h2 id="Odk464" _msttexthash="243945" _msthash="438">5.7 Splitscreen</h2>
+
+<p _msttexthash="128048063" _msthash="439">If we want to additionally monitor the monitor during the QSO, we can
+ALT-F8 to split the screen into two halves. In the upper half
+we continue to connect (in QSO), in the lower one we watch the monitor. ALT-F9 and
+The ALT-F10 can be used to move the dividing line between the two halves. You can use the dividing line
+Right-click to turn it on or off. The size of the windows can be changed,
+If we move the mouse pointer over the double-arrow symbol on the dividing line and
+Move the mouse up or down with the left mouse button. </p><h2 id="Odk465" _msttexthash="222768" _msthash="440">5.8 Scroll-Lock</h2>
+
+<p _msttexthash="18113992" _msthash="441">On-screen printing can be stopped by pressing the
+SCROLL-LOCK. The ScrLock switch on the dividing line between the QSO and the
+monitor screen. This switch can be controlled with the mouse. </p><p _msttexthash="34886488" _msthash="442">CAUTION: printing on the screen will remain blocked for so long,
+as long as the mode is in operation (Scroll-Lock indicator is lit, or if the switch is
+Scroll-lock pressed). If you forget the mode by pressing the key again
+cancel, a buffer overflow and an error occur. </p><h2 id="Odk466" _msttexthash="226031" _msthash="443">5.9 TNC Commands</h2>
+
+<p _msttexthash="45401590" _msthash="444">To change the TNC parameters, press the
+&lt;ESC&gt; when the window appears in which we write the command. By re-
+&lt;ESC&gt; close the window again without executing the command. Possibly modified
+TNC parameters initialized by <b _istranslated="1">TNCINI</b> after they call the DOS shell using &lt;ALT-O&gt; will be rewritten
+configuration data. </p><h2 id="Odk467" _msttexthash="392171" _msthash="445">5.10 Keeping a journal</h2>
+
+<p _msttexthash="6652945" _msthash="446">On request, the GP automatically keeps a station logbook. To
+configuration file, just type <b _istranslated="1">the Log=ON</b> command. </p><h2 id="Odk468" _msttexthash="863616" _msthash="447">5.11 Miscellaneous Connectt Texts</h2>
+
+<p _msttexthash="132514265" _msthash="448">GP offers the ability to create various connectt texts. By doing so, we can
+prepare different texts for different occasions easily and quickly
+switch. The standard text link is in the CTEXT file. GPI, alternative
+can be created by extending the file name by up to three letters, e.g.
+CTEXT_A.GPI CTEXT_01.GPI CTEXT_ABC. GPI, etc. When using the program more
+The user may experience a problem when alternative connectt texts exist
+only for one of the users. If the selected alternate link text is not found,
+A standard one is sent. </p><h2 id="Odk469" _msttexthash="328133" _msthash="449">5.12 Sysop Function</h2>
+
+<p _msttexthash="202887464" _msthash="450">For Sysops TheNet, BayCom and Flexnet as well as
+FALCon/DigiWare and password-compatible mailboxes offers GP automatic
+password generation. The password is automatically generated and written to the writing buffer,
+as soon as the <b _istranslated="1">SY</b> or <b _istranslated="1">PW</b> command is answered. In any case,
+MUST send at least <b _istranslated="1">SYs</b> so that GP can
+Generate password. With Mailbox, the password is generated directly when logging in and can be
+copied to the writing buffer at any time (pre-write window)
+<b _istranslated="1">via Ctrl-B</b>. For each node or box must be set up
+own file, which has the name of the machine caller and <b _istranslated="1">the extension GPW</b>. If he has
+caller also SSID, must also be indicated (without a hyphen). </p><p><font _mstmutation="1" _msttexthash="311997634" _msthash="451">EXAMPLE: <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">The file for DBOIZ-9 must be <b _istranslated="1">DBOIZ9. WSE</b>. May contain
+only the actual text of the password, or in the case of flexnet one five-digit decimal number, and u
+box 60 lines of 27 characters each. In order for the password function to work, the station must
+also be in the NAMES file. GP, when the correct type data matters. Details
+see Chapter 9. BayCom nodes must be declared as <b _istranslated="1">N</b>, because
+They use TheNet passwords.
+FALCon/DigiWare as <b _istranslated="1">B</b>, because it is
+DieBox system was used. In later versions of DigiWare, the password system
+slightly modified, so the <b _istranslated="1">W</b> type is already available in GP. Appropriate login command
+as a Sysop can be invoked up to
+when no more data is received from the machine, that is, when it has sent
+Last Prompt. Otherwise, the GP will not recognize the query and will not calculate any password.</i></font>
+
+</p><h2 id="Odk470" _msttexthash="604253" _msthash="452">5.13 DieBox AutoBin Transfer</h2>
+
+<p _msttexthash="90899341" _msthash="453">The DieBox system since version 1.9 offers the ability to load binary
+file using AutoBin mode to Mailbox or select it. The procedure is no different
+from the current method of uploading and reading the file. You just need to turn on the 7+ function
+AutoSave in GP and send a read command to the box. The rest goes automatically as with
+Selecting a 7+ file. In the box, you can recognize the file by the previous designation <b _istranslated="1">(BIN)</b> in the title. </p><h1 id="Odk471" _msttexthash="440180" _msthash="454">6 MailBox Usage Options</h1>
+
+<p _msttexthash="42203525" _msthash="455">The following MailBox uses are based on the
+various BBS systems. Message lists can be obtained for Box using the <b _istranslated="1">(C)HECK</b> or <b _istranslated="1">(L)IST</b> command, for other BBS systems using various <b _istranslated="1">(L)IST</b> commands.
+If you are not yet familiar with the operation of Mailbox, please read the helpful advice
+<b _istranslated="1">Mailbox (H)ELP</b>. </p><h2 id="Odk472" _msttexthash="123578" _msthash="456">6.1 BBS Menu</h2>
+
+<p _msttexthash="35193457" _msthash="457">Mailboxes provide the ability to browse through all new records
+from the last Login (connection). Everyone responds in every Mailbox system
+a certain format. The GP has the ability to distinguish the corresponding lists from regular BBS
+systems. It recognizes: </p><ul>
+<li _msttexthash="72098" _msthash="458">DieBox</li>
+<li _msttexthash="1484340" _msthash="459">F6FBB (Version 5.15, but only with reservations)</li>
+<li _msttexthash="196144" _msthash="460">DK5SG BBS (DB0SAO)</li>
+<li _msttexthash="38025" _msthash="461">DB0IE</li>
+</ul>
+
+<p _msttexthash="283512619" _msthash="462">If the GP receives such a list, it will store it in its memory
+special buffer. This buffer is linked to the menu selector, so you can
+conveniently select the selected item to read. Tap to automatically transform
+on the read command and it is sent to the box. Then we can wait for the text.
+The list is deleted (cancelled) only if the user cancels the connection himself, for example
+using DISC. In case of Time out, Link failures, etc., the list is preserved and can be
+be reused when CONN is restored. However, it must be on the same channel! Because
+there is only ONE buffer, we can only use this function if the GP is connected
+WITH ONLY ONE MAILBOX, otherwise the entries of all Mailboxes would be written in one
+buffer and errors would inevitably occur. Here's how to use the function: </p><ol>
+<li _msttexthash="165841" _msthash="463">CONN Mailbox</li>
+<li _msttexthash="7883681" _msthash="464">Send the appropriate C(HECK) command to the box (read the instructions for the mailbox for information on the commands).</li>
+<li _msttexthash="360877686" _msthash="465">As soon as the overall list comes and the PROMPt is shown, we choose using
+ALT-F1 Check window, search for the message we want to read with the cursor key
+and select it with the SPACE key. To read the messages, enter
+ENTER and then just wait for the message to appear. This can be repeated at will.
+If you want to read only one piece of information, just hover the colored bar over that data and
+press ENTER. On request, the list can also be divided into individual sections,
+which makes it clearer, because we are mostly interested in only one of the
+section. If there is another list in the BBS Menu and the new list is
+accepted, the query old list is shown <b _istranslated="1">
+Cancel Yes/No/Interrupt.</b> If we choose YES, then the old list will be cancelled and
+replaced by a new allowance. NO will add a new post to the old list.
+An interrupt interrupts the function and prevents a CHECK or LIST from being sent.</li>
+</ol>
+
+<h2 id="Odk473" _msttexthash="462137" _msthash="466">6.2 DieBox List Function</h2>
+
+<p _msttexthash="20074678" _msthash="467">The LIST function basically has the same function as the CHECK function.
+However, this menu only works with Mailbox. Only one can be assigned to a list
+section. To use this feature, it looks like this: </p><ol>
+<li _msttexthash="165841" _msthash="468">CONN Mailbox</li>
+<li _msttexthash="2693873" _msthash="469">Browse through the relevant section (read info about box commands)</li>
+<li _msttexthash="64284389" _msthash="470">Once the entire list is received and the PROMPt box appears, we select
+using the ALT-F2 LIST function, select the appropriate message to read with the cursor and
+mark with a spacebar. To read it, type ENTER and then just wait for the messages.
+This can be repeated at will. If you want to read only one message, just set
+color bar on this figure and press ENTER directly.</li>
+</ol>
+
+<h2 id="Odk474" _msttexthash="271947" _msthash="471">6.3 Find function</h2>
+
+<p _msttexthash="153967541" _msthash="472">In the BBS menu as well as in the DieBox list function, we can
+For example, have callers searched. To do this, just press ALT-F or press
+using the mouse to enter the corresponding ICON and then type the search term into the box. As soon as it is
+the line with the search term found, GP marks it with a colored bar. A new assignment
+ALT-F and confirming the new term with ENTER the search continues to the current
+cursor position. However, if a new search term is entered, GP always starts the search
+from the beginning of the list, regardless of the position of the colored bar. </p><h2 id="Odk475" _msttexthash="938782" _msthash="473">6.4 Problems in recognizing the list</h2>
+
+<p _msttexthash="90808081" _msthash="474">Unfortunately, there are always problems with recognizing mail
+list. This usually happens as soon as a new version of Mailbox is installed
+software. With FBB BBS, it occurred to me that the format of the list is directly dependent on the
+the language you set. If there are any problems while evaluating the list, please write to me
+please send a short message (Mail) and with it send a cut-out of the list so that I can GP on
+customize it. </p><p _msttexthash="34909043" _msthash="475">With Baycom Box, the format of the list can be customized according to
+of their own wishes. With the standard settings, the DieBox is compatible and the list is
+GP program without any problems. Perhaps other preset formats also work.
+We will find out when we try it. </p><h2 id="Odk476" _msttexthash="887055" _msthash="476">6.5 Importing a list from the editor</h2>
+
+<p _msttexthash="158242864" _msthash="477">In the BBS Menu and List Window settings, there is a
+version 1.60 one function with which we can import a list from the editor to the BBS
+Menu, or to the list window. To do this, you need to upload a file that
+contains the corresponding CHECK list, in the editor and select in the BBS Menu (or
+function window) <b _istranslated="1">to paste from the editor</b>.
+Found posts in the editor will be attached to any existing ones
+posts. If we want to cancel old posts, we have to do it manually by invoking
+ALT-F4 function. New functions for changing the reference channel or rubric should be
+should have been clear. </p><h1 id="Odk477" _msttexthash="123435" _msthash="478">7 GP Editor</h1>
+
+<p _msttexthash="303069208" _msthash="479">This small editor is a simple tool to process
+short texts such as configuration or NEWS information files. GPI
+or CTEXT. GPI. It does not offer any special comfort to the operator, but they are still there
+All essential functions available. The main advantage is the ability to edit some
+text without leaving the GP program. The size of its memory can be set in
+configuration file according to your own wishes. There are 80 characters per line. The minimum is 40
+lines, maximum 780 lines (about 64kB). The editor can work in two modes. <b _istranslated="1">Slide</b> mode moves everything to the right of the
+cursor to the right, and the character <b _istranslated="1">is inserted</b> into the vacated space. Optically, this mode is <b _istranslated="1">made visible</b> by the half cursor,
+while in <b _istranslated="1">the overwrite</b> mode, the cursor is whole. Both modes are switched by the INSERT key. </p><p _msttexthash="345283887" _msthash="480">When using the GP editor, you need to distinguish between <b _istranslated="1">a text</b> line and <b _istranslated="1">an on-screen</b> line. A screen line can be up to 80 characters long, and
+contains those characters that we see on the screen, while the text line can be
+consist of several screen lines and is what you can do after uploading a
+appears on a single line. GP editor is capable of processing text lines with up to 255
+characters. However, these will be divided into several screen lines of 80 characters each.
+If you save more than 80 characters per line, they will be ignored. The length of the text
+Line can be edited in the menu by setting the line break. To edit text, press
+ALT-L key, and then type a name for the file. To record a file that you have on
+floppy/HD is not there yet, also simply press ALT-L, specify the name of the new file
+and answer YES to the question of whether the file should be saved. </p><h1 id="Odk478" _msttexthash="223730" _msthash="481">8 List of MH (ALT-H)</h1>
+
+<p _msttexthash="146436316" _msthash="482">GP maintains an internal MH list that contains a list of 40
+last heard stations. This is sent to the remote-controlled
+<b _istranslated="1">with the MHeard</b> command. The MH list contains information from the monitor channel and
+continuously captures the latest status if the monitor is turned on (Monitor TNC
+must not be <b _istranslated="1">N</b>). MH offers a list
+the ability to test whether the listened to calls are already entered in the file
+NAMES. GP. Just hover over the call sign with the inverse line and press <b _istranslated="1">ENTER</b>.
+It can also be done with the mouse, the function is the same as for <b _istranslated="1">the BBS menu</b>. </p><h1 id="Odk479" _msttexthash="83382" _msthash="483">9 QSO Spy</h1>
+
+<p _msttexthash="103992668" _msthash="484">From version 1.50 onwards, GP offers the ability to read selectively
+individual connections of other stations on the channel. The relevant data shall be recorded in the
+own window. Up to 10 foreign connections can be eavesdropped on in this way, if there are enough
+memory space for text buffers in SPY windows. The size of the text buffer
+can be set in the configuration file using <b _istranslated="1">the Spybuffer</b> command, the maximum
+The number of spy windows then using <b _istranslated="1">MaxSpy</b>. </p><h2 id="Odk480" _msttexthash="1056900" _msthash="485">9.1 Invoking a Joint Reading Connection</h2>
+
+<p _msttexthash="344270030" _msthash="486">If we want to subtract a foreign connection, we switch first
+to the MH list. Next, either click on the <b _istranslated="1">SPY</b> icon with the mouse or press ALT-S.
+A prompt will appear in the window PLEASE SELECT
+QSO. Now we can select the appropriate QSO connection from the MH list by
+hover over the colored line and press ENTER or use the mouse. Next
+the question of whether we want to save the QSO. If we answer YES, we can enter the next insertion
+window to enter the name under which the monitored connection will be saved to the HD file.
+GP will offer some standard name. To use it, just press ENTER.
+Then the GP jumps into the window in which the recorded QSO takes place. Terminate a QSO spy
+we can either press ALT-K in the temporary window or tap the <b _istranslated="1">Kill Spy</b> icon. QSO can be removed from the MH list
+also by pressing ALT-K or tapping on the <b _istranslated="1">Kill Spy</b> icon and then choosing the desired QSO. </p><p _msttexthash="194119289" _msthash="487">If the MH list also includes the opposite direction of the selected
+QSO, this is also automatically marked and the spy window naturally shows
+data of both directions (in different colors). If there is no opposite direction when the QSO is activated
+the spy can be heard, it is not in the MH list and the GP writes and marks only one direction. Is it
+hear the opposite direction at a later time indication, it can be subsequently called to
+reading together. In this case, the GP automatically recognizes that they are together
+read the second half of the QSO and the spy does not open a new window, but assigns it to the
+to the existing window. </p><h2 id="Odk481" _msttexthash="195351" _msthash="488">9.2 Spy window</h2>
+
+<p _msttexthash="47069750" _msthash="489">This window shows the transmitted data of the listened connection
+QSO. If both directions are heard, the GP will recognize it automatically and in the window
+It marks both directions with different colors. Which caller will be marked with which color
+depends on which direction was chosen from the MH list. </p><p><font _mstmutation="1" _msttexthash="167952135" _msthash="490">EXAMPLE: <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">We have chosen in
+MH-list QSO <b _istranslated="1">DB0SG - DH1DAE,</b> then
+DB0SGL data in foreground color and DH1DAE data in color appear in the spy window
+<b _istranslated="1">inverse (SpyInverseAttr</b>). On the one hand, a QSO will appear in the status window, which
+is read in this window and the number of the last read AX.25 packet. IN AX.25
+protocol, packets are numbered so that in the event of a transmission error,
+the given erroneous packet was repeated. The numbering is done in the interval 0 to 7 (from this
+Maxframe parameter in TNC can also be only a maximum of 7). Numbering
+naturally, it always refers to only one direction.</i></font>
+
+</p><h2 id="Odk482" _msttexthash="345358" _msthash="491">9.3 Automatic QSO Spy</h2>
+
+<p _msttexthash="188854549" _msthash="492">From version 1.60 onwards, GP can be set to automatically save to HD
+certain QSO connections. These are automatically stored in memory in the SPY list.
+A new file is created for each QSO. His name is generated from the call card
+with a sequential suffix of 000 to 999, e.g. <b _istranslated="1">DH1DAE.000</b>.
+If the Info frame of a station is captured to be automatically spied on,
+a new QSO spy is automatically started if there is one. QSO connection
+is then stored in HD until a DISC, DM- or UA- packet is received
+station or its counterpart. In that case, the QSO spy will be replaced again
+closes automatically and the window is available for a new QSO connection. </p><p _msttexthash="336047465" _msthash="493">Which QSOs should be automatically spied on, we can set
+using <b _istranslated="1">the AutoSpy</b> and <b _istranslated="1">NoAutoSpy commands</b> in the CONFIG file. GP.
+With <b _istranslated="1">the AutoSpy</b> parameter, we ensure which callers
+those calls that should not be there should be automatically saved by <b _istranslated="1">the NoAutoSpy</b> parameter. Under NoAutoSpy should be in any case
+the custom caller is listed, because it doesn't make much sense to record your own QSO. U
+Up to 10 data can be defined for both parameters, which need to be separated by a comma.
+At the same time, it does not have to be directly callers, but it can be any section
+from the Monitor window. Experiments in the development of this feature have shown that it is practical
+Search criteria to choose the keywords <b _istranslated="1">FM</b> and <b _istranslated="1">to</b>. It is absolutely necessary to
+Follow the uppercase and lowercase letters as well as the position of the space character! </p><p _msttexthash="48138350" _msthash="494">ATTENTION! In the normal course they are stored on HD as normal
+QSO as well as UI packets (that is, beacons or Flexnet search). In the UI package
+but there are no DISC packets, so the QSO spy will open but never close again.
+Therefore, it is a good idea to specify the <b _istranslated="1">CTL UI</b> keyword to <b _istranslated="1">the NoAutoSpy</b> parameter (see
+example). </p><p _msttexthash="11027900" _msthash="495">Example 1 - we have to record all connections between DB0SGL and
+DB0FN, but no QSOs that take place with DH1DAE: <br _istranslated="1">AutoSpy = fm DB0SGL, fm DB0FN <br _istranslated="1">NoAutoSpy = DH1DAE </p><p _msttexthash="11782264" _msthash="496">Example 2 - we have to record all the connections that will be with
+any DB0 station, but no QSO with DH1DAE or UI packets: <br _istranslated="1">AutoSpy = fm DB0 <br _istranslated="1">NoAutoSpy = DH1DAE, ctl UI </p><p><font _mstmutation="1" _msttexthash="38138945" _msthash="497">Example 3 – we have to record a QSO between DB0SGL and DB0FN, however,
+only a connection from DB0FN without SSID, not QSO DB0FN-1, DB0FN-2 to DB0FN-15: <br _mstmutation="1" _istranslated="1">AutoSpy = DB0FN, DB0SGL <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">space after the word DB0FN is important because this will only make GP respond to frames from DB0FN without SSID</i></font>
+
+</p><p _msttexthash="25826463" _msthash="498">Recommended when using automatic QSO spies regularly
+Delete the generated files, otherwise it is easy to lose the overview. But he recommends
+use it if it saves you from searching or downloading data in Mailbox, for example. </p><p _msttexthash="37618373" _msthash="499">NOTE: 7+ files can also be processed from SPY files without
+problems using the 7+ program (naturally, if there were no errors in the
+the audibility of the station). Those who do not know, should study the documentation
+to the 7+ program. It offers some interesting features... </p><h2 id="Odk483" _msttexthash="405158" _msthash="500">9.4 Possible problems</h2>
+
+<p _msttexthash="37149346" _msthash="501">QSO spy works without problems only when we hear the given
+station (or node) perfectly and every packet. If we can't always properly build our object
+accept, it may be the case that some part of the connection is missing in the spy window, or
+are displayed in the wrong order. </p><h1 id="Odk484" _msttexthash="201578" _msthash="502">10 Autorouter</h1>
+
+<p _msttexthash="51175397" _msthash="503">Autorouter helps us connect known stations without having to
+enter the complete path or manually work through the nodes. The prerequisite is
+However, the road to the station in question is known, still operational and that it has been
+recorded in the NAMES file. GP. The lines in the file always have the following syntax: </p><p _msttexthash="257686" _msthash="504">TYPE&gt;CALL NAME; PFAD </p><p _msttexthash="21957" _msthash="505">or </p><p _msttexthash="409994" _msthash="506">TYPE&gt;IDENT:CALL NAME; PFAD </p><p _msttexthash="252922865" _msthash="507">It is important to enter the TYPE correctly, because according to it, the GP will recognize
+which actions should be performed and which should not. Thus, the CHECK and LIST functions can be
+used only for the mailbox, while the message can be sent only to those channels using the <b _istranslated="1">remotely controlled n Text</b> command,
+that are connected to another end station. The station name may contain
+and can theoretically be arbitrarily long, but in the program
+It works only with the first 22 letters. The call card and TYPE data must be capitalized
+in letters, see the examples below. If the station in question can be reached directly
+without nodes, then the path is omitted, otherwise it must contain all the necessary nodes after
+way. </p><p><font _mstmutation="1" _msttexthash="9974861" _msthash="508">IMPORTANT: The last entry must in any case ALWAYS
+TYPE&gt;CALL syntax and must not contain any IDENT! A type can contain
+the following letters: </font><br>&nbsp;
+
+</p><table class="nobor">
+<tbody><tr>
+<td class="info" _msttexthash="6006" _msthash="509">
+B
+</td>
+<td class="info" _msttexthash="360243" _msthash="510"> Mailbox (e.g.: B&gt;DB0SGL) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="6188" _msthash="511">
+D
+</td>
+<td class="info" _msttexthash="323167" _msthash="512"> L2 nodes (e.g.: D&gt;DB0ID) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="6370" _msthash="513">
+F
+</td>
+<td class="info" _msttexthash="464724" _msthash="514"> Flexnet node (e.g.: F&gt;DB0FN) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="7098" _msthash="515">
+N
+</td>
+<td class="info" _msttexthash="453869" _msthash="516"> NetRom node (e.g.: N&gt;DB0EAM) </td>
+</tr>
+<tr>
+<td class="info" _msttexthash="3003" _msthash="517">
+!
+</td>
+<td class="info"><font _mstmutation="1" _msttexthash="938886" _msthash="518"> as N, here you need to use <b _mstmutation="1" _istranslated="1">the C command!</b></font>
+</td>
+</tr>
+<tr>
+<td class="info" _msttexthash="7644" _msthash="519">
+T
+</td>
+<td class="info" _msttexthash="825448" _msthash="520"> Terminal, end station (e.g.: T&gt;DH1DAE) </td>
+</tr>
+</tbody></table>
+
+<p _msttexthash="35560096" _msthash="521">If the final station is also used as a digipeater,
+then GP automatically generates the appropriate Remote command, i.e. <b _istranslated="1">C to </b>. By
+type of designation shall be recognised by the GP as to how it must
+connect individual stations. The path input looks something like this: </p><p><font _mstmutation="1" _msttexthash="4968444" _msthash="522">T&gt;DH1DAE Ulf; D&gt;DB0NWS D&gt;DB0FN T&gt;DH1DAE <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">In this case, the GP sends <b _istranslated="1">the command C to TNC DH1DAE DB0NWS DB0FN.</b></i></font>
+
+</p><p _msttexthash="1870700" _msthash="523">However, if there is another N&gt; or F&gt; node in the path, e.g.: </p><p><font _mstmutation="1" _msttexthash="24125049" _msthash="524">T&gt;DH1DAE Ulf; N&gt;DB0HSK F&gt;DB0DOZ D&gt;DB0FN T&gt;DH1DAE <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">then the connection looks a little different. Now the DB0HSK node will be connected first, then the <b _istranslated="1">C DB0DOZ</b> command will be sent, and then the <b _istranslated="1">C DH1DAE DB0FN</b> command will be sent.</i></font>
+
+</p><p _msttexthash="1983319" _msthash="525">The following example demonstrates the use of the <b _istranslated="1">!</b> type: </p><p><font _mstmutation="1" _msttexthash="12890579" _msthash="526">T&gt;DF3VI Patrick; D&gt;DB0FN-9 !&gt;DB0II !&gt;ON5PL !&gt;ON5ZS F&gt;LX0PAC D&gt;DB0HOM <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">GP generates only the following konnekt sequence: <b _istranslated="1">C DB0II
+DB0FN, C! ON5PL, C! ON5ZS, C! LX0PAC, C DF3VI DB0HOM</b></i></font>
+
+</p><p _msttexthash="1068717" _msthash="527">For example, an ident can look like this: </p><p _msttexthash="1874184" _msthash="528">F&gt;SIEGEN:DB0FN Digi Siegen
+<br>T&gt;ULF:DH1DAE Ulf; D&gt;SIEGEN T&gt;DH1DAE
+
+</p><p>
+<i _msttexthash="2876562" _msthash="529">We can only set <b _istranslated="1">DH1DAE</b> or <b _istranslated="1">ULF</b> and GP
+generates the link command: <b _istranslated="1">C DH1DAE DB0FN</b>.</i>
+
+</p><h2 id="Odk485" _msttexthash="689416" _msthash="530">10.1 Recursive path notations</h2>
+
+<p _msttexthash="9979060" _msthash="531">The list of stations does not have to include the complete path to the
+specific station, but it can be based on other already known routes. </p><p _msttexthash="170365" _msthash="532">For example: </p><p _msttexthash="15104193" _msthash="533">F&gt;DB0FN Digi Siegen
+<br>F&gt;DB0WST Netzknoten West; F&gt;DB0FN F&gt;DB0WST
+<br>F&gt;DB0ME Digi Solingen; F&gt;DB0WST F&gt;DB0ME
+<br>B&gt;DB0SGL Mailbox Siegen; F&gt;DB0FN B&gt;DB0SGL
+<br>B&gt;DB0IZ Mailbox Solingen; F&gt;DB0ME B&gt;DB0IZ
+
+</p><p _msttexthash="9696622" _msthash="534">The full path to DB0IZ is compiled from e.g. the path to DB0ME and to
+DB0WST. This automatically gives the following path when connecting: </p><p _msttexthash="538434" _msthash="535">F&gt;DB0FN F&gt;DB0WST F&gt;DB0ME B&gt;DB0IZ
+
+</p><p _msttexthash="2186951" _msthash="536">There are two advantages to using recursive path notation: </p><ol>
+<li _msttexthash="293332" _msthash="537">We need to tap less</li>
+<li _msttexthash="9243663" _msthash="538">The list of paths becomes more variable if a certain Digi
+drops out or when a new line is created, just change the notation of one path.</li>
+</ol>
+
+<h2 id="Odk486" _msttexthash="713882" _msthash="539">10.2 Autorouting via SP gateway</h2>
+
+<p _msttexthash="11827972" _msthash="540">If a line is used in a path via the SP gateway,
+when the port number must be given after the caller, it can be achieved
+simple trick, through the Dummy node. </p><p><font _mstmutation="1" _msttexthash="25246351" _msthash="541">Example: <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">DL9ZZZ is an SP gateway that is on Port 0 on 70 cm and Port 1 on the 2m band. The station is on a 2m band and
+wants to connect the DB0XYZ on the 70 cm band. The relevant command of the connect would therefore have to
+<b _istranslated="1">Sound C DB0XYZ-0</b>. </i></font>
+
+</p><p _msttexthash="1891006" _msthash="542">Write a line in the NAMES file. The GP then looks like this: </p><p _msttexthash="894491" _msthash="543">N&gt;DB0XYZ Testdigi; T&gt;DL9ZZZ D&gt;0 N&gt;DB0XYZ
+
+</p><p>
+<i _msttexthash="43537390" _msthash="544">GP connects first
+DL9ZZZ and sends <b _istranslated="1">the command C DB0XYZ-0</b> (if DL9ZZZ has configured its Gateway as a Node, we can also write <b _istranslated="1">N&gt;DL9ZZZ&gt;DL9ZZZ)</b> instead of <b _istranslated="1">TDL9ZZZ</b>). This trick can be used
+not only for the SP gateway, but also, for example, for the Baycom node, if it must be specified there
+some port number.</i>
+
+</p><h2 id="Odk487" _msttexthash="529165" _msthash="545">10.3 A Few Notes on AUTOROUTER</h2>
+
+<p _msttexthash="155630592" _msthash="546">As you have already noticed, AUTOROUTER evaluates the relevant
+message link to communicate the actual end nodes. From a purely technical point of view, it is like this
+the AUTOROUTE method is quite nonsensical, but with the current Packet network it works differently
+is not possible. In any case, better ROUTED will be taken over from Flexnet Digipeatru and
+For this reason, this ROUTING should be used as much as possible. When
+Flexnet Digipeater can be notified which digi may be available via
+Flexnet Autorouting. The command by which such a list can be invoked is <b _istranslated="1">D</b>. </p><h2 id="Odk488" _msttexthash="920205" _msthash="547">10.4 Managing QRG (TNC Multiport Only)</h2>
+
+<p _msttexthash="107134131" _msthash="548">Since version 1.50, GP can manage multiple ports (not TNC).
+For example, more ports are offered by the Baycom USCC card in conjunction with TFPCX from version 2.00 or
+modern TNC such as FALCon or TNC 3. In order for the GP to know which port to connect to,
+or on which port a connection (QSO) is running, we need to tell it on which
+port is what node and on which frequency it is located. To do this, use the PORTx command,
+where <b _istranslated="1">x</b> is a number between 0 and 8.
+The syntax for this command is: </p><p _msttexthash="310700" _msthash="549">PORTx = &lt;digi&gt;, &lt;qrg&gt;
+
+</p><p><font _mstmutation="1" _msttexthash="6801002" _msthash="550">Example: <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">I'm using DB0FN as
+nod. It operates at a frequency of 430.625 MHz and the transmitter is connected to Port 0.</i></font>
+
+</p><p _msttexthash="725348" _msthash="551">Then the relevant record reads: </p><p _msttexthash="228683" _msthash="552">PORT0 = DB0FN, 430.625
+
+</p><p _msttexthash="196872806" _msthash="553">IMPORTANT: Multiple frequencies can be allocated per port,
+but not the other way around. GP always automatically takes the first port record that belongs to
+for the selected frequency. If more ports were assigned to one, we would have to
+frequency data can be entered differently, e.g. by using "<b _istranslated="1">, </b>" instead of
+"<b _istranslated="1">.</b>"
+as a separation between MHz and kHz data. But because it doesn't have to be in the station diary
+the exact frequency and only the band is enough, there are other options to
+resolution. If a node with two different SSIDs operates on one frequency, e.g.
+since it works with both 1200Bd and 9600Bd, then we also have to assign it
+Port record. </p><p><font _mstmutation="1" _msttexthash="12685374" _msthash="554">Example: <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">DB0FN broadcasts to QRG
+430,625 with 1200Bd and with 9600Bd. On port 0 is connected a modem with 1200Bd and on
+Port 3 is connected to the modem with the 9600Bd.</i></font>
+
+</p><p _msttexthash="4303884" _msthash="555">If we want to work with both speeds, we need to integrate into the
+NAMES file. GP as follows: </p><p><font _mstmutation="1" _msttexthash="3380104" _msthash="556">PORT0 = DB0FN, 430.625 <br _mstmutation="1" _istranslated="1">PORT3 = DB0FN-9, 430, 625 <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">comma instead of dot is intentional</i></font>
+
+</p><p _msttexthash="113301097" _msthash="557">If we want to start a connection on a 9k6 port, we need to specify QRG <b _istranslated="1">430, 625</b>,
+on the other hand, if we want to work through a 1K2 port, we need to specify a QRG <b _istranslated="1">of 430.625</b>.
+In fact, this should rarely occur, because who would want to
+work on a 1K2 port when it can also use 9K6?! When using multiport TNC
+Port recording is absolutely necessary. Otherwise, the attempt to connect via unknown will end
+frequency by erroneous reporting. Port Logging Is Not Required If Multiport TNC
+we do not use it. </p><h2 id="Odk489" _msttexthash="2079077" _msthash="558">10.5 Frequency-dependent conditions of the autoconnect</h2>
+
+<p _msttexthash="115696256" _msthash="559">If we have more nodes within range and therefore change the input more often
+to the network, we usually also have to change some data in NAMES. GP and customize them
+to the current node. So that we don't have to do it manually, we can from version 1.50 to
+NAMES. GP to build in frequency-dependent IF conditions. The way it works is in the
+principle is the same as for IF conditions in CONFIG. GP, only the decisive figure is here
+QRG frequency. The use is simple and can best be explained with an example: </p><p>
+<font _mstmutation="1" _msttexthash="5576857" _msthash="560"><i _mstmutation="1" _istranslated="1">I have the ability to work both through DB0FN and DB0NWS.</i>  <br _mstmutation="1" _istranslated="1">Then the NAMES file can. GP should look like this: </font></p><p _msttexthash="45059469" _msthash="561">PORT0 = DB0FN, 430.625
+<br>PORT1 = DB0NWS, 433.775
+<br>&lt;IF 430.625&gt;
+<br>B&gt;DB0SGL Mailbox Siegen; D&gt;DB0FN B&gt;DB0SGL
+<br>F&gt;DB0ME FALCon-Digi Solingen; D&gt;DB0FN F&gt;DB0ME
+<br>&lt;END&gt;
+<br>&lt;IF 433.775&gt;
+<br>B&gt;DB0SGL Mailbox Siegen; D&gt;DB0NWS B&gt;DB0SGL
+<br>F&gt;DB0ME FALCon-Digi Solingen; D&gt;DB0NWS F&gt;DB0ME
+<br>&lt;END&gt;
+<br>T&gt;DG9EP Walter; F&gt;DB0ME T&gt;DG9EP
+<br>B&gt;DB0IZ Mailbox Solingen; F&gt;DB0ME B&gt;DB0IZ
+
+</p><p _msttexthash="2931032" _msthash="562">If we work only through DB0FN, the path to DG9EP looks like e.g.
+as follows: </p><p _msttexthash="314964" _msthash="563">D&gt;DB0FN F&gt;DB0ME T&gt;DG9EP
+
+</p><p _msttexthash="3630939" _msthash="564">If, on the other hand, we work through DB0NWS, the path changes
+automatically to: </p><p _msttexthash="345202" _msthash="565">D&gt;DB0NWS F&gt;DB0ME T&gt;DG9EP
+
+</p><p _msttexthash="57743153" _msthash="566">If we use hierarchical lists (as in the example above)
+paths, they do not have to be all dependent on one IF condition, but only parts of them,
+which changes by changing the node used. In the example above, for example, the path
+from DB0ME always the same, so it is necessary to change the path only to DB0ME, but not the path,
+that lead from DB0ME onwards. </p><h2 id="Odk490" _msttexthash="193544" _msthash="567">10.6 Macro %DIGI%</h2>
+
+<p _msttexthash="30331470" _msthash="568">This macro is interesting only in multiport operation. Program
+GP replaces it when finding a way through the node callers that are assigned
+the currently active port. If we use the Autorouter node, it makes it much easier to
+Build a list of paths. </p><p _msttexthash="170365" _msthash="569">For example: </p><p _msttexthash="18159778" _msthash="570">PORT0 = DB0FN, 430.625
+<br>PORT1 = DB0NWS, 433.775
+<br>B&gt;DB0SGL Mailbox Siegen; D&gt;%DIGI% B&gt;DB0SGL
+<br>F&gt;DB0ME FALCon-Digi Solingen; D&gt;%DIGI% F&gt;DB0ME
+<br>T&gt;DG9EP Walter; F&gt;DB0ME T&gt;DG9EP
+<br>B&gt;DB0IZ Mailbox Solingen; F&gt;DB0ME B&gt;DB0IZ
+
+</p><p>
+<i _msttexthash="10583274" _msthash="571">This example corresponds to
+function of the example given in Chapter 10.5. By using this Macro, you can
+In this case, the IF pointers are deleted.</i>
+
+</p><h2 id="Odk491" _msttexthash="2509338" _msthash="572">10.7 Registering callers in the list during the connection (ALT-N)</h2>
+
+<p _msttexthash="148075083" _msthash="573">If we want to take over to NAMES. GP station just connected,
+We can do this by editing this file. But it can be done more simply,
+if we press ALT-N and insert the name of the station. GP then stores the station in
+memory to the end of the NAMES file. GP. In this way, they can be done very easily
+construct hierarchical paths as we connect from node to node and each time
+we use the ALT-N function. However, I can only recommend this method at TheNet
+compatible nodes, because FlexNet autorouting compatible nodes
+generally works better than the path list in NAMES. GP. </p><h1 id="Odk492" _msttexthash="420303" _msthash="574">11 Setup Function (ALT-U)</h1>
+
+<p _msttexthash="162550531" _msthash="575">GP offers the possibility to change some of the program functions during operation
+parameters. These include, for example, setting the color or activating or deactivating
+remote control for QSO channel, etc. Individual menu items can be selected
+either by the cursor key and ENTER, or by double-pressing the left mouse button. When
+ending GP using ALT-X, all settings of this menu are saved to a file
+CSTAT. GPB and at the next start, GP will read these values again. For each channel
+there is a custom setup that is not as extensive as with the Mailbox list,
+editor, MH list, or monitor </p><h2 id="Odk493" _msttexthash="350467" _msthash="576">11.1 Changing Colors</h2>
+
+<p _msttexthash="112613852" _msthash="577">After selecting the appropriate menu, you can change the colors. Selection window
+It offers three options and can be made with the left or right arrow buttons.
+The matching colors are presented in a small window. If we choose a color according to
+If desired, confirm the change in the menu by pressing <b _istranslated="1">ENTER</b>. Color selection can be made at any time
+interrupt using <b _istranslated="1">ESC</b>. If you want the new color setting to be
+ready for next use, you need to change the settings in the CONFIG file as well. GP. </p><h2 id="Odk494" _msttexthash="723112" _msthash="578">11.2 Remote-controlled prompt</h2>
+
+<p _msttexthash="56098250" _msthash="579">This menu item determines the shape of the prompt that is emitted after execution
+remotely controlled command to the counterstation. However, the prompt will only be sent if there is
+activated via the remotely controlled <b _istranslated="1">PRompt ON</b> command. Prompt
+can contain all macros that are also used in files
+*GPI. This applies to all QSO channels. </p><h2 id="Odk495" _msttexthash="504166" _msthash="580">11.3 Remote Control On/Off</h2>
+
+<p _msttexthash="21536788" _msthash="581">Remote Menu Item <b _istranslated="1">
+The control</b> shows the current state of remote control. To turn on or off
+remote control, just tap the mouse on this point or press ENTER. This
+The setting applies only to the current channel. </p><h2 id="Odk496" _msttexthash="573430" _msthash="582">11.4 Inserting a Text Buffer</h2>
+
+<p _msttexthash="37042915" _msthash="583">This menu item is used to disable <b _istranslated="1">the BACKUP</b> function, which
+the current content of the Scroll buffer screen when leaving GP is saved to HD and when new
+restart. Compared to other setting data, this value is not
+stored on HD, but when GP restarts, it is read from the CONFIG file. GP. </p><h2 id="Odk497" _msttexthash="84916" _msthash="584">11.5 Echo</h2>
+
+<p _msttexthash="42916978" _msthash="585">This menu item turns local Echo on or off. When ON is in the
+the text I broadcast will also be shown on the screen of the current channel. If set
+OFF, the text is suppressed during transmission and only the text received from the
+counterstations. This setting applies only to the current channel. </p><h2 id="Odk498" _msttexthash="172731" _msthash="586">11.6 RX Zigzag</h2>
+
+<p _msttexthash="7319754" _msthash="587"><b _istranslated="1">The name RX klick</b> is an acoustic signal that alerts you to the text being received. This parameter
+It can have 3 values: </p><ul>
+<li _msttexthash="1400412" _msthash="588"><b _istranslated="1">O</b> - the acoustic signal is always disconnected</li>
+
+<li _msttexthash="18430061" _msthash="589"><b _istranslated="1">1</b> - if text is received on any port other than the selected one
+(channel), an acoustic signal sounds. However, if text is broadcast on the currently activated
+channel, no signal will be heard.</li>
+
+<li _msttexthash="3456258" _msthash="590"><b _istranslated="1">2</b> - An acoustic signal is always heard when text is received on the
+any channel.</li>
+</ul>
+
+<p _msttexthash="921726" _msthash="591">This status applies to all channels. </p><h2 id="Odk499" _msttexthash="200577" _msthash="592">11.7 Line break</h2>
+
+<p _msttexthash="29713359" _msthash="593">This parameter specifies the maximum number of characters per line. When
+converse mode, for example, this value should be set to 65, otherwise by default to
+80 characters per line. This setting applies only to the currently selected channel. </p><h2 id="Odk500" _msttexthash="284609" _msthash="594">11.8 Packet Length</h2>
+
+<p _msttexthash="79197131" _msthash="595">Specifies the maximum number of characters per AX.25
+package. For example, if we have a relatively bad connection to a node, it should not be
+This value is too high, because with short packets, the chance of a flawless
+transmission higher than with long ones. But the value should not be too small either,
+Because then we need many packets to forward the message. This setting
+applies to all QSO channels. </p><h2 id="Odk501" _msttexthash="238823" _msthash="596">11.9 Softscroll</h2>
+
+<p _msttexthash="5842876" _msthash="597">Toggles the Softscroll function. For more details, see Chapter 14.
+The setting applies to all channels. </p><h2 id="Odk502" _msttexthash="301223" _msthash="598">11.10 Code AutoSave</h2>
+
+<p _msttexthash="9482954" _msthash="599">Turns AutoSave on and off for 7plus and LCplus file.
+This setting applies separately to each QSO channel. For more information, see 5.3.5. </p><h2 id="Odk503" _msttexthash="380965" _msthash="600">11.11 Lighthouse Menu</h2>
+
+<p _msttexthash="67740959" _msthash="601">This menu item can only be found in the monitor window. Controls
+Beacon broadcasting. It can be specified which beacon text is to be broadcast and at what
+destination address to be sent. It can also be through a node. This must be entered
+corresponding in the destination address. The <b _istranslated="1">Periode</b> menu item does not need to be mentioned. An example is given in the original text. </p><p _msttexthash="18393271" _msthash="602">IMPORTANT: not to unnecessarily burden the nodes and frequencies,
+The beacon function should be turned on only in special cases, e.g. when we
+on the portable. As a rule, we do not need a beacon. </p><p><font _mstmutation="1" _msttexthash="4625244" _msthash="603">Example: As the beacon text, <br _mstmutation="1" _istranslated="1"><i _mstmutation="1" _istranslated="1">we want to have <b _istranslated="1">DH1DAE/p in Siegen</b> and as
+destination address <b _istranslated="1">ALL.</b></i></font>
+
+</p><p _msttexthash="3513237" _msthash="604">If we insert a period of 5 minutes, the GP broadcasts every 5 minutes
+following: </p><p _msttexthash="1199458" _msthash="605">fm DH1DAE to ALL ctl UI^ pid F0
+<br>DH1DAE/p in Siegen
+
+</p><p _msttexthash="3578679" _msthash="606">If we insert that the destination address is <b _istranslated="1">ALL DB0FN,</b> we will see the following: </p><p _msttexthash="5897424" _msthash="607">fm DH1DAE to ALL via DB0FN ctl UI^ pid F0
+<br>DH1DAE/p in Siegen
+<br>fm DH1DAE to ALL via DB0FN* ctl UI^ pid F0
+<br>DH1DAE/p in Siegen
+
+</p><h2 id="Odk504" _msttexthash="2000739" _msthash="608">11.12 Dividing Line Between QSO Window and Monitor Window</h2>
+
+<p _msttexthash="28202265" _msthash="609">For individual functions that could be used more often,
+there are additionally switches in the Setup menu, which can be switched on using the mouse
+or turned off. The switch symbols are usually clear enough, so only
+Short explanation: </p><table class="nobor">
+<tbody><tr>
+<td class="info">
+<b _msttexthash="184626" _msthash="610">QRG: xxxxxxx</b>
+</td>
+<td class="info" _msttexthash="849810" _msthash="611"> Frequency reported in the logbook </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="190099" _msthash="612">CT: xxxxxxxx</b>
+</td>
+<td class="info" _msttexthash="702091" _msthash="613"> Text connection option (see 5.11) </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="52975" _msthash="614">[-&gt;ü</b>
+</td>
+<td class="info" _msttexthash="408252" _msthash="615"> German umlauts on/off </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="43173" _msthash="616">Echo</b>
+</td>
+<td class="info" _msttexthash="303134" _msthash="617"> Echo on/off (see 10.5) </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="247559" _msthash="618">&lt;stairs&gt;/&lt;line&gt;</b>
+</td>
+<td class="info" _msttexthash="308750" _msthash="619"> Softscroll on/off </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="65754" _msthash="620">&lt;Note&gt;</b>
+</td>
+<td class="info" _msttexthash="318032" _msthash="621"> Beep (Ctrl-G) on/off </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="9477" _msthash="622">7+</b>
+</td>
+<td class="info" _msttexthash="657982" _msthash="623"> 7plus autosave on/off (see 5.3.5) </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="77493" _msthash="624">Remote</b>
+</td>
+<td class="info" _msttexthash="408343" _msthash="625"> Remote control on/off </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="54028" _msthash="626">BIN-RX</b>
+</td>
+<td class="info" _msttexthash="721526" _msthash="627"> AutoBin saving to an on/off file </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="54314" _msthash="628">BIN-TX</b>
+</td>
+<td class="info" _msttexthash="505960" _msthash="629"> AutoBin broadcast on/off </td>
+</tr>
+<tr>
+<td class="info">
+<b _msttexthash="90467" _msthash="630">ScrLock</b>
+</td>
+<td class="info" _msttexthash="47233641" _msthash="631"> Holds a TNC query on an existing channel. Compared to earlier
+GP versions, where this switch was applied to all channels at the same time,
+now only to the existing channel. Therefore, this function must be turned off. If
+the channel is held in this way, the current caller is in the list menu
+shown by the cursor. </td>
+</tr>
+</tbody></table>
+
+<h1 id="Odk505" _msttexthash="132184" _msthash="632">12 DOS Shell</h1>
+
+<p _msttexthash="98336797" _msthash="633">Invoking this function allows us to enter DOS commands without
+we would have to end the GP. If we want to return to GP, we need to give the <b _istranslated="1">EXIT</b> command and confirm with the <b _istranslated="1">Enter</b> key. In the <b _istranslated="1">CONFIG. GP</b>, the <b _istranslated="1">command TNCDOS = M N</b> should appear, which stops the monitor from listing, otherwise there is a danger,
+that TNC will overflow with unclaimed monitored information. In addition, if
+we turn off <b _istranslated="1">the M N</b> monitoring, we lose
+the possibility of using a QSO spy. </p><h1 id="Odk506" _msttexthash="276003" _msthash="634">13 Using the Mouse</h1>
+
+<p _msttexthash="389803596" _msthash="635">If a mouse is connected to the PC and the driver is loaded, GP
+It automatically recognizes and allows you to select all icons and menus with the mouse. The mouse operation is
+quite simple. When selecting a menu icon or function, hover over the
+object and press and release the left mouse button again. If we
+accidentally selected another object, then move the pointer while pressing the
+icon or window in the menu and then release the button. It works the same way
+mouse in the CHECK and LIST menu. If we accidentally pressed the left mouse button, then
+while the button is pressed, hover over the SCROLL bar and only then release the button.
+In these menus, in addition to the left mouse button, the right button also has its function.
+It works when pressed in the same way as <b _istranslated="1">the SPACE spacebar</b>, which you can use to
+tag different records. But the best thing is to try out all the features of the mouse
+themselves. </p><h2 id="Odk507" _msttexthash="561613" _msthash="636">13.1 Scroll Bar (ScrollLock)</h2>
+
+<p _msttexthash="189276633" _msthash="637">For all text windows, you can see on their right side
+scroll bar, showing the current screen viewport in relation to the entire scroll
+buffer. You can use your mouse to scroll up or down rows or pages.
+To scroll in a row, just press both arrows. On the other hand, if you want to scroll
+full page, you must press the cyan-colored bar below or above the position
+stripe. To display any section of the screen, you can press the positional
+bar and move to the desired position while pressing the mouse button. Scrolling
+The bar can also be deleted to get 80 columns. This is done using a combination of
+ALT-B keys, or click <b _istranslated="1">B</b> of the scroll bar. </p><h1 id="Odk508" _msttexthash="545571" _msthash="638">14 Command Line Parameters</h1>
+
+<p _msttexthash="7415876" _msthash="639">GP allows you to change command-line parameters that affect
+start of the program. The call is carried out as follows: </p><p>
+<i _msttexthash="619034" _msthash="640">gp &lt;parameter1&gt;
+&lt;parameter2&gt;</i>
+
+</p><p _msttexthash="21957" _msthash="641">or </p><p>
+<i _msttexthash="728221" _msthash="642">gp286
+&lt;parameter1&gt; &lt;parameter2&gt;</i>
+
+</p><h2 id="Odk509" _msttexthash="451438" _msthash="643">14.1 <b _istranslated="1">/e</b> and <b _istranslated="1">/v</b> parameters</h2>
+
+<p _msttexthash="4061850" _msthash="644">This parameter turns on EGA or VGA mode without noticing
+settings in the CONFIG file. GP. </p><p _msttexthash="39650" _msthash="645">gp /e
+
+</p><p _msttexthash="21957" _msthash="646">or </p><p _msttexthash="54626" _msthash="647">GP286 /E </p><p _msttexthash="600860" _msthash="648">switches GP to EGA mode (640x350). </p><p>
+<i>&nbsp;</i>
+
+</p><p _msttexthash="41860" _msthash="649">gp /v
+
+</p><p _msttexthash="21957" _msthash="650">or </p><p _msttexthash="57499" _msthash="651">GP286 /V </p><p _msttexthash="585780" _msthash="652">switches GP to VGA mode (640x480) </p><h2 id="Odk510" _msttexthash="245544" _msthash="653">14.2 Parameter <b _istranslated="1">/h</b></h2>
+
+<p _msttexthash="40886235" _msthash="654">With this parameter, GP can be started without initialization
+Guest mode. However, the TNC must already be in guest mode, otherwise
+interruption of the program. However, GP does not need these parameters for normal operation,
+because it knows if the TNC is already in guest mode or not. </p><h2 id="Odk511" _msttexthash="729508" _msthash="655">14.3 <b _istranslated="1">/NOXMS</b> and <b _istranslated="1">/NOEMS</b> parameters</h2>
+
+<p _msttexthash="181396670" _msthash="656">GP recognizes completely automatically whether there is XMS memory in the PC
+or EMS and directs the receiving buffers and other data there to save
+space of normal DOS lower memory. If there are any problems, the GP may
+specify that it does not use any additional memory, even if it is present in the PC. Problems
+may occur e.g. when using XMS (HIMEM.SYS) if the
+TFPCX. On slower computers, using GP on XMS, TFPCX may experience
+income problems and the operation of PR will thus become much more difficult. In this case, it is better
+XMS by invoking the /NOXMS parameter. The /NOEMS parameter similarly prevents
+use of EMS memory. </p><h2 id="Odk512" _msttexthash="711360" _msthash="657">14.4 <b _istranslated="1">Parameters of /XTBO</b> and <b _istranslated="1">/ATKBO</b></h2>
+
+<p _msttexthash="194260586" _msthash="658">These parameters are considered in case it does not work
+Automatic keyboard recognition. To use the F11 and F12 function keys,
+GP must use special BIOS functions, which e.g. on XT computers
+They do not exist and this leads to problems. In normal cases, GP recognizes the keyboard
+immediately, but there may still be problems, because the PCs are not completely
+compatible. If there is a problem in the overwriting window, they keep appearing
+some characters without any key pressed, then it's good to enter the GP
+<b _istranslated="1">parameter /XTKBD</b>. If you have
+keyboard with F11, F12, but GP does not respond to them in any way, try to enter <b _istranslated="1">the /ATKBD</b> parameter. </p><h2 id="Odk513" _msttexthash="381017" _msthash="659">14.5 <b _istranslated="1">/3MOUSE</b> Parameter</h2>
+
+<p _msttexthash="39118989" _msthash="660">GP normally only supports left and right
+mouse button. However, if we have a mouse with three buttons, then the middle
+button corresponds to the ALT-Z function. However, in this case, we must inform the GP that we are
+connected a three-button mouse by entering <b _istranslated="1">the /3MOUSE parameter</b>. </p><h2 id="Odk514" _msttexthash="381225" _msthash="661">14.6 <b _istranslated="1">/NOFIFO</b> Parameter</h2>
+
+<p _msttexthash="139221537" _msthash="662">Since version 1.50, GP also supports UART 16550, which has inside
+16 byte data buffer &lt;FIFO&gt;. This allows for greater transmission
+speed without character loss (no interruptions).
+Even on the 286, it is possible to transmit up to 115200 baud, but provided that you use
+corresponding TNC &lt;FALCon or TNC3 &gt;. GP will automatically recognize if there is a
+initialized 16550A, or whether the UART used is a common type.
+The <b _istranslated="1">/NOFIFO</b> parameter can be used to do the following
+automatic recognition can be turned off and thus the GP will not activate FIFO. </p><h2 id="Odk515" _msttexthash="348608" _msthash="663">14.7 <b _istranslated="1">/CHECK</b> Parameter</h2>
+
+<p _msttexthash="145311816" _msthash="664">With this command, the GP is instructed to look at the
+some change to your code. If he has found one, he stops searching and announces the find. V
+In this case, immediately scan your computer for the possible presence of a virus. Computer on
+Turn off for a while, wait and turn it back on. Now insert the floppy disk with the antivirus
+program. You can then scan HD for viruses and remove viruses. In the
+In any case, prepare a virus-free floppy disk in advance, which you should secure
+write protection. Viruses always appear when you least expect them. </p><h2 id="Odk516" _msttexthash="412659" _msthash="665">14.8 <b _istranslated="1">/KISSOFF</b> Parameter</h2>
+
+<p _msttexthash="4449575" _msthash="666">This command instructs the computer to
+Kiss mode was turned on, turned it off at startup. </p><h1 id="Odk517" _msttexthash="198705" _msthash="667">15 Softscroll</h1>
+
+<p _msttexthash="692592069" _msthash="668">The peculiarity of GP is that it allows you to switch between <b _istranslated="1">normal</b> and <b _istranslated="1">slow</b> scrolling. Softscroll <b _istranslated="1">slow</b> means that the total text
+on the screen will not scroll by one text line, i.e. 8 or 16 graphic
+line, but by 4 or 8 times two graphic lines up. This produces an <b _istranslated="1">effect
+slow scrolling</b>, which makes it easier to read text.
+However, this slow scrolling also has its drawback, that the ratio of scrolling speeds
+It is too small for the section of the screen that needs to be scrolled. This loss
+speed is generated by an enormous amount of data, which on a screen of 80x40 characters (for
+capital letters 80x20 characters) in any case represents 102400 bytes. This
+The amount of memory slots is required for one row 4 times for slow scrolling
+shift, i.e. Softscroll of one line of lowercase characters must be shifted by 409600,
+with a line of large characters even by 819200 characters. In this case, only
+A faster computer. The 80386 is not bad either. Nevertheless, it happens that in the case of a large
+TNC monitoring is not enough and the memory overflows. That's why I recommend that Softscroll
+has only been used in conjunction with the use of a reduced window, as this
+a significant decrease in the amount of processed text. </p><p _msttexthash="133516422" _msthash="669">Unfortunately, most VGA cards that are programmed
+mainly hardware, malfunctions occur when activating Softcsroll, because there is no
+One hundred percent compatibility with the VGA standard is guaranteed. Problems arise
+especially with SVGA cards. If a malfunction occurred in which the screen was
+deleted, you can fix this by jumping into DOS Shell for a while and then
+with EXIT you will return to GP. In order to shut down Softscroll, it is necessary to immediately
+Start the screen, press ALT-U to start the Setup menu. </p><h1 id="Odk518" _msttexthash="447746" _msthash="670">16 What is HOST mode on TNC2</h1>
+
+<p _msttexthash="524351074" _msthash="671">I'm sure you've wondered what the HOST mode is when you talk about it
+operation of some terminal programs? HOST mode is a type of operation on
+TNC2, in which the data exchange between the computer and the TNC is a little different. In this
+Terminal program works as <b _istranslated="1">HOST</b> and TNC
+<b _istranslated="1">as a SLAVE</b>, which means that the TNC does not send a
+program until it gives the command to do so. This ensures that
+data will always reach the correct terminal channel. In practice, the terminal
+the program sends a query to all TNC channels if there are any on the given channel
+data or not. If so, TNC sends the data to the terminal program. Traffic
+slows down a bit because the GP is not able to recognize which channel the data is on
+is currently being accepted and therefore has to question everyone. It takes a little longer to
+The data will appear on the screen. If an error occurs in this process, the GP will recognize it immediately
+and tries to bring TNC to a defined state. The user is told this as
+Synchronization error. However, it cannot be repaired, so data loss may also occur. </p><p _msttexthash="151254883" _msthash="672">However, the HOST mode must not be confused with the AX.25 protocol. TNC's
+in fact, it converts the cache that receives data according to the AX.25 protocol into another
+format and caches it until the terminal program
+He won't say. The opposite is true for broadcasting, where PC data is broadcast to TNC, where they are
+cached and converted to the AX.25 protocol. Per repetition count
+(Retries) for the packet to reach the destination without errors, the terminal program does not have
+no influence. The maximum you can ask for <b _istranslated="1">is LINK</b> information and that's it. </p><p _msttexthash="241983287" _msthash="673">HOST mode has been compiled for <b _istranslated="1">INTELLIGENT</b> terminal
+programs that are able to provide <b _istranslated="1">MULTIKONNET.</b> For <b _istranslated="1">a normal</b> terminal program,
+inappropriate. Unfortunately, not every TNC has a built-in HOST mode, e.g. TAPR. WA8DED only
+software and The Firmware &lt;Nord&gt;&lt;Link&gt; have it. That's also the reason,
+why programs like GP, SP, THP, and the like only work with these TNCs. In addition,
+there are also additional programs that replace TNC or allow the use of other
+TNC instead of The Firmware. Such is, for example, the TFPCR from DL1MEN, representing KISS
+HOST interface enabling TAPR operation. Another such program is TFPCX from DG0FT,
+replacing even the entire TNC, requiring only a very small modem between the TRX and the PC. </p><h1 id="Odk519" _msttexthash="569738" _msthash="674">17 Synchronization Errors</h1>
+
+<p _msttexthash="605200622" _msthash="675">Synchronization errors occur when the GP and the
+TNC is the loss or distortion of characters. In this case, the GP tries to bring TNC
+to the default state, so that the further operation of the information runs without defects, if the GP cannot
+synchronize with TNC, it will end the activity and go to DOS. But it can happen
+that TNC, for example, as a result of a short network outage, fell apart and GP does not have the TNC option
+synchronize. In such a case, an <b _istranslated="1">emergency brake</b> was installed, which
+The resynchronization procedure is interrupted and the screen
+prints a menu that will allow you to decide on the further course of the GP. This is possible
+perform RESYNC ERRORS during RESYNC ERRORS by using Ctrl-BREAK. We can bring the decayed TNC
+bring TNC REINIT back to life by calling TNC REINIT from the menu without having to exit the GP.
+Of course, we still have to reset the TNC before and wait a while. If the
+On the first try, a malfunction message appeared, please try again. TNC after reset
+He always needs some time to recover. Another option is simply TNC
+ignore, but in that case no more exchange of information between GP and TNC
+will fail. </p><p _msttexthash="202078357" _msthash="676">If you use TFPCX or TFPCR, none of the
+resynchronization errors may occur at all. If they do occur, they should
+we would delete them because they always represent data loss. We usually have
+luckily in that a resynchronization error occurs when querying for LINK status, but
+this can also happen when TNC queries QSO connection data. In such a
+In this case, the data will neither appear on the screen nor be stored in memory, and so on
+they are lost. We can solve this problem by reducing the number of
+Bauds V24 or we will use 16550A UART. But often it is enough to discard it from memory
+programs such as disk cache or slow drivers, or replace them with
+others. </p><h1 id="Odk520" _msttexthash="255658" _msthash="677">18 Several types</h1>
+
+<p _msttexthash="1289379" _msthash="678">Finally, a few types for using the GP program. </p><p _msttexthash="994978634" _msthash="679">To connect to Mailbox, it is recommended to use a channel with if
+possibly with a large text buffer. Because we can't set up for all channels
+large text buffers relative to the memory space of the PC, we should as a channel
+For mailbox, for example, choose the last channel (e.g. channel 4 with a maximum of four
+channels) and equip this with a large text buffer. The last channel can
+be connected only when all other channels are already connected to the
+occupied. This ensures that we can connect one Mailbox and Mailbox at any time.
+when we were already connected by other stations. Another reason for
+Such a procedure is remote control. This can be turned on and off for each
+channel separately and independently - the current state is stored in the
+memory. With Mailbox, the remote control should be disconnected in any case,
+because in the texts there may be commands for the remote control, on which the GP
+reacts and then there are erroneous boxing reports or something worse. It is
+Good so that the remote control is activated during normal connections. In order to
+they still didn't have to turn the remote control on and off when they were running on one channel
+QSO connection and Mailbox operation, it is practical when for Mailboxes
+uses a special last channel on which there will never be any QSO. When
+e.g. we use channel 4 for Mailbox, just turn off the remote control for the first time and then
+We don't have to worry about anything anymore. </p><p>
+<font _mstmutation="1" _msttexthash="50928956" _msthash="680"><b _mstmutation="1" _istranslated="1">Testmode:</b> If we want to start GP without TNC (to be tested
+and so on), we can do so by adding <b _mstmutation="1" _istranslated="1">the /h</b> parameter (see 14.2). If
+GP then reports an error in synchronization, we can interrupt the count using Ctrl-Break
+and then choose <b _mstmutation="1" _istranslated="1">TNC to ignore</b>. However, no connection is possible in this mode
+QSO, only the editor remains usable. </font></p><p><font _mstmutation="1" _msttexthash="23025054" _msthash="681">Of course, this trick is eliminated when we use TFPCX or
+TFPCR. If the <b _mstmutation="1" _istranslated="1">TNC message does not respond</b> appears at the start of the GP, there is nothing
+fine in communication between PC and TNC. This can have several causes: </font><br>&nbsp;
+
+</p><ul>
+<li _msttexthash="1103362" _msthash="682">serial port number in CONFIG. GP disagrees</li>
+<li _msttexthash="2159781" _msthash="683">speed of communication in CONFIG. GP was not given correctly</li>
+<li _msttexthash="2515916" _msthash="684">the serial port IRQ setting was not in CONFIG. GP correctly entered</li>
+<li _msttexthash="1345344" _msthash="685">V24 line to TNC is broken or not properly wired</li>
+<li _msttexthash="1937312" _msthash="686">TNC has collapsed. In this case, only a TNC reset will help</li>
+<li _msttexthash="19669052" _msthash="687">There is no built-in software with WA8DED hostmode in TNC. Examples
+that's why Multimode TNCs like KAM, PK 232, etc. With these TNCs, GPs run only in
+connection with the Hostmode TFPCR program from DL1MEN.</li>
+</ul>
+
+<p _msttexthash="161953922" _msthash="688">If you suspect that malfunctions are occurring when using TFPCX
+reception, you can check this by specifying <b _istranslated="1">the TFPCX -d</b> parameter. From the speaker
+A PC will sound a tone by which you can estimate the quality of TFPCX reception.
+If the tone sounds relatively clear, it should not be
+No difficulty in receiving them. If you hear a distinct crackling sound on the tone, or
+even its interruption is a problem in some memory driver. Problems can be caused by
+cause e.g. HIMEM.SYS. In this case, run GP with <b _istranslated="1">the /NOXMS</b> parameter (See 14.3). The TFPCX driver can be terminated with <b _istranslated="1">the TFPCX -u</b> command. </p><p>
+<font _mstmutation="1" _msttexthash="38529699" _msthash="689"><b _mstmutation="1" _istranslated="1">XMS:</b> From version 1.50 onwards, GP requires more XMS trades than
+how much HIMEN.SYS normally provides. Therefore, when using XMS, you can
+GP cannot fully use the XMS memory because there are no more free
+available trades. Therefore, it is a good idea to install HIMEM.SYS as follows: </font></p><p _msttexthash="588874" _msthash="690">DEVICE = HIMEM.SYS /NUMHANDLES=64
+
+</p><h1 id="Odk521" _msttexthash="127387" _msthash="691">Appendix A</h1>
+
+<h2 id="Odk522" _msttexthash="168233" _msthash="692">1 License Law</h2>
+
+<p _msttexthash="13014521" _msthash="693">GP may be used or disseminated only in accordance with
+General Terms and Conditions for the Use of Amateur Software (ALAS), as well as
+conditions compiled in 1992: </p><p _msttexthash="3156543" _msthash="694">Copyright © 1992 Hans Georg Giese, DF2AU
+<br>Hinter dem Berge 5
+<br>D-3300 Braunschweig
+
+</p><p _msttexthash="11780951" _msthash="695">This document may be freely distributed or reproduced if
+it will not be altered. Thank you for the changes leading to its improvement. (DF2AU @
+DK0MAV.DL.EU) </p><h3 _msttexthash="132639" _msthash="696">1.1 Preface</h3>
+
+<p _msttexthash="248601990" _msthash="697">This license is derived from the General Public License of Free Software
+Foundation (GPL). I have tried, while preserving its meaning, to bring into it
+greater clarity. Some of its passages have completely fallen away. However, every user has
+the right to use the terms of the GPL in place of this license. The purpose of this license is to protect
+both the author and the user of this software. Therefore, there are certain limitations and thus
+in fact, also obligations to the person who changes and distributes the software associated with this license.
+This is achieved by the fact that this software is protected by Copyright and therefore the user
+This license has almost unlimited possibilities in its use. </p><h3 _msttexthash="362973" _msthash="698">1.2 Scope of Validity</h3>
+
+<p _msttexthash="21114327" _msthash="699">This license applies to each program or part of the
+flowing from him. In the following, the term PROGRAM will be considered this program or parts of the
+flowing from him. You are then the user of the license. </p><h3 _msttexthash="236431" _msthash="700">1.3 Your rights:</h3>
+
+<p _msttexthash="6217861" _msthash="701">You can use, copy, split or change the program if you
+By doing so, you are not pursuing any commercial goals. </p><h3 _msttexthash="391521" _msthash="702">1.4 Your obligations:</h3>
+
+<h4 _msttexthash="13529880" _msthash="703">1.4.1 You may not copyright or link to this license under any circumstances
+change and it must be clear to the user every time this program is started.
+indicated.</h4>
+
+<h4 _msttexthash="13812214" _msthash="704">1.4.2 You must also grant the rights that have been transferred to you to the person to whom
+you pass this PRG on. Likewise, demand obligations and comply with them.</h4>
+
+<h4 _msttexthash="10473138" _msthash="705">1.4.3 You may not demand any compensation for the transfer of the PRG to another user.
+remuneration, except for the cost of media and postage.</h4>
+
+<h4 _msttexthash="7344064" _msthash="706">1.4.4 You may only submit the complete program as you received it
+you. (Note DH1DAE 1:1 copy of the original floppy disk!)</h4>
+
+<h4 _msttexthash="15460341" _msthash="707">1.4.5 If you change the program or use parts of it for your work,
+whether in a literal or modified wording, then the newly created program is subject to
+the following points:</h4>
+
+<ul>
+<li _msttexthash="7928349" _msthash="708">You must state clearly enough: your name and address,
+the fact that you have modified the program or used some parts of it.</li>
+
+<li _msttexthash="16554044" _msthash="709">You must then pass on the program either with full indication of the origin or
+each may be asked to send the original text only for the payment of the costs of the medium and
+postage.</li>
+
+<li _msttexthash="3395782" _msthash="710">You must not place any restrictions that go beyond the scope of this
+license.</li>
+</ul>
+
+<h3 _msttexthash="105313" _msthash="711">1.5 Other.</h3>
+
+<p _msttexthash="37841011" _msthash="712">You receive the program without any guarantee of functionality,
+flawlessness or applicability to an activity. You waive any claim
+compensation in the event of damage, for whatever reason. S
+By using this program, you fully agree to these license agreements.
+conditions. </p><p _msttexthash="549939" _msthash="713">Version 1.0, 13-OCT-92 <br _istranslated="1">Ende ALAS </p><h1 id="Odk523" _msttexthash="127582" _msthash="714">Appendix B</h1>
+
+<h2 id="Odk524" _msttexthash="340041" _msthash="715">1 Contact Addresses</h2>
+
+<p _msttexthash="7470242" _msthash="716">If you are interested in the latest version of GP, send a floppy disk and
+sufficient payment of postage to the address: </p><p _msttexthash="7120906" _msthash="717">Ulf Saran Bankverbindung: <br _istranslated="1">DH1DAE account: 674945 <br _istranslated="1">Veit-StoĐ-Str. 36 Institute: Sparkasse Siegen <br _istranslated="1">57076 Siegen BLZ: 460 500 01 </p><p _msttexthash="4159051" _msthash="718">(Fundraisers for the program are not necessary, but will be accepted with
+gratitude) </p><h1 id="Odk525" _msttexthash="127777" _msthash="719">Appendix C</h1>
+
+<h2 id="Odk526" _msttexthash="456872" _msthash="720">1 Authors of the program</h2>
+
+<p _msttexthash="86679073" _msthash="721">The GP program was entirely developed by DH1DAE, some routines to
+The initialization of V24 comes from DL5FBD. The idea and execution of GPRI (Graphic Packet)
+Remote Interface) comes from DH1DAE. GP was developed using TURBO PASCAL 6.0
+© ( Borland International 1990). To program the graphical user interface
+Standard means were used, i.e. no special tools. The length in
+has currently enlarged to almost 26800 lines (about 700kB) to </p><p _msttexthash="9468160" _msthash="722">Special thanks for the reports, help with programming, utilities,
+Translations, suggestions for improvement, etc., etc., include: </p><p _msttexthash="6148909" _msthash="723">DL1ELY, DF3VI, DG9EP, DG3DBI, DG1EHE, DG1EH, DC1VL, DG0FT,
+DG1FAZ, DL1DBC, DL7GAI, DJ1XK, G0KIU, F1HBN, PE1MHO and many more. </p><p _msttexthash="1070693" _msthash="724">(This list does not claim to be complete) </p><p><font _mstmutation="1" _msttexthash="4672473" _msthash="725">Thanks also to ADACOM e.V. and AMPACK Bayern e.V. <br _mstmutation="1" _istranslated="1">The right to change is reserved. <br _mstmutation="1" _istranslated="1">Siegen, 16.09.1993 </font><br>&nbsp;
+</p><p>
+</p><div class="cete">
+<div class="fb-like fb_iframe_widget" data-href="https://www.qsl.net/ok1cfp/gpman.htm" data-width="" data-layout="standard" data-action="like" data-size="small" data-share="true" fb-xfbml-state="rendered" fb-iframe-plugin-query="action=like&amp;app_id=&amp;container_width=2273&amp;href=https%3A%2F%2Fwww.qsl.net%2Fok1cfp%2Fgpman.htm&amp;layout=standard&amp;locale=cs_CZ&amp;sdk=joey&amp;share=true&amp;size=small&amp;width="><span style="vertical-align: top; width: 0px; height: 0px; overflow: hidden;"><iframe name="f8721760231168a35" width="1000px" height="1000px" data-testid="fb:like Facebook Social Plugin" title="fb:like Facebook Social Plugin" frameborder="0" allowtransparency="true" allowfullscreen="true" scrolling="no" allow="encrypted-media" src="https://www.facebook.com/v16.0/plugins/like.php?action=like&amp;app_id=&amp;channel=https%3A%2F%2Fstaticxx.facebook.com%2Fx%2Fconnect%2Fxd_arbiter%2F%3Fversion%3D46%23cb%3Df3d3dfe0a77547f74%26domain%3Dwww.qsl.net%26is_canvas%3Dfalse%26origin%3Dhttps%253A%252F%252Fwww.qsl.net%252Ff31156d8233d89705%26relation%3Dparent.parent&amp;container_width=2273&amp;href=https%3A%2F%2Fwww.qsl.net%2Fok1cfp%2Fgpman.htm&amp;layout=standard&amp;locale=cs_CZ&amp;sdk=joey&amp;share=true&amp;size=small&amp;width=" style="border-width: medium; border-style: none; border-color: currentcolor; border-image: none; visibility: visible; width: 0px; height: 0px;"></iframe></span></div>
+&nbsp;&nbsp;<a href="https://www.pinterest.com/pin/create/button/?url=https%3A%2F%2Fwww.qsl.net%2Fok1cfp%2Fgpman.htm&amp;description=Pinterest" data-pin-do="buttonPin" data-pin-count="beside" data-pin-lang="cs"></a>
+</div>
+</main>
+<footer>
+<p>
+</p><hr>
+<p class="big cete">
+©
+
+
+25/9/2001
+</font><br>&nbsp;
+</p></footer>
+</body>
