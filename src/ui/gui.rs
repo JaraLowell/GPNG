@@ -70,11 +70,9 @@ use super::session::{
 use super::theme::vga;
 
 const TYPED_HISTORY: usize = 10;
-/// KISS T3: idle link check (RR poll) after this much silence.
+/// Idle link check. Also the wait for an answer before the next try.
 const AX25_T3_IDLE: Duration = Duration::from_secs(5 * 60);
-/// KISS T1: wait for RR/I after a poll before retry / drop.
-const AX25_T1_POLL: Duration = Duration::from_secs(30);
-/// Retries of RR poll before link timeout disconnect.
+/// Unanswered polls before the link is dead and we send DISC.
 const AX25_POLL_RETRIES: u8 = 3;
 /// KISS SABM: wait for UA before resend.
 const AX25_SABM_RETRY: Duration = Duration::from_secs(5);
@@ -259,6 +257,9 @@ pub struct GpGuiApp {
     rx_row: Vec<Option<u64>>,
     /// Previous packet ended on CR; the next LF is the same newline.
     rx_cr: Vec<bool>,
+    /// `//` command already run from the incoming message, so the later
+    /// terminal line-close does not run it again.
+    cmd_ran: Vec<Option<String>>,
     /// Colour pen for the channel. A packet cut does not reset it.
     rx_ansi: Vec<AnsiDecoder>,
     /// Unfinished 7Plus row per channel (raw payload bytes, not the painted text).
@@ -524,6 +525,7 @@ impl GpGuiApp {
             ch_unack: vec![0; slots],
             rx_row: vec![None; slots],
             rx_cr: vec![false; slots],
+            cmd_ran: vec![None; slots],
             rx_ansi: vec![AnsiDecoder::new(); slots],
             seven_pending: vec![Vec::new(); slots],
             seven: (0..slots)
@@ -716,9 +718,6 @@ impl GpGuiApp {
                     payload,
                 } => {
                     self.serial_rx_frames += 1;
-                    if self.session.bell && payload.contains(&0x07) {
-                        play_bell_wav(&self.bell_wav);
-                    }
                     let text = decode_rx_text(&payload, self.session.extended_ascii);
                     // Heuristic: TNC reply to `M` query often looks like `IUSC` / `UISC`.
                     if channel == 0
@@ -857,6 +856,12 @@ impl GpGuiApp {
         self.last_link_status = text.to_string();
         let upper = text.to_ascii_uppercase();
         let was_linked = self.channel_peer.get(idx).and_then(|p| p.as_ref()).is_some();
+        // Set while this channel is the one that placed the call (`C CALL`).
+        let was_outgoing = self
+            .channel_connecting
+            .get(idx)
+            .and_then(|c| c.as_ref())
+            .is_some();
 
         if upper.contains("DISCONNECTED")
             || upper.contains("LINK FAILURE")
@@ -923,7 +928,7 @@ impl GpGuiApp {
                 self.channel_peer[idx] = Some("****".into());
             }
         }
-        // Classic: on connect, send GTEXT / CTEXT to the peer.
+        // Classic: CTEXT goes out only from the station that was connected to.
         if upper.contains("CONNECTED TO ") || upper.contains("CONNECTED") {
             if !was_linked {
                 play_wav(&self.connect_wav);
@@ -937,7 +942,7 @@ impl GpGuiApp {
                 }
             }
             if !was_linked {
-                self.finish_link_up(channel);
+                self.finish_link_up(channel, !was_outgoing);
             }
         }
     }
@@ -1443,7 +1448,8 @@ impl GpGuiApp {
         }
         play_wav(&self.connect_wav);
         self.prepare_busy_redirect_identities();
-        self.finish_link_up(channel);
+        // First data while we are still calling — we placed this call.
+        self.finish_link_up(channel, false);
     }
 
     fn names_qrg(&self) -> String {
@@ -1457,10 +1463,14 @@ impl GpGuiApp {
             .unwrap_or_default()
     }
 
-    /// After the AX.25 link is up: send the next node command, or the connect text.
-    fn finish_link_up(&mut self, channel: u8) {
+    /// After the AX.25 link is up: send the next node command.
+    ///
+    /// `greet` sends CTEXT. Only the station that was connected to greets.
+    /// The station that placed the call does not. A queued node downlink
+    /// (`C` / `C!`) still goes out first, in place of the greeting.
+    fn finish_link_up(&mut self, channel: u8, greet: bool) {
         self.note_link_up(channel);
-        if !self.send_next_downlink(channel) {
+        if !self.send_next_downlink(channel) && greet {
             self.send_connect_text(channel);
         }
     }
@@ -1619,7 +1629,7 @@ impl GpGuiApp {
             if let Some(pad) = self.pads.get_mut(channel as usize) {
                 pad.push(PadKind::System, "*** autoroute complete");
             }
-            self.send_connect_text(channel);
+            // We placed this call. The far station sends its own CTEXT.
         }
     }
 
@@ -1834,6 +1844,15 @@ impl GpGuiApp {
     /// Terminal write. Bytes append to the open row. `\n` / `\r` end that row.
     /// The end of a packet does not.
     fn accept_rx_text(&mut self, channel: u8, chunk: &str, kind: PadKind) {
+        // BEL (Ctrl-G, 0x07) rings only on the station that received it,
+        // and only while the session bell is on.
+        if kind == PadKind::Incoming
+            && channel >= 1
+            && self.session.bell
+            && chunk.as_bytes().contains(&0x07)
+        {
+            play_bell_wav(&self.bell_wav);
+        }
         let bytes = chunk.as_bytes();
         let mut i = 0;
         if self.rx_cr.get(channel as usize).copied().unwrap_or(false) {
@@ -1844,6 +1863,11 @@ impl GpGuiApp {
                 i = 1;
             }
             self.finish_rx_line(channel, kind);
+        }
+        // A // command is one short line. Answer it from this message.
+        // The terminal row is unchanged and may still be waiting on CR/LF.
+        if kind == PadKind::Incoming && channel >= 1 {
+            self.commands_in_message(channel, chunk);
         }
         while i < bytes.len() {
             if bytes[i] == b'\n' {
@@ -1932,10 +1956,7 @@ impl GpGuiApp {
                 *slot = None;
             }
             if !self.seven_capturing(channel) {
-                self.maybe_remote_line(channel, &text);
-            }
-            if kind == PadKind::Incoming && !text.is_empty() {
-                self.maybe_rx_click(channel);
+                self.maybe_remote_line(channel, &text, kind == PadKind::Incoming);
             }
             if kind == PadKind::Incoming && channel >= 1 && !text.is_empty() {
                 self.note_autoroute_rx(channel, &text);
@@ -1947,16 +1968,53 @@ impl GpGuiApp {
         }
     }
 
-    fn maybe_remote_line(&mut self, channel: u8, line: &str) {
+    /// Run `//` commands found in one incoming message. Pieces are split on
+    /// CR/LF only to find the line; nothing is written to the terminal here.
+    fn commands_in_message(&mut self, channel: u8, chunk: &str) {
+        for piece in chunk.split(|c| c == '\r' || c == '\n') {
+            let piece = piece.trim();
+            if piece.is_empty() || parse_line(piece).is_none() {
+                continue;
+            }
+            self.maybe_remote_line(channel, piece, true);
+            if let Some(slot) = self.cmd_ran.get_mut(channel as usize) {
+                *slot = Some(piece.to_string());
+            }
+        }
+    }
+
+    fn maybe_remote_line(&mut self, channel: u8, line: &str, incoming: bool) {
         if channel >= 1 && self.user_write.get(channel as usize).and_then(|w| w.as_ref()).is_some()
         {
             self.capture_write_line(channel, line);
             return;
         }
-        if self.session.remote && channel >= 1 {
-            if let Some((action, args)) = parse_line(line.trim()) {
+        if channel < 1 {
+            return;
+        }
+        let trimmed = line.trim();
+        if incoming {
+            if let Some(done) = self.cmd_ran.get_mut(channel as usize) {
+                if done.as_deref() == Some(trimmed) {
+                    *done = None;
+                    return;
+                }
+            }
+        }
+        let Some((action, args)) = parse_line(trimmed) else {
+            return;
+        };
+        // //Bell / //B / //Ring is a page, not general remote control.
+        // It runs on the station that received the line. The bell icon
+        // only decides whether that station also plays the sound.
+        if action == RemoteAction::Bell {
+            if incoming {
                 self.handle_remote_on_channel(channel, action, &args);
             }
+            return;
+        }
+        if self.session.remote {
+            self.handle_remote_on_channel(channel, action, &args);
         }
     }
 
@@ -2257,8 +2315,8 @@ impl GpGuiApp {
                     false,
                     None,
                 );
-                self.note_link_up(ch);
-                self.send_connect_text(ch);
+                // SABM: they called us, so this side sends CTEXT.
+                self.finish_link_up(ch, true);
                 self.status = format!("KISS linked ch{ch} ← {}", frame.src);
                 self.last_link_status = self.status.clone();
             }
@@ -2296,7 +2354,8 @@ impl GpGuiApp {
                         format!("*** CONNECTED to {}", frame.src),
                     );
                 }
-                self.finish_link_up(ch);
+                // UA: we placed the call, so this side does not send CTEXT.
+                self.finish_link_up(ch, false);
                 self.status = format!("KISS linked ch{ch} → {}", frame.src);
                 self.last_link_status = self.status.clone();
             }
@@ -2390,18 +2449,24 @@ impl GpGuiApp {
             }
             Ax25FrameType::Rr => {
                 self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                // P=1 on a command asks for an answer. F=1 on a response is
+                // that answer — it must not be polled again or the two
+                // stations RR each other without a pause.
+                let is_poll = frame.command && frame.poll;
                 let ch = self.kiss_channel_for_frame(&frame.src, &frame.dest);
                 let Some(ch) = ch else {
-                    // Still answer if the poll is clearly for one of our calls.
-                    if frame.poll {
+                    if is_poll {
                         if let Some(ch) = self.kiss_channel_owning_dest(&frame.dest) {
+                            self.kiss_link_activity(ch, true);
                             self.kiss_reply_rr_final(ch, &frame.src);
                         }
                     }
                     return;
                 };
+                // Peer traffic, including the answer to our poll, restarts
+                // the 5-minute idle clock on this side.
                 self.kiss_link_activity(ch, true);
-                if frame.poll {
+                if is_poll {
                     self.kiss_reply_rr_final(ch, &frame.src);
                 }
             }
@@ -2449,7 +2514,12 @@ impl GpGuiApp {
         }
     }
 
-    /// SABM retries while connecting; T3 idle RR poll when linked.
+    /// SABM retries while connecting; idle RR poll when linked.
+    ///
+    /// Five minutes after the last packet from either side, send one RR poll.
+    /// An answer restarts that clock on both ends. No answer is one timeout;
+    /// the same station tries again five minutes later. The third timeout
+    /// sends DISC.
     fn kiss_link_timers(&mut self) {
         if !self.kiss_mode() {
             return;
@@ -2467,7 +2537,7 @@ impl GpGuiApp {
             let pending = self.ax25_poll_at.get(idx).and_then(|t| *t);
             let tries = *self.ax25_poll_tries.get(idx).unwrap_or(&0);
             if let Some(sent) = pending {
-                if now.duration_since(sent) >= AX25_T1_POLL {
+                if now.duration_since(sent) >= AX25_T3_IDLE {
                     if tries >= AX25_POLL_RETRIES {
                         drop.push(ch);
                     } else {
@@ -2485,7 +2555,7 @@ impl GpGuiApp {
             if let Some(pad) = self.pads.get_mut(ch as usize) {
                 pad.push(
                     PadKind::System,
-                    "*** link timeout (no RR) — disconnecting",
+                    "*** link dead (no answer to 3 checks) — DISC",
                 );
             }
             self.disconnect_channel(ch);
@@ -2761,8 +2831,11 @@ impl GpGuiApp {
         }
 
         if let Some((action, args)) = parse_line(&line) {
-            self.handle_remote(action, &args);
-            return;
+            // Page the other station. Do not ring here.
+            if action != RemoteAction::Bell {
+                self.handle_remote(action, &args);
+                return;
+            }
         }
         // Unregistered `//verb` → serve matching data/*.GPI (not ORIGIN).
         if let Some(verb) = line.strip_prefix("//").or_else(|| line.strip_prefix("\\\\")) {
@@ -3135,7 +3208,11 @@ impl GpGuiApp {
                 self.send_gpi_text(args);
             }
             RemoteAction::Bell => {
-                play_bell_wav(&self.bell_wav);
+                self.status = "Ring the sysop".into();
+                self.send_gpi_text("Ring the sysop\r");
+                if self.session.bell {
+                    play_bell_wav(&self.bell_wav);
+                }
             }
             RemoteAction::MHeard => {
                 let lines = self.mheard.lines();
@@ -4563,20 +4640,6 @@ impl GpGuiApp {
             Some(&text),
         );
         self.status = format!("beacon {my} {}", ax25::unproto_to(&dest, &vias));
-    }
-
-    fn maybe_rx_click(&self, channel: u8) {
-        let play = match self.cfg.session.rx_click {
-            0 => false,
-            1 => match self.active {
-                ActivePane::Channel(n) => channel != n,
-                _ => channel != 0,
-            },
-            _ => true,
-        };
-        if play {
-            play_bell_wav(&self.bell_wav);
-        }
     }
 
     /// DOS chapter 4 keys. A key with no product yet answers on the status line.

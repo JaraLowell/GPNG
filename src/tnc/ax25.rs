@@ -488,7 +488,11 @@ mod tests {
         let f = parse_frame(&cmd).unwrap();
         assert_eq!(f.kind, Ax25FrameType::Rr);
         assert_eq!(f.nr, 3);
+        assert!(f.command);
         assert!(f.poll);
+        let ans = parse_frame(&rsp).unwrap();
+        assert!(!ans.command, "RR Final is a response, not a new poll");
+        assert!(ans.poll);
     }
 
     #[test]

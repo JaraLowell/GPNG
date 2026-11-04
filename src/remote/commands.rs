@@ -56,7 +56,9 @@ pub fn catalogue() -> Vec<RemoteCommand> {
         cmd("//<n>", &[], 1, RemoteAction::CrossChannelText, "Send text to channel/port n"),
         cmd("//7+", &["7+"], 2, RemoteAction::SevenPlusAutoSave, "7Plus AutoSave on/off"),
         cmd("//Activity", &["ACTIVITY"], 2, RemoteAction::Activity, "Last sysop keyboard/mouse activity"),
-        cmd("//Bell", &["BELL", "B", "RING"], 1, RemoteAction::Bell, "Ring the sysop"),
+        cmd("//Bell", &["BELL", "B"], 1, RemoteAction::Bell, "Ring the sysop"),
+        // "RI" so //R stays //Read. //Ring and //RI still page the sysop.
+        cmd("//RIng", &["RING"], 2, RemoteAction::Bell, "Ring the sysop"),
         cmd(
             "//CATalog",
             &["CATALOG", "CAT", "DIRECTORY", "DIR"],
@@ -222,5 +224,10 @@ mod tests {
             (RemoteAction::Name, "Jara".into())
         );
         assert_eq!(parse_line("//N Jara").unwrap().0, RemoteAction::Name);
+        assert_eq!(parse_line("//bell").unwrap().0, RemoteAction::Bell);
+        assert_eq!(parse_line("//B").unwrap().0, RemoteAction::Bell);
+        assert_eq!(parse_line("//ring").unwrap().0, RemoteAction::Bell);
+        assert_eq!(parse_line("//RI").unwrap().0, RemoteAction::Bell);
+        assert_eq!(parse_line("//R").unwrap().0, RemoteAction::Read);
     }
 }
