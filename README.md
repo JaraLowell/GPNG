@@ -27,18 +27,27 @@ original name, is a Rust port in `transfer::sevenplus_codec`. The MS-DOS
 |------|------|
 | `src/config.rs` | Typed `Config` + `Config.toml` loader; maps legacy `CONFIG.GP` keys (`MYCALL`, `SERPORT`, `SERBAUD`, `CHANNELS`, colours, `TNCINI`, …) |
 | `src/tnc/` | Modem drivers — WA8DED / TFPCX / KISS serial or TCP (one loaded from `[tnc] protocol`) |
-| `src/ui/` | Clean-room TUI (`ratatui`) recreating classic panes — **not** a BGI decompile |
+| `src/ui/` | Pixel UI (egui). `--tui` is the thinner text UI |
 | `docs/LAYOUT.md` | Pane map from V1.63 screenshot + docs |
 | `docs/ICONS.md` | Decoded `ICONS.GP` format (70×40 planar VGA, 17 icons) |
 | `src/ui/icons.rs` | Runtime decoder for the icon library |
-| `data/` | Runtime files shipped beside the exe: GPI text, icons, sounds, `KISS.INI`, `WA8DED.INI`, and `log/` |
-| `data/ICONS.GP` | Canonical toolbar icon library (loaded at runtime) |
+| `data/` | Runtime tree beside the exe (or the crate, while developing) |
+| `data/ICONS.GP` | Toolbar icons |
+| `data/NAMES.GP` | Station list for Connect, `%N`, and `//Name` |
+| `data/*.GPI`, `data/*.GPH` | Connect texts and remote help. `G.GPH` is English |
+| `data/*.GPW` | Sysop password. `DB0IZ-9` is `DB0IZ9.GPW` |
+| `data/USER` | `//` catalog, read, write, and delete. 7Plus autosave writes here too. Browsing stays inside this folder |
+| `data/mail` | `{CALL}.GPM` for the linked station. Not listed by `//` catalog |
+| `data/log/gpng.log` | Shell and debug log. A release build has no console |
+| `data/log/<CALL>.GPL` | Station journal when `log = true` or `LOG=ON`. One file per base call, not per SSID |
+| `data/log/pads/` | Saved monitor, channel, spy, BBS, and box pads |
+| `data/SAVE`, `data/TEMP` | Intended 7Plus join and split folders. Not wired to the channel yet |
 | `docs/COMPATIBILITY.md` | `//` remotes + `%` macros recovered from `*.GPH` / docs / EXE strings |
-| `src/remote/` | Abbreviation-aware command parser + GPI macro expander |
+| `src/remote/` | Abbreviation-aware command parser, GPI macros, USER jail, and mail |
 | `docs/TRANSFER.md` | AutoBin `#BIN#` + 7Plus Code-AutoSave (≠ 7-Zip) for DOS GP interop |
-| `src/transfer/` | `#BIN#` state machine, CCITT CRC, `go_7+.` / `stop_7+.` sniffer |
-| `src/main.rs` | Tokio entry: serial RX task ‖ ratatui UI |
-| `Config.toml` | Modern defaults mirroring classic `CONFIG.GP` |
+| `src/transfer/` | `#BIN#` state machine, CCITT CRC, `go_7+.` / `stop_7+.` sniffer, and `sevenplus_codec` |
+| `src/main.rs` | Tokio entry. Default window is the pixel UI; `--tui` selects the text UI |
+| `Config.toml` | Modern defaults. An optional `CONFIG.GP` beside it overlays recognised keys |
 
 ### GUI strategy (no EGAVGA.BGI)
 
@@ -111,11 +120,13 @@ KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` str
 
 ## Credits
 
+**Graphic Packet** was written by Ulf Saran (DH1DAE). This crate is a new implementation of that terminal for current operating systems. It does not include the DOS binary.
+
 7Plus Code-AutoSave follows the file format of **7PLUS 2.2** by Axel Bauda, DG1BBQ. The part names (`picture.p01`, a single part as `picture.7pl`, part 10 as `picture.p0a`) and the `go_7+.` / `stop_7+.` markers are taken from the C sources maintained by HB9XAR:
 
 [https://github.com/hb9xar/7plus](https://github.com/hb9xar/7plus)
 
-The C sources are not compiled into this crate. `transfer::sevenplus_codec` is a Rust port of the 7PLUS 2.2 codec so the same parts can be built and joined on Windows, Linux, and macOS. 7PLUS itself is free to circulate and is not for sale or commercial use. That port stays under those terms, not under the MIT / Apache-2.0 licence below. Incoming parts are intended for `data/SAVE`, and a file chosen for send is split in `data/TEMP` (`-sb` is the part size, separate from the AX.25 packet length). Wiring those folders to the air is still ahead.
+The C sources are not compiled into this crate. `transfer::sevenplus_codec` is a Rust port of the 7PLUS 2.2 codec so the same parts can be built and joined on Windows, Linux, and macOS. 7PLUS itself is free to circulate and is not for sale or commercial use. That port stays under those terms, not under the MIT / Apache-2.0 licence below. With **7+** on, a live capture is written to `data/USER`. Joined parts are intended for `data/SAVE`, and a file chosen for send is split in `data/TEMP` (`-sb` is the part size, separate from the AX.25 packet length). Those two folders are not wired to the channel yet.
 
 ## License
 

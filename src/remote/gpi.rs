@@ -148,7 +148,6 @@ pub fn stem_for_action(action: super::commands::RemoteAction) -> Option<&'static
         Info => Some("info"),
         News => Some("news"),
         Quit => Some("qrt"),
-        Run => Some("run"),
         _ => None,
     }
 }

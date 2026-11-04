@@ -28,6 +28,8 @@ pub enum StationKind {
     Digi,
     Flex,
     NetRom,
+    /// Later DigiWare (`W>`). Same character-index password as TheNet.
+    Ware,
     Bang,
     Terminal,
 }
@@ -39,6 +41,7 @@ impl StationKind {
             'D' => Some(Self::Digi),
             'F' => Some(Self::Flex),
             'N' => Some(Self::NetRom),
+            'W' => Some(Self::Ware),
             '!' => Some(Self::Bang),
             'T' => Some(Self::Terminal),
             _ => None,
@@ -124,6 +127,15 @@ impl NamesFile {
             .find(|s| s.call.eq_ignore_ascii_case(&call))
             .map(|s| s.name)
             .filter(|n| !n.is_empty())
+    }
+
+    /// `NAMES.GP` type for this call on the current QRG, if the station is listed.
+    pub fn kind_of(&self, call: &str, qrg: &str) -> Option<StationKind> {
+        let call = normalize_mycall(call).ok()?;
+        self.active(qrg)
+            .into_iter()
+            .find(|s| s.call.eq_ignore_ascii_case(&call))
+            .map(|s| s.kind)
     }
 
     /// Call, ident, or name → route. `Ok(None)` means the token is not in the file.

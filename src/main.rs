@@ -9,9 +9,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
-
 use graphic_packet::config::Config;
+use graphic_packet::shelllog;
 use graphic_packet::tnc::{spawn_tnc_task, TncCommand};
 use graphic_packet::ui;
 use graphic_packet::version::{self, APP_NAME};
@@ -24,18 +23,19 @@ fn main() -> Result<()> {
         attach_console();
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .with_target(false)
-        .init();
+    shelllog::init();
 
     info!(
         "{APP_NAME} v{} — {}",
         version::APP_VERSION,
         if tui { "TUI" } else { "pixel UI" }
+    );
+    info!(
+        "shell log {}",
+        graphic_packet::paths::data_dir()
+            .join("log")
+            .join("gpng.log")
+            .display()
     );
 
     let config_path = resolve_config_path();
@@ -43,6 +43,10 @@ fn main() -> Result<()> {
         .with_context(|| format!("loading config from {}", config_path.display()))?;
     if let Err(err) = graphic_packet::transfer::sevenplus::ensure_user_dir(&cfg.paths.user_dir) {
         tracing::warn!("USER dir {}: {err}", cfg.paths.user_dir.display());
+    }
+    let mail_dir = graphic_packet::remote::mail::mail_dir();
+    if let Err(err) = graphic_packet::remote::mail::ensure_mail_dir(&mail_dir) {
+        tracing::warn!("mail dir {}: {err}", mail_dir.display());
     }
 
     // eframe owns the main thread; drive Tokio in the background.

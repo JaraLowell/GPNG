@@ -5,5 +5,8 @@
 //! `docs/COMPATIBILITY.md`.
 
 pub mod commands;
+pub mod gph;
 pub mod gpi;
 pub mod macros;
+pub mod mail;
+pub mod userdir;

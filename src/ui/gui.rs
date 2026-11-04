@@ -36,10 +36,15 @@ use eframe::egui::text::LayoutJob;
 use tokio::sync::mpsc;
 
 use crate::config::{Config, HostProtocol};
+use crate::gpw::{self, Reply as GpwReply};
+use crate::journal::{self, OpenQso};
 use crate::names::{NamesFile, Route};
 use crate::remote::commands::{parse_line, RemoteAction};
+use crate::remote::gph;
 use crate::remote::gpi;
-use crate::remote::macros::MacroContext;
+use crate::remote::macros::{self, MacroContext};
+use crate::remote::mail::{self, MailAsk};
+use crate::remote::userdir;
 use crate::tnc::ax25::{self, Ax25Frame, Ax25FrameType};
 use crate::tnc::{
     pack_text_payloads, payload_lines, BufferReport, ChannelBuffers, HostCode, TncCommand,
@@ -134,6 +139,13 @@ fn egui_color(name: &str) -> Color32 {
 }
 
 
+/// Text captured by `//Write` until `//END` or Ctrl-Z.
+#[derive(Clone)]
+struct UserWrite {
+    name: String,
+    body: String,
+}
+
 pub struct GpGuiApp {
     cfg: Config,
     /// Path used to persist MYCALL (and later settings) into Config.toml.
@@ -166,6 +178,12 @@ pub struct GpGuiApp {
     channels: u8,
     /// Peer callsign per channel index (`1..=channels`); `None` = disconnected.
     channel_peer: Vec<Option<String>>,
+    /// Open QSO for `<base call>.GPL`. Index matches `channel_peer`.
+    qso_open: Vec<Option<OpenQso>>,
+    /// Waiting for a sysop challenge (`SY` / `PW`, or a link that has a `.GPW`).
+    gpw_armed: Vec<bool>,
+    /// Last calculated sysop reply. Ctrl-B pastes it into the compose box.
+    last_gpw: String,
     /// In-progress connect target per channel (not linked yet).
     channel_connecting: Vec<Option<String>>,
     /// Self-connect in flight: `(caller_ch, answer_ch)`.
@@ -225,6 +243,12 @@ pub struct GpGuiApp {
     seven_pending: Vec<Vec<u8>>,
     /// One 7Plus sniffer per channel. Index 0 (monitor) is unused.
     seven: Vec<SevenPlusAutosave>,
+    /// `//Write` capture, one slot per channel (0 = local compose).
+    user_write: Vec<Option<UserWrite>>,
+    /// Lowercase names this session stored with `//Write`. `//DELete` only removes those.
+    user_written: Vec<String>,
+    /// `//PRompt ON` — send the prompt template after a remote command.
+    remote_prompt: bool,
     /// Serial device for the session-bar badge (`COM6`).
     serial_port: String,
     /// Serial baud for the session-bar badge.
@@ -290,6 +314,8 @@ impl GpGuiApp {
 
         let mut pads = Vec::with_capacity(channels as usize + 1);
         let mut channel_peer = Vec::with_capacity(channels as usize + 1);
+        let mut qso_open = Vec::with_capacity(channels as usize + 1);
+        let mut gpw_armed = Vec::with_capacity(channels as usize + 1);
         let mut channel_connecting = Vec::with_capacity(channels as usize + 1);
         let mut temp_slot_call = Vec::with_capacity(channels as usize + 1);
         let mut ax25_vs = Vec::with_capacity(channels as usize + 1);
@@ -309,6 +335,8 @@ impl GpGuiApp {
             }
             pads.push(pad);
             channel_peer.push(None);
+            qso_open.push(None);
+            gpw_armed.push(false);
             channel_connecting.push(None);
             temp_slot_call.push(None);
             ax25_vs.push(0);
@@ -367,7 +395,10 @@ impl GpGuiApp {
         } else {
             cfg.tnc.monitor_mode.clone()
         };
-        let session = SessionChrome::from_config(&cfg.session.chrome);
+        let mut session = SessionChrome::from_config(&cfg.session.chrome);
+        if !cfg.session.qrg_text.trim().is_empty() {
+            session.qrg_log = journal::clip_qrg(&cfg.session.qrg_text);
+        }
         let seven_on = session.seven_plus;
         if let Err(err) = sevenplus::ensure_user_dir(&cfg.paths.user_dir) {
             tracing::warn!("USER dir: {err}");
@@ -400,6 +431,9 @@ impl GpGuiApp {
             event_log: VecDeque::new(),
             channels,
             channel_peer,
+            qso_open,
+            gpw_armed,
+            last_gpw: String::new(),
             channel_connecting,
             self_connect_pair: None,
             self_connect_live: None,
@@ -435,6 +469,9 @@ impl GpGuiApp {
             seven: (0..slots)
                 .map(|_| SevenPlusAutosave::new(seven_on))
                 .collect(),
+            user_write: (0..slots).map(|_| None).collect(),
+            user_written: Vec::new(),
+            remote_prompt: false,
             serial_port,
             serial_baud,
             serial_open: false,
@@ -575,6 +612,9 @@ impl GpGuiApp {
                     self.status = format!("link down: {m}");
                     self.serial_open = false;
                     self.log_event(format!("link down: {m}"));
+                    for ch in 1..=self.channels {
+                        self.close_journal(ch);
+                    }
                     for peer in &mut self.channel_peer {
                         *peer = None;
                     }
@@ -752,6 +792,7 @@ impl GpGuiApp {
             if was_linked {
                 play_wav(&self.disconnect_wav);
             }
+            self.close_journal(channel);
             self.channel_peer[idx] = None;
             if let Some(c) = self.channel_connecting.get_mut(idx) {
                 *c = None;
@@ -770,6 +811,7 @@ impl GpGuiApp {
                     // Drop the other end of a self-connect too.
                     if self.channel_peer.get(other as usize).and_then(|p| p.as_ref()).is_some() {
                         self.tx_modem_line(other, "D");
+                        self.close_journal(other);
                         if let Some(p) = self.channel_peer.get_mut(other as usize) {
                             *p = None;
                         }
@@ -978,6 +1020,14 @@ impl GpGuiApp {
     }
 
     fn load_connect_text(&self, channel: u8) -> Option<String> {
+        let mut ctx = self.macro_ctx();
+        self.apply_channel_peer(&mut ctx, channel);
+        if let Some(text) = self.linked_call(channel).and_then(|call| {
+            let _ = mail::ensure_mail_dir(&mail::mail_dir());
+            mail::read_text(&mail::mail_dir(), &call)
+        }) {
+            return Some(gpi::expand_gpi_text(&text, &ctx));
+        }
         let raw = [
             self.session.ctext_path.clone(),
             gpi::default_gtext_path(),
@@ -985,8 +1035,6 @@ impl GpGuiApp {
         ]
         .into_iter()
         .find_map(|p| gpi::read_file(&p))?;
-        let mut ctx = self.macro_ctx();
-        self.apply_channel_peer(&mut ctx, channel);
         Some(gpi::expand_gpi_text(&raw, &ctx))
     }
 
@@ -1080,6 +1128,8 @@ impl GpGuiApp {
         }
         self.self_connect_live = Some((caller, answer));
         self.self_connect_pair = None;
+        self.note_link_up(caller);
+        self.note_link_up(answer);
 
         let Some(text) = self.load_connect_text(answer) else {
             return;
@@ -1222,6 +1272,7 @@ impl GpGuiApp {
     }
 
     fn clear_channel_link_state(&mut self, channel: u8) {
+        self.close_journal(channel);
         let idx = channel as usize;
         if let Some(p) = self.channel_peer.get_mut(idx) {
             *p = None;
@@ -1330,8 +1381,120 @@ impl GpGuiApp {
 
     /// After the AX.25 link is up: send the next node command, or the connect text.
     fn finish_link_up(&mut self, channel: u8) {
+        self.note_link_up(channel);
         if !self.send_next_downlink(channel) {
             self.send_connect_text(channel);
+        }
+    }
+
+    fn journal_qrg(&self) -> String {
+        if self.session.qrg_log.trim().is_empty() {
+            journal::clip_qrg(&format!("{:.3}", self.session.qrg_mhz))
+        } else {
+            journal::clip_qrg(&self.session.qrg_log)
+        }
+    }
+
+    /// Start the journal clock and arm a `.GPW` if this peer has one.
+    fn note_link_up(&mut self, channel: u8) {
+        self.open_journal(channel);
+        if self
+            .linked_call(channel)
+            .is_some_and(|peer| gpw::find_file(&peer).is_some())
+        {
+            if let Some(slot) = self.gpw_armed.get_mut(channel as usize) {
+                *slot = true;
+            }
+        }
+    }
+
+    fn open_journal(&mut self, channel: u8) {
+        if !self.cfg.session.log {
+            return;
+        }
+        let Some(peer) = self.linked_call(channel) else {
+            return;
+        };
+        let idx = channel as usize;
+        if self.qso_open.get(idx).and_then(|s| s.as_ref()).is_some() {
+            return;
+        }
+        let mycall = self.effective_mycall(channel);
+        let Some(slot) = self.qso_open.get_mut(idx) else {
+            return;
+        };
+        *slot = Some(OpenQso {
+            start: journal::clock(self.cfg.session.utc_offset_min),
+            peer,
+            mycall,
+        });
+    }
+
+    fn close_journal(&mut self, channel: u8) {
+        if let Some(slot) = self.gpw_armed.get_mut(channel as usize) {
+            *slot = false;
+        }
+        let Some(slot) = self.qso_open.get_mut(channel as usize) else {
+            return;
+        };
+        let Some(open) = slot.take() else {
+            return;
+        };
+        if !self.cfg.session.log {
+            return;
+        }
+        let end = journal::clock(self.cfg.session.utc_offset_min);
+        let qrg = self.journal_qrg();
+        let path = journal::gpl_path(&self.cfg.paths.log_dir, &open.mycall);
+        match journal::append(&path, &open, end, &qrg) {
+            Ok(()) => tracing::info!("journal {}", path.display()),
+            Err(err) => tracing::warn!("journal {}: {err}", path.display()),
+        }
+    }
+
+    fn note_sysop_command(&mut self, text: &str) {
+        let ActivePane::Channel(channel) = self.active else {
+            return;
+        };
+        let word = text.split_whitespace().next().unwrap_or("");
+        if word.eq_ignore_ascii_case("SY") || word.eq_ignore_ascii_case("PW") {
+            if let Some(slot) = self.gpw_armed.get_mut(channel as usize) {
+                *slot = true;
+            }
+        }
+    }
+
+    /// Incoming line after `SY`/`PW`, or just after connect when a `.GPW` exists.
+    fn consider_gpw(&mut self, channel: u8, line: &str) {
+        let idx = channel as usize;
+        if !self.gpw_armed.get(idx).copied().unwrap_or(false) {
+            return;
+        }
+        let Some(peer) = self.linked_call(channel) else {
+            return;
+        };
+        let Some(path) = gpw::find_file(&peer) else {
+            return;
+        };
+        let Some(secret) = gpw::load(&path) else {
+            return;
+        };
+        let kind = self.names.kind_of(&peer, &self.names_qrg());
+        match gpw::reply(kind, &secret, line) {
+            GpwReply::Answer(text) => {
+                if let Some(slot) = self.gpw_armed.get_mut(idx) {
+                    *slot = false;
+                }
+                self.last_gpw = text.clone();
+                self.input = text;
+                self.status = format!("sysop reply for {peer}");
+                tracing::info!("sysop reply ready for {peer}");
+            }
+            GpwReply::GridNotCalculated => {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("GPW");
+                self.status = format!("{name} is a DieBox grid — reply not calculated");
+            }
+            GpwReply::Ignore => {}
         }
     }
 
@@ -1695,6 +1858,7 @@ impl GpGuiApp {
             }
             if kind == PadKind::Incoming && channel >= 1 && !text.is_empty() {
                 self.note_autoroute_rx(channel, &text);
+                self.consider_gpw(channel, &text);
             }
         } else if let Some(pad) = self.pads.get_mut(idx) {
             pad.push(kind, "");
@@ -1702,6 +1866,11 @@ impl GpGuiApp {
     }
 
     fn maybe_remote_line(&mut self, channel: u8, line: &str) {
+        if channel >= 1 && self.user_write.get(channel as usize).and_then(|w| w.as_ref()).is_some()
+        {
+            self.capture_write_line(channel, line);
+            return;
+        }
         if self.session.remote && channel >= 1 {
             if let Some((action, args)) = parse_line(line.trim()) {
                 self.handle_remote_on_channel(channel, action, &args);
@@ -2002,6 +2171,7 @@ impl GpGuiApp {
                     false,
                     None,
                 );
+                self.note_link_up(ch);
                 self.send_connect_text(ch);
                 self.status = format!("KISS linked ch{ch} ← {}", frame.src);
             }
@@ -2467,6 +2637,20 @@ impl GpGuiApp {
         // Always show what we typed when Echo is on (before any early return).
         self.echo_own_line(&line);
 
+        let write_ch = match self.active {
+            ActivePane::Channel(n) => n,
+            _ => 0,
+        };
+        if self
+            .user_write
+            .get(write_ch as usize)
+            .and_then(|w| w.as_ref())
+            .is_some()
+        {
+            self.capture_write_line(write_ch, &line);
+            return;
+        }
+
         // Local / TNC monitor-mode helpers: `M IUSC`, `M`, `MONITOR IUSC`
         if let Some(mode) = parse_monitor_set(&line) {
             self.monitor_mode = mode.clone();
@@ -2495,18 +2679,72 @@ impl GpGuiApp {
         self.send_operator_text(&line);
     }
 
+    fn linked_call(&self, channel: u8) -> Option<String> {
+        self.channel_peer
+            .get(channel as usize)
+            .and_then(|p| p.clone())
+            .filter(|c| !c.is_empty() && c != "****")
+    }
+
+    /// `//Read` with no name sends this station's mail when `data/mail/{CALL}.GPM`
+    /// exists. A file name is still a USER file. `*.GPM` is never a USER read.
+    fn read_user_or_mail(&mut self, channel: u8, args: &str) {
+        let peer = self.linked_call(channel);
+        match mail::classify(peer.as_deref(), args) {
+            MailAsk::Own => {
+                if self.send_own_mail(channel) {
+                    return;
+                }
+                if args.trim().is_empty() {
+                    self.send_user_catalog("");
+                } else {
+                    self.status = "no mail".into();
+                    self.send_gpi_text("no mail");
+                }
+            }
+            MailAsk::Foreign => {
+                self.status = "only your own mail".into();
+                self.send_gpi_text("only your own mail");
+            }
+            MailAsk::NotMail => {
+                if args.trim().is_empty() {
+                    self.send_user_catalog("");
+                } else {
+                    self.read_from_user(args);
+                }
+            }
+        }
+    }
+
+    /// Send `{CALL}.GPM` when it exists. Returns false when there is no mail.
+    fn send_own_mail(&mut self, channel: u8) -> bool {
+        let Some(call) = self.linked_call(channel) else {
+            return false;
+        };
+        let _ = mail::ensure_mail_dir(&mail::mail_dir());
+        let Some(text) = mail::read_text(&mail::mail_dir(), &call) else {
+            return false;
+        };
+        let mut ctx = self.macro_ctx();
+        self.apply_channel_peer(&mut ctx, channel);
+        let text = gpi::expand_gpi_text(&text, &ctx);
+        self.status = format!("Mail {call}");
+        self.send_gpi_text(&text);
+        true
+    }
+
     /// `//Read` — list USER, or send one file from that folder.
     fn read_from_user(&mut self, args: &str) {
         let dir = self.cfg.paths.user_dir.clone();
         let _ = sevenplus::ensure_user_dir(&dir);
         let name = args.trim();
         if name.is_empty() {
-            let listing = sevenplus::list_user_dir(&dir);
-            self.status = format!("USER {}", dir.display());
+            let listing = userdir::catalog(&dir, "");
+            self.status = "USER".into();
             self.send_file_bytes(listing.as_bytes());
             return;
         }
-        match sevenplus::read_user_file(&dir, name) {
+        match userdir::read_file(&dir, name) {
             Ok(bytes) => {
                 self.status = format!("//Read {name}");
                 self.log_event(format!("//Read {} ({} bytes)", name, bytes.len()));
@@ -2554,6 +2792,7 @@ impl GpGuiApp {
     /// Typed text and text files: normalize breaks to `\n`, then one packet
     /// per `packet_payload` bytes. Same chunks for KISS and hostmode.
     fn send_operator_text(&mut self, text: &str) {
+        self.note_sysop_command(text);
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
         for chunk in pack_text_payloads(text, max) {
             if self.kiss_mode() {
@@ -2654,7 +2893,7 @@ impl GpGuiApp {
                 } else {
                     self.status = "//Q — select a connected channel".into();
                 }
-                self.active = prev;
+                self.close_remote(prev);
                 return;
             }
             RemoteAction::Disconnect => {
@@ -2664,7 +2903,7 @@ impl GpGuiApp {
                 } else {
                     self.status = "//DISC — select a connected channel".into();
                 }
-                self.active = prev;
+                self.close_remote(prev);
                 return;
             }
             _ => {}
@@ -2673,11 +2912,11 @@ impl GpGuiApp {
         if let Some(stem) = gpi::stem_for_action(action) {
             if let Some(text) = gpi::load_expanded(stem, &ctx) {
                 self.send_gpi_text(&text);
-                self.active = prev;
+                self.close_remote(prev);
                 return;
             }
             self.status = format!("GPI {stem}.GPI not found");
-            self.active = prev;
+            self.close_remote(prev);
             return;
         }
 
@@ -2699,12 +2938,76 @@ impl GpGuiApp {
                         self.send_gpi_text("7+ ON or OFF");
                     }
                 }
-                self.active = prev;
+                self.close_remote(prev);
                 return;
             }
             RemoteAction::Read => {
-                self.read_from_user(args);
-                self.active = prev;
+                self.read_user_or_mail(channel, args);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::Catalog => {
+                self.send_user_catalog(args);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::ChangeDir => {
+                self.remote_cd(args);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::Delete => {
+                self.delete_user_file(channel, args);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::Write => {
+                self.begin_user_write(channel, args);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::EndWrite => {
+                if !self.finish_user_write(channel) {
+                    let msg = "no //Write in progress";
+                    self.status = msg.into();
+                    self.send_gpi_text(msg);
+                }
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::Help => {
+                let text = gph::help_for(&self.cfg.session.remote_language, args);
+                self.status = format!("//Help {}", args.trim());
+                self.send_gpi_text(&text);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::Language => {
+                self.remote_language(args);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::Prompt => {
+                self.remote_prompt_cmd(args);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::Parameters => {
+                let text = self.parameters_text();
+                self.send_gpi_text(&text);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::Usage => {
+                let text = self.usage_text(args);
+                self.send_gpi_text(&text);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::Run => {
+                self.status = "not supported".into();
+                self.send_gpi_text("not supported");
+                self.close_remote(prev);
                 return;
             }
             RemoteAction::Version => {
@@ -2731,9 +3034,331 @@ impl GpGuiApp {
             }
             _ => {
                 self.status = format!("remote {action:?} (not implemented)");
+                self.send_gpi_text("not implemented");
             }
         }
+        self.close_remote(prev);
+    }
+
+    fn close_remote(&mut self, prev: ActivePane) {
         self.active = prev;
+        self.maybe_send_prompt();
+    }
+
+    fn maybe_send_prompt(&mut self) {
+        if !self.remote_prompt {
+            return;
+        }
+        let template = self.cfg.session.prompt.clone();
+        if template.trim().is_empty() {
+            return;
+        }
+        let ctx = self.macro_ctx();
+        let line = macros::expand(&template, &ctx);
+        if !line.is_empty() {
+            self.send_gpi_text(&line);
+        }
+    }
+
+    fn send_user_catalog(&mut self, spec: &str) {
+        let dir = self.cfg.paths.user_dir.clone();
+        let _ = sevenplus::ensure_user_dir(&dir);
+        let listing = userdir::catalog(&dir, spec);
+        self.status = "USER".into();
+        self.send_gpi_text(&listing);
+    }
+
+    fn remote_cd(&mut self, args: &str) {
+        let args = args.trim();
+        let msg = if args.is_empty() || args == "." || args.eq_ignore_ascii_case("user") {
+            "USER"
+        } else {
+            "USER is the only directory"
+        };
+        self.status = msg.into();
+        self.send_gpi_text(msg);
+    }
+
+    fn remote_language(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() {
+            let text = gph::language_list();
+            self.status = "languages".into();
+            self.send_gpi_text(&text);
+            return;
+        }
+        match gph::resolve_language(args) {
+            Some((code, label)) => {
+                self.cfg.session.remote_language = code.to_string();
+                if let Err(err) = self.cfg.persist_remote_language(&self.config_path) {
+                    self.status = format!("language: {err}");
+                } else {
+                    self.status = format!("Language {label}");
+                }
+                self.send_gpi_text(&format!("Language {label}"));
+            }
+            None => {
+                let text = format!("Unknown language {args}\r{}", gph::language_list());
+                self.status = format!("Unknown language {args}");
+                self.send_gpi_text(&text);
+            }
+        }
+    }
+
+    fn remote_prompt_cmd(&mut self, args: &str) {
+        let on = match args.trim().to_ascii_lowercase().as_str() {
+            "on" | "1" | "yes" => Some(true),
+            "off" | "0" | "no" => Some(false),
+            "" => Some(!self.remote_prompt),
+            _ => None,
+        };
+        match on {
+            Some(v) => {
+                self.remote_prompt = v;
+                let msg = format!("Prompt {}", on_off(v));
+                self.status = msg.clone();
+                self.send_gpi_text(&msg);
+            }
+            None => {
+                self.status = "Prompt ON or OFF".into();
+                self.send_gpi_text("Prompt ON or OFF");
+            }
+        }
+    }
+
+    fn parameters_text(&self) -> String {
+        format!(
+            "{}\rMycall: {}\rQRG: {:.3}\rChannels: {}\rPaclen: {}\rMonitor: {}\r7+: {}\rRemote: {}\rLanguage: {}\rUSER",
+            version::startup_credits(),
+            self.mycall_for_active(),
+            self.session.qrg_mhz,
+            self.channels,
+            self.cfg.buffers.packet_payload,
+            self.monitor_mode,
+            on_off(self.session.seven_plus),
+            on_off(self.session.remote),
+            self.cfg.session.remote_language,
+        )
+    }
+
+    fn usage_text(&self, args: &str) -> String {
+        let args = args.trim();
+        if args.is_empty() {
+            let mut lines = vec!["Channel  Call".to_string()];
+            for n in 1..=self.channels {
+                let call = self
+                    .channel_peer
+                    .get(n as usize)
+                    .and_then(|p| p.clone())
+                    .filter(|c| !c.is_empty())
+                    .unwrap_or_else(|| "----".into());
+                lines.push(format!("{n:<7}  {call}"));
+            }
+            return lines.join("\r");
+        }
+        let qrg = self.names_qrg();
+        match self.names.route_for(args, &qrg) {
+            Ok(Some(route)) => {
+                let mut line = if route.name.is_empty() {
+                    route.call.clone()
+                } else {
+                    format!("{} {}", route.call, route.name)
+                };
+                if !route.link_digis.is_empty() {
+                    line.push_str(" via ");
+                    line.push_str(&route.link_digis.join(" "));
+                }
+                line
+            }
+            Ok(None) => format!("{args} — not in NAMES.GP"),
+            Err(err) => err,
+        }
+    }
+
+    fn begin_user_write(&mut self, channel: u8, args: &str) {
+        if self
+            .user_write
+            .get(channel as usize)
+            .and_then(|w| w.as_ref())
+            .is_some()
+        {
+            let msg = "already writing — //END first";
+            self.status = msg.into();
+            self.send_gpi_text(msg);
+            return;
+        }
+        let name = match userdir::safe_name(args) {
+            Ok(name) => name,
+            Err(err) => {
+                self.status = err.clone();
+                self.send_gpi_text(&err);
+                return;
+            }
+        };
+        if userdir::is_protected(&name) {
+            let msg = "README.txt stays";
+            self.status = msg.into();
+            self.send_gpi_text(msg);
+            return;
+        }
+        let dir = self.cfg.paths.user_dir.clone();
+        let _ = sevenplus::ensure_user_dir(&dir);
+        let owned = self
+            .user_written
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(&name));
+        if dir.join(&name).is_file() && !owned {
+            let msg = format!("{name} is not a //Write file");
+            self.status = msg.clone();
+            self.send_gpi_text(&msg);
+            return;
+        }
+        if let Some(slot) = self.user_write.get_mut(channel as usize) {
+            *slot = Some(UserWrite {
+                name: name.clone(),
+                body: String::new(),
+            });
+        }
+        let msg = format!("Writing {name} — //END to finish");
+        self.status = msg.clone();
+        self.send_gpi_text(&msg);
+    }
+
+    fn capture_write_line(&mut self, channel: u8, line: &str) {
+        let line = line.trim_end_matches(['\r', '\n']);
+        let end = parse_line(line.trim()).is_some_and(|(action, _)| action == RemoteAction::EndWrite);
+        if end {
+            self.finish_user_write(channel);
+            self.maybe_send_prompt();
+            return;
+        }
+        if let Some(cut) = line.find('\u{001a}') {
+            let head = line[..cut].trim_end();
+            if !head.is_empty() {
+                self.append_user_write(channel, head);
+            }
+            self.finish_user_write(channel);
+            self.maybe_send_prompt();
+            return;
+        }
+        self.append_user_write(channel, line.trim_end());
+    }
+
+    fn append_user_write(&mut self, channel: u8, line: &str) {
+        let Some(slot) = self.user_write.get_mut(channel as usize).and_then(|w| w.as_mut()) else {
+            return;
+        };
+        if !slot.body.is_empty() {
+            slot.body.push('\n');
+        }
+        slot.body.push_str(line);
+    }
+
+    /// `true` when a capture was open and has been stored (or the error was sent).
+    fn finish_user_write(&mut self, channel: u8) -> bool {
+        let Some(slot) = self.user_write.get_mut(channel as usize) else {
+            return false;
+        };
+        let Some(cap) = slot.take() else {
+            return false;
+        };
+        let dir = self.cfg.paths.user_dir.clone();
+        let _ = sevenplus::ensure_user_dir(&dir);
+        match userdir::write_file(&dir, &cap.name, &cap.body) {
+            Ok(()) => {
+                let key = cap.name.to_ascii_lowercase();
+                if !self.user_written.iter().any(|n| n == &key) {
+                    self.user_written.push(key);
+                }
+                let msg = format!("Stored {}", cap.name);
+                self.status = msg.clone();
+                self.send_gpi_text(&msg);
+                true
+            }
+            Err(err) => {
+                self.status = err.clone();
+                self.send_gpi_text(&err);
+                true
+            }
+        }
+    }
+
+    fn delete_user_file(&mut self, channel: u8, args: &str) {
+        let peer = self.linked_call(channel);
+        match mail::classify(peer.as_deref(), args) {
+            MailAsk::Own => {
+                let Some(call) = self.linked_call(channel) else {
+                    self.status = "connect a station first".into();
+                    self.send_gpi_text("connect a station first");
+                    return;
+                };
+                let dir = mail::mail_dir();
+                let _ = mail::ensure_mail_dir(&dir);
+                match mail::delete_own(&dir, &call) {
+                    Ok(true) => {
+                        let msg = format!("Deleted {call}.GPM");
+                        self.status = msg.clone();
+                        self.send_gpi_text(&msg);
+                    }
+                    Ok(false) => {
+                        self.status = "no mail".into();
+                        self.send_gpi_text("no mail");
+                    }
+                    Err(err) => {
+                        self.status = err.clone();
+                        self.send_gpi_text(&err);
+                    }
+                }
+                return;
+            }
+            MailAsk::Foreign => {
+                self.status = "only your own mail".into();
+                self.send_gpi_text("only your own mail");
+                return;
+            }
+            MailAsk::NotMail if args.trim().is_empty() => {
+                self.status = "connect a station first".into();
+                self.send_gpi_text("connect a station first");
+                return;
+            }
+            MailAsk::NotMail => {}
+        }
+        if args.trim().is_empty() {
+            return;
+        }
+        let name = match userdir::safe_name(args) {
+            Ok(name) => name,
+            Err(err) => {
+                self.status = err.clone();
+                self.send_gpi_text(&err);
+                return;
+            }
+        };
+        if userdir::is_protected(&name)
+            || !self
+                .user_written
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(&name))
+        {
+            let msg = format!("Only a file stored with //Write can be deleted ({name})");
+            self.status = msg.clone();
+            self.send_gpi_text(&msg);
+            return;
+        }
+        let dir = self.cfg.paths.user_dir.clone();
+        match userdir::delete_file(&dir, &name) {
+            Ok(()) => {
+                self.user_written
+                    .retain(|n| !n.eq_ignore_ascii_case(&name));
+                let msg = format!("Deleted {name}");
+                self.status = msg.clone();
+                self.send_gpi_text(&msg);
+            }
+            Err(err) => {
+                self.status = err.clone();
+                self.send_gpi_text(&err);
+            }
+        }
     }
 
     /// `//Name Jara` from the station linked on `channel` (call NL0MSK → name Jara).
@@ -2822,6 +3447,18 @@ impl GpGuiApp {
         if down {
             self.step_split(-1.0);
         }
+    }
+
+    /// Ctrl-B copies the last sysop reply into the compose box.
+    fn poll_gpw_key(&mut self, ctx: &Context) {
+        let hit = ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::B));
+        if !hit || self.last_gpw.is_empty() {
+            return;
+        }
+        if !self.input.is_empty() && !self.input.ends_with(' ') && !self.input.ends_with('\n') {
+            self.input.push(' ');
+        }
+        self.input.push_str(&self.last_gpw);
     }
 
     fn toggle_split(&mut self) {
@@ -3000,6 +3637,7 @@ impl eframe::App for GpGuiApp {
         self.maybe_hour_gong();
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
         self.poll_split_keys(ctx);
+        self.poll_gpw_key(ctx);
 
         // Panels own reserved bands so CentralPanel (RX) cannot paint over them.
         // Strip height stays fixed; icons scale to fill it (1 px top/bottom).

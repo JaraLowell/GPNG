@@ -4,8 +4,11 @@
 //! and UI code here so `pub` APIs are not flagged as dead code.
 
 pub mod config;
+pub mod gpw;
+pub mod journal;
 pub mod names;
 pub mod paths;
+pub mod shelllog;
 pub mod remote;
 pub mod tnc;
 pub mod transfer;

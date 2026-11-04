@@ -44,6 +44,10 @@ zoom = 1
 prompt = "%c to %y>"
 noname = "%c"
 remote_language = "EN"
+# Legacy LOG. When true, a disconnect appends one line to data/log/<base call>.GPL.
+log = false
+# Legacy UTC. Minutes added to the PC clock for that journal line.
+utc_offset_min = 0
 security = false
 remote = []
 no_remote = []

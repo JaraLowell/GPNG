@@ -40,6 +40,8 @@ impl LineStep {
 #[derive(Debug, Clone)]
 pub struct SessionChrome {
     pub qrg_mhz: f64,
+    /// Journal QRG, at most 7 characters. Empty means format `qrg_mhz`.
+    pub qrg_log: String,
     pub ctext_path: PathBuf,
     /// `false` = plain ASCII monitor; `true` = extended DOS (CP437 / äöü).
     pub extended_ascii: bool,
@@ -79,6 +81,7 @@ impl Default for SessionChrome {
     fn default() -> Self {
         Self {
             qrg_mhz: 27.235,
+            qrg_log: String::new(),
             ctext_path: PathBuf::from("CTEXT.GPI"),
             extended_ascii: false,
             line_step: LineStep::Hard,
@@ -167,6 +170,7 @@ impl SessionChrome {
             return Err("QRG out of range".into());
         }
         self.qrg_mhz = (v * 1000.0).round() / 1000.0;
+        self.qrg_log = crate::journal::clip_qrg(&format!("{:.3}", self.qrg_mhz));
         self.show_qrg_dialog = false;
         Ok(())
     }

@@ -331,9 +331,26 @@ impl Config {
                     self.print.invers_print = parse_u8_list(value, "INVERSPRINT")?;
                 }
 
+                "LOG" => {
+                    self.session.log = parse_on_off(value);
+                }
+                "QRG" => {
+                    let clipped: String = value.chars().take(7).collect();
+                    self.session.qrg_text = clipped;
+                    let numeric = value.trim().replace(',', ".");
+                    if let Ok(mhz) = numeric.parse::<f64>() {
+                        if (0.0..=1000.0).contains(&mhz) {
+                            self.session.chrome.qrg_mhz = mhz;
+                        }
+                    }
+                }
+                "UTC" => {
+                    self.session.utc_offset_min = parse_i32(value, "UTC")?;
+                }
+
                 // Known but ignored modern-irrelevant keys (e.g. GRAPHIC=VGA).
-                "GRAPHIC" | "LOG" | "QRG" | "UTC" => {
-                    tracing::debug!("ignoring legacy display/log key `{key_upper}`");
+                "GRAPHIC" => {
+                    tracing::debug!("ignoring legacy display key `{key_upper}`");
                 }
 
                 other => {
@@ -450,6 +467,12 @@ impl Config {
             c.scr_lock,
         );
         upsert_toml_section(path, "session.chrome", &body)
+    }
+
+    /// Keep `//Language` across a restart (`remote_language` in Config.toml).
+    pub fn persist_remote_language(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let value = toml_string(&self.session.remote_language);
+        upsert_toml_key(path.as_ref(), None, "remote_language", &value)
     }
 
     /// Ensure `spy_calls` has 10 entries; rewrite the TOML array.
@@ -735,6 +758,12 @@ pub struct SessionConfig {
     pub prompt: String,
     pub noname: String,
     pub remote_language: String,
+    /// `LOG=ON` — append a line to `<base call>.GPL` when a QSO ends.
+    pub log: bool,
+    /// `UTC=` minutes added to the PC clock for the journal.
+    pub utc_offset_min: i32,
+    /// `QRG=` text, at most 7 characters (`430.625` or `70cm`).
+    pub qrg_text: String,
     pub security: bool,
     pub remote: Vec<String>,
     pub no_remote: Vec<String>,
@@ -777,6 +806,9 @@ impl Default for SessionConfig {
             prompt: "%c to %y>".into(),
             noname: "%c".into(),
             remote_language: "EN".into(),
+            log: false,
+            utc_offset_min: 0,
+            qrg_text: String::new(),
             security: false,
             remote: Vec::new(),
             no_remote: Vec::new(),
@@ -1133,6 +1165,13 @@ fn parse_u32(value: &str, key: &str) -> Result<u32, String> {
         .trim()
         .parse::<u32>()
         .map_err(|e| format!("{key}: cannot parse `{value}` as u32 ({e})"))
+}
+
+fn parse_on_off(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "on" | "1" | "true" | "yes"
+    )
 }
 
 fn parse_i32(value: &str, key: &str) -> Result<i32, String> {

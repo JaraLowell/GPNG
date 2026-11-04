@@ -52,10 +52,15 @@ These are the DOS features an operator would notice first.
    `//C` answer “not implemented”. `REMOTE=` / `NOREMOTE=` are loaded and
    not enforced. A mailbox marked type `B` in `NAMES.GP` is not auto-blocked,
    because that file is not read.
-5. **No station journal, no sysop passwords, no beacon.** `LOG=` and `UTC=`
-   are ignored on purpose. There is no `<mycall>.GPL` log, no `*.GPW`
-   password file, no Ctrl-B paste into the compose window, and no beacon
-   menu (text, destination, via, period).
+5. **Beacon is still missing.** The station journal runs when `LOG=ON`
+   (or `log = true`). A disconnect appends one line to
+   `data/log/<base call>.GPL`. One file per base call, not per SSID.
+   `QRG` (at most 7 characters) and `UTC` (minutes from the PC clock) are
+   read. The same folder gets `gpng.log`: the shell and debug stream,
+   because a release build has no console. `*.GPW` answers TheNet / BayCom
+   character positions and the old FlexNet 5-digit sum, and puts the reply
+   in the compose box. Ctrl-B pastes it again. A DieBox / FALCon 60×27 grid
+   is recognised and not calculated. There is still no beacon menu.
 6. **Setup (ALT-U) is not a menu.** Colours, prompt text, line length, packet
    length, RX-click mode, backup, and the beacon live in `Config.toml` or
    are unused. The session bar covers only a subset (QRG, connect-text file,
@@ -77,7 +82,7 @@ These are the DOS features an operator would notice first.
 |-------------|--------|-------|
 | Install to a directory, `CONFIG.GP` | **Partial** | `Config.toml`, with an optional `CONFIG.GP` overlay for recognised keys |
 | `UserDir`, `ExternalDir`, `SaveDir`, `LogDir`, `SpyDir` | **Partial** | `data/USER` is created and used by 7Plus autosave and `//Read`. Incoming parts are intended for `data/SAVE`, joined by `transfer::sevenplus_codec`. `data/TEMP` is where a send is split. Those folders are not wired to the channel yet |
-| Per-call `CTEXT???.GPI`, `<call>.GPC`, `<call>.GPM`, `<mycall>.GPI`, `QRT.GPI` | **Partial** | One connect-text file (session **CT**, default `GTEXT.GPI`) and `QRT.GPI` on `//Quit`. No per-call `.GPC` / `.GPM`, and no “try MYCALL file, then shared file” search |
+| Per-call `CTEXT???.GPI`, `<call>.GPC`, `<call>.GPM`, `<mycall>.GPI`, `QRT.GPI` | **Partial** | `{CALL}.GPM` lives in `data/mail`. On connect, and on bare `//Read`, that station receives its mail instead of the USER list. `//DEL` / `//Kill` with no file name deletes only that mail. Another station's file is refused, and `//CATalog` does not list the folder. No per-call `.GPC` yet. `QRT.GPI` still goes out on `//Quit` |
 | `GP.EXE` vs `GP286.EXE`, overlay, EMS/XMS | **DOS-only** | One native binary. QSO spy is included (it was the GP286-only extra) |
 
 ### 3 Configuration and data files
@@ -104,8 +109,8 @@ These are the DOS features an operator would notice first.
 | `NAMES.GP` | **Have** | `data/NAMES.GP`. Call, ident, and name lookup. `%N`, `//Name`, and the channel **Name** button read and write it |
 | `*.GPB` (including `CSTAT.GPB` and startup `BINDATA.GP`) | **Missing** | No greeting screen from `BINDATA.GP`. Session chrome is written back into `Config.toml` |
 | `ICONS.GP` | **Have** | Decoded and shown. Clicks that have no action yet: **SETUP**, **FILETRANS**, **SORT**, **FIND** |
-| `<mycall>.GPL` journal | **Missing** | |
-| `*.GPT` system texts, `*.GPH` remote help | **Missing** | `//Help` does not send a help file |
+| `<mycall>.GPL` journal | **Have** | `data/log/<base call>.GPL` when `LOG=ON`. One file per base call. A disconnect appends date, UTC time, the other call, QRG, and the duration |
+| `*.GPT` system texts, `*.GPH` remote help | **Partial** | `//Help` sends the overview or one `@TAG` section from the language pack. `G.GPH` is English. `//Language` switches `NL`, `DL`, `F`, `PL`, `SLO`, `OK`, `HA`. `*.GPT` system texts are still unused |
 
 ### 4 Keyboard
 
@@ -122,7 +127,7 @@ These are the DOS features an operator would notice first.
 | ALT-B scroll lock, ALT-S continuous save, ALT-F send file, ALT-Q QRG, ALT-N save name, ALT-T connect text | **Partial** | Scroll lock, QRG, connect-text, and **Name** (ALT-N → `NAMES.GP`) are on the session bar. Continuous save and file send are not. The pixel UI has no ALT key |
 | ALT-F8/F9/F10 splitscreen | **Have** | Pixel UI, channel only (`docs/screenshots/SplitScreen.png`). ALT-F8 or a right-click on the QSO, the session bar, or the lower pane toggles it. ALT-F9 / ▲ move the bar up (more monitor); ALT-F10 / ▼ move it down. Drag the ▲▼ pair as well. The lower pane is the same monitor pad, not a second buffer. On Monitor the arrows still nudge that pad. They do nothing on Spy |
 | Shift-F1…F12 macro send | **Missing** | |
-| Ctrl-D date, Ctrl-T time, Ctrl-O origin line, Ctrl-Y / Ctrl-C / Ctrl-P line clipboard, Ctrl-K copy to editor, Ctrl-Enter send without CR, Ins insert/overwrite | **Missing** | Compose is a normal text field with history |
+| Ctrl-D date, Ctrl-T time, Ctrl-O origin line, Ctrl-Y / Ctrl-C / Ctrl-P line clipboard, Ctrl-K copy to editor, Ctrl-Enter send without CR, Ins insert/overwrite | **Missing** | Compose is a normal text field with history. Ctrl-B pastes the last sysop reply |
 | BBS cursor / Space mark / Enter = `READ` / Esc leave | **Missing** | |
 | ALT + numpad for ASCII 1–31 | **DOS-only** | The OS keyboard does this |
 
@@ -139,13 +144,13 @@ These are the DOS features an operator would notice first.
 | 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Partial** | Channel RX is saved into `data/USER` when **7+** is on. Names follow 7plus 2.2 (`name.p01`, `name.7pl`, `name.p0a`). `transfer::sevenplus_codec` encodes and joins parts in Rust (not the DOS exe). `.err` / `.cor` repair is not ported. Saving into `data/SAVE`, splitting a send into `data/TEMP`, and waiting for `ok`/`okay` before the next part are not wired to the channel yet |
 | Mouse-mark QSO lines and Ctrl-Ins / Ctrl-K into the editor | **Missing** | |
 | Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. ESC command entry is a TUI placeholder only |
-| External programs and GPRI (`ExternalDir`, `//RUN`) | **Missing** | `RUN.GPI` is sent as text |
+| External programs and GPRI (`ExternalDir`, `//RUN`) | **Missing** | `//RUN` answers `not supported`. It does not start a program |
 | Splitscreen while in QSO | **Have** | Channel only. Top pane is the QSO, the session bar is the divider, and the monitor pad is drawn under it. Not on Spy, BBS-Menu, or Box-List. Shot: `docs/screenshots/SplitScreen.png`. ALT-F8, right-click, ▲▼, and dragging the arrows |
 | Scroll-lock per channel | **Partial** | One session-bar switch for the visible pad, not a TNC poll hold, and not per channel in the DOS 1.50+ sense |
 | ESC TNC command window | **Missing** | |
-| Station journal `LOG=ON` plus `QRG` | **Missing** | QRG on the session bar is a label and a log line, not a `<mycall>.GPL` entry |
+| Station journal `LOG=ON` plus `QRG` | **Have** | `LOG`, `QRG`, and `UTC` come from `CONFIG.GP` or `Config.toml`. The line is written under `data/log` (or `LogDir`). `gpng.log` in that folder is the shell log |
 | Alternate connect texts `CTEXT_A.GPI` and fallback to `CTEXT.GPI` | **Partial** | Any one GPI can be picked. No automatic fallback chain, no per-mycall file |
-| Sysop password (`SY`/`PW`, `*.GPW`, TheNet / BayCom / FlexNet / DieBox / FALCon types) | **Missing** | |
+| Sysop password (`SY`/`PW`, `*.GPW`, TheNet / BayCom / FlexNet / DieBox / FALCon types) | **Partial** | `DB0IZ-9` reads `data/DB0IZ9.GPW`. Type `N`, `D`, and `W` pick 1-based characters. Type `F` uses the old 5-digit product-sum, or character positions when the secret is longer. The reply is placed in the compose box; Ctrl-B pastes it again. A type `B` 60×27 grid is recognised and not calculated |
 | DieBox `(BIN)` mail via AutoBin | **Missing** | Depends on the unwired AutoBin path |
 
 ### 6 Mailbox menus
@@ -205,7 +210,7 @@ A mailbox marked `B` is stored and still does not block remotes. `MultiPort` in 
 | Menu item | Status |
 |-----------|--------|
 | Colours, with ENTER/ESC, not written back unless `CONFIG.GP` is edited | **Missing** as a menu. Colours load from config |
-| Remote prompt template (`PROMPT`, macros, `//PRompt ON`) | **Missing**. `//PRompt` is unimplemented. A prompt string is stored |
+| Remote prompt template (`PROMPT`, macros, `//PRompt ON`) | **Have**. `//PRompt ON` sends the stored `prompt` template after each remote command. `//PRompt OFF` stops that |
 | Remote on/off for this channel | **Partial**. Session **Remote** flag, one global switch |
 | Backup of the scroll buffer (`BACKUP`) | **Missing**. Flag stored. Pads are saved as `log/*.txt` on exit, which is a different mechanism |
 | Echo | **Have** (session bar; monitor mirror, not strictly per channel) |
@@ -243,8 +248,13 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 | `//Quit`, `//DISConnect` | **Have** |
 | `//Info`, `//NEws`, other `*.GPI` by stem or prefix | **Have** (file must exist under `data/`) |
 | `//VERsion`, `//Echo`, `//Bell`, `//MHeard`, `//Name` | **Have** |
-| `//7+`, `//Read` | **Have** | `//7+ ON\|OFF` is the session switch. `//Read file` sends a file from `data/USER`; bare `//Read` lists it |
-| `//Activity`, `//CATalog` / `//DIR`, `//CD`, `//CUT`, `//DELete` / `//Kill`, `//END`, `//Help`, `//Language`, `//PARameters`, `//PRompt`, `//RPrg`, `//RTt`, `//RUN`, `//Usage`, `//Write`, `//WPrg`, `//C`, `//<n> text`, chat `#` | **Missing** (parsed, then “not implemented”, except `//RUN` which only sends `RUN.GPI` if that file is present) |
+| `//7+`, `//Read`, `//CATalog` / `//DIR` | **Have** | `//7+ ON\|OFF` is the session switch. `//Read file` and `//CAT` / `//DIR` stay inside `data/USER`. A pattern such as `*.txt;*.doc` is a DOS wildcard. The reply says `USER`, not a disk path |
+| `//Help`, `//Language` | **Have** | `//Help` and `//H H` use `data/G.GPH` (English) or the pack selected with `//Language` |
+| `//PRompt`, `//PARameters`, `//Usage` | **Have** | Prompt on/off, a short station parameter list, and channel state or a `NAMES.GP` lookup |
+| `//CD` | **Have** | Shows `USER`. Any other directory is refused, so the remote cannot browse the rest of the disk |
+| `//Write`, `//END`, `//DELete` / `//Kill` | **Have** | Text capture into `data/USER` until `//END` or Ctrl-Z. `//DELete` of a named file removes only a file this session stored with `//Write`. Bare `//DEL` / `//Kill` deletes `data/mail/{CALL}.GPM` for the linked station only |
+| `//RUN` | **Have** | Answers `not supported`. It does not start a program and does not send `RUN.GPI` |
+| `//Activity`, `//CUT`, `//RPrg`, `//RTt`, `//WPrg`, `//C`, `//<n> text`, chat `#` | **Missing** | Parsed, then “not implemented” |
 
 `#` as a chat allow-list token in `REMOTE=` is not applied.
 
@@ -269,7 +279,7 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 1. Wire 7Plus AutoSave and AutoBin to the channel that has **7+** / **BIN-RX** / **BIN-TX** on, including `//RPrg`, `//WPrg`, `//Read`, `//Write`, `//CUT`.
 2. `NAMES.GP` plus autorouter on Connect, then ALT-N. **Done.** Connect uses `data/NAMES.GP`. **Name** is ALT-N. A type `B` mailbox still does not block remotes, and `PORTx` does not change the radio.
 3. BBS-Menu and Box-List parsers (DieBox first), mark, and `READ`.
-4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language.
-5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper.
+4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language. **Done.** Help follows `data/G.GPH` (English) and the other language packs. Catalog, read, write, and delete stay in `data/USER`. `//CD` cannot leave that folder. AutoBin `//RPrg` / `//WPrg` / `//CUT` remain with item 1.
+5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper. **Done** for the journal and for TheNet, BayCom, and FlexNet. Shell and debug lines go to `data/log/gpng.log`. The DieBox 60×27 grid is not calculated. The beacon stays with item 6.
 6. Setup menu for the items that are still config-only: colours, line length, paclen, RX click, beacon.
 7. Pixel-UI hotkeys that operators still hit from muscle memory (F-keys, ALT-C/D/X, Shift-F macros, Ctrl-D/T/O).

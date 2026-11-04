@@ -1,0 +1,2983 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                          ÜÛßßÛÜ          ßÛÛßßÛÜ
+                          ÛÛ               ÛÛÜÜÛß
+                          ÛÛ ßÛÛ           ÛÛ
+                          ßÛÜÜßÛ raphic   ÜÛÛÜ acket
+
+
+
+
+                                Version 1.61b
+
+
+
+
+                       (C) by Ulf Saran, DH1DAE 1990-94
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ I n h a l t
+------------- 
+
+
+
+1................................  Allgemeine Informationen 
+
+2............................................  Installation 
+
+3.......................................  Die Zusatzdateien 
+
+4.......................................  Tastaturkommandos 
+
+5.........................................  Der QSO-Betrieb 
+
+6.........................  Anwendung der MailBox-Utilities 
+
+7...........................................  Der GP-Editor 
+
+8............................................  Die MH-Liste 
+
+9.......................................... Der "QSO-Spion"
+
+10.........................................  Der Autorouter
+
+11.....................................  Die Setup-Funktion
+
+12..........................................  Die DOS-Shell
+
+13..........................................  Mausbenutzung
+
+14...............................  Kommandozeilen-Parameter
+
+15.............................................  Softscroll
+
+16.......................  Was ist der HOST-Modus beim TNC2
+
+17.................................  Synchronisationsfehler
+
+18............................................  Einige Tips
+
+
+ANHANG
+
+A....................................... Lizenzbestimmungen
+B........................................... Kontaktadresse
+C.......................................... Programmautoren
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+1. Allgemeine Informationen 
+
+  Bei GP handelt es sich um ein Terminalprogramm, das den Host-Modus der 
+  WA8DED Software bzw.  The Firmware gebraucht.  Es kann auch eine andere TNC-
+  Software verwendet werden, sofern diese den KISS-Modus untersttzt.  In 
+  diesem Fall wird jedoch das Programm TFPCR von DL1MEN ben”tigt.  Ein TNC 
+  wird sogar ganz berflssig, wenn man das TFPCX von DG0FT und ein passendes
+  Modem besitzt.  GP unterscheidet sich von anderen Terminalprogrammen dadurch
+  daá es eine grafische Benutzeroberfl„che besitzt und somit einfach zu
+  bedienen ist.  Fr alle wichtigen Funktionen sind Icons vorhanden, die mit
+  der Maus angeklickt werden k”nnen.  Ist keine Maus angeschlossen, lassen
+  sich diese Funktionen auch durch Hotkeys aktivieren.  GP bietet maximal 10 
+  QSO-Kan„le, es k”nnen auf Wunsch aber auch weniger Kan„le eingestellt 
+  werden.  Fr Mailbox-Betrieb existiert eine ntzliche Funktion, die eine 
+  DieBox- Checkliste (die Liste, die bei dem Befehl "(C)heck" erscheint) in 
+  einem speziellen Puffer speichert.  Danach kann man aus dieser Liste die ge- 
+  wnschten Texte ausw„hlen.  Dasselbe ist auch fr den Befehl "(L)ist" vor- 
+  handen.  Seit der Version 1.20 werden auch andere BBS-Systeme untersttzt.  
+  Zus„tzlich dazu ist in GP noch ein kleiner Editor eingebaut, mit dem Texte 
+  wie z.B.  die Konfigurationsdatei editiert werden k”nnen.  
+
+  Fr den Betrieb von GP ist ein IBM-kompatibler Computer mit mindestens 1MB
+  Speicher, EGA- bzw.  VGA-Grafikkarte und DOS 2.0 bzw.  h”here DOS-Versionen 
+  erforderlich. GP l„uft auch in einer DOS-Box unter OS/2. Mit den 
+  Standard-VGA Treibern kann es sowohl als Vollbild als auch im Fenster 
+  gestartet bzw. mit ALT-Home umgeschaltet werden. Ob der Fenster-Modus auch 
+  mit SVGA- XGA- usw.-Treibern funktioniert, kann ich leider nicht sagen. 
+  Der Vollbild-Modus wird aber in jedem Fall funktionieren.
+  Ist in dem benutzten PC EMS- oder XMS-Speicher installiert (In den 
+  DOS-Sitzungen von OS/2 mit den "DOS-Settings" einstellbar), lagert GP die
+  Scroll-Back-Puffer in diesen Speicher aus und verbraucht dann nur noch ca. 
+  380K im normalen DOS-Speicher. Fr OS/2 sollte man aber besser die OS/2-
+  Version von GP (GP/2) benutzen. Es handelt sich dabei um eine 32Bit-
+  Applikation fr den OS/2 Presentation Manager.
+
+
+
+1.1 Der Unterschied zwischen GP.EXE und GP286.EXE 
+
+  GP ist in zwei Varianten compiliert, die fr unterschiedliche Prozessortypen
+  geeignet sind.  
+
+  GP.EXE l„uft auf allen Prozessoren der 80x86-Familie, also auf dem
+  8088,8086,80286 usw...  
+
+  GP286.EXE untersttzt den erweiterten Befehlssatz des 80286, ist also auf
+  dem 8088 bzw.  8086 NICHT lauff„hig, sondern NUR auf dem 80286 sowie dessen 
+  Nachfolgern.  Wird dennoch versucht, das Programm auf einem 8088 oder 8086 
+  laufen zu lassen, kommt es zum Absturz des Systems. (Versuche haben gezeigt,
+  daá GP286.EXE auch auf XTs l„uft, die mit einem NEC V20-Prozessor
+  ausgestattet sind)
+  Aus Speicherplatz-Grnden wurde bei GP.EXE der "QSO-Spion" nicht 
+  implementiert sondern ist nur in GP286.EXE vorhanden.
+
+
+
+
+2. Installation 
+
+  Fr den Betrieb von GP wird eine Festplatte empfohlen.  Die Installation von
+  GP auf die Festplatte ist sehr einfach.  Es braucht nur das Batch-File 
+  INSTALL.BAT aufgerufen zu werden.  Daraufhin wird automatisch das gewnschte 
+  GP-Verzeichnis erstellt und alle notwendigen Dateien in dieses Verzeichnis 
+  kopiert.  Danach muá die Datei CONFIG.GP auf pers”nliche Parameter, wie z.B.  
+  das eigene Call angepaát werden.  Fr Remote-Betrieb sollte ein zus„tzliches 
+  Unterverzeichnis angelegt werden.  Auf dieses Verzeichnis haben dann alle 
+  fremden Stationen Zugriff.  Der Pfad zu diesem Unterverzeichnis muá dann in 
+  der Konfigurationsdatei entsprechend ge„ndert werden.  Fr den 
+  Fernsteuerbefehl "//RUN" muá ein weiteres Unterverzeichnis angelegt werden.  
+  Bei diesem Befehl handelt es sich um den Aufruf eines externen Programms, 
+  dessen Bildschirmausgabe zum TNC umgeleitet und somit zur Gegen- station 
+  zurckgesendet wird.  Diese externen Programme sollten in einem anderen 
+  Verzeichnis stehen als GP, da sonst GP selbst als externes Programm 
+  aufgerufen werden kann, was unweigerlich zu Komplikationen fhrt.  Die 
+  Befehle der Konfigurationsdatei werden im Kapitel 3.1 erkl„rt.  
+
+
+
+2.1 Installationsbeispiel 
+
+  Fr den Betrieb von GP sind folgende Dateien notwendig:
+
+  GP.EXE oder GP286.EXE ,BINDATA.GP (die Daten fr das Begráungsfenster),
+  ICONS.GP (die Daten fr die Symbole), CONFIG.GP (die Konfigurationsdatei),
+  ????????.GPT (DL.GPT) (die System- und Remote-Texte), ????????.GPH (DL.GPH)
+  (die Texte fr die Remote-Hilfen) 
+
+  Die restlichen Dateien sind fr den Betrieb von GP nicht unbedingt 
+  notwendig. Mit den Dateien CTEXT.GPI und QRT.GPI lassen sich ein Begráungs-
+  und Verabschiedungstext nach eigenen Wnschen erstellen. In der Datei
+  NAMES.GP werden die Namen und Pfade von Stationen gespeichert, die den
+  //Name-Befehl benutzt haben.  Man kann auch manuell Stationen anfgen. Ist
+  eine Station in der Liste enthalten, so reicht es beim Connecten dieser
+  Station, nur deren Rufzeichen einzugeben.  Den Connect-Pfad holt sich  GP
+  aus dieser Datei.  
+
+
+Beispiel:  
+
+  - GP soll auf Festplatte C:  im Unterverzeichnis "C:\GP" installiert werden 
+  - Alle Fernsteuerfunktionen sollen sich im Verzeichnis "C:\GP\USER.GP" 
+    abspielen
+  - Die externen Programme, die mit //RUN aufgerufen werden k”nnen,
+    sollen sich im Verzeichnis "C:\GP\EXTERNAL.GP" befinden
+  - Die Speicherung von Texten soll ins Verzeichnis "C:\GP\SAVE.GP" erfolgen
+  - Die Originaldiskette von GP befindet sich im Laufwerk A:
+
+
+
+C:\>cd a:  
+
+A:\>install a: c:\gp 
+
+  (Das Installationsprogramm wird gestartet und das Archiv entpackt sich
+  automatisch in C:\GP. Danach befindet man sich automatisch im Verzeichnis 
+  C:\GP) 
+
+C:\GP>md external.gp 
+
+C:\GP>cd external.gp
+
+C:\GP\EXTERNAL.GP>a:#gpri
+
+  (Die GPRI-Dateien werden entpackt)
+
+C:\GP\EXTERNAL.GP>cd..
+
+C:\GP>md user.gp 
+
+C:\GP>md save.gp 
+
+C:\GP>
+
+
+
+  Jetzt muá man in CONFIG.GP noch einige Werte „ndern, und zwar die Pfad-
+  einstellungen fr die Fernsteuerung und Abspeichern von Texten:  
+
+  UserDir = C:\GP\USER.GP
+  ExternalDir = C:\GP\EXTERNAL.GP
+  SaveDir = C:\GP\SAVE.GP
+  LogDir = C:\GP
+
+  Auáerdem muá noch das eigene Rufzeichen eingestellt werden:
+
+  MyCall = xxxxxx (z.B.  MyCall = DH1DAE)
+
+  Bisher ist als Rufzeichen NOCALL eingetragen, man muá also nur NOCALL gegen
+  sein eigenes Call austauschen.  
+
+  Die Daten fr die serielle Schnittstelle sind bisher auf 9600 Baud und COM1
+  eingestellt, wird der TNC mit einer anderen Baudrate oder an einer anderen 
+  Schnittstelle betrieben, sind die entsprechenden Parameter zu „ndern 
+  (SerBaud und SerNr).  M”chten Sie GP an der dritten und vierten 
+  Schnittstelle betreiben, so muá zus„tzlich noch die Port- und IRQ-Nummer der 
+  Schnittstelle angegeben werden, da diese nicht genormt sind.  Die 
+  entsprechenden Daten entnehmen Sie bitte aus dem Benutzerhandbuch ihrer 
+  Schnittstellenkarte.  
+
+  Des weiteren sollte die Datei NAMES.GP angelegt und die Rufzeichen, Namen 
+  und Connect-Pfade der bekannten Stationen eintragen werden.  Die Syntax
+  dieser Eintragungen finden Sie in Kapitel 3.6 und in NAMES.GP der
+  Originaldiskette.  
+
+
+
+2.2 Betrieb mit mehreren MYCALLs 
+
+  Wird GP auf einem Rechner unter mehreren Rufzeichen gleichzitig betrieben, 
+  so besteht die M”glichkeit, fr jedes Rufzeichen eigene Connect- Info- und 
+  Verabschiedungstexte zu installieren.  Die Installation ist sehr einfach, 
+  man braucht nur fr jedes Rufzeichen ein eigenes Unterverzeichnis zu 
+  erstellen und dort die entsprechenden Dateien anzulegen.  Die Namen der 
+  jeweiligen Unterverzeichnisse entspricht dem jeweiligen Rufzeichen.  
+  Folgende Dateien k”nnen in ein solches Mycall-Unterverzeichnis installiert 
+  werden:
+
+    CTEXT???.GPI   Connect-Text(e) (siehe 5.11)
+    <call>.GPC     pers”nlicher Connect-Text fr <call>
+    <call>.GPM     Mail-Datei fr <call>
+    <mycall>.GPI   (bzw. INFO.GPI) Info-Datei, die durch //Info gesendet wird.
+    QRT.GPI        Verabschiedungstext, der bei //Quit vor dem Trennen der
+                   Verbindung ausgesendet wird.
+
+  Jede dieser Dateien wird zuerst in dem entsprechenden Mycall-Verzeichnis
+  gesucht.  Sind sie dort nicht vorhanden, wird im GP-Verzeichnis gesucht.  Es 
+  ist somit also auch m”glich, einen Teil der Texte von allen oder einem Teil 
+  aller Mycalls gemeinsam nutzen zu lassen.  
+
+
+
+
+3. Die Zusatzdateien 
+
+
+3.1.  Die Konfigurationsdatei 
+
+  In der Datei "CONFIG.GP" sind alle Parameter gespeichert, die fr den 
+  Betrieb von GP notwendig sind.  Diese sind vor dem ersten Aufruf von GP auf
+  die gewnschten Werte einzustellen, insbesondere die Parameter fr die 
+  V24-Schnittstelle, den Grafiktreiber und die fr Remote-Betrieb notwendigen 
+  Pfadeinstellungen.  Die Syntax der Variablenzuweisungen sind immer gleich 
+  und haben die Form Variable = Wert, z.B.  "Zoom = 2".
+  In der Konfigurationsdatei k”nnen auch Kommentare eingefgt werden, indem
+  vor dem Kommentar ein Semikolon gesetzt wird.  Kommentare drfen jedoch
+  nur am Ende einer Zeile hinter einem Befehl eingefgt werden, z.B.
+  "Zoom = 2 ;Zoom auf den Wert 2 gesetzt".  
+
+
+3.1.1 Die Farbeinstellungen 
+
+  Der Bildschirm von GP ist in verschiedene Fenster aufgeteilt. Die Farben  
+  der einzelnen Bildschirmfenster lassen sich individuell nach eigenen
+  Wnschen einstellen. Alle m”glichen Bildschirmfarben lauten folgendermaáen: 
+
+    Black        = Schwarz
+    Blue         = Blau
+    Green        = Grn
+    Cyan         = Trkis
+    Red          = Rot
+    Magenta      = Magentarot
+    Orange       = Orange
+    LightGray    = Hellgrau
+    DarkGray     = Dunkelgrau
+    LightBlue    = Hellblau
+    LightGreen   = Hellgrn
+    LightCyan    = Helltrkis
+    LightRed     = Hellrot
+    LightMagenta = helles Magentarot
+    Yellow       = Gelb
+    White        = Weiá
+
+
+  Fr diese Farbeinstellungen existieren folgende Systemvariablen:
+
+  MonitorBackGround :  Hintergrundfarbe des Monitorfensters
+  MonitorForeGround :  Textfarbe des Monitorfensters, in der die Informations-
+                       Pakete dargestellt werden.
+  MonitorInversAttr :  Textfarbe des Monitorfensters, in der die  
+                       Monitorheader dargestellt werden.
+  EditorBackGround  :  Hintergrundfarbe des Editors
+  EditorForeGround  :  Textfarbe des Editors
+  EditorInversAttr  :  Farbe des Cursors und EOL-Markers im Editor
+  CheckBackGround   :  Hintergrundfarbe des BBS-Menu-Fensters
+  CheckForeGround   :  Textfarbe des BBS-Menu-Fensters
+  CheckInversAttr   :  Farbe des Auswahlbalkens und der markierten Dateien
+  ListBackGround    :  Hintergrundfarbe des DieBox-List-Fensters
+  ListForeGround    :  Textfarbe des DieBox-List-Fensters
+  ListInversAttr    :  Farbe des Auswahlbalkens und der markierten Dateien
+  ConnectBackGround :  Hintergrundfarbe des Connectfensters (Kanal 1-10) 
+  ConnectForeGround :  Farbe des empfangenen Textes im Connectfenster 
+  ConnectInversAttr :  Farbe des gesendeten Textes im Connectfenster 
+  MenuBackGround    :  Hintergrundfarbe der oberen Menleiste
+  MenuForeGround    :  Textfarbe der oberen Menleiste
+  MenuInversAttr    :  Wird auf einem Kanal Text empfangen, wenn gerade ein
+                       anderer Kanal aktiv ist, d.h.  auf dem Bildschirm
+                       angezeigt wird, „ndert sich die Textfarbe des
+                       Kanals in diese Farbe und man wird so auf den
+                       empfangenen aber noch nicht gelesenen Text hingewiesen.
+  StateBackGround   :  Hintergrundfarbe des Statusfensters
+  StateForeGround   :  Textfarbe des Statusfensters
+  InputBackGround   :  Hintergrundfarbe des Eingabefensters
+  InputForeGround   :  Textfarbe des Eingabefensters
+  MHBackGround      :  Hintergrundfarbe der MH-Liste
+  MHForeGround      :  Vordergrundfarbe der MH-Liste
+  MHInversAttr      :  Inversfarbe der MH-Liste (Auswahlbalken)
+  SpyBackGround     :  Hintergrundfarbe des "QSO-Spions"
+  SpyForeGround     :  Vordergrundfarbe des "QSO-Spions"
+  SpyInversAttr     :  Inversfarbe des "QSO-Spions"
+
+
+3.1.2 Einstellung der Scroll-Back-Puffer 
+
+  GP stellt fr alle Kan„le Textpuffer zur Verfgung, in denen die Daten
+  gespeichert werden und in dem auch zurckgebl„ttert werden kann, wenn die 
+  Daten aus dem Bildschirm herausgescrollt sind.  Die Gr”áen der Textpuffer 
+  lassen sich individuell einstellen.  Die Puffergr”áen werden dabei in der 
+  Anzahl von Textzeilen zu je 80 Zeichen angegeben, d.h.  um die tats„chliche 
+  Gr”áe des Puffers in Bytes zu ermitteln, die im RAM verbraucht werden, muá 
+  man die Anzahl der Zeilen mit der Zahl 84 multiplizieren, da pro Zeile 84 
+  Bytes ben”tigt werden (80 Bytes fr den eigentlichen Text und vier Bytes fr 
+  die Farbsteuerung).  Die Anzahl der Zeilen kann zwischen 40 und 780 
+  schwanken.  40 ist die minimale Anzahl, da 40 Zeilen am Bildschirm 
+  dargestellt werden k”nnen, und 780 ist die maximale Anzahl, da bei 
+  80x86-Prozessoren nur maximal 64KB in einem Speichersegment adressiert 
+  werden k”nnen und 780 Zeilen entsprechen ca.  64 KB.  
+
+  CheckBuffer :  Puffer fr BBS-Menu-Fenster
+  EditBuffer  :  Puffer fr Editor
+  TextBuffer  :  Puffer fr Monitor und die Kan„le 1-10, hier wird jedoch
+                 nicht nur eine Zahl bergeben, sondern soviele Zahlen, wie
+                 Kan„le definiert wurden ("Channels") sowie die Gr”áe des
+                 Monitors.  Diese Zahlen werden durch ein Komma getrennt in
+                 der Reihenfolge Monitor, Kanal 1, Kanal 2, ... angegeben.
+  InputBuffer :  Puffer fr die Vorschreibfenster von Kanal 1-10  und des
+                 Monitors.  Die Anwendung dieses Befehls ist analog zum Befehl
+                 "TextBuffer", nur daá die maximale Anzahl von Zeilen hier nur
+                 199 betragen darf.
+  SpyBuffer  :  Puffer fr jedes "QSO-Spion"-Fenster in Zeilen.
+  MHBuffer   :  Puffer fr die MH-Liste in Zeilen.
+
+
+3.1.3 Timereinstellungen 
+
+  GP beinhaltet eine Screensave-Funktion, die den Bildschirm dunkeltastet, 
+  wenn nach einer gewissen Zeit keine Taste gedrckt wurde.
+  Diese Zeit kann man in der Konfigurationsdatei festlegen. Der Befehl dafr
+  lautet "Screensave" und wird in Minuten  angegeben, d.h. der Befehl
+  "Screensave = 5" setzt die Screensave-Zeit auf fnf Minuten.
+  Des weiteren kann man einstellen, wie lange Pop-Up-Fenster angezeigt werden
+  sollen, also z.B.  Connect-Meldungen o.„.  Hierfr existiert der Befehl
+  "PopUpTime", die Zeit wird hier jedoch in Sekunden angegeben.  Der Befehl
+  "PopUpTime = 5" l„át Pup-Up-Fenster fnf Sekunden lang anzeigen.
+  Auch die interne Uhrzeit von GP ist einstellbar, und zwar bezglich der
+  Systemzeit des Rechners. Dies geschieht mittels der Befehle "Time" und
+  "Zone".  Der Befehl "Time" definiert die interne Uhrzeit von GP bezglich
+  der PC-Uhr in Minuten.  Der Befehl "Time = -60" l„át die GP-Uhrzeit also
+  60 Minuten bezglich der PC-Uhr nachgehen.  Der Befehl "Zone" hat Einfluá
+  auf das Macro "%z", welches in Infotexten die benutzte Zeitzone anzeigt. 
+  Fr die automatische Logbuchfhrung ist zus„tzlich zur GP-Systemzeit noch
+  die Weltzeit (UTC) erforderlich.  Diese l„át sich mit dem Befehl "UTC"
+  festlegen.  Es wird wie auch bei "Time"-Befehl der Zeitoffset bezglich
+  der PC-Uhr in Minuten angegeben.  Der Befehl "UTC = -120" l„át die interne
+  Uhrzeit von GP bezglich der Systemzeit um zwei Stunden zurckstellen, was
+  der Differenz von UTC bezgl. MESZ entspricht.
+  Der Befehl "ConnectBell" gibt an, wie oft es klingeln soll, wenn man von
+  einer anderen Station  connected wird.  In diesem Fall wird von GP ein
+  Telefon emuliert und es ert”nt eine Drei-Ton-Glocke.
+  "ConnectBell = 5" z.B. l„át es fnf mal klingeln.  
+
+
+3.1.4 Konfiguration der seriellen Schnittstelle 
+
+  GP ist in der Lage, jede beliebige Kombination von Portadressen und IRQ-
+  Nummern von seriellen Schnittstellen zu verarbeiten.  Die IRQ-Nummern k”nnen 
+  auch AT-spezifische Werte annehmen, also auch Werte zwischen 8 und 15.  
+  Verwendet man die erste oder zweite serielle Schnittstelle, so sind im 
+  Allgemeinen die Port- und IRQ-Nummern genormt und sind GP bereits bekannt.  
+  In diesem Fall braucht nur die Nummer der Schnittstelle angegeben werden.  
+  Alle Werte k”nnen Dezimal oder Hexadezimal angegeben werden, bei hexa- 
+  dezimalen Werten muá jedoch ein Dollar-Zeichen vorangestellt werden.  (z.B.  
+  $3F8).  Die Anzahl der Daten- und Stop- sowie Parit„tsbits k”nnen nicht 
+  ver„ndert werden.  Sie sind von GP auf folgende Werte eingestellt:
+  8 Datenbits, 1 Stopbit, keine Parit„t.  
+
+  Fr die Einstellung der seriellen Schnittstelle existieren folgende Befehle:
+
+  SerNr   :  Nummer der Schnittstelle
+  SerBaud :  Baudrate der seriellen šbertragung
+  SerPort :  Portadresse der Schnittstelle
+  SerIRQ  :  IRQ-Nummer der Schnittstelle
+
+
+3.1.5 Pfadeinstellungen 
+
+  Fr die Fernsteuerbefehle //Dir,//Write,//Read und //DELete muá ein Pfad
+  angegeben werden, auf den die Befehle Zugriff haben.  Alle fremden Stationen 
+  besitzen die gleiche Priorit„t, d.h.  sie drfen alle Dateien lesen, die in 
+  diesem Verzeichnis stehen und beliebig neue Dateien anlegen.  Aus diesem 
+  Grund sollte ein eigenes Verzeichnis angelegt werden.  Der Befehl fr die 
+  Pfadeinstellung ist "UserDir".  Ein weiterer Pfad muá fr den Befehl //RUN 
+  angegeben werden, das Verzeichnis enth„lt dann die externen Programme.  
+  Der Pfad zu den externen Programmen wird mit dem Befehl "ExternalDir" ein-
+  gestellt.  Des weiteren l„át sich ein Pfad fr die Speicherung von Texten
+  angeben.  Dies ist mit dem Befehl "SaveDir" m”glich. Der Defaultwert ist das 
+  Verzeichnis von GP.
+  Um mehr šbersichtlichkeit beim Mitspeichern von anderen QSOs zu gewinnen,
+  wurde ab Version 1.50 der Befehl "SpyDir" eingefhrt. Der hier eingestellte
+  Pfad wird dann als Standard-Pfad zur Speicherung von QSO-Mitschnitten 
+  verwendet.  
+
+
+3.1.6 TNC-Initialisierung/De-Initialisierung 
+
+  Beim Start und Ende von GP kann der TNC nach eigenen Wnschen initialisiert
+  werden.  Die Syntax der Initialisierung ist immer folgende:  
+
+  TNCINI = <tnc-befehl>
+
+  Fr <tnc-befehl> k”nnen alle Kommandos der TheFirmware-Software eingesetzt
+  werden.  Es k”nnen beliebig viele Initialisierungskommandos in die Konfi- 
+  gurationsdatei aufgenommen werden.
+  Will man den TNC mit der Uhrzeit des Rechners laden, muá man den Befehl
+  "TNCINI = DateTime" benutzen. "DateTime" ist in dem Fall kein echter 
+  TNC-Befehl, sondern ein reserviertes Schlsselwort von GP. GP wandelt dieses
+  Schlsselwort in die entsprechende Befehle zum Stellen der TNC-Uhr um.
+
+  Fr die De-Initialisierung des TNC  gelten die selben Bedingungen wie fr
+  die Initialisierung, mit dem Unterschied, daá hier der Befehl TNCDEI voran-
+  gestellt werden muá:  
+
+  TNCDEI = <tnc-befehl>
+
+  Will man w„hrend des Betriebs von GP die DOS-Shell aufrufen, ist es zweck-
+  m„áig, den Monitor des TNC abzuschalten, da GP den TNC w„hrend der DOS-Shell 
+  nicht weiter abfragt und es deshalb zu einem Puffer-šberlauf des TNC kommen 
+  kann.  Fr diesen Fall existiert der Befehl TNCDOS, mit dem bestimmt wird, 
+  welche Parameter des TNC auf welche Werte gesetzt werden, wenn die DOS-Shell 
+  aktiviert wird.  Nach Beendigung der Shell werden die TNCINI-Werte wieder- 
+  hergestellt.  Die Syntax des Befehls ist dieselbe wie oben:  
+
+  TNCDOS = <tnc-befehl>
+
+
+3.1.7 Druckereinstellungen 
+
+  Will man ein QSO auf dem Drucker ausdrucken, kann man den empfangenen und
+  selbst gesendeten Text in unterschiedlichen Schriftbildern ausdrucken 
+  lassen, sofern der Drucker dieses erlaubt.  Alle EPSON-Kompatiblen Drucker 
+  bieten hierzu jedoch verschiedene M”glichkeiten.  Es k”nnen pro Attribut 
+  maximal 10 Steuerzeichen verwendet werden.  Diese werden jeweils durch ein 
+  Komma getrennt in dezimaler Form angegeben.  Der Befehl "DefaultPrint" setzt 
+  die Druckattribute fr den empfangenen Text fest, der Befehl "InversPrint" 
+  die Attribute fr den selbst gesendeten Text.  
+
+  Syntax:
+    DefaultPrint = Zeichen1,Zeichen2,....,Zeichen10
+    InversPrint = Zeichen1,Zeichen2,....,Zeichen10
+
+  Die erforderlichen Zeichensequenzen fr die gewnschten Druckattribute 
+  k”nnen Sie dem Handbuch ihres Druckers entnehmen.  
+
+
+3.1.8 Sonstige Einstellungen 
+
+  Die Anzahl der tats„chlich benutzten Kan„le wird mit dem Befehl "Channels"
+  festgelegt.  Dieser kann Werte zwischen 1 und 10 annehmen, es drfen aber 
+  nicht mehr Kan„le angegeben werden, als der TNC verarbeiten kann, da es 
+  ansonsten st„ndig zu Fehlermeldungen kommt.  Es gibt fr GP keine
+  M”glichkeit, die Maximalanzahl der vom TNC verwalteten Kan„le festzustellen,
+  daher ist das Programm auf Ihre richtige Angabe angewiesen.  Es ist ratsam,
+  immer die Anzahl der Kan„le einzustellen, die der TNC maximal verarbeiten 
+  kann.  Werden weniger Kan„le benutzt, als der TNC verwaltet, kann dies 
+  ebenfalls zu Problemen fhren, wenn Sie auf einem Kanal connected werden, 
+  der von GP nicht abgefragt wird.
+  Syntax:
+    Channels = <1..10>
+  (z.B. Channels = 4) 
+
+  Der MyCall-Befehl teilt dem System das eigene Call mit und initalisiert den
+  TNC dementsprechend.  Es l„át sich fr jeden Kanal ein anderes Rufzeichen 
+  einstellen, ein Leerstring wird automatisch durch das Monitor- Rufzeichen, 
+  was dem Digipeat-Rufzeichen entspricht, ersetzt.  Die Calls werden durch ein 
+  Komma getrennt in der Reihenfolge Monitor, Kanal1-10 eingegeben.
+  Syntax:  
+    MyCall = <monitor>,<kanal1>,<kanal2>, ...
+
+  Beispiel:
+    MyCall = DH1DAE,,DH1DAE-2,,DH1DAE-4
+
+    In diesem Fall wird das Monitor-Rufzeichen auf DH1DAE gestellt, die
+    Kan„le 1 und 3 erhalten einen Leerstring und damit auch das Call DH1DAE,
+    Kanal2 wird auf DH1DAE-2 und Kanal4 auf DH1DAE-4 eingestellt.
+
+  Mit dem NoName-Befehl l„át sich einstellen, wie Stationen, deren Name noch
+  nicht in der Namensdatei gespeichert ist, vom System angeredet werden sollen 
+  (Makro %N in *.GPI-Dateien).
+  Syntax:
+    NoName = <anrede>
+
+  Der Befehl "Prompt" definiert ein Systemprompt, welches nach einem
+  ausgefhrten Fernsteuerbefehl zur Gegenstation gesendet wird, soweit es 
+  aktiviert wurde.  Das Prompt l„át sich auch w„hrend des Betriebes von GP im 
+  Setup „ndern.
+  Syntax:
+    Prompt = <prompt>
+
+  Im Monitorfenster lassen sich auf Wunsch zwischen den einzelnen angezeigten
+  Paketen eine zus„tzliche Leerzeile einfgen, was das Monitorfenster 
+  bersichtlicher macht.  Dies ist mit dem Befehl "InsertMonLine" m”glich.  
+  Syntax:
+    InsertMonLine = <ON/OFF>
+
+  Die automatische Logbuchfhrung l„át sich auf Wunsch abschalten, dies wird
+  mit dem Befehl "Log" erreicht.
+  Syntax:
+    Log = <ON/OFF>
+
+  Ist das automatische Logbuch eingeschaltet, muá zus„tzlich noch die Frequenz
+  angegeben werden, auf der man den Packet-Betrieb durchfhrt.  Dies kann ent- 
+  weder eine genaue Frequenzangabe oder auch eine Bandangabe sein, also z.B.  
+  430.625 oder 70cm.  Die L„nge der Frequenz darf jedoch maximal 7 Buchstaben 
+  lang sein.
+  Syntax:
+    QRG = <frequenz>
+
+  Dieser Befehl ist jedoch nur dann wirksam, wenn man keinen Multiport-TNC
+  verwendet.  Dagegen muá man bei Verwendung eines Multiport-TNCs die QRG-
+  Einstellungen in der Datei NAMES.GP vornehmen.  N„here Iformationen dazu
+  finden Sie in Kapitel 9. 
+
+  Der Backup-Befehl erm”glicht es, daá GP bei Programmende die Textpuffer
+  speichert und bei einem Neustart diese Puffer wieder in den Speicher l„dt.  
+  so gehen QSO-Daten nicht verloren, auch wenn GP w„hrend eines QSO unter- 
+  brochen wird.
+  Syntax:
+    Backup = <ON/OFF>
+
+  Empfangene Pakete auf den QSO-Kan„len k”nnen auch akustisch angezeigt 
+  werden, d.h.  es gibt ein akustisches Signal, wenn ein Paket empfangen 
+  wurde. Dies geschieht mit dem Befehl "RXClick".  Die m”glichen Werte haben
+  folgende Funktion:
+    0 :  Kein Signal
+    1 :  Akustisches Signal nur, wenn das Paket auf einem anderen als dem
+         gerade aktiven Kanal empfangen wurde.
+    2 :  Immer ein akustisches Signal, auch wenn das Paket auf dem aktiven
+         Kanal empfangen wurde.
+  Syntax:
+    RXClick = <0..2>
+
+  Die Sprache der Remote-Meldungen kann auf einen Defaultwert eingestellt
+  werden.  Es drfen nur solche Sprachen gew„hlt werden, fr die es auch eine 
+  entsprechende *.GPT-Datei existiert.
+  Syntax:
+    RemoteLanguage = <xxx>
+  Beispiel:
+    RemoteLanguage = G
+    (Englische Remote-Texte (G.GPT)) Wird der Befehl weggelassen, wird bei
+    einem Connect die jeweils aktive Systemsprache als Remotesprache
+    bernommen.
+
+  Mit dem Befehl "Remote" lassen sich die Fernsteuerbefehle definieren, die
+  connectete Stationen benutzen drfen. Die Default-Einstellung ist
+  "Remote = *", d.h. alle m”glichen Fernsteuerbefehle werden zugerlassen.
+  Will man nur einen Teil der Befehle zulassen, muá man die einzelnen Befehle
+  getrennt durch Kommatas auffhren. Es reichen die Abkrzungen der Befehle.
+  Beispiel:
+    Remote = VER,I,NE,N,#
+    Hier werden nur die Befehle VERsion, Info, NEws, Name und der Chatmode 
+    zugelassen, alle anderen Befehle werden gesperrt.
+
+  Das genaue Gegenteil von "Remote" ist der Befehl "NoRemote". Hier lassen sich 
+  die Fernsteuerbefehle definieren, die auf keinen Fall benutzt werden drfen.
+  Ansonsten ist die Anwendung die gleiche wie bei "Remote".
+  
+  Findet man die h„ufigen Nachfragen "Ja/Nein/Abbruch" von GP l„stig, kann man
+  diese mit dem Befehl "Questions = <ON/OFF>" an bzw.  ausschalten.  
+  "Questions = ON" schaltet die Abfrage ein, "Questions = OFF" schaltet sie 
+  dagegen aus.  Aber Vorsicht beim Ausschalten der Nachfragen...  ;-) 
+
+  Der Befehl "FastPoll" beeinfluát die Abfrage-Methode des TNCs durch GP.
+  "FastPoll = ON" bringt GP dazu, den TNC geschwindigkeitsoptimiert 
+  abzufragen.  Hier wird der Interrupt-Betrieb der V24 voll ausgenutzt.
+  Diese Methode kann unter Umst„nden jedoch zu "Resync"-Fehlern d.h. 
+  Zeichenverlust beim V24-Empfang fhren.  Dies ist jedoch vollkommen
+  abh„ngig vom verwendeten PC bzw.  der installierten Treiber oder sonstigen
+  speicherresidenten Programmen, die zus„tzlich zu GP aktiviert sind. Gibt
+  es Resync-Probleme, sollte man "FastPoll = OFF" setzen.  Die Default-
+  Einstellung ist "FastPoll = AUTO".  Bei dieser Einstellung ist die
+  Verwendung der Abfrage-Methode davon abh„ngig, ob ein 16550A UART benutzt 
+  wird oder nicht.  Bei Verwendung eines 16550A wird dann optimiert abgefragt, 
+  bei Verwendung eines anderen UARTs wirkt diese Einstellung wie
+  "FastPoll = OFF".  
+
+  "PopUpEnableKeyboard" klingt kompliziert, entscheidet aber ledeglich, ob
+  Popup-Fenster mit Hilfe der Tastatur bzw.  Maus oder ausschlieálich mit
+  Hilfe der Maus vor Ablauf von "PopUpTime" geschlossen werden k”nnen.  
+  "PopUpEnableKeyboard = ON" erlaubt das vorzeitige Schlieáen von PopUp- 
+  Fenstern mit Hilfe der <RETURN>- oder <ESC>-Taste.  Andere Tasten werden 
+  hingegen ignoriert, solange das Popup-Fenster aktiv ist.  Ein Vorschreiben 
+  von Text, wie man es bei den bisherigen GP-Versionen gewohnt war, ist dann 
+  nicht m”glich.  "PopUpEnableKeyboard = OFF" unterl„át eine Abfrage der 
+  Tastatur, w„hrend ein Popup-Fenster aktiv ist.  W„hrend dieser Zeit kann 
+  dann z.B.  Text vorgeschrieben werden, der nach dem Schlieáen des Fensters 
+  in einem Rutsch im jeweiligen Vorschreibfenster landet.  Das PopUp-Fenster 
+  kann in diesem Fall jedoch nur mit der Maus vor Ablauf von "PopUpTime" 
+  geschlossen werden.
+
+  Das Befehl "MultiPort" legt fest, ob ein TNC im Standard- oder DRSI-Modus 
+  verwendet werden soll. Im Normalfall erkenn GP automatisch, ob ein TNC den 
+  DRSI-Modus untersttzt oder nicht, doch kann es ja nach TNC-Software 
+  vorkommen, daá diese automatische Erkennung nicht funktioniert. Daher sollte 
+  man bei Verwendung eines Multiport-TNCs wie z.B. FALCon/TNC4 oder TNC3 den 
+  Befehl "MultiPort = ON" einfgen. Bei Verwendung von TFPCX ab Version 2.0 kann
+  man den Befehl "MultiPort = AUTO" (Standard-Einstellung) verwenden. Will man 
+  dagegen generell auf Multiport-F„higkeiten verzichten, kann man dan Befehl 
+  "MultiPort = OFF" verwenden.
+
+
+3.1.9 Bedingte Konfiguration 
+
+  In manchen Situationen kann es ntzlich sein, wenn man GP variabel
+  konfigurieren kann. Daher bietet GP ab der Version 1.50 die M”glichkeit,
+  "IF"-Bedingungen in die Konfigurationsdatei einzubinden und diese mit
+  Hilfe von Kommandozeilen-Parametern zu steuern. Die Funktionsweise ist
+  relativ einfach und l„át sich wohl am besten anhand eines Beispiels 
+  erkl„ren:
+  Man hat zwei TNCs, wobei einer mit 9600 Baud auf der V24 betrieben wird und
+  der andere mit 38400 Baud. Jetzt kann man in CONFIG.GP folgende Befehle 
+  eintragen:
+
+  <IF 38400>
+  SerBaud = 38400
+  <ELSE>
+  SerBaud = 9600
+  <END>
+
+  Ruft man nun GP folgendermaáen auf "gp 38400" bzw. "gp286 38400" wird die 
+  V24 mit 38400 Baud initialisiert. Ruft man GP aber ohne den Parameter 
+  "38400" auf, wird die V24 mit 9600 Baud initialisiert.
+
+  Auch folgende Kombinationen sind m”glich:
+
+  <IF 38400>
+  SerBaud = 38400
+  <END>
+  <IF 19200>
+  SerBaud = 19200
+  <END>
+  <IF 9600>
+  SerBaud = 9600
+  <END>
+
+  Die <ELSE>-Bedingung ist also nicht unbedingt n”tig.
+  Es existiert auch die logische Verneinung einer Bedingung mittels des 
+  Schlsselwortes "NOT". Beispiel:
+
+  <IF NOT 9600>
+  SerBaud = 38400
+  <ELSE>
+  SerBaud = 9600
+  <END>
+ 
+  Hier initialisiert GP die Schnittstelle mit 9600 Baud, wenn man GP mit dem
+  Parameter "9600" aufruft. In allen anderen F„llen werden 38400 Baud
+  initialisiert.
+
+  Was man beachten muá:
+    - Die Schlsselzeilen "<IF (NOT) xxx>", "<ELSE>" und "<END>" mssen 
+      alleine in einer Zeile stehen und in der ersten Spalte beginnen.
+    - Eine Verschachelung von mehreren IF-Bedingungen ist nicht zul„ssig.
+      Es darf erst dann eine neue IF-Bedingung definiert werden, wenn die 
+      vorherige mit "<END>" abgeschlossen wurde.
+
+  Reservierte Schlsselw”rter:
+  Bisher stellt GP nur ein reserviertes Schlsselwort zur Verfgung, n„mlich 
+  "%TFPCX200". Die Anwendung dieses Schlsselwortes unterscheidet sich nicht
+  von der Anwendung der Kommandozeilen-Parameter, nur daá in diesem Fall die 
+  IF-Bedingung davon abh„gt, ob TFPCX ab Version 2.0 installiert ist oder 
+  nicht.
+  Beispiel:
+
+  <IF %TFPCX200>
+  TNCINI = @L 0:DB0FN
+  <END>
+
+  Der Befehl "@L 0:DB0FN" wird nur dann benutzt, wenn TFPCX 2.0 ff installiert
+  ist. Bei Verwendung von sonstigen TNCs, TFPCR oder „lteren Versionen von
+  TFPCX wird dieser Befehl ignoriert.
+
+
+
+3.2.  Die Dateien *.GPI 
+  
+  Die Dateierweiterung ".GPI" steht fr "Graphic Packet Infofile".  Dateien 
+  mit dieser Erweiterung enthalten Informationstexte, die von anderen 
+  Stationen z.B. durch bestimmte Fernsteuerbefehle gelesen werden k”nnen.
+  In allen Dateien, die diese Dateierweiterung besitzen, k”nnen Platzhalter
+  fr Macros eingebaut werden.  Es stehen insgesamt fnfzehn Macros zur
+  Verfgung.  Die Platzhalter und die entsprechenden Macros lauten:  
+
+       %V :  Versionsnummer dieser Software, in diesem Fall "1.61b"
+       %C :  Das Call der Gegenstation
+       %N :  Der Name der Gegenstation
+       %Y :  Das eigene Call
+       %K :  Die Nummer des Kanals, auf dem der Text ausgesendet wird
+       %T :  Die aktuelle GP-Uhrzeit im Format HH:MM:SS, z.B. "10:41:32"
+       %D :  Das aktuelle Datum, z.B. "25.03.1991"
+       %B :  Entspricht dem Klingelzeichen (07h)
+       %I :  Ist die Datei "NEWS.GPI" vorhanden, wird ein entsprechender
+             Hinweis auf die Existenz dieser Datei ausgegeben, ansonsten
+             nichts.
+       %Z :  Gibt die Zeitzone der GP-Uhr aus.
+       %_ :  Fgt einen Wagenrcklauf+Zeilenvorschub ein.
+       %% :  Das Prozentzeichen
+       %O :  Liest eine Zeile aus ORIGIN.GPI (Auswahl durch Zufallsgenerator)
+       %? :  Fordert die eingeloggte Station auf, ihren Namen einzugeben,
+             falls dieser noch nicht in NAMES.GP eingetragen ist.
+       %> :  Schaltet das Prompt ein. (Nur empfehlenswert im CTEXT) 
+
+  Zus„tzlich kann noch eine Formatierungsangabe angefgt werden, welches die
+  Gesamtl„nge des Macros bestimmt.  Dies wird notwendig, da die Macros keine 
+  definierte L„nge besitzen, sondern je nach connecteter Station in der L„nge 
+  variieren k”nnen, z.B. das %N-Macro.  Die Formatierung wird durch das 
+  Doppelkreuz gefolgt von einer zweistelligen Zahl bestimmt.  Ist der 
+  eigentliche Macrotext krzer als die Formatangabe, wird der Rest mit 
+  Leerzeichen aufgefllt.
+  Beispiel:  "%N#20" liefert den Namen der connecteten Station, die 
+  Gesamtl„nge des Macros ist aber immer 20 Zeichen.  
+  Wichtig wird eine Formatangebe, wenn man einen Text, der Macros enth„lt, 
+  einrahmen will.  Als Beispiel fr die Anwendung von Macros kann man die 
+  Datei "CTEXT.GPI" heranziehen.  
+
+
+3.2.1 Die Datei(en) "CTEXT???.GPI" 
+
+  Diese Datei beinhaltet den allgemeinen Begráungstext, der ausgesendet wird,
+  wenn man von einer anderen Station connected wird.  Der Standard-Connecttext 
+  heiát CTEXT.GPI, es k”nnen jedoch auch Alternativ-Connecttexte angelegt 
+  werden.  Diese k”nnen dann w„hrend des Betriebs von GP bei Bedarf 
+  umgeschaltet werden.  N„heres dazu in Kapitel 5.11.
+
+
+3.2.2 Die Datei "NEWS.GPI" 
+
+  Diese Datei dient zum speichern von aktuellen Neuigkeiten.  Der Text kann 
+  mit dem Fernsteuerbefehl "//NEws" gelesen werden.  Die Datei kann gel”scht 
+  werden, wenn keine aktuellen Neuigkeiten existieren.  
+
+
+3.2.3 Die Datei "<mycall>.GPI" 
+
+  Diese Datei wird mit dem Fernsteuerbefehl "//Info" angezeigt.  Sie enth„lt
+  eine kurze Information ber die eigene Station.  Fr <mycall> muá das eigene 
+  Rufzeichen eingesetzt werden (z.B.  DH1DAE.GPI).  Es k”nnen somit Info-
+  Dateien fr mehr als einen Benutzer angelegt werden, falls mehrere OMs
+  diese Station unter ihren eigenen Rufzeichen verwenden.  
+
+
+3.2.4 Die Dateien "F1.GPI".."F12.GPI" 
+
+  In diesen Dateien k”nnen Textmacros gespeichert werden, die besonders h„ufig
+  benutzt werden.  Diese Texte werden aus GP heraus mit Shift-F1..F12 auf- 
+  gerufen.  Der Dateiname entspricht der Funktionstasten-Nummer, z.B.  wird 
+  die Datei "F5.GPI" wird mit Shift-F5 aufgerufen.  Die Makrodateien F11.GPI 
+  und F12.GPI k”nnen nur auf Rechnern verwendet werden, die eine MF2-Tastatur 
+  angeschlossen haben und wo die Funktionstasten F11 und F12 existieren.  
+
+
+3.2.5 Die Datei "QRT.GPI" 
+
+  Diese Datei wird gesendet, wenn der QSO-Partner der Fernsteuerbefehl //Q
+  ausl”st.  Nach dem Aussenden der Datei wird die Verbindung getrennt.  
+
+
+3.2.6 Die Datei "RUN.GPI"
+
+  Wird von einem QSO-Partner der Fernsteuerbefehl "//RUN ?"  aufgerufen, 
+  sendet GP den Inhalt dieser Datei aus.  Die Datei sollte eine 
+  Kurzbeschreibung aller externen Programme enthalten, die mit //RUN
+  aufgerufen werden k”nnen.  
+
+
+3.2.7 Die Datei "ORIGIN.GPI" 
+
+  In dieser Datei kann der Anwender originelle Zitate usw.  abspeichern und 
+  mit Hilfe des Makros %O im CTEXT usw. unterbringen.  Fr jedes Zitat steht
+  nur eine Zeile zur Verfgung, die maximal 255 Zeichen lang sein darf.
+
+
+3.2.8 Hinweise zur Benutzung der *.GPI-Dateien
+
+  Da die *.GPI-Dateien von jeder Station gelesen werden k”nnen, sollte man 
+  folgende Punkte beachten:
+
+    - Keine Umlaute oder IBM-Grafikzeichen in diesen Texten verwenden. Diese 
+      sehen zwar auf einem IBM sch”n aus, aber wenn die Gegenstation einen 
+      anderen Rechner benutzt, bekommt die Station auf dem Bildschirm 
+      irgendwelche anderen Zeichen angezeigt, was wiederum nicht so sch”n 
+      aussieht.
+    - Bei Beschreibung von Fernsteuer-Kommandos darauf achten, daá die Kommandos
+      nicht direkt am Anfang der Zeile beginnen, weil sie sonst vom Programm
+      der Gegenstation irrtmlich ausgewertet werden.
+
+
+
+3.3 Die Dateien "<call>.GPC" 
+
+  In diesen Dateien k”nnen pers”nliche Connect-Texte fr bestimmte Calls
+  gespeichert werden, d.h. OM A kann anders begrát werden als OM B. Wird man 
+  von einem OM connected und es existiert fr sein Call eine entsprechende 
+  *.GPC-Datei, wird die Datei "CTEXT.GPI" ignoriert und nur die *.GPC-Datei 
+  gesendet.  Die pers”nlichen Connecttexte k”nnen wie die *.GPI-Dateien alle 
+  Macros enthalten.  
+
+
+
+3.4 Die Dateien "<call>.GPM" 
+
+  Diese Dateierweiterung bedeutet "Graphic Packet Mail".  Mit Hilfe dieser
+  Dateien hat man die M”glichkeit, pers”nliche Nachrichten an ein bestimmtes 
+  Rufzeichen zu richten. Wird man von dieser Station connected, wird anstelle 
+  des normalen Begráungstextes diese Datei gesendet.  Es kann pro Call nur 
+  eine Mail-Datei existieren. In den *.GPM-Dateien k”nnen die gleichen Macros 
+  verwendet werden, wie in den *.GPI-Dateien.  Von der Gegenstation kann eine 
+  Mail-Datei mit dem Fernsteuerbefehl //Kill bzw. //DEL (ohne Angabe eines
+  Dateinamens) gel”scht werden. Dieses sollte am Ende einer Mail-Datei
+  angegeben werden.  *.GPM-Dateien besitzen immer eine h”here Priorit„t als
+  *.GPC-Dateien.  
+
+
+
+3.5 Die Datei "MHEARD.GP" 
+
+  GP verwaltet intern eine MH-Liste, in der alle geh”rten Rufzeichen
+  gespeichert werden. Die gr”áe der MH-Liste l„át sich in der 
+  Konfigurationsdatei mit Hilfe des Befehls "MHBuffer" einstellen.
+  Die MH-Liste erfllt zwei Funktionen: Zum einen dient sie als Men fr den
+  "QSO-Spion" (siehe Kapitel 9), zum anderen l„át sie sich auch von 
+  connecteten Stationen mit dem Fernsteuerbefehl //MHeard abrufen.
+  Nach Beendigung von GP wird die MH-Liste in der Datei "MHEARD.GP"
+  abgespeichert.  
+
+
+
+3.6 Die Datei "NAMES.GP" 
+
+  In dieser Datei werden die Namen und Connect-Pfade von anderen Stationen
+  gespeichert.  Auáerdem wird in dieser Datei auch die QRG-Verwaltung von GP 
+  durchgefhrt.  Connectete Stationen k”nnen sich in die Liste eintragen, 
+  indem sie den Befehl "//Name" benutzen.  Da es sich bei der Namensliste um 
+  einen gew”hnlichen ASCII-Text handelt, kann man die Liste auch selbst 
+  „ndern.  Genauere Informationen zur Syntax der Pfadeintr„ge finden Sie in 
+  Kapitel 10.
+
+
+
+3.7 Die Dateien "*.GPB" 
+
+  Der Datei-Suffix ".GPB" bedeutet "Graphic Packet Backup" und bezeichnet die
+  Dateien, die von GP angelegt werden, um Programmdaten bei Beendigung des 
+  Programms abzuspeichern und beim Starten wieder in den Speicher zu laden.  
+  Diese Dateien drfen nicht manipuliert werden !  Durch diese Dateien ist es 
+  m”glich, GP w„hrend eines QSO's zu beenden und wieder zu starten, ohne 
+  vorher disconnecten zu mssen.  In der Datei CSTAT.GPB werden die QSO-Daten, 
+  in der Datei BUFFERS.GPB die Textpuffer gespeichert. (BUFFERS.GPB nur, wenn 
+  in CONFIG.GP der Befehl "Backup = ON" enthalten ist) In CSTAT.GPB werden
+  auáerdem einige Setup-Einstellungen und QSO-Parameter fr jeden Kanal 
+  gespeichert.  
+
+
+
+3.8 Die Datei "BINDATA.GP" 
+
+  Diese Datei beinhaltet die Daten fr das Begráungsfenster.
+
+  Im EGA-Modus kann das Begráungsfenster wegen der geringeren Aufl”sung
+  leider nicht gezeigt werden.
+
+
+
+3.9 Die Datei "ICONS.GP" 
+
+  In dieser Datei sind die Bilddaten der Symbole gespeichert.  Diese werden 
+  bei Bedarf von Diskette/Festplatte nachgeladen, es sei denn, man hat in
+  seinem PC EMS- oder XMS-Speicher installiert.  In dem Fall wird die Datei
+  beim Start komplett in diesen Speicher geladen und steht GP dort zur
+  Verfgung, ohne das weitere Plattenzugriffe erfolgen mssen.
+  Die Datei muá im selben Verzeichnis wie GP stehen. Fehlt diese Datei oder
+  wurde sie unzul„ssig manipuliert, kann GP nicht nicht gestartet werden.
+  Das Aussehen der Icons kann mit dem Programm GP-Paint von DL1ELY nach
+  eigenen Wnschen editiert werden.
+
+
+
+3.10 Die Dateien "<mycall>.GPL" 
+
+  Die Dateierweiterung ".GPL" bedeutet "Graphic Packet Logfile" und bezeichnet
+  die Logbuchdateien, die vom integrierten Logbuch-Manager angelegt werden.  
+  Fr jedes MYCALL wird eine eigene Logbuchdatei angelegt, um so eine bessere 
+  šbersicht zu erhalten.  Fr unterschiedliche SSIDs werden jedoch keine neuen 
+  Dateien angelegt.  Das Format der Logbuchdateien ist kompatibel zur 
+  Log-Datei von SP.  
+
+
+
+3.11 Die Dateien "*.GPT" 
+
+  Diese Dateien enthalten die System- sowie Remote-Texte von GP.  Dadurch ist
+  es m”glich, GP mit unterschiedlichen Sprachen zu betreiben.  Es k”nnen bis
+  zu acht unterschiedliche Sprachen gleichzeitig verwaltet werden. Aus Grnden
+  der Zugriffsgeschwindigkeit wurden die Texte in einem speziellen Format 
+  abgespeichert.
+
+
+
+3.12 Die Dateien "*.GPH" 
+
+  In diesen Dateien werden die Texte fr die Remote-Hilfen gespeichert. Diese
+  Texte werden gesendet, wenn eine Station den Befehl //Help aufruft.  Da es 
+  hier nicht so sehr auf hohe Geschwindigkeit ankommt, wurde fr diese Datei 
+  ein anderes Format gew„hlt als fr die *.GPT-Dateien. Jeder Text wird durch 
+  ein "@" eingeleitet, welchem der jweilige Befehl sowie die Anzahl der 
+  signifikanten Buchstaben, d.h.  wie weit der Befehl maximal abgekrtzt 
+  werden darf, nachgestellt wird.  Eine Ausnahme bildet der Text fr die 
+  generelle Hilfe, d.h.  wenn nach dem Befehl //Help kein weiterer Parameter 
+  angegeben wurde.  Dieser Text wird durch "@@" gekennzeichnet.  
+
+
+
+3.13 Die Dateien "<call>.GPW" 
+
+  Diese Dateien haben nur fr Sysops von TheNet-, BayCom-, Flexnet-, sowie
+  FALCon/DigiWare-Digipeatern und DieBox-Mailboxen Bedeutung.  In diesen
+  Dateien werden die ensprechenden Paáwort-Strings gespeichert.  N„here
+  Informationen dazu in 5.12.  
+
+
+
+
+4. Tastaturkommandos 
+
+
+4.1 Tastaturkommandos, die fr alle Kan„le gelten 
+
+      F1..F10            :  Schaltet auf Kanal 1..10
+      F11 bzw.  ALT-F1   :  BBS-Menu
+      F12 bzw.  ALT-F2   :  DieBox-Listfunktion
+      ALT-M              :  Schaltet auf den Monitorkanal
+      ALT-E              :  Schaltet in den Editor
+      ALT-O              :  DOS-Shell
+      ALT-R              :  Softscroll fr jeweiligen Kanal an/aus
+      ALT-U              :  Setup
+      ALT-X              :  Programm beenden
+      ALT-Z              :  Zoom an/aus (nur VGA)
+      ALT-F4             :  Fenster l”schen
+      ALT-F6             :  Zeigt letzte Link-Status Meldung
+      ALT-F7             :  Zeigt letzte Fehlermeldung
+      <Ins>              :  Schaltet um zwischen Einfge- und 
+                            šberschreibmodus. (Nur bei Editor und Kanal 1-10)
+      ALT-G              :  Schaltet den stndlichen Gong ein bzw. aus.
+                            (Bei Mausbenutzung kann auch die Doppel-Note bei
+                             der Uhr angeklickt werden)
+
+
+
+4.2 Kommandos, die nur fr Kanal 1..10 gelten 
+
+      ALT-B              :  Scrollbalken ein/aus
+      ALT-C              :  Verbindung herstellen
+      ALT-D              :  Verbindung trennen
+      ALT-Y              :  Mycall setzen (nur wenn disconnected)
+      ALT-S              :  QSO speichern
+      ALT-F              :  Datei senden (nur wenn connected) *)
+      ALT-F8             :  Schaltet Splitscreen an/aus
+      ALT-F9             :  Splitscreen-Trennlinie nach oben schieben
+      ALT-F10            :  Splitscreen-Trennlinie nach unten schieben
+      ALT-T              :  Connect-Text ausw„hlen
+      ALT-Q              :  Betriebsfrequenz eingeben
+      ALT-N              :  Namen der gerade connecteten Station speichern
+      Shift-F1..F12      :  Sendet Textmacro 1..12 (F1.GPI..F12.GPI)
+      Ctrl-D             :  Schreibt das Datum in den Vorschreibpuffer
+      Ctrl-T             :  šbernimmt die Uhrzeit in den Vorschreibpuffer
+      Ctrl-Y             :  Zeile im Vorschreibpuffer l”schen (Wird zugleich
+                            in den Zwischenpuffer kopiert und kann mit Ctrl-P
+                            wiederhergestellt werden)
+      Ctrl-C             :  Zeile in den Zwischenpuffer kopieren (Copy)
+      Ctrl-P             :  Zwischenpuffer in Zeile kopieren (Paste)
+      Ctrl-O             :  W„hlt per Zufallsgenerator eine Zeile aus der 
+                            Datei "ORIGIN.GPI" aus und kopiert sie in den
+                            Vorschreibpuffer.
+      Ctrl-K oder
+      Ctrl-<INS>         :  Kopiert einen selektierten Text aus dem RX-Fenster
+                            in den Editor.  
+      Ctrl-RETURN        :  Sendet eine Zeile ohne CR am Zeilenende aus. Dadurch
+                            lassen sich Zeilen mit einer beliebigen L„nge 
+                            erstellen.
+
+
+
+4.3 Editorbefehle 
+
+      ALT-L              :  Text laden *)
+      ALT-S              :  Text speichern
+      Ctrl-Y             :  Zeile l”schen (Wird zugleich in den 
+                            Zwischenpuffer kopiert und kann mit Ctrl-P
+                            wiederhergestellt werden)
+      Ctrl-C             :  Zeile in den Zwischenpuffer kopieren (Copy)
+      Ctrl-P             :  Zwischenpuffer in Zeile kopieren (Paste)
+
+      des weiteren alle Cursorsteuerungs-Kommandos (s.u.)
+
+
+
+4.4 BBS-Menu- und Listmen-Kommandos 
+
+      ALT-S              :  Checkliste sortieren (nicht bei LIST)
+      Cursortasten (s.u.):  Auswahlbalken auf gewnschten Eintrag setzen
+      <SPACE>            :  Eintrag markieren/demarkieren
+      <RETURN>           :  Read-Befehl zur Mailbox senden
+      <ESC>              :  Check-Men verlassen
+
+
+
+4.5 Bildschirm und Cursorsteuerung 
+
+      CursorUp           :  Scrollt den Textpuffer nach oben
+      CursorDown         :  Scrollt den Textpuffer nach unten
+      CursorRight        :  Bewegt den Cursor nach Rechts 
+      CursorLeft         :  Bewegt den Cursor nach Links
+      PageUp             :  Scrolling um eine Seite nach oben
+      PageDown           :  Scrolling um eine Seite nach unten
+      Ctrl-PageUp        :  Springt zum Textanfang
+      Ctrl-PageDown      :  Springt zum Textende 
+      Ctrl-CursorRight   :  Setzt Cursor auf den Anfang des rechten Worts
+      Ctrl-CursorLeft    :  Setzt Cursor auf den Anfang des linken Worts
+      Home               :  Setzt Cursor in die erste Spalte **)
+      End                :  Setzt Cursor an das Ende der Zeile **) 
+          
+
+*) Die Funktionen "Text laden" und "Datei senden" erwarten die Eingabe eines 
+   Dateinamens.  Tauchen in diesem Namen sogenannte Wildcards auf, also * oder
+   ?, wird eine File-Select-Box aktiviert und die Datei kann aus einer Liste
+   ausgew„hlt werden.  Wird als Dateiname ein Unterverzeichnis angegeben,
+   wird automatisch der Stellvertretername *.* verwendet und eine
+   dementsprechende Liste angezeigt.  Die Auswahlliste beginnt immer mit evtl.
+   vorhandenen Unterverzeichnissen, gefolgt von den eigentlichen Dateien.  Die
+   Unterverzeichnisse erkennt man an dem Backslash (\), der direkt auf den
+   Namen folgt.  Durch Auswahl eines Unterverzeichnisses wird zu dem neuen 
+   Pfad
+   gewechselt und der Inhalt dieses Verzeichnisses angezeigt.  Das Anklicken
+   des Verzeichnisses "..\" wechselt in das vorherige Verzeichnis.
+
+**) Die Home- und End-Taste sind mangels geeigneterer Tasten im Monitor und 
+    Kanal 1-10 anders belegt.  bei diesen Kan„len wird mittels dieser Tasten
+    das Ausgabefenster um eine Zeile nach oben bzw.  unten gescrollt.
+
+
+
+4.6 Erzeugung von ASCII-Zeichen 1-31 
+
+  Normalerweise kann man ASCII-Zeichen 1-31 durch die Tastenkombinationen
+  Ctrl-[A..Z] bzw.  durch andere Ctrl-Kombinationen erzeugen.  Einige 
+  Ctrl-Funktionen sind aber durch GP belegt, z.B.  Ctrl-D.  In diesem Fall 
+  wird dann nicht das ASCII-Zeichen 4 sondern das Datum in den Eingabepuffer 
+  geschrieben.  Unter bestimmten Bedingungen braucht man aber gerade ein 
+  ASCII- Zeichen, was von GP mit einem Makro belegt ist.  In einem solchen 
+  Fall kann man das entsprechende Zeichen mit Hilfe der ALT-Taste und des 
+  Nummernblocks erzeugen.  Dazu muá man die ALT-Taste drcken und gedrckt 
+  lassen.  Dann kann man mit dem Nummernblock eine beliebige Zahl zwischen 1 
+  und 255 eintippen und danach die ALT-Taste loslassen.  
+
+
+
+
+5. Der QSO-Betrieb 
+
+
+5.1 Allgemeine Informationen 
+
+  GP bietet die M”glichkeit, bis zu zehn QSOs gleichzeitig zu fhren.  Dazu
+  stellt es pro QSO jeweils einen Kanal zur Verfgung.  Auf diese Kan„le kann 
+  mit den Funktionstasten F1..F10 geschaltet werden.  Fr jeden Kanal l„át 
+  sich ein eigenes Rufzeichen einstellen.  Dies ist mit ALT-Y m”glich.  Will 
+  man eine Verbindung mit einer anderen Station herstellen, muá man zun„chst 
+  auf einen freien QSO-Kanal schalten und dann die Tastenkombination ALT-C 
+  drcken.  Daraufhin wird man zur Eingabe des Rufzeichens der Zielstation 
+  aufgefordert.  Ist die Station in der Namensdatei eingetragen, reicht die 
+  Eingabe des Calls ohne Pfad, ansonsten muá man den gesamten Pfad durch ein 
+  Leerzeichen getrennt hinter dem Rufzeichen angeben.  Will man zum Beispiel 
+  DH1DAE ber DB0NWS und DB0FN connecten und DH1DAE ist in der Namensdatei 
+  noch nicht eingetragen, muá man auf die Frage nach dem Rufzeichen "dh1dae 
+  db0nws db0fn" eingeben (Siehe TNC-2 Manual).  Ist DH1DAE stattdessen in der 
+  Liste enthalten, reicht die Eingabe "dh1dae".  Will man eine Verbindung 
+  trennen, einfach die Tastenkombination ALT-D bet„tigen.  Ist man auf 
+  mehreren Kan„len gleichzeitig connected, so wird in der oberen Menleiste 
+  angezeigt, wenn auf einem Kanal Text empfangen und noch nicht gelesen wurde.  
+  In so einem Fall erscheint der entsprechende Menpunkt in anderen Farbe.  
+  Zus„tzlich dazu hat man noch die M”glichkeit, das Empfangen von Paketen mit 
+  einem akustischen Signal zu unterlegen.  (s.  3.1.8) 
+
+  Ist man mit einer Station verbunden, kann man einfach losschreiben.  Der 
+  Text wird in dem oberen Fenster angezeigt und kann mit den Cursortasten
+  editiert werden.  Zum Aussenden einer Textzeile muá man <RETURN> drcken. 
+  Der Eingabe-Editor verfgt zus„tzlich ber einen automatischen 
+  Zeilenumbruch, d.h. bei Erreichen des Zeilenendes wird ein Wort, das noch
+  nicht zu Ende geschrieben wurde, automatisch in die n„chste Zeile 
+  geschrieben und die letzte Zeile wird ausgesendet.  Auf diese Weise kann
+  es nicht zu unkontrollierten Trennungen von W”rtern am Ende einer Zeile
+  kommen.  Ein weiterer Vorteil ist, daá man nicht mehr <RETURN> drcken muá
+  sondern l„ngere Texte einfach eintippen kann, ohne sich um das Abschicken
+  der Textzeilen zu kmmern.  Nur zum Abschluá des Textes muá man die
+  RETURN-Taste drcken, wenn die letzte Zeile weniger als 80 Zeichen
+  enth„lt.  Der Zeilenumbruch ist als Default-Wert auf 80 Zeichen pro Zeile
+  eingestellt. Dieser Wert l„át sich im Setup ver„ndern.  Dies ist dann
+  wichtig, wenn man sich z.B.  im Conversmodus eines Digipeaters befindet. 
+  In so einem Fall wird der gesendeten Zeile das Rufzeichen des Absenders
+  vorangestellt und die L„nge der Zeile erh”ht sich somit.  Es ist deshalb
+  gnstig, bei Conversrunden den Zeilenumbruch auf 65 Zeichen pro Zeile
+  einzustellen.  
+
+
+
+5.2 Filetransfer (ALT-T) 
+
+  Diese Funktion sendet eine Datei von Diskette/Festplatte zum QSO-Partner,
+  wobei in diesem Fall die Macros, wie sie bei den *.GPI-Dateien Verwendung 
+  finden, ignoriert werden.  Es existieren drei M”glichkeiten der Dateiber- 
+  tragung:
+    1. Textdatei-šbertragung
+    2. Bin„rdatei-šbertragung
+    3. AutoBin-šbertragung
+    4. šbertragung des Editor-Inhalts
+
+  Bei der Textdatei-šbertragung wird eine Datei ganz gew”hnlich sequentiell
+  gelesen und zum QSO-Partner gesendet.  Dabei werden aber bestimmte
+  Zeichen, wie z.B. LF oder EOF nicht bertragen, d.h.  der Text wird leicht
+  ver„ndert.  Dies spielt bei Textdateien allerdings keine Rolle.  
+
+  Will man aber Dateien bertragen, die nicht ver„ndert werden drfen, d.h.
+  die Datei, die beim QSO-Partner empfangen und bei ihm auf Diskette/
+  Festplatte gespeichert wurde, muá ein genaues Abbild der Datei sein, die
+  von der eigenen Diskette gesendet wurde, also z.B.  *.EXE-Dateien oder
+  GIF-Bilder etc., muá man die Datei als Bin„rfile bertragen.  Die AutoBin-
+  šbertragung ist eine Erweiterung der Bin„rdatei-šbertragung.  Hier wird ein
+  kleines, einfaches Protokoll fr die šbertragung benutzt, durch das
+  eventuelle Fehler bei der šbertragung festgestellt werden k”nnen.  Vor der
+  eigentlichen šbertragung der Datei wird zun„chst die L„nge der Datei zu
+  dem Terminalprogramm des QSO-Partners gesendet, welches mit einer Be-
+  st„tigung dieser Information antwortet.  Dann beginnt die eigentliche
+  Dateibertragung.  Nach Beendigung der šbertragung wird eine Prfsumme,
+  die w„hrend der šbertragung errechnet wurde, angezeigt und zum QSO-Partner
+  gesendet, dessen Terminalprogramm verf„hrt genauso und so kann man beide 
+  Prfsummen, die eigene und die des QSO-Partners vergleichen.  Haben sie 
+  unterschiedliche Werte, so ist bei der šbertragung ein Fehler aufgetreten 
+  und die Datei, die beim QSO-Partner empfangen wurde, ist unbrauchbar und 
+  sollte gel”scht werden.  Diese Art der šbertragung ist kompatibel zu Turbo 
+  Packet, TOP, SP usw.  Sie ist nur dann m”glich, wenn der QSO-Parter ein
+  solches Terminalprogramm benutzt.  Sofern die Gegenstation nicht GP benutzt 
+  und "7+ AutoSave" eingeschaltet hat, muá immer zuerst der Empf„nger sein
+  Programm auf Empfang  schalten, erst dann darf der Sender die šbertragung
+  starten.  Wird anders  verfahren, wird der Header am Anfang der šbertragung
+  vom Empf„nger nicht decodiert und best„tigt, d.h.  die šbertragung kann nicht
+  stattfinden.  GP erkennt jedoch den AutoBin-Header bei eingeschaltetem "7+ 
+  AutoSave" automatisch, so daá der Empf„nger den AutoBin-Empfang nicht von Hand
+  aktivieren muá.
+
+  Das DieBox-System bietet seit der Version 1.9 die M”glichkeit, Dateien mit
+  Hilfe des AutoBin-Modus' in das Mailboxsystem einzuspielen und auszulesen.  
+  N„heres dazu in Kapitel 5.13.  
+
+  Die Aussendung des Editor-Inhalts entspricht der šbertragung einer 
+  Textdatei, nur daá anstelle einer Datei der Inhalt des eingebauten
+  Texteditors gesendet wird.  Ein weiterer Unterschied besteht darin, daá
+  beim Senden des Editors eine Makro-Abfrage durchgefhrt wird.  Man sollte
+  deshalb darauf achten, daá es nicht zu ungewollten Makroauswertungen
+  kommt. Es drfen im Editor also keine unbeabsichtigten %-Zeichen vorkommen, 
+  oder man muá diese per Hand in ein doppeltes Prozentzeichen (%%) umwandeln.
+
+  Alle Arten der Dateibertragung k”nnen jederzeit abgebrochen werden, indem
+  die entsprechende Funktion erneut angew„hlt wird.  
+
+  Wird GP w„hrend einer Dateibertragung mit ALT-X beendet, wird diese nach
+  einem Neustart an der Stelle weitergefhrt, an der sie unterbrochen wurde.  
+
+  Ab Version 1.50 wird beim Senden einer Datei ein zus„tzliches Statusfenster
+  mit einigen interessanten Angaben eingeblendet. So werden neben dem 
+  Dateinamen und der Dateigr”áe auch angezeigt, wieviel Bytes schon gesendet 
+  wurden und deren prozentualer Anteil an der Gesamtl„nge des Files grafisch
+  dargestellt. Darberhinaus wird noch die effektive Baudrate der 
+  šbertragung angezeigt, wie lange der Filetransfer schon andauert (Elapsed
+  Time) und wie lange er voraussichtlich insgesamt dauern wird (Estimated 
+  Time). Die Vorausberechnung ist allerdings je nach Verbindungsqualit„t
+  relativ groáen Schwankungen ausgesetzt und kann daher nur als grober
+  Sch„tzwert angesehen werden.
+ 
+
+
+5.3 QSO speichern (ALT-S) 
+
+  Ein bestehendes QSO kann auf verschiedene Weise gespeichert werden.  Ist die
+  Speicherung aktiviert worden, „ndert sich der entsprechende Mentext und ist 
+  nun fr das Beenden der Speicherung zu verwenden.  W„hrend des Speicherns 
+  von Dateien kann GP mit ALT-X beendet werden.  Beim n„chsten Neustart wird 
+  das Speichern weitergefhrt.
+
+  Wie beim Filetransfer wird auch beim Speichern ab der Version 1.50 ein 
+  zus„tzliches Statusfenster angezeigt. Eine Vorausberechnung der gesamten 
+  šbertragungszeit kann hier jedoch nur dann durchgefhrt werden, wenn die 
+  Gesamtgr”áe der Datei im Voraus bekannt ist. Dies ist aber nur bei AutoBin 
+  und 7+ Autosave der Fall. Auch die Grafikbalken ist nur bei diesen 
+  beiden Speichermethoden funktionstchtig.
+  Hier nun eine Beschreibung der verschiedenen Speichermethoden:
+
+
+5.3.1 Textdatei online 
+
+  Hier wird der Text im dem Moment, wo er empfangen und auf dem Bildschirm
+  angezeigt wird, auf Diskette bzw.  Festplatte geschrieben.  Dies geschieht 
+  solange, bis die Speicherung beendet wird.  Es wird jedoch nur der Text 
+  gespeichert, der nach dem Einschalten der Speicherfunktion empfangen wird.  
+  Selbst gesendeter Text wird ebenfalls gespeichert.  
+
+
+5.3.2 Drucker online 
+
+  Diese Speichermethode funktioniert genauso wie "Diskette/Festplatte online",
+  nur wird in diesem Fall speziell ein Drucker angesprochen und der Text, der 
+  selbst gesendet wird, mit einem anderen Druckattribut versehen wird, d.h.  
+  das Druckbild ist bei empfangenem Text anders als bei gesendetem (wie auf 
+  dem Bildschirm).  Die Druckattribute k”nnen in der Konfigurationsdatei mit 
+  den Befehlen "DefaultPrint" und "InversPrint" eingestellt werden.  
+
+  Da DOS die Druckerports wie Dateinamen behandelt, kann auch in eine Datei
+  "gedruckt" werden.  Dies geschieht, wenn man anstelle von "LPT1".."LPT4" 
+  oder "PRN" einen Dateinamen als Ziel angibt.  Diese Datei kann danach 
+  jederzeit von DOS aus mit "COPY <datei> PRN" ausgedruckt werden.  
+
+  ACHTUNG:  Wird in eine Datei "gedruckt", entf„llt die Abfrage, ob eine Datei
+  mit demselben Namen schon existiert.  Ist dies der Fall, wird diese Datei 
+  gel”scht und mit dem neuen Inhalt berschrieben.  Die Abfrage entf„llt 
+  deshalb, da im Normalfall ein Drucker ange- sprochen werden soll und dieser 
+  ja schon vorher existierte.  
+
+
+5.3.3 Ausschnitt speichern 
+
+  Hier kann man einen beliebigen Ausschnitt aus dem Textpuffer speichern. 
+  Dies ist ntzlich, wenn man z.B.  aus einer Mailbox einen interessanten
+  Text ausgelesen hat und vorher die Online-Speicherung nicht eingeschaltet
+  hatte. So kann man erst nach Lesen der Nachricht entscheiden, ob man sie
+  wirklich speichern m”chte oder nicht.  Es kann jedoch nur Text gespeichert
+  werden, der sich noch im Textpuffer befindet.  Ist der Textpuffer klein
+  gew„hlt, so kann es vorkommen, daá ein Text zum Teil schon wieder
+  berschrieben wurde und somit dieser Teil des Textes verloren ist. 
+  Deshalb sollte man fr einen Kanal einen relativ groáen Textpuffer w„hlen
+  (z.B.  500 Zeilen), auf dem man seine Mailbox immer connected.  Groáe
+  GIF-Bilder etc., sofern sie mit 7Plus o.„. in ein Textformat codiert
+  wurden, sollten sicherheitshalber aber immer online gespeichert werden. 
+  7Plus-Dateien im speziellen lassen sich am besten mit der Code-Autosave-
+  Funktion speichern.  (siehe 5.3.5)
+  Als Zieldatei kann man entweder eine Datei oder ein anderes DOS-Ger„t
+  angeben. Wird die Speicherung auf einen Drucker geleitet, entspricht das
+  Druckbild der Funktion im Punkt 5.3.2.  Fr das Drucken eines Ausschnitts
+  muá man den entsprechenden Druckerport eingeben, also z.B.  "LPT1".
+
+  W„hlt man als untere Grenze die letzte Zeile an, hat man die M”glichkeit, 
+  den weiteren Text im Speichermodus "Textdatei online" an die Datei 
+  anzuh„ngen.
+
+
+5.3.4 AutoBin-Speicherung 
+
+  Diese Funktion speichert eine Bin„rdatei mit einem šbertragungsprotokoll, 
+  das kompatibel zu Turbo Packet, SP und AHP (Automodus) ist.  Genauere 
+  Beschreibung siehe Punkt 5.2.  Will man eine Bin„rdatei vom QSO-Partner 
+  empfangen, muá man zuerst bei sich die Bin„rfile-Speicherung aktivieren, 
+  BEVOR beim QSO-Partner die šbertragung gestartet wird.  Will man eine 
+  Bin„rdatei speichern, die mit 7Plus etc.  codiert wurde, kann die Datei 
+  problemlos auch als normaler Text gespeichert werden, also mit 
+  "Diskette/Festplatte online" (siehe 5.3.1).
+  Seit Version 1.50 muá man den AutoBin-Empfang nicht mehr von Hand starten, 
+  sondern kann dies dirch GP selbst erledigen lassen. Voraussetzung hierfr 
+  ist allerdings, daá man zum einen den Schalter fr "7+ AutoSave" 
+  eingeschaltet hat und daá die Gegenstation einen erweiterten AutoBin-Header 
+  schickt, in dem der Dateiname enthalten ist. Dies ist z.B. bei SP ab Version
+  6.0 und bei DieBox-Mailboxen ab Version 1.9a der Fall.
+  Anmerkung: Daten, die in DieBox-Mailboxen im AutoBin-Format gespeichert
+  wurden, kann man an einem vorangestellen "(BIN)" im Titel erkennen.
+  Verwendet die Gegenstation nicht den erweiterten AutoBin-Header, wird die 
+  Datei unter dem Namen <call>.xxx gespeichert, wobei <call> fr das Call der 
+  Gegenstation steht und xxx fr eine Zahl zwischen 000 und 999. Existiert 
+  z.B. schon die Datei "DB0SGL.000", wird beim n„chsten Mal der Name
+  "DB0SGL.001" generiert, wenn kein erweiterter AutoBin-Header benutzt wird.
+
+
+5.3.5 Code-AutoSave 
+
+  Code-AutoSave ist eine ntzliche Funktion zum Speichern von 7Plus- und
+  LCPlus-codierten Dateien.  Das Speichern eines solchen Files wird in diesem
+  Fall m„mlich von GP automatisch organisiert und man braucht sich selbst 
+  keine Gedanken mehr ber den richtigen Dateinamen usw.  zu machen.  Erkannt 
+  werden alle 7Plus- und LCPlus-Dateien, also auch .ERR- und .COR-Dateien.  
+  Praktisch ist diese Utility besonders dann, wenn ein Programm oder Bild in 
+  mehrere Teile geteilt wurde.  Da GP automatisch den richtigen Namen fr die 
+  entsprechende Datei ausw„hlt, braucht man sich selbst gar nicht mehr darum 
+  zu kmmern, sondern muá nur noch z.B.  "r 10-20" eingeben und kann danach 
+  erstmal eine Tasse Tee trinken... :-)
+  Die Funktionsweise dieses Utilities ist relativ einfach:  Sobald ein
+  7Plus-Header erkannt wird und es ist eine Speicherung nicht eingeschaltet,
+  dann aktiviert GP automatisch die Online-Speicherung und zeigt dies durch
+  ein Info-Fenster an.  Die nachfolgenden Daten werden solange gespeichert,
+  bis die entsprechende Ende-Kennung empfangen wird.  Die so entstandene Datei
+  auf Diskette/Festplatte enth„lt dann nur die informativen Daten, der brige 
+  Text, z.B.  der Mailbox-Header werden nicht gespeichert.  
+
+  Aktiviert bzw.  deaktiviert wird diese Funktion im Setup-Men, n„here Infor-
+  mationen dazu in Kapitel 10.
+
+  Seit der Version 1.50 wurde das automatische Speichern auch auf den 
+  AutoBin-Modus erweitert, siehe 5.3.4.
+
+  Seit der Version 1.60 ist es nun auch m”glich, die AutoSave-Funktion bei
+  eingeschalteter Text-Speicherung zu verwenden.
+
+
+
+5.4 Text in Editor kopieren 
+
+  Seit der Version 1.20 gibt es die M”glichkeit, bereits empfangenen Text aus
+  einem QSO-Fenster in den Editor zu kopieren und ihn dort 
+  weiterzuverarbeiten.  Fr diese Funktion ist jedoch eine Maus erforderlich!  
+  Um einen gewnschten Textausschnitt in den Editor zu kopieren, muá man 
+  diesen Ausschnitt zun„chst mit Hilfe der Maus selektieren.  Dazu klickt man 
+  die Anfangszeile des gewnschten Blocks an und h„lt die Maustaste gedrckt.  
+  Dann bewegt man die Maus bei gedrckter Maustaste nach oben oder unten, bis 
+  alle gewnschten Textzeilen inversfarbig markiert sind.  Dann l„át man die 
+  Maus- taste wieder los und bet„tigt die Tastenkombination Ctrl-<INS> oder 
+  Ctrl-K.  Befindet sich noch ein anderer Text im Editor, der noch nicht 
+  gespeichert wurde, erscheint eine entsprechende Abfrage.  W„hlt man 
+  "Abbruch", so wird der selektierte Text nicht in den Editor kopiert, bleibt 
+  aber selektiert.  Eine erneute Textselektion auf demselben Kanal l”scht die 
+  alte Markierung.  
+
+
+
+5.5 Fernsteuerbetrieb 
+
+  GP bietet eine Reihe von Fernsteuerbefehlen, die der QSO-Partner ausfhren
+  kann.  Allen Fernsteuerbefehlen mssen zwei Schr„gstriche vorangestellt 
+  werden, damit GP diese als Fernsteuerbefehle interpretiert.  So kann es 
+  jedoch zu Fehlausl”sungen kommen, wenn in der ersten Spalte ein Satz 
+  zuf„llig mit zwei Schr„gstrichen beginnt.  Dies kann besonders bei 
+  Mailboxbenutzung passieren, wenn einige OMs in ihren Beitr„gen aus 
+  irgendwelchen Grnden Fernsteuerbefehle verwenden.  Aus diesem Grund ist es 
+  ratsam, bei Mailboxbetrieb die Fernsteuerung auf dem entsprechenden Kanal 
+  abzuschalten oder die Mailbox in die Datei NAMES.GP als Typ "B>" 
+  einzutragen. Fr "B>"-Calls sperrt GP die Fernsteuerung automatisch.
+
+  Fr die Befehle, die der Dateimanipulation/verwaltung dienen, muá 
+  in der Konfigurationsdatei ein Pfad angegeben werden.  Alle Benutzer haben 
+  die gleiche Priorit„t und drfen somit alle Befehle verwenden.  Deshalb 
+  sollte als Verzeichnis ein anderes als das GP-Verzeichnis gew„hlt werden.  
+  Der Befehl zum ndern des Pfades in "CONFIG.GP" ist "UserDir = <pfad>".  
+  Wird GP auf der Festplatte installiert, muá unbedingt die Pfadeinstellung 
+  entsprechend ge„ndert werden, da die Dateibefehle sonst nicht benutzt werden 
+  k”nnen.  Fernsteuerbefehle k”nnen auch vom Sysop selbst ausgefhrt werden 
+  und die Ausgabe wird zum QSO-Partner gesendet, als wenn der QSO-Partner 
+  selbst den Befehl ausgefhrt h„tte.  Dies geschieht durch drcken der 
+  <ESC>-Taste.  Daraufhin erscheint ein Eingabefenster und man braucht nur den 
+  Fernsteuerbefehl einzugeben.  Zu beachten ist, daá man dem Fernsteuerbefehl 
+  zwei Schr„gstriche ("//") voranstellen muá, damit dieser als
+  Fernsteuerbefehl erkannt wird.  (z.B.  "<ESC>//h" sendet den Hilfetext zur 
+  Gegenstation) 
+
+
+
+5.6 Externe Programme 
+
+  Mit dem Fernsteuerbefehl "//RUN <Programm>" bzw nur einfach "//<Programm>" 
+  kann ein QSO-Partner Programme starten, die nicht im Standard-Befehlssatz von
+  GP enthalten sind.  Fr GP ab Version 1.50 existieren zwei Arten von
+  Programmen.  Zum einen k”nnen die herk”mmlichen Remote-Programme benutzt
+  werden, zum anderen k”nnen sogenannte "GPRI-Programme" verwendet werden. 
+  "GPRI" ist die Abkrzung fr "Graphic Packet Remote Interface" und steht fr
+  eine v”llig neue Art von Remote-Programmen.  Im Gegensatz zu den
+  herk”mmlichen Remote-Programmen sind GPRI-Programme in der Lage, interaktiv
+  mit dem Benutzer zu kommunizieren.  Dadurch sind weitaus mehr Anwendungs-
+  m”glichkeiten vorhanden als bei den herk”mmlichen Remote-Programmen.  Des
+  weiteren l„át sich GP ganz normal weiterbedienen, w„hrend ein GPRI-Programm
+  l„uft.  Durch die Struktur des GPRI ist eine Art von "Multitasking" m”glich,
+  d.h.  es k”nnen mehrere GPRI-Programme gleichzeitig laufen, jedoch immer
+  nur eins pro Kanal.  Genauere Informationen zu GPRI fr Programmierer sind
+  in der Datei GPRI.DOC zu finden, als Beispiele fr GPRI-Programmierung kann
+  man die Pascal-Sourcecodes der mitgelieferten GPRI-Programme heranziehen.
+
+  Remote-Programme mssen generell in dem Verzeichnis installiert werden,
+  welches man in CONFIG.GP beim Befehl "ExternalDir" angegeben hat.  
+
+
+
+5.7 Splitscreen 
+
+  Will man w„hrend eines QSO's zus„tzlich den Monitor beobachten, kann man mit
+  ALT-F8 den Bildschirm teilen, wobei im oberen Teil weiterhin das QSO und im 
+  unteren Teil der Monitor dargestellt wird.  Mit den Tasten ALT-F9 und 
+  ALT-F10 l„át sich die Trennzeile zwischen den beiden Fenstern verschieben.  
+  Der Splitscreen l„át sich auch mittels der rechten Maustaste ein- und aus- 
+  schalten.  Die Groáe der Fenster l„át sich ver„ndern, indem man den Maus- 
+  zeiger auf das "Verschiebe-Symbol" (Up/Down-Pfeile) auf der Trennzeile
+  positioniert, die linke Maustaste drckt und bei gedrckter Taste die Maus
+  nach oben oder unten bewegt.  
+
+
+
+5.8 Scroll-Lock 
+
+  Die Bildschirmausgabe kann gestoppt werden, wenn man die Taste Scroll-Lock
+  drckt.  Die gleiche Funktion bernimmt auch der Schalter "ScrLock" auf der 
+  Trennleiste zwischen QSO- und Monitorbildschirm.  Dieser Schalter kann mit 
+  der Maus ein- und ausgeschaltet werden.
+  ACHTUNG:  Die Bildschirmausgabe bleibt gestoppt, solange der Scroll-Lock-
+  Modus aktiv ist (Scroll-Lock-Led leuchtet bzw. ScrollLock-Schalter 
+  "gedrckt").  Vergiát man, den Modus durch nochmaliges Drcken der
+  Scroll-Lock-Taste zu deaktivieren, kann der Puffer des TNC berlaufen und
+  es kommt zu Fehlern.  
+
+
+
+5.9 TNC-Befehle 
+
+  Will man TNC-Parameter „ndern, kann man dies tun, indem man die <ESC>-Taste
+  drckt.  Daraufhin erscheint ein Eingabefenster, wo man den TNC-Befehl ein- 
+  geben kann.  Durch nochmaliges Drcken der <ESC>-Taste wird das 
+  Eingabefenster wieder geschlossen, ohne einen evtl.  eingegeben Befehl 
+  auszufhren.
+  Eventuell ge„nderte TNC-Parameter, die auch in der Konfigurationsdatei mit
+  "TNCINI" initialisiert werden, werden nach einem Ausflug in die DOS-Shell 
+  (ALT-O) wieder mit den Werten der Konfigurationsdatei berschrieben.
+
+
+
+5.10 Logbuchfhrung 
+
+  Auf Wunsch wird von GP automatisch Logbuch gefhrt.  Dies ist der Fall, wenn
+  in der Konfigurationsdatei der Befehl "Log = ON" enthalten ist.  
+
+
+
+5.11 Verschiedene Connect-Texte 
+
+  GP bietet die M”glichkeit, verschiedene Connect-Texte zu verwalten.  Man 
+  kann sich so verscheidene Connect-Texte vorbereiten und diese dann bei ent- 
+  sprechender Gelegenheit einfach und schnell umschalten.  Der Standard-
+  Connect-Text tr„gt den DOS-Dateinamen "CTEXT.GPI".  Alternative Connect-
+  Texte k”nnen so angelegt werden, indem der Pr„fix des Dateinamen um
+  bis zu drei Buchstaben erweitert wird.  Beispiele sind z.B.:  "CTEXT_A.GPI", 
+  "CTEXT_01.GPI", "CTEXTABC.GPI" ...  
+
+  Beim Betrieb mit mehren Mycall-Verzeichnissen kann es dabei allerdings zu
+  Problemen fhren, wenn alternative Connect-Texte nur fr eines von 
+  verschiedenen Mycalls existieren.  Wird der ausgew„hlte alternative CText 
+  nicht gefunden, wird der Standard-CText gesendet.  
+
+
+
+5.12 Sysop-Funktionen 
+
+  Fr Sysops von TheNet-,BayCom- und Flexnet- sowie FALCon/DigiWare-
+  Digipeatern und DieBox-Paáwort-kompatiblen Mailboxen bietet GP eine
+  automatische Generierung des Sysop-Paáwortes. Das Paáwort wird automatisch
+  generiert und in den Vorschreibpuffer geschrieben, sobald die Antwort des
+  Digis auf den Befehl "SY" bzw.  "PW" gekommen ist.  Es MUSS auf jeden Fall
+  mindestens "SY" zum Digi gesendet werden, damit GP das Paáwort generieren
+  kann.  Bei DieBox-Mailboxen wird das Paáwort direkt beim Einloggen
+  generiert und kann jederzeit mit Ctrl-B ins Vorschreibfenster kopiert 
+  werden.
+  Fr jeden Digi bzw. jede Mailbox muá eine eigene Datei angelegt werden, die
+  den Namen des Digis/der Mailbox tr„gt und den Suffix ".GPW" enth„lt.  Hat
+  das Call einen SSID, so muá auch dieses im Dateinamen angegeben werden,
+  jedoch ohne Bindestrich.
+  Beispiel:  Die Datei fr DB0IZ-9 máte "DB0IZ9.GPW" heiáen.
+  Die Paáwortdateien drfen nur den eigentlichen Paáwortstring enthalten, bzw. 
+  bei Flexnet eine fnstellige Dezimalzahl und bei DieBox 60 Zeilen zu je 27
+  Zeichen.  Damit die Paáwort-Funktion funktionieren kann, muá die jeweilige
+  Station auch in der Datei NAMES.GP eingetragen sein, wobei es auf die
+  richtige Angabe des Typs ankommt.  Genauere Informationen finden Sie in
+  Kapitel 9.  BayCom-Nodes mssen als "N>" deklariert werden, da sie das
+  TheNet-Paáwortverfahren verwenden, FALCon/DigiWare als "B>", weil hier das 
+  DieBox-Verfahren zur Paáwort-Berechnung benutzt wird. In sp„teren 
+  DigiWare-Versionen wird das Paáwort-Verfahren jedoch ge„ndert. Daher wurde in 
+  GP schon der Typ "W>" bereitgestellt, der das zuknftige Paáwort-Verfahren
+  bereits untersttzt. (GP ist seiner Zeit wieder einmal weit voraus ;-) )
+  Der entsprechende Befehl zum Einloggen als Sysop darf erst gesendet werden,
+  wenn keine Daten vom Digi mehr anstehen, d.h. wenn der Digi das letzte Prompt 
+  gesendet hat. Andernfall erkennt GP die Paáwort-Abfrage des Digi nicht und 
+  errechnet auch kein Paáwort.
+
+
+
+5.13 Das DieBox-AutoBin 
+
+  Das DieBox-System bietet seit der Version 1.9 die M”glichkeit, bin„re 
+  Dateien mit Hilfe des AutoBin-Modus' in das Mailboxsystem einzuspielen bzw. 
+  wieder auszulesen.  Die Vorgehensweise unterscheidet sich dabei nicht von
+  der bisherigen Methode, Files einzuspielen bzw.  auszulesen.  Man muá nur 
+  die 7+ AutoSave-Funktion von GP einschalten und den Lesebefehl zur 
+  Mailbox senden. Der Rest geht dann wie beim Auslesen von 7+ Dateien
+  automatisch. Man erkennt bin„re Dateien in der Mailbox an einem
+  vorangestellten "(BIN)" im Titel.  
+
+
+
+
+6. Anwendung der MailBox-Utilities 
+
+  Die folgenden Utilities zur Mailboxbenutzung basieren auf den Funktionen
+  verschiedener BBS-Systeme, eine Liste aller verfgbaren Meldungen ausgeben 
+  zu lassen.  Diese Listen bekommt man beim DieBox-System mit (C)heck bzw.  
+  (L)ist <Rubrik>, bei anderen BBS-Systemen mit verschiedenen L-Kommandos.  
+  Wenn Sie mit dem Mailbox-Betrieb noch nicht vertraut sind, lesen Sie bitte 
+  die Hilfestellungen der Mailbox (HELP).  
+
+
+
+6.1 Das BBS-Menu 
+
+  Mailboxen bieten die M”glichkeit, alle neuen Eintr„ge seit dem letzten Login
+  aufzulisten.  Eine solche Liste entspricht bei jedem Mailboxsystem einem 
+  bestimmten Format.  GP ist in der Lage, die entsprechenden Listen von ver- 
+  schiedenen g„ngigen BBS-Systemen zu erkennen.  Erkannt werden:
+
+    DieBox
+    F6FBB (Versionen 5.15, jedoch nur unter Vorbehalt)
+    DK5SG-BBS (DB0SAO)
+    DB0IE
+
+  Empf„ngt GP eine solche Liste, wird diese in einem speziellen Puffer
+  gespeichert.  Dieser Puffer ist mit einem Auswahlmen gekoppelt, so daá man 
+  sich bequem den gewnschten Eintrag zum Lesen ausw„hlen kann.  Der gew„hlte 
+  Listeneintrag wird dann automatisch in einen Befehl zum Lesen der Datei 
+  umgewandelt und an die Mailbox gesendet.  Danach muá man nur noch auf den 
+  Text warten.  Nachdem die Verbindung mit der Mailbox getrennt wurde, wird 
+  die Liste wieder gel”scht.  Die Liste wird aber nur dann gel”scht, wenn die 
+  Verbindung vom Benutzer selbst getrennt wurde, sei es durch einen Disconnect 
+  oder den Quit-Befehl der Mailbox.  Bei Timeouts, Link failures usw.  bleibt 
+  die Liste erhalten und kann bei erneutem Connecten der Mailbox 
+  wiederverwendet werden.  Der erneute Connect der Mailbox nach einem Timeout 
+  muá jedoch auf demselben Kanal erfolgen!  Da nur EIN Auswahlmen existiert, 
+  kann man diese Funktion auch nur dann anwenden, wenn man NUR MIT EINER 
+  MAILBOX ZUR GLEICHEN ZEIT verbunden ist, ansonsten werden alle Eintr„ge der 
+  verschiedenen Mailboxen in einen Puffer geschrieben und es kommt 
+  unweigerlich zu Fehlern.  Die Anwendung dieser Funktion gestaltet sich so:  
+ 
+       1. Mailbox connecten
+       2. Den enstsprechenden Check-Befehl zur Mailbox senden. (Infos ber die
+          Mailbox-Befehle lesen Sie bitte in der Hilfestellung der Mailbox)
+       3. Nachdem die gesamte Liste angekommen ist und das Prompt der Mailbox
+          erscheint, mit ALT-F1 die Check-Funktion anw„hlen, die gewnschten
+          Nachrichten zum Lesen mit den Cursortasten ausw„hlen und mit
+          der Leertaste markieren.  Will man die Nachrichten lesen, muá man
+          <RETURN> eingeben. Danach braucht man nur noch auf die Nachrichten
+          zu warten.  Punkt 3 kann beliebig oft wiederholt werden.  Will man
+          nur eine Datei auslesen, reicht es, den Auswahlbalken auf den
+          gewnschten Eintrag zu positionieren und <RETURN> zu drcken.  
+
+  Auf Wunsch kann die Liste auch nach Rubriken sortiert werden, damit wird die
+  Liste wesentlich bersichtlicher, da man sich meistens sowieso nur fr be- 
+  stimmte Rubriken interessiert.  
+
+  Befindet sich im BBS-Menu noch eine Liste und eine neue Liste wird 
+  empfangen, erscheint eine Abfrage "Alte Liste l”schen Ja, Nein,Abbruch".
+  W„hlt man "Ja", so wird die alte Liste gel”scht und durch die neuen
+  Eintr„ge ersetzt. "Nein" fgt die neuen Eintr„ge an die alte Liste an. 
+  "Abbruch" bricht die Funktion ab, indem die Aussendung des Check- oder
+  List-Befehls verhindert wird.  
+
+
+
+6.2 Die DieBox-Listfunktion 
+
+  Die Listfunktion hat im Prinzip die gleiche Funktion wie die Checkfunktion.
+  Dieses Men funktioniert aber nur mit DieBox-Mailboxen.  Die Liste kann nur 
+  einer Rubrik zugeordnet werden.  Beim Listen einer anderer Rubrik werden die 
+  vorherigen Eintr„ge gel”scht.  Die Anwendung dieser Funktion sieht so aus:  
+
+       1. Mailbox connecten
+       2. eine gewnschte Rubrik auflisten, z.B.  "l ibm"
+          (weitere Info ber die Mailbox-Befehle lesen Sie bitte in der
+          Hilfestellung der Mailbox)
+       3. Nachdem die gesamte Liste angekommen ist und das Prompt der Mailbox
+          erscheint, mit ALT-F2 die List-Funktion anw„hlen, die gewnschten
+          Nachrichten zum Lesen mit den Cursortasten ausw„hlen und mit der
+          Leertaste markieren.  Will man die Nachrichten lesen, muá man
+          <RETURN> eingeben.  Danach braucht man nur noch auf die Nachrichten
+          zu warten.  Punkt 3 kann beliebig oft wiederholt werden.
+          Will man nur eine Datei auslesen, reicht es, den Auswahlbalken auf
+          den gewnschten Eintrag zu positionieren und <RETURN> zu drcken.
+
+
+
+6.3 Die "Find"-Funktion
+
+  Sowohl im "BBS-Menu" als auch in der "DieBox-Listfunktion" kann man nach 
+  bestimmten Begriffen, z.B. Calls suchen lassen. Dazu braucht man nur ALT-F 
+  zu drcken oder das entsprechende Icon mit der Maus anzuklicken und dann den
+  gewnschten Suchbegriff in das Eingabefenster zu schreiben. Wird der 
+  Suchbegriff in einer Zeile gefunden, setzt GP den Auswahlbalken auf diese 
+  Zeile. Durch erneute Eingabe von ALT-F und die Best„tigung des Suchbegriffs 
+  mit <RETURN> wird die Suche an der derzeitigen Cursorposition fortgesetzt.
+  Wird aber ein neuer Suchbegriff eingegeben, beginnt GP mit der Suche immer 
+  am Anfang der Liste, unabh„ngig von der Position des Auswahlbalkens.
+
+
+
+6.4 Probleme beim Erkennen der Listen
+
+  Leider tauchen immer wieder Probleme mit der richtigen Erkennung von 
+  Mail-Listen auf. Meistens passiert dies, wenn bei der Mailbox eine neue
+  Software-Version installiert wurde. Bei der FBB-BBS ist mir jedoch 
+  aufgefallen, daá das Format der Liste auch von der gerade eingestellten 
+  Sprache abh„ngig ist. Sollte es bei der Auswertung der Listen zu Problemen 
+  kommen, bitte ich mir eine kurze Mail zu schreiben und einen Ausschnitt der 
+  Liste mitzuschicken, damit ich GP darauf anpassen kann.
+  Bei der Baycom-Box kann man das Format der Liste seinen eigenen Wnschen
+  anpassen. Die Standard-Einstellung ist eine DieBox-kompatible Liste und wird
+  von GP problemlos erkannt. Eventuell funktionieren aber auch noch andere 
+  Format-Einstellungen. Diese kann man am einfachsten experimentell 
+  ermitteln.
+
+
+
+6.5 Import von Listen aus dem Editor
+
+  Im Setup-Men des BBS-Men und des List-Fensters existiert seit der Version 
+  1.60 eine Funktion, mit der man eine Checkliste aus dem Editor in das BBS-Men
+  bzw. das List-Fenster importieren kann. Dazu l„dt man z.B. eine Datei, die 
+  eine entsprechende Checkliste enth„lt, in den Editor und w„hlt dann im 
+  BBS-Men bzw. Listfenster die Funktion "Liste aus Editor einfgen" aus dem 
+  Setup-Men. Die im Editor gefundenen Eintr„ge werden an eventuell schon 
+  vorhandene Eintr„ge angeh„ngt. Will man die alten Eintr„ge l”schen, so muá man
+  dies vor Aufruf der Funktion mit ALT-F4 von Hand tun.
+
+  Die ebenfalls neuen Funktionen zum ndern des Referenz-Kanals bzw. der Rubrik 
+  drften wohl selbsterkl„rend sein. :-)
+
+
+
+
+7. Der GP-Editor 
+
+  Bei diesem Editor handelt es sich um einen einfaches Instrument zum
+  Bearbeiten von kleineren Textdateien, z.B.  der Konfigurationsdatei oder
+  Infotexten wie "NEWS.GPI" oder "CTEXT.GPI".  Der Editor bietet keinen
+  besonderen Bedienungskomfort, doch sind alle wesentlichen Cursorsteuerungen
+  vorhanden. Auáerdem bietet dieser Editor den Vorteil, GP nicht extra 
+  verlassen zu mssen, um einen Text zu editieren.  Die Gr”áe des
+  Editor-Speichers l„át sich in der Konfigurationsdatei auf eigene Wnsche
+  einstellen.  Der Speicher wird dabei in Zeilen … 80 Zeichen angegeben. 
+  Das Minimum sind 40 Zeilen, das Maximum 780 Zeilen (ca.  64KB).  Es
+  existieren zwei Modi, in denen der Editor betrieben werden kann.  Im
+  Einfgemodus werden alle Zeichen, die rechts vom Cursor stehen, nach
+  rechts geschoben und das neue Zeichen in den Text eingefgt.
+  Im šberschreib-Modus wird stattdessen das Zeichen, auf dem sich der Cursor
+  befindet, durch das neue Zeichen ersetzt.  Optisch wird der Einfgemodus
+  durch einen "halben" Cursor angezeigt, w„hrend im šberschreibmodus ein
+  "voller" Cursor zu sehen ist.  Zwischen diesen Modi wird mit der Insert-
+  Taste umgeschaltet.
+
+  Bei der Benutzung des GP-Editors muá zwischen "Textzeile" und "Bildschirm-
+  zeile" unterschieden werden.  Eine Bildschirmzeile kann maximal 80 Zeichen 
+  lang werden und beinhaltet die Zeichen, die tats„chlich auf dem Bildschirm 
+  zu sehen sind.  Eine Textzeile kann ais mehreren Bildschirmzeilen bestehen 
+  und ist das, was nach dem Speichern der Datei in einer Zeile vorhanden ist.  
+  Der GP-Editor kann Textzeilen bis 255 Zeichen L„nge verarbeiten, diese 
+  werden jedoch in mehrere Bildschirmzeilen zu je 80 Zeichen aufgeteilt.  Pro 
+  Bild- schirmzeile sind maximal 80 Zeichen erlaubt.  Wird versucht, mehr als 
+  80 Zeichen in eine Bildschirmzeile zu schreiben (im Einfgemodus), werden 
+  die Tastatureingaben ignoriert.  Das Ende einer Textzeile wird mit einer 
+  Raute markiert.  Fehlt diese Raute, so wird beim Speichern die n„chste 
+  Bildschirmzeile angefgt, ohne ein CR/LF zwischen den Bildschirmzeilen 
+  einzufgen. Die L„nge einer Textzeile kann im Setup mit dem Menpunkt 
+  "Zeilenumbruch" eingestellt werden.
+
+  Zum Laden eines Textes die Tastenkombination ALT-L drcken und dann den
+  Dateinamen angeben.  Zum Speichern eines Textes ALT-S drcken und Dateinamen 
+  eingeben.  
+
+  Will man eine neue Datei, die noch nicht auf der Diskette/Festplatte exis-
+  tiert, einfach ALT-L drcken und dann den gewnschten Dateinamen eingeben 
+  und die nachfolgende Frage, ob die Datei neu angelegt werden soll, mit "J" 
+  beantworten.  
+
+
+
+
+8. Die MH-Liste (ALT-H) 
+
+  GP verwaltet eine interne MH-Liste, welche die 40 letztgeh”rten Stationen
+  auflistet.  Diese Liste wird bei dem Fernsteuerbefehl //MHeard an die Gegen- 
+  station gesendet.  Die MH-Liste erh„lt ihre Informationen aus dem Monitor- 
+  kanal und wird nur auf den neuesten Stand gebracht, wenn der Monitor ein- 
+  geschaltet ist (Monitor Mode sollte nicht "N" sein).  Die MH-Liste bietet 
+  die M”glichkeit, zu untersuchen, ob ein geh”rtes Call schon in der Datei 
+  NAMES.GP eingetragen ist.  Um dieses zu prfen, braucht man nur den inversen 
+  Balken auf ein Rufzeichen zu bringen und <RETURN> zu drcken.  Die Auswahl 
+  kann natrlich auch mit der Maus geschehen, die Funktionsweise ist dieselbe
+  wie beim BBS-Menu.  
+
+
+
+
+9. Der "QSO-Spion"
+
+  Ab Version 1.50 bietet GP die M”glichkeit, einzelne QSOs selektiv 
+  mitzulesen. Dazu werden die bertragenen Daten in einem eigenen Fenster 
+  angezeigt. Es k”nnen bis zu 10 QSOs gleichzeitig "spioniert" werden, soweit
+  man genug Speicherplatz fr die Textpuffer der "Spion"-Fenster hat. Die 
+  Gr”áe der Textpuffer l„át sich in der Konfigurationsdatei mit Hilfe des 
+  Befehls "SpyBuffer", die Anzahl der Fenster mit "MaxSpy" einstellen.
+
+
+
+9.1 QSO zum mitlesen ausw„hlen
+
+  Will man ein QSO mitlesen, muá man zun„chst in die MH-Liste schalten. Danach
+  entweder das "SPY"-Icon anklicken oder die Tastenkombination ALT-S drcken. 
+  Im Statusfenster erscheint die Aufforderung "Bitte QSO ausw„hlen". Jetzt 
+  kann man aus der MH-Liste das gewnschte QSO ausw„hlen, indem man den 
+  Auswahlbalken ber das entsprechende Rufzeichenpaar bringt und dann <RETURN>
+  drckt oder einfach die Maus benutzt. Danach kommt die Frage, ob man das QSO
+  auf Diskette bzw. Festplatte speichern will. Beantwortet man die Farge mit 
+  "Ja", kann man in einem weiteren Eingabefenster den gewnschten Dateinamen 
+  eingeben. GP bietet einen Standard-Namen an. Will man diesen benutzen, 
+  braucht man nur <RETURN> zu drcken. Danach springt GP in das Fenster, in 
+  dem das QSO angezeigt wird.
+  Entfernen kann man den "QSO-Spion" entweder, indem man in dem jeweiligen 
+  Fenster ALT-K drckt oder das Icon "Kill Spy" anklickt. Man kann ein QSO 
+  auch aus der MH-Liste entfernen, indem man dort ALT-K drckt oder das Icon 
+  "Kill Spy" anklickt und dann das jeweilige QSO ausw„hlt.
+
+  Ist in der MH-Liste auch die Gegenrichtung des gew„hlten QSOs eingetragen, so 
+  wird sie automatisch ebenfalls markiert und im jeweiligen "Spion-Fenster" 
+  werden die Daten beider Richtungen angezeigt. (Mit unterschiedlichen Farben)
+  Wurde die Gegenrichtung bei Aktivierung des "QSO-Spions" noch nicht geh”rt, 
+  d.h. sie taucht in der MH-Liste noch nicht auf, wird von GP zun„chst nur die 
+  eine Richtung markiert und mitgeschrieben. Wird die Gegenrichtung zu einem 
+  sp„teren Zeitpunkt geh”rt, so kann man sie nachtr„glich zum Mitlesen 
+  ausw„hlen. GP erkennt in dem Fall automatisch, daá die andere H„fte des QSOs 
+  bereits mitgelesen wird und er”ffnet kein neues "Spion-Fenster", sondern 
+  ordnet die ausgew„hlte QSO-H„lfte dem bereits existierenden Fenster zu.
+
+
+
+9.2 Das "Spion-Fenster"
+
+  In diesem Fenster werden die bertragenen Daten des jeweiligen QSO 
+  angezeigt. Werden beide QSO-Richtungen geh”rt, erkennt GP dies automatisch
+  und zeigt beide Richtungen in einem Fenster mit unterschiedlichen Farben
+  an. Welches Call in welcher Farbe angezeigt wird, h„ngt davon aus, welche
+  Richtung in der MH-Liste angew„hlt wurde.
+  Beispiel:
+    Man hat in der MH-Liste das QSO "DB0SGL > DH1DAE" ausgew„hlt, dann
+    erscheinen im "Spion-Fenster" die Daten von DB0SGL in der Vordergrundfarbe
+    (SpyForeGround) und die von DH1DAE in der Inversfarbe (SpyInversAttr).
+
+  Im Statusfenster wird zum einen das QSO angezeigt, welches in diesem Fenster
+  mitgelesen wird und zum anderen die Nummern der zuletzt geh”rten 
+  AX.25-Pakete. Beim AX.25-Protokoll werden die Pakete nummeriert, damit bei 
+  einem eventuellen šbertragungsfehler genau das fehlerhafte Paket wiederholt 
+  werden kann. Diese Nummerierung geschieht mit Zahlen zwischen 0 und 7. (Aus
+  diesem Grund kann der "Maxframe"-Parameter im TNC auch nur maximal 7 sein.)
+  Diese Nummerierung bezieht sich natrlich immer nur auf jeweils eine 
+  Richtung.
+
+
+
+9.3 Der automatische QSO-Spion
+
+  Seit Version 1.60 besteht die M”glichkeit, GP automatisch bestimmte QSOs
+  mitschreiben zu lassen. Diese QSOs werden dann automatisch im Spy-Verzeichnis 
+  gespeichert. Fr jedes QSO wird eine neue Datei angelegt. Das Dateiname wird 
+  aus dem Rufzeichen des jeweiligen Calls generiert, mit einem Suffix zwischen 
+  ".000" und ".999". (z.B. "DH1DAE.000")
+  Wird ein Info-Frame von einer Station, die automatisch mitgespeichert werden 
+  soll, empfangen, so wird automatisch ein neuer QSO-Spion gestartet, sofern 
+  noch einer frei ist. Das QSO wird dann solange mitgespeichert, bis ein 
+  DISC-, DM- oder UA-Paket von der jeweiligen Station bzw. der Gegenstation 
+  empfangen wird. In dem Fall wird der QSO-Spion wieder geschlossen und steht 
+  fr neue QSOs wieder zur Verfgung.
+
+  Welche QSOs automatisch mitgespeichert werden sollen, kann man mit den
+  Config-Parametern "AutoSpy" und "NoAutoSpy" festlegen. Mit dem Parameter
+  "AutoSpy" legt man fest, welche Calls automatisch mitgespeichert werden sollen
+  und mit dam Parameter "NoAutoSpy" dle Calls, die auf keinen Fall 
+  mitgespeichert werden sollen. Unter "NoAutoSpy" sollte auf jeden Fall das 
+  eigene Call eingetragen werden, da ein Mitschnitt der eigenen QSOs ja nicht 
+  viel Sinn ergibt. ;-)
+  Bei beiden Parametern lassen sich jeweils bis zu 10 Eintr„ge definieren, die 
+  jeweils durch ein Komma getrennt werden mssen.Dabei muá es sich nicht direkt 
+  um Calls handeln sondern es kann ein beliebiger Ausschnitt aus einem 
+  Monitor-Header sein. Meine Versuche bei der Entwicklung dieser Funktion haben 
+  auch gezeigt, daá es sinnvoll ist, die Suchkriterien z.B. an die 
+  Schlsselw”rter "fm" und "to" zu koppeln.
+
+  Groá-Kleinschreibung ist unbedingt zu beachten, ebenso die Position von 
+  -----------------------------------------------------------------------
+  SPACE-Zeichen!
+  --------------
+
+  ACHTUNG: Es werden im Normalfall sowohl normale QSOs als auch UI-Pakete (d.h. 
+           Baken oder z.B. Flexnet-Searchs) mitgespeichert. Bei UI-Paketen gibt 
+           es aber keine Disconnect-Pakete, so daá ein QSO-Spion ge”ffnet, aber 
+           nicht wieder automatisch geschlossen wird. Man sollte daher beim 
+           Parameter "NoAutoSpy" das Kriterium "ctl UI" angeben.
+           (siehe Beispiel)
+ 
+
+  Beispiele:
+    Es sollen alle QSOs mit DB0SGL und DB0FN mitgespeichert werden, jedoch keine
+    QSOs, die in irgendeiner Weise mit DH1DAE zu tun haben:
+
+    AutoSpy = fm DB0SGL,fm DB0FN
+    NoAutoSpy = DH1DAE
+
+
+    Es sollen generell alle QSOs mitgespeichert werden, die mit beliebigen DB0-
+    Stationen gefhrt werden. Es sollen aber weder QSOs von DH1DAE noch 
+    irgendwelche Baken oder sonstige UI-Pakete (z.B. Flexnet-Search) 
+    mitgeschrieben werden:
+
+    AutoSpy = fm DB0
+    NoAutoSpy = DH1DAE,ctl UI
+
+    Es sollen QSOs von DB0SGL und con DB0FN mitgeschrieben werden, jedoch nur
+    QSOs von DB0FN(-0), aber keine QSOs von DB0FN-1, DB0FN-2 .. DB0FN-15:
+
+    AutoSpy = DB0FN ,DB0SGL
+                   ^
+                   dieses SPACE ist wichtig, dadurch reagiert GP nur auf Frames 
+                   von DB0FN(-0)
+
+
+  Es ist ratsam, bei Verwendung des automatischen QSO-Spions das Spy-Verzeichnis
+  regelm„áig zu warten, da man ansonsten leicht den šberblick verlieren kann. 
+  Ansonsten kann ich nur zur Benutzung raten, denn mir hat es schon einige Male 
+  das Auslesen von Mails aus der Mailbox erspart.
+  šbrigens: 7+ Files lassen sich aus den Mitschnitten problemlos mit Hilfe von 
+  7PLUS extrahieren (Sofern der Mitschnitt fehlerfrei war, natrlich). Wer nicht
+  weis, wie's geht, sollte einmal die Dokumentation von 7+ studieren. Das 
+  Programm bietet einige interessante Funktionen...
+
+
+
+9.4 M”gliche Probleme
+
+  Der "QSO-Spion" kann nur dann einwandfrei arbeiten, wenn man die jeweiligen 
+  Stationen (bzw. in den meisten F„llen den Digipeater) einwandfrei h”ren kann
+  und jedes Paket fehlerfrei decodieren kann. Kann man den Digi nicht immer
+  korrekt empfangen (DCD leuchtet auf aber das Paket wird nicht im 
+  Monitorfenster angezeigt oder man hat ”fters mit "Reject Frames" zu tun),
+  kann es auch vorkommen, daá im "Spion-Fenster" einzelne Pakete fehlen oder
+  in der falschen Reihenfolge angezeigt werden. Diese Fehler sind zwar
+  „rgerlich, aber leider nicht zu verhindern.
+
+
+
+
+10. Der Autorouter
+
+  Der Autorouter von GP hilt Ihnen, bekannte Stationen zu connecten, ohne daá
+  Sie den kompletten Pfad eingeben mssen oder sich von Hand durch die 
+  Digipeater durchzuconnecten.  Voraussetzung dafr ist jedoch, daá der Pfad 
+  zu der jeweiligen Station bekannt ist und in der Datei NAMES.GP eingetragen 
+  wurde.  Die Listeneintr„ge haben immer folgende Syntax:  
+
+  TYP>CALL NAME; PFAD
+  oder
+  TYP>IDENT:CALL NAME; PFAD
+
+  Bei Benutzung von IDENTs ist es auf jeden Fall wichtig, Ident UND Call
+  anzugeben, da GP nur mit den Calls arbeitet. Daher kann jeder Station
+  ein beliebiges Ident zugeteilt werden, also auch z.B. Flexnet-Digipeatern.
+  Dies ist aber nur m”glich, weil GP nach auáen hin immer nur mit dem Call
+  einer Station arbeitet, aber nicht mit dem Ident. Der Ident wird lediglich
+  GP-intern verwendet.
+  Wichtig ist auch die richtige Angabe des Typs, denn dadurch erkennt GP,
+  welche Aktionen durchgefhrt werden drfen und welche nicht.  So kann die
+  Check- und List-Funktion nur bei Mailboxen gebraucht werden, w„hrend ein
+  Text mit Hilfe des Fernsteuerbefehls "//<n> <Text>" nur an Kan„le geschickt
+  werden kann, die mit einem TERM (Terminal-Endstelle) verbunden sind. Des
+  weiteren werden Die Statusmeldungen am Ende einer AutoBin- oder 7plus-
+  Speicherung ebenfalls nur an T>-Stationen gesendet. Bei anderen Stationen
+  werden die Text nur auf dem Bildschirm angezeigt.
+  Der Name der Station darf Leerzeichen enthalten und kann theoretisch
+  beliebig lang sein, im Programm werden allerdings nur die ersten 22
+  Buchstaben des Namens angezeigt.  Es muá darauf geachtet werden, daá die
+  Rufzeichen und die Typenangabe in Groábuchstaben geschrieben wird, so wie
+  bei den untenstehenden Beispielen.  Ist die entsprechende Station direkt
+  und ohne einen Digipeater erreichbar, dann wird der Pfadeintrag einfach
+  weggelassen, ansonsten enth„lt der Pfad eine Auflistung aller notwendigen
+  Digipeater. Ein Digipeatereintrag hat immer folgende Syntax:
+
+    TYP>CALL
+    oder
+    TYP>IDENT
+    oder
+    TYP>IDENT:CALL
+
+  WICHTIG: Der letzte Eintrag muá in jedem Fall IMMER die Syntax TYP>CALL
+           besitzen und darf keinen Ident enthalten!
+
+  Der Typ kann folgende Buchstaben annehmen:
+
+            B :  Mailbox (z.B. B>DB0SGL)
+            D :  L2-Digipeater (z.B. D>DB0ID)
+            F :  Flexnet-Digipeater (z.B. F>DB0FN)
+            N :  NetRom-Digipeater (z.B. N>DB0EAM)
+            ! :  Wie N, nur daá hier der Befehl "C!" verwendet wird
+            T :  Terminal-Endstelle (z.B. T>DH1DAE)
+
+  Wird eine Terminal-Endstelle als Digipeater benutzt, dann generiert GP
+  automatisch einen entsprechenden Remote-Befehl, also "//C ...".  
+
+  Anhand dieser Typenbezeichner erkennt GP, auf welche Weise ber die 
+  einzelnen Stationen connected werden muá.  Ein Pfadeintrag sieht z.B.
+  folgendermaáen aus:  
+
+  T>DH1DAE Ulf; D>DB0NWS D>DB0FN T>DH1DAE
+
+  In diesem Fall sendet GP an den TNC den Befehl "C DH1DAE DB0NWS DB0FN".
+
+  Ist in der Pfadliste jedoch ein N>- oder F>-Digi vorhanden, z.B.:
+
+  T>DH1DAE Ulf; N>DB0HSK F>DB0DOZ D>DB0FN T>DH1DAE
+
+  dann sieht die Connectsequenz etwas anders aus.  Jetzt wird zun„chst der
+  Digipeater DB0HSK connected, dann der Befehl "C DB0DOZ" und anschlieáend der 
+  Befehl "C DH1DAE DB0FN" ausgesendet.  
+
+  Das folgende Beispiel demonstriert die Anwendung des Typs "!":
+
+  T>DF3VI Patrick; D>DB0FN-9 !>DB0II !>ON5PL !>ON5ZS F>LX0PAC D>DB0HOM
+
+  GP generiert nun folgende Connect-Sequenz:
+  "C DB0II DB0FN" "C! ON5PL" "C! ON5ZS" "C! LX0PAC" "C DF3VI DB0HOM"
+
+  Idents k”nnen beispielsweise so angewendet werden:
+
+  F>SIEGEN:DB0FN Digi Siegen
+  T>ULF:DH1DAE Ulf; D>SIEGEN T>DH1DAE
+
+  Nun kann man anstelle von "DH1DAE" auch "ULF" eingeben, und GP generiert
+  diesen Connect-Befehl: "C DH1DAE DB0FN".
+
+
+
+10.1 Rekursive Pfadeintr„ge
+
+  In der Pfadliste muá nicht der komplette Pfad eingegeben werden, sondern es
+  kann auf einen anderen, schon bekannten Pfad aufgebauen.  
+
+  Beispiel:
+
+  F>DB0FN Digi Siegen
+  F>DB0WST Netzknoten West; F>DB0FN F>DB0WST
+  F>DB0ME Digi Solingen; F>DB0WST F>DB0ME
+  B>DB0SGL Mailbox Siegen; F>DB0FN B>DB0SGL 
+  B>DB0IZ Mailbox Solingen; F>DB0ME B>DB0IZ
+
+  Der vollst„ndige Pfad zu DB0IZ z.B. wird nun aus dem Pfad zu DB0ME und zu
+  DB0WST zusammengesetzt.  Es ergibt sich beim Connecten dann automatisch 
+  folgender Pfad:  
+
+  F>DB0FN F>DB0WST F>DB0ME B>DB0IZ
+
+  Die Verwendung der rekursiven Pfadeintr„ge hat zwei Vorteile:
+
+    1. Man muá weniger eintippen (hi)
+    2. Die Pfadliste wird variabler, falls ein bestimmter Digipeater ausf„llt
+       oder ein neuer Link dazukommt, braucht nur EIN Pfadeintrag ge„ndert zu
+       werden.
+
+
+
+10.2 Autorouting ber SP-Gateways
+
+  Sollte in einem Pfad ein Link ber ein SP-Gateway vorkommen, bei dem hinter
+  dem Call auch noch eine Portnummer angegeben werden muá, l„át sich dies 
+  durch einen Trick erreichen, und zwar durch einen "Dummy-Digi".
+  Beispiel:  
+
+    DL9ZZZ ist ein SP-Gateway, der mit Port0 auf 70cm und mit Port1 auf 2m QRV
+    ist.  OM A ist auf 2m QRV und will DB0XYZ auf 70cm connecten.  Der
+    entsprechende Connect-Befehl máte also lauten "//C DB0XYZ 0".  Der Pfad-
+    eintrag in NAMES.GP sieht dann folgendermaáen aus:
+
+    N>DB0XYZ Testdigi; T>DL9ZZZ D>0 N>DB0XYZ
+
+    GP connected zuerst DL9ZZZ und sendet dann den Befehl "//C DB0XYZ 0". 
+    (Hat DL9ZZZ seinen Gateway als Node konfiguriert, kann man anstelle von
+    "T>DL9ZZZ" auch "N>DL9ZZZ" eintragen)
+
+  Dieser Trick kann nicht nur bei SP-Gateways angewendet werden, sondern z.B.
+  auch bei Baycom-Nodes, wenn dort eine Portnummer angegeben werden muá.  
+
+
+
+10.3 Einige Anmerkungen zum Autorouter
+
+  Wie Sie sicher schon bemerkt haben, wertet der Autorouter die entsprechenden
+  Connect-Meldungen der Digipeater aus, um den tats„chlichen Endknoten zu er- 
+  mitteln.  Nachrichtentechnisch gesehen ist solch eine Art des Autoroutens 
+  zwar ziemlich unsinnig, aber bei dem derzeitigen Packet Radio-Netz mit 
+  seinen NetRom-Knoten nicht anders m”glich.  Das bessere Routing wird auf 
+  jeden Fall von Flexnet-Digipeatern bernommen und es sollte daher so weit 
+  wie m”glich dieses Routing-System benutzt werden.  Bei Flexnet-Digipeatern 
+  kann angezeigt werden, welche Digipeater ber das Flexnet-Autorouting 
+  erreicht werden k”nnen, der Befehl, mit dem eine solche Liste abgerufen 
+  werden kann, ist "D".  
+
+
+
+10.4 Die QRG-Verwaltung (nur fr Multiport-TNCs)
+
+  Seit der Version 1.50 ist GP in der Lage mehrere HF-Ports (nicht TNCs) zu
+  verwalten.  Mehrere HF-Ports bieten z.B.  die BayCom USCC-Karte in 
+  Verbindung mit TFPCX ab Version 2.00 oder moderne TNCs wie FALCon oder TNC3.  
+  Damit GP erkennen kann, auf welchem HF-Port ein Connect erfolgen soll bzw.  
+  auf welchem HF-Port ein QSO l„uft, muá man GP mitteilen, auf welchem HF-Port 
+  welcher Digipeater zu finden ist und auf welcher Frequenz sich dieser 
+  befindet.  Dazu wurde der Befehl PORTx eingefhrt, wobei "x" fr eine Zahl 
+  zwischen 0 und 8 steht.  Die Syntax fr den Befehl lautet:
+  
+  PORTx = <digi>,<qrg>
+
+  Beispiel:
+
+    Ich benutze DB0FN als Digi.  Dieser arbeitet auf der Frequenz 430.625 MHz
+    und das Funkger„t ist an Port 0 angeschlossen.  Dann lautet der
+    entsprechende Eintrag folgendermaáen:
+
+    PORT0 = DB0FN,430.625
+
+
+  WICHTIG: Es k”nnen einem HF-Port mehrere QRGs zugewiesen werden, jedoch nicht 
+           umgekehrt. GP nimmt automatisch immer den ersten PORT-Eintrag, der zu
+           der gew„hlten QRG paát. Sollen trotzdem mehrere HF-Ports einer QRG 
+           zugeordnet werden, muá man die QRG-Angaben unterschiedlich gestalten,
+           z.B. durch benutzung eines "," anstelle eines "." als Trennung 
+           zwischen MHz und kHz-Angabe. Aber da im Logbuch nicht die genaue 
+           Frequenz sondern nur das Band angegeben werden muá, bleiben noch 
+           andere M”glichkeiten zur Unterscheidung.
+
+
+  Arbeitet ein Digi mit zwei unterschiedlichen SSIDs auf einer QRG, z.B.  weil
+  der Digi einen Zugrang mit 1200 BpS und einen mit 9600 BpS betreibt, so muá 
+  man dementsprechend auch die PORT-Eintr„ge anpassen.
+  Beispiel:
+
+    DB0FN sendet auf der QRG 430.625 sowohl mit 1200 als auch mit 9600 BpS. 
+    An Port 0 ist ein 1200 Bps- und an Port3 ein 9600 BpS-Modem angeschlossen.
+    Will man in beiden Baudraten qrv sein, muá man folgende Eintr„ge in
+    NAMES.GP integrieren:
+
+    PORT0 = DB0FN,430.625
+    PORT3 = DB0FN-9,430,625
+                       À Das Komma anstelle eines Punkts ist Absicht, s.o.
+ 
+  Will man nun eine Verbindung auf dem 9k6-Port starten, muá man die QRG 
+  "430,625" angeben, will man dagegen ber den 1k2-Port arbeiten, muá man die 
+  QRG "430.625" angeben.
+  Doch dieses Beispiel drfte in der Realit„t wohl „uáerst selten vorkommen, 
+  denn wer will schon auf einem 1k2-Port QSOs fahren wenn er auch 9k6 machen
+  kann?! ;-)
+
+  Bei Verwendung eines Multiport-TNCs ist mindestens ein PORT-Eintrag 
+  unbedingt notwendig.  Ansonsten endet ein Connect-Versuch in einer
+  Fehlermeldung ber eine nicht bekannte QRG.  Ein PORT-Eintrag ist nicht
+  notwendig, wenn man keinen Multiport-TNC benutzt.  
+
+
+
+10.5 QRG-abh„ngiges Autoconnecten
+
+  Hat man mehrere Digipeater in Reichweite und wechselt daher ”fters den 
+  Digi-Einstieg ins Netz, muá man meistens auch einige Pfadeintr„ge in 
+  NAMES.GP „ndern und auf den jeweiligen Digipeater anpassen. Damit man das 
+  nicht per Hand machen muá, kann man ab Version 1.50 QRG-abh„ngige IF-
+  Bedingungen in NAMES.GP einbauen. Die Funktionsweise ist dabei prinzipiell 
+  die gleiche wie bei den IF-Bedingungen in CONFIG.SYS, nur daá hier die 
+  QRG-Angabe entscheidend ist. Die Anwendung ist ganz einfach und l„át sich am
+  besten direkt an einem Beispiel erkl„ren:
+
+  Ich bin in der Lage, sowohl ber DB0FN als auch ber DB0NWS zu arbeiten. 
+  Dann kann die Datei NAMES.GP z.B. so aussehen:
+
+  PORT0 = DB0FN,430.625
+  PORT1 = DB0NWS,433.775
+  <IF 430.625>
+  B>DB0SGL Mailbox Siegen; D>DB0FN B>DB0SGL
+  F>DB0ME FALCon-Digi Solingen; D>DB0FN F>DB0ME
+  <END>
+  <IF 433.775>
+  B>DB0SGL Mailbox Siegen; D>DB0NWS B>DB0SGL
+  F>DB0ME FALCon-Digi Solingen; D>DB0NWS F>DB0ME
+  <END>
+  T>DG9EP Walter; F>DB0ME T>DG9EP
+  B>DB0IZ Mailbox Solingen; F>DB0ME B>DB0IZ
+  .
+  .
+  .
+
+  Wenn man nun ber DB0FN arbeitet, sieht der Pfad nach z.B. DG9EP so aus:
+  D>DB0FN F>DB0ME T>DG9EP
+  Arbeitet man hingegen ber DB0NWS, „ndert sich der Pfad automatisch in:
+  D>DB0NWS F>DB0ME T>DG9EP
+
+  Wenn man wie in dem Beispiel hierarchische Pfadeintr„ge benutzt, braucht man
+  nicht alle Pfadeintr„ge von einer IF-Bedingung abh„ngig zu machen, sondern 
+  nur die Teilstcke, die sich durch den Digipeaterwechsel „ndern.
+  In dem oben genannten Beispiel ist z.B. der Pfad ab DB0ME immer gleich, 
+  deshalb braucht nur der Pfad nach DB0ME ge„ndert zu werden, aber nicht die 
+  Pfade, die von DB0ME aus weiterfhren.
+
+
+
+10.6 Das Makro %DIGI%
+
+  Dieses Makro ist nur bei Multiport-Betrieb interessant. GP ersetzt dieses 
+  Makro beim Erzeugen des Pfades durch das Digipeater-Call, was dem gerade 
+  aktiven Port zugeordnet ist. Dadurch wird das Erstellen der Pfadliste 
+  erleichtert, wenn man den Autorouter der Digipeater benutzt.
+
+  Beispiel:
+    PORT0 = DB0FN,430.625
+    PORT1 = DB0NWS,433.775
+    B>DB0SGL Mailbox Siegen; D>%DIGI% B>DB0SGL
+    F>DB0ME FALCon-Digi Solingen; D>%DIGI% F>DB0ME
+    T>DG9EP Walter; F>DB0ME T>DG9EP
+    B>DB0IZ Mailbox Solingen; F>DB0ME B>DB0IZ
+
+  Dieses Beispiel entspricht in der Wirkung dem aus Kapitel 10.5. Durch den 
+  Einsatz dieses Makros k”nnen in diesem Beispiel die IF-Anweisungen weggelassen
+  werden.
+
+
+
+10.7 Calls w„hrend eines Connects in die Liste eintragen (ALT-N)
+
+  Will man eine gerade connectete Station in NAMES.GP bernehmen, so kann man 
+  die einerseits durch Editieren der Datei erreichen. Es geht aber auch 
+  einfacher, indem man die Tastenkombination ALT-N drckt und dort den Typ 
+  sowie den Namen der Station eingibt. GP speichert die Station dann am Ende 
+  von NAMES.GP. Auf diese Weise lassen sich sehr einfach hierarchische Pfad 
+  herstellen, indem man einfach von Digipeater zu Digipeater weiterconnected 
+  und jeweils die Funktion ALT-N ausfhrt.
+  Diese Methode ist allerdings nur bei TheNet-kompatiblen Digipeatern ratsam, 
+  da das Autorouting der Flexnet-kompatiblen Digipeater in der Regel besser 
+  funktioniert und flexibler ist als die Pfadliste eines Terminalprogramms...
+
+
+
+
+11.  Setup-Funktion (ALT-U)
+
+  GP bietet die M”glichkeit, w„hrend des Betriebes einige Programmparameter zu
+  ver„ndern.  Dies sind z.B.  die Farbeinstellungen oder auch die Aktivierung 
+  bzw.  Deaktivierung der Fernsteuerung fr einen QSO-Kanal usw.  Die 
+  einzelnen Menpunkte k”nnen entweder mit den Cursortasten und <RETURN>, oder 
+  durch einen Doppelklick der linken Maustaste angew„hlt werden.  Nach 
+  Verlassen von GP mit ALT-X werden alle Einstellungen dieses Mens in der 
+  Datei CSTAT.GPB gespeichert und beim n„chsten Start von GP wieder auf diese 
+  Werte eingestellt.  Fr jeden Kanal existiert ein eigenes Setup-Men.  Diese 
+  Mens sind bei den Mailbox-Utilities, dem Editor, der MH-Liste und dem 
+  Monitor nicht so umfangreich wie bei den QSO-Kan„len.  
+
+
+
+11.1 nderung der Farben
+
+  Nachdem man ein entsprechendes Men zur nderung der Farben angew„hlt hat,
+  den Auswahlbalken auf eine der drei Attribute bringen und mit CursorRechts
+  oder CursorLinks eine Farbe ausw„hlen.  Die entsprechende Farbe wird in
+  einem kleinen Fenster dargestellt.  Sind die Farben den eigenen Wnschen
+  angepaát worden, den Menpunkt "Ge„nderte Farben bernehmen" anw„hlen und
+  <RETURN> drcken.  Die Farbauswahl kann mit <ESC> jederzeit abgebrochen
+  werden, die neuen Farben werden dann jedoch nicht bernommen.  Will man
+  die neuen Farbeinstellungen bei der n„chsten Benutzung von GP wieder-
+  verwenden, muá man die neuen Einstellungen in der Datei "CONFIG.GP"
+  entsprechend „ndern.  
+
+
+
+11.2 Das Fernsteuer-Prompt
+
+  Dieser Menpunkt legt das Erscheinungsbild des Fernsteuer-Prompts fest, das
+  nach Ausfhrung eines Fersteuerbefehls an die Gegenstation gesendet wird.  
+  Das Prompt wird allerdings nur dann ausgesendet, wenn es mit Hilfe des Fern- 
+  steuerbefehls //PRompt ON aktiviert wurde.  Das Prompt kann alle Macros 
+  beinhalten, die auch in den *.GPI-Dateien ver- wendet werden.  Diese 
+  Einstellung gilt global fr alle QSO-Kan„le.  
+
+
+
+11.3 Fernsteuerung aktivieren/deaktivieren
+
+  Der Menpunkt "Fernsteuerung" zeigt den aktuellen Zustand der Fernsteuerung.
+  Zum Ein- oder Ausschalten der Fernsteuerung einfach diesen Menpunkt an- 
+  klicken bzw.  <RETURN> drcken.  Diese Einstellung gilt nur fr den jeweils 
+  angezeigten Kanal.  
+
+
+
+11.4 Textpuffer-Backup
+
+  Dieser Menpunkt dient zum Ausschalten der Backup-Funktion, die die 
+  aktuellen Bildschirminhalte der Scroll-Back-Puffer beim Verlassen von GP auf
+  Diskette/Festplatte speichert und beim Neustart wiederherstellt.  Im 
+  Gegensatz zu den anderen Men-Einstellungen wird dieser Wert nicht ge- 
+  speichert, sondern es wird bei einem Neustart von GP die Einstellung des
+  Backup-Befehls der Datei CONFIG.GP bernommen.  
+
+
+
+11.5 Echo
+
+  Dieser Menpunkt schaltet das lokale Echo ein oder aus.  In der Stellung ON
+  wird der gesendete Text auf den Bildschirm angezeigt.  Steht der Wert 
+  dagegen auf OFF, wird die Textausgabe beim Senden unterdrckt und es wird 
+  nur empfangener Text angezeigt.  Diese Einstellung gilt nur fr den jeweils
+  angezeigten Kanal.  
+
+
+
+11.6 RX-Click
+
+  Unter "RX-Click" ist ein akustisches Signal zu verstehen, welches auf 
+  empfangenen Text aufmerksam macht.  
+
+  Dieser Parameter kann drei Werte annehmen:
+
+  0 :  Das akustische Signal ist immer ausgeschaltet.
+  1 :  Wird auf einem anderem als dem momentan angezeigten Kanal Text emp-
+       fangen, ert”nt ein akustisches Signal.  Wird dagegen auf dem gerade
+       aktiven Kanal Text empfangen, ert”nt kein Signal.
+  2 :  Es ert”nt immer ein akustisches Signal, wenn Text empfangen wurde, 
+       egal, welcher Kanal gerade angezeigt wird.
+
+  Diese Einstellung gilt global fr alle QSO-Kan„le.
+
+
+
+11.7 Zeilenumbruch
+
+  Dieser Parameter legt fest, welche maximale Anzahl von Zeichen eine Zeile
+  haben darf.  Bei CONVERS-Runden z.B.  sollte man diese immer auf den Wert 65 
+  einstellen, ansonsten sind 80 Zeichen/Zeile angebracht.  Diese Einstellung 
+  gilt nur fr den jeweils angezeigten Kanal.  
+
+
+
+11.8 Paketl„nge
+
+  Legt fest, wieviele Zeichen ein AX.25-Paket maximal enthalten darf.  Hat man
+  z.B.  eine relativ schlechte Verbindung zu einem Digipeater, sollte dieser 
+  Wert nicht sehr groá sein, da die Chance einer fehlerfreien šbertragung 
+  bei kurzen Paketen gr”áer ist als bei langen Paketen.  Zu klein sollte man 
+  diesen Wert jedoch auch nicht w„hlen, da sonst sehr viele Datenpakete 
+  notwendig sind, um eine Nachricht zu bermitteln.  Diese Einstellung gilt 
+  global fr alle QSO-Kan„le.  
+
+
+
+11.9 Softscroll
+
+  Schaltet die Softscroll-Funktion ein bzw.  aus.  N„here Informationen zum
+  Softscrolling finden Sie in Kapitel 14.  Diese Einstellung gilt nur fr den 
+  jeweils angezeigten Kanal.  
+
+
+
+11.10 Code-AutoSave
+
+  Schaltet die AutoSave-Funktion fr 7Plus- und LCPlus-Dateien ein bzw.  aus.
+  Diese Einstellung gilt getrennt fr jeden QSO-Kanal.  N„here Informationen
+  dazu unter 5.3.5.  
+
+
+
+11.11 Bakenmen
+
+  Dieser Menpunkt ist nur im Monitorfenster zu finden.  Er steuert die
+  Aussendung einer Funkbake.  Es kann festgelegt werden, welcher Bakentext 
+  ausgesendet werden soll.  Des weiteren kann man w„hlen, an welche 
+  Zieladresse die Bake geschickt werden soll.  Eine Bake kann auch ber 
+  Digipeater geschickt werden.  Diese muá man dann entsprechend in der 
+  Zieladresse angeben.  šber den Menpunkt "Periode (Minuten)" braucht wohl 
+  kein Wort verloren zu werden.  ;-) 
+
+  Beispiel:
+    Als Bakentext wurde "DH1DAE/p in Siegen" eingestellt und als Zieladresse
+    "ALL" angegeben.  Wenn die Periode auf 5 Minuten eingestellt wurde, sendet 
+    GP alle 5 Minuten folgendes:
+
+    fm DH1DAE to ALL ctl UI^ pid F0
+    DH1DAE/p in Siegen
+
+    Wurde als Zieladresse "ALL DB0FN" angegeben, erscheint folgendes:
+
+    fm DH1DAE to ALL via DB0FN ctl UI^ pid F0
+    DH1DAE/p in Siegen
+    fm DH1DAE to ALL via DB0FN* ctl UI^ pid F0 
+    DH1DAE/p in Siegen
+
+    Das erste Paket wurde vom eigenen TNC ausgesendet und das zweite vom
+    Digipeater, daher auch der Stern hinter dem Digi-Call.  (Das Echo vom
+    Digipeater kann ”fters fehlen, insbesondere bei viel QSO-Betrieb.  Bei einem
+    relativ leeren Digi sollte es aber bei fast jedem Bakenpaket ber den
+    Digipeater ein Echo geben.  Kommt nur selten ein Echo, kann sie der Digi
+    nicht einwandfrei h”ren.  Dies liegt dann entweder an einem zu kurzen 
+    TXDelay oder an sonstigen NF- oder HF-Problemen, z.B. schlechte Antenne,
+    zuviel oder zuwenig Hub usw.  Es liegt jedoch NICHT an sonstigen
+    vermeindlich falsch eingestellten Parametern wie P-Persistance etc.)
+
+
+  WICHTIG:  Um die Digi-QRG nicht unn”tig zu belasten, sollte eine Funkbake
+  -------   nur in besonderen F„llen eingeschaltet werden, z.B. wenn man 
+            portabel in PR QRV ist. In der Regel braucht man die Bake jedoch
+            NICHT.
+
+
+
+11.12 Der Trennbalken zwischen QSO- und Monitorfenster
+
+  Fr einige Funktionen, die h„ufiger benutzt werden k”nnten, existieren
+  zus„tzlich zum Setup-Men noch "Schalter", die mit Hilfe der Maus ein- oder
+  ausgeschaltet werden k”nnen.  Die Symbole der Schalter sind zum groáen Teil 
+  selbserkl„rend.  Hier eine kurze Erkl„rung:  
+
+  "QRG:  xxxxxxx"         :  Die Frequenz, die im Logbuch angegeben wird
+  "CT:  xxxxxxxx"         :  Auswahl des Connect-Textes (siehe 5.11)
+  "[->"                  :  Umlautkonvertierung an/aus
+  "Echo"                  :  Echo an/aus (siehe 10.5)
+  <Schr„gstrich>/<Treppe> :  Softscroll an/aus
+  <Note>                  :  Beep (Ctrl-G) an/aus
+  "7+"                    :  Code-Autosave an/aus (siehe 5.3.5)
+  "Remote"                :  Fernsteuerung an/aus
+  "BIN-RX"                :  AutoBin-Speicherung aktivieren/abbrechen
+  "BIN-TX"                :  AutoBin-Senden aktivieren/abbrechen
+  "ScrLock"               :  H„lt die TNC-Abfrage auf dem jeweiligen 
+                             Kanal an.  Im Gegensatz zu frheren GP-Versionen,
+                             wo sich dieser Schalter auf alle Kan„le 
+                             gleichzeitig auswirkte, wirkt er jetzt nur noch
+                             auf dem jeweiligen Kanal.  Man darf also nicht
+                             vergessen, Die Funktion wieder auszuschalten. 
+                             Wird ein Kanal auf diese Weise angehalten, wird
+                             das jeweilige Call in der Menleiste kursiv
+                             dargestellt.
+
+
+
+
+12.  DOS-Shell
+
+  Durch Aufrufen dieser Funktion hat man die M”glichkeit, DOS-Befehle aus-
+  zufhren, ohne GP beenden zu mssen.  Will man zu GP zurckkehren, muá man 
+  den DOS-Befehl "EXIT"+<RETURN> eingeben.  In der Konfigurationsdatei 
+  CONFIG.GP sollte der Befehl "TNCDOS = M N" eingetragen werden, da sonst 
+  die Gefahr besteht, daá der TNC mit Monitordaten, die nicht abgefragt werden 
+  k”nnen, voll„uft. Andererseits gibt es Empfangsverluste im "QSO-Spion", wenn
+  man den Monitor mit "M N" ausschaltet...
+
+
+
+
+13.  Mausbenutzung
+
+  Ist eine Maus an den PC angeschlossen und der Maustreiber wurde geladen, 
+  wird dies von GP automatisch erkannt und man kann alle Icons und Men-
+  funktionen mit der Maus anw„hlen.  Die Bedienung der Maus ist ganz
+  einfach.  Um ein Icon oder eine Menfunktion anzuw„hlen, einfach mit dem
+  Mauszeiger auf das Objekt zeigen, die linke Maustaste drcken und wieder 
+  loslassen. Hat man aus Versehen eine Funktion angew„hlt, die man gar nicht
+  haben wollte, so kann man bei gedrckter Maustaste den Mauszeiger wieder
+  auf eine Position auáerhalb des Icons bzw. Menfensters zeigen lassen und
+  dann erst die Maustaste loslassen.  Im Check- und List-Men funktioniert
+  die Maus genauso, wie oben beschrieben, hat man hier aus Versehen die
+  linke Maustaste gedrckt, dann den Mauszeiger bei gedrckter Taste auf den
+  Scrollbalken ziehen und dann erst die Taste loslassen.  In diesen Mens
+  hat auáer der linken Taste auch die rechte Maustaste eine Funktion, und
+  zwar entspricht das Drcken der rechten Maustaste dem Drcken der
+  Leertaste, mit der man mehrere Eintr„ge zum Lesen markieren kann.  Am
+  besten ist es, die Mausfunktionen einfach zu testen, die Bedienung ist bei
+  allen Kan„len und Menfenstern einheitlich und sehr einfach zu lernen.  
+
+
+
+13.1 Der Scrollbalken
+
+  Bei allen Textfenstern ist am rechten Bildschirmrand ein Scrollbalken zu
+  sehen, der den aktuellen Bildschirmausschnitt in Bezug auf den gesamten 
+  Scroll-Back-Puffer anzeigt.  Mit Hilfe dieses Balkens kann man den 
+  Bildschirm mit der Maus zeilen- oder seitenweise nach oben und unten 
+  scrollen.  Zum zeilenweisen Scrollen braucht man nur die beiden Pfeile 
+  anzuklicken, will man dagegen jeweils eine ganze Bildschirmseite scrollen, 
+  muá man den Cyanfarbigen Bereich ober- oder unterhalb des Positionsbalkens 
+  anklicken.  Um einen beliebigen Bildschirmausschnitt anzeigen zu lassen, 
+  kann man auch den Positionsbalken selbst anklicken und bei gedrckter 
+  Maustaste auf die gewnschte Position schieben.
+
+  Da der Scrollbalken die Textspalten 79 und 80 berdeckt, kann man ihn auch 
+  bei Bedarf abschalten. Dies ist entweder mit der Tastenkombination ALT-B 
+  oder durch anklicken des Schalters "B" unterhalb des Scrollbalkens m”glich.
+
+
+
+
+14.  Kommandozeilen-Parameter
+
+  GP k”nnen beim Aufruf Kommandozeilen-Parameter bergeben werden, die den
+  Ablauf des Programms beeinflussen.  Der Aufruf erfolgt dann folgendermaáen:  
+  "gp <parameter1> <parameter2> ..."  bzw.  "gp286 <parameter1> ..."  
+
+
+
+14.1 Die Parameter "/e" und "/v"
+
+  Diese Parameter schalten GP in den EGA- bzw.  VGA-Modus, ohne die in der
+  Datei "CONFIG.GP" enthaltene Einstellung zu beachten.
+  "gp /e" bzw. "gp286 /e" schaltet GP in den EGA-Modus (640x350).
+  "gp /v" bzw. "gp286 /v" schaltet GP in den VGA-Modus (640x480) 
+
+
+
+14.2 Der Parameter "/h"
+
+  Dieser Parameter bringt GP dazu, ohne Hostmode-Initialisierung zu starten.
+  Der TNC muá sich dann allerdings schon im Host-Modus befinden, da es sonst zu 
+  einem Resync-Fehler mit anschlieáendem Programmabbruch kommt.
+  Fr den normalen Betrieb von GP braucht man diesen Parameter jedoch nicht, da 
+  GP auch schon von alleine erkennt, ob sich der TNC schon im Host-Modus 
+  befindet oder nicht.
+
+
+
+14.3 Die Parameter "/NOXMS" und "/NOEMS"
+
+  GP erkennt automatisch, on XMS oder EMS installiert ist und lagert die
+  Empfangspuffer und andere Daten automatisch in diese Speicherbereiche aus, 
+  um Platz im normalen DOS-Speicher zu sparen.  Falls es aber zu Problemen mit 
+  EMS oder XMS kommen sollte, kann man GP veranlassen, einen entsprechenden 
+  Erweiterungsspeicher nicht zu verwenden, auch wenn dieser Speicher im PC 
+  installiert ist.  Probleme k”nnen z.B.  bei Verwendung von XMS (HIMEM.SYS) 
+  auftreten, wenn TFPCX installiert ist.  So kann es auf langsameren Rechnern 
+  bei jedem Zugriff von GP auf XMS zu Empfangsproblemen bei TFPCX kommen und 
+  der PR-Betrieb wird erheblich erschwert.  In diesem Fall sollte man dann auf 
+  die Benutzung von XMS verzichten, indem man GP mit dem Parameter /NOXMS 
+  aufruft.  Der Parameter /NOEMS verhindert die Nutzung von EMS-Speicher.  
+
+
+
+14.4 Die Parameter "/XTKBD" und "/ATKBD"
+
+  Diese Parameter sind nur fr den Fall gedacht, daá die automatische 
+  Erkennung der Tastatur nicht funktioniert.  Um die Funktionstasten F11 und
+  F12 benutzen zu k”nnen, muá GP spezielle BIOS-Funktionen benutzen, die auf
+  XT-Rechnern z.B.  nicht existieren und dann zu Problem fhren. Im 
+  Normalfall erkennt GP zwar automatisch die Tastatur, doch kann es unter 
+  Umsta„nden trotzdem zu Problemen kommen, da die PCs in einigen Punkten doch 
+  nicht so "kompatibel" sind, hi.  Sollte es also zu Problemen mit der 
+  Tastatur fhren, d.h.  es erscheinen im Vorschreibfenster laufend 
+  irgendwelche Zeichen, obwohl man keine einzige Taste gedrckt hat, dann muá 
+  man GP mit den Parameter "/XTKBD" aufrufen.  Hat man dagegen eine Tastatur 
+  mit F11/F12, aber GP reagiert nicht auf diese Tasten, sollte man einmal den 
+  Parameter "/ATKBD" testen.  
+
+
+
+14.5 Der Parameter "/3MOUSE"
+   
+  GP untersttzt normalerweise nur die linke und die rechte Maustaste.  Hat 
+  man jedoch eine 3Tasten-Maus, so entspricht die mittlere Taste der Funktion 
+  ALT-Z.  Fr diesen Zweck muá man GP jedoch mitteilen, daá man eine 3Tasten- 
+  Maus angeschlossen hat, dies geschieht mit dem Parameter "/3MOUSE".  
+
+
+
+14.6 Der Parameter "/NOFIFO"
+
+  Ab der Version 1.50 untersttzt GP den UART 16550A, der einen internen 16
+  Byte groáen Datenpuffer (FIFO) besitzt.  Dadurch werden h”here
+  šbertragungsraten ohne Zeichenverlust m”glich, da entsprechend weniger
+  Interrupts ausgel”st werden mssen.  Selbst auf einem 286 sind so
+  Baudraten bis 115200 Bd m”glich sein, ein entsprechender TNC 
+  (FALCon oder TNC3) natrlich vorausgesetzt.
+  GP erkennt automatisch, ob ein 16550A installiert ist oder ob es sich bei
+  dem benutzten UART um einen herk”mmlichen Typ handelt.  Mit dem Parameter
+  "/NOFIFO" kann man diese automatische Erkennung abschalten und GP aktiviert
+  den FIFO nicht. (Sollte der FIFO jedoch schon vor dem Start von GP
+  eingeschaltet sein, benutzt ihn GP in jedem Fall) 
+
+
+
+14.7 Der Parameter "/CHECK"
+
+  Mit diesem Parameter wird GP veranlaát, sich selber auf m”gliche 
+  Manipulationen hin zu untersuchen. Wurden Manipulationen festgestellt, 
+  wird GP mit einem entsprechenden Hinweis beendet. Man sollte in einem 
+  solchen Fall sofort seinen Rechner auf m”gliche Viren untersuchen. Dazu muá 
+  man den Rechner ausschalten und nach einigen Sekunden Wartezeit wieder 
+  einschalten, wobei nun von einer sauberen Diskette gebootet werden muá, auf 
+  der sich auch der Virenscanner befindet. Dann kann man die Festplatte des 
+  Rechners auf Viren berprfen und diese mit entsprechenden CLEAN-
+  Programmen entfernen. Deshalb auf jeden Fall IMMER eine virenfreie, 
+  bootf„hige DOS-Diskette anfertigen und mit einem Schreibschutz versehen, 
+  denn Viren tauchen immer dann auf, wenn man es am wenigsten erwartet.
+
+
+
+14.8 Der Parameter "/KISSOFF"
+
+  Dadurch wird der TNC veranlaát, einen ggf. eingeschalteten KISS-Modus beim 
+  Start von GP auszuschalten.
+
+
+
+
+15.  Softscroll
+
+  Eine Besonderheit von GP ist die M”glichkeit, das Textscrolling zwischen
+  "normalem" Scrollen und "Softscroll" umzuschalten.  Softscroll bedeutet, daá 
+  der gesamte Textbildschirm nicht um eine Textzeile, d.h.  8 bzw.  16 Grafik- 
+  zeilen auf einmal, sondern 4 bzw.  8 mal um jeweils zwei Grafikzeilen nach 
+  oben gescrollt wird.  Dadurch kommt ein weicher Rolleffekt zustande, der ein 
+  Mitlesen des Textes auch w„hrend des Scrollens erm”glicht.
+  Das Softscrolling hat jedoch einen entscheidenen Nachteil: es ist langsam,
+  und zwar proportional zur Gr”áe des zu scrollenden Bildausschnitts. 
+  Diese Geschwindigkeitseinbuáe kommt durch die enorme Datenmenge
+  zustande, die bei einem Bildschirm von 80x40 Zeichen (bei groáer Schrift
+  80x20 Zeichen) immerhin 102400 Bytes betr„gt.  Diese Anzahl von
+  Speicherstellen muá beim Softscrolling 4 mal pro Zeile verschoben werden,
+  d.h.  ein Softscroll von einer Zeile muá bei kleiner Schrift 409600 Bytes,
+  bei groáer Schrift sogar 819200 Bytes verschieben.  Bei solchen
+  Datenmengen hilft dann nur noch Rechnerpower, ein 386er ist da schon
+  nicht schlecht.  Trotzdem kommt es vor, daá GP bei hohem Monitorverkehr
+  nicht mehr mitkommt und der TNC langsam voll„uft.  Es empfiehlt sich
+  deshalb, Softscroll nur in Verbindung mit Splitscreen zu verwenden, da
+  in diesem Fall die einzelnen Textfenster wesentlich kleiner sind und somit
+  auch die zu scrollende Datenmenge erheblich abnimmt.
+  Leider kommt es bei manchen VGA-Karten zu St”rungen, wenn Softscroll
+  aktiviert wird, da dies relativ hardwarenah programmiert wurde und eine
+  100-Prozentige Kompatibilit„t zum VGA-Standard erfordert. Dies erfllen
+  jedoch nicht alle VGA-Grafikkarten, insbesondere Super-VGA-Karten machen
+  oft Probleme.  Sollten St”rungen auftreten und der Bildschirminhalt 
+  gel”scht wird, kann man dies aber wieder rckg„ngig machen, indem man
+  kurzzeitig in die DOS-Shell wechselt und mit "EXIT" wieder zu GP 
+  zurckkehrt.  Noch w„hrend der Bildschirm wieder aufgebaut wird, sollte man 
+  die Tastenkombination ALT-U drcken, um sofort ins Setup-Men zu gelangen 
+  und das Softscrolling wieder abzustellen.  
+
+
+
+
+16.  Was ist der HOST-Modus beim TNC2
+
+  Bestimmt haben Sie sich schon gewundert, wenn immer wieder vom "HOST-Modus"
+  in Verbindung mit bestimmten Terminalprogrammen gesprochen wird.  Nun, der 
+  HOST-Modus ist eine Betriebsart des TNC-2, bei der der Datenverkehr zwischen 
+  Rechner und TNC in ganz besonderer Weise abgewickelt wird.  Bei dieser 
+  Betriebsart fungiert das Terminalprogramm als "HOST" (engl.  Gastgeber) und
+  der TNC als "Slave" (engl.  Sklave), was bedeutet, daá der TNC keine Daten
+  zum Terminalprogramm sendet, bevor dieses nicht den Befehl dazu gegeben
+  hat. Auf diese Weise ist gew„hrleistet, daá die Daten immer beim
+  richtigen Terminalkanal ankommen.  In der Praxis sendet das
+  Terminalprogramm immer reihum an alle TNC-Kan„le eine Anfrage, ob auf
+  dem jeweiligen Kanal Daten anliegen oder nicht.  Ist dies der Fall, sendet
+  der TNC die Daten zum Terminalprogramm.  Durch diese Methode dauert es auch
+  immer etwas l„nger, bis empfangene Daten eines Kanals auf dem Bildschirm
+  angezeigt werden, da GP ja von selbst nicht erkennen kann, auf welchem
+  Kanal gerade Daten empfangen wurden und somit alle Kan„le immer abfragen
+  muá.  Des weiteren hat GP auch noch andere Dinge zu tun, z.B. die
+  Textausgabe an sich, die ja auch Zeit in Anspruch nimmt.  Kommt es w„hrend
+  dieses st„ndigen  Datenaustauschs zu einem Fehler, wird dieser von GP
+  sofort erkannt und es wird versucht, den TNC wieder in einen definierten
+  Zustand zu bringen.  Dem Benutzer wird dieses durch ein Fenster angezeigt
+  (Synchronisationsfehler). Leider kann ein solcher Fehler aber nicht 
+  berichtigt werden, d.h. es k”nnen wichtige Daten verlorengehen.
+
+  Der HOST-Modus darf jedoch nicht mit dem AX.25-Protokoll verwechselt werden.
+  Der TNC ist eine Art Zwischenspeicher, der Daten vom Funkger„t mit dem 
+  AX.25-Protokoll empf„ngt, in ein anderes Format umwandelt und 
+  zwischenspeichert, bis das Terminalprogramm diese Daten abfragt. Umgekehrt 
+  werden vom PC Daten an den TNC geschickt, die wiederum dort 
+  zwischengespeichert und in das AX.25-Format umgewandelt werden.
+  Auf Dinge wie z.B. die Anzahl der Retries, bis ein Datenpaket bei der
+  Gegenstation fehlerfrei empfangen wurde, hat das Terminalprogramm keinen
+  Einfluá.  Es kann lediglich den TNC daraufhin abfragen und die vom TNC
+  gelieferte Linkinformation anzeigen, mehr jedoch nicht.  
+
+  Der HOST-Modus wurde speziell fr "intelligente" Terminalprogramme mit 
+  Multiconnect-M”glichkeit geschaffen und ist fr "normale" Terminalprogramme
+  ungeeignet.  Leider hat jedoch nicht jede TNC-Software diesen HOST-Modus
+  implementiert, die TAPR-Software z.B.  bietet diesen Modus nicht.  Nur die 
+  WA8DED-Software und The Firmware (NORD><LINK) haben diesen HOST-Modus 
+  implementiert.  Dies ist der Grund, warum Programme wie GP, SP, THP usw.  
+  NUR mit dieser TNC-Software zusammen laufen.  Mittlerweile gibt es 
+  Zusatzprogramme, die einen TNC ersetzen bzw.  auch andere TNC-Software als 
+  TheFirmware zulassen.  Dies ist z.B.  DL1MEN's TFPCR, welches ein 
+  KISS-HOST-Interface darstellt und somit auch den Betrieb mit der TAPR- 
+  Software zul„át.  Ein weiteres Programm ist TFPCX von DG0FT, welches sogar
+  den gesamten TNC ersetzt und nur noch ein einfaches Modem zwischen Funkger„t 
+  und PC notwendig macht.  GP kann mit beiden Programmen zusammenarbeiten.  
+
+
+
+
+17.  Synchronisationsfehler
+
+  Synchronisationsfehler treten auf, wenn beim Datenverkehr zwischen GP und 
+  TNC ein oder mehrere Zeichen verlorengehen oder ver„ndert werden.  In solch 
+  einem Fall versucht GP, den TNC wieder in einen definierten Ausgangszustand 
+  zu be- kommen, damit der weitere Datenverkehr wieder reibungslos 
+  funktionieren kann.  Kann GP keine Synchronisation mit dem TNC herstellen, 
+  wird GP beendet und ins DOS gesprungen.  Nun kann es aber passieren, daá der 
+  TNC z.B.  durch einen kurzen Stromausfall abgestrzt ist und GP somit gar 
+  keine M”glichkeit hat, den TNC zu synchronisieren.  Fr so einen Fall wurde 
+  eine "Notbremse" eingebaut, den Resynchronisationsvorgang unterbricht und 
+  ein Men auf den Bildschirm bringt, welches eine Entscheidung ber das 
+  weitere Vorgehen von GP zul„át.  Dieses ist w„hrend eines Resync-Errors 
+  durch Crtl-BREAK m”glich.  Man kann so z.B.  einen abgestrzten TNC wieder 
+  zum Laufen bringen, ohne GP beenden zu mssen, indem man den Menpunkt "TNC 
+  reinitialisieren" aufruft, natrlich muá man vorher beim TNC einen Reset 
+  ausgel”st und ein paar Sekunden gewartet haben.  Sollte beim ersten Mal eine 
+  Fehlermeldung erscheinen, ruhig noch einmal probieren.  Der TNC braucht nach 
+  einem Reset immer einige Zeit, bevor er einsatzbereit ist.  Eine weitere 
+  M”glichkeit ist, den TNC einfach zu ignorieren.  In diesem Fall findet 
+  berhaupt kein Datenverkehr mehr zwischen GP und TNC statt.  
+
+  Wird TFPCX oder TFPCR verwendet, sollten berhaupt keine Resynchronisations-
+  fehler auftreten.
+
+  Hat man Probleme mit solchen Resync-Fehlern, sollte man versuchen, diese zu 
+  beseitigen, da diese Fehler immer Datenverlust bedeuten. Zwar hat man 
+  meistens Glck, daá ein Resync-Fehler bei einer Abfrage des Link-Status o.„.
+  auftritt, aber es kann genausogut passieren, daá es einen solchen Fehler 
+  gerade in dem Moment gibt, wo QSO-Daten vom TNC abgefragt werden. Die 
+  betroffenen Daten sind dann verloren und werden weder auf dem Bildschirm
+  angezeigt noch gespeichert, falls das Speichern aktiviert ist.
+  Resync-Probleme kann man zum einen durch Herabsetzen der V24-Baudrate 
+  vermindern oder durch den Einsatz eines 16550A UART. Manchmal reicht es aber
+  auch schon aus, bestimmte speicherresidente Programme (z.B. Disk-Cache oder 
+  langsame Tastaturtreiber) aus dem Speicher zu enternen oder eventuell gegen 
+  andere auszutauschen.
+
+
+
+
+18. Einige Tips
+
+  Zum Schluá noch einige Tips zur Benutzung von GP.
+
+  Es empfiehlt sich fr Mailbox-QSOs, einen Kanal mit m”glichst groáem Text-
+  puffer zu benutzen.  Da man aus Speicherplatzgrnden nicht alle Kan„le mit 
+  groáen Textpuffern ausstatten kann, sollte als "Mailboxkanal" m”glichst den 
+  letzten Kanal (z.B.  Kanal 4 bei max.  4 Kan„len) w„hlen und diesen mit 
+  einem groáen Textpuffer ausstatten, da dieser Kanal erst connected werden 
+  kann, wenn alle anderen Kan„le bereits mit QSOs belegt sind.  Auf diese 
+  Weise ist sichergestellt, daá man jederzeit eine Mailbox connecten kann, 
+  auch wenn man schon vorher von anderen Stationen connected wurde.  Ein 
+  weiterer Grund fr diese Vorgehensweise ist die Fernsteuerung.  Diese kann 
+  fr jeden Kanal getrennt und unabh„ngig ein- und ausgeschaltet werden und 
+  der aktuelle Zustand wird beim Verlassen von GP gespeichert.  Bei Mailboxen 
+  sollte man die Fernsteuerung auf jeden Fall immer abschalten, da in Texten 
+  schon mal Fernsteuerbefehle auftauchen k”nnen, auf die GP natrlich 
+  reagiert und es zu Fehlermeldungen der Mailbox kommt oder schlimmeres.  
+  Nun ist es aber wnschenswert, daá bei "normalen" QSOs die Fernsteuerung 
+  aktiviert ist.  Um nun nicht st„ndig die Fernsteuerung ein- und ausschalten 
+  zu mssen, wenn auf einem Kanal ab- wechselnd QSOs gefahren und 
+  Mailboxbetrieb gemacht wird, ist es praktisch, wenn zum Mailboxen ein 
+  "spezieller" Kanal benutzt wird, auf dem normalerweise kein QSO 
+  zustandekommt.  Wenn man z.B.  Kanal4 als Mailboxkanal benutzt, reicht es, 
+  beim ersten Mal die Fernsteuerung auszuschalten und danach braucht man sich 
+  nicht mehr darum zu kmmern.  
+
+  GP arbeitet im Gegensatz zu anderen Terminalprogrammen nicht im Textmodus,
+  sondern im Grafikmodus.  Der Vorteil davon ist die sch”ne grafische 
+  Benutzeroberfl„che, doch hat GP auch mit einem viel gr”áeren 
+  Bildschirmspeicher zu k„mpfen, was sich wiederum in der Geschwindigkeit 
+  widerspiegeln.  So ist es nicht zu verleugnen, daá Bildschirmausgaben von GP 
+  langsamer sind als von anderen Programmen.  Dieses l„át sich auf Rechnern, 
+  die ein sog.  "Shadow ROM" im Setup einstellen lassen, zumindest etwas 
+  beschleunigen.  Dies ist mittlerweile bei fast allen Rechnern, zumindest ab 
+  386 aufw„rts, m”glich.  
+
+  Testmodus:  Will man GP ohne TNC starten (zu Testzwecken o.„.), kann man 
+  dies mit šbergabe des Kommandozeilenparameters "/h" tun (s.  14.2).
+  Meldet GP dann einen Synchronisationsfehler, kann man diesen mit
+  CTRL-BREAK unterbrechen und dann den Menpunkt "TNC ignorieren" anw„hlen. 
+  In diesem Modus ist natrlich kein QSO-Betrieb m”glich, der Editor ist
+  jedoch weiterhin voll einsatzf„hig.  
+
+  Dieser Trick entf„llt natrlich, wenn man TFPCX oder TFPCR verwendet.
+
+
+  Sollte beim Aufruf von GP die Meldung "TNC antwortet nicht !"  erscheinen,
+  ist irgend etwas mit der Kommunikation zwischen PC und TNC nicht in Ordnung.
+  Dies kann mehrere Ursachen haben:
+
+    - Die Nummer der seriellen Schnittstelle in CONFIG.GP stimmt nicht.
+    - Die Baudrate wurde in CONFIG.GP nicht richtig angegeben.
+    - Der eingestellte IRQ der seriellen Schnittstelle wurde in CONFIG.GP
+      nicht richtig angegeben.
+    - Die V24-Leitung zum TNC ist defekt oder nicht richtig eingest”pselt.
+    - Der TNC ist abgestrzt.  In diesem Fall hilft nur noch ein TNC-Reset. 
+    - Im TNC ist keine Sotware mit WA8DED-Hostmode eingebaut. Beispiele dafr 
+      sind Multimode-TNCs wie KAM, PK232 etc. Mit diesen TNCs l„uft GP nur in 
+      Verbindung mit dem Hostmode-Treiber TFPCR von DL1MEN.
+  
+
+
+  Hat man bei Verwendung von TFPCX den Verdacht, daá es zu Empfangsproblemen
+  kommt, so kann man dies šberprfen, indem man TFPCX mit dem Parameter "-d" 
+  aufruft, also "TFPCX -d".  Es ert”nt dann ein Ton aus dem PC-Lautsprecher, 
+  an dessen Tonqualit„t man die Empfangsqualit„t von TFPCX erkennen kann.  
+  Klingt der Ton relativ sauber, so gibt es keine Empfangsschwierigkeiten bei 
+  TFPCX.  Sind im Ton aber deutliche Knackger„usche oder sogar deutliche 
+  Unterbrechungen zu h”ren, gibt es Probleme mit irgendwelchen 
+  speicherresidenten Programmen.  Auch HIMEM.SYS kann eine Ursache fr 
+  Empfangsprobleme sein.  In diesem Fall sollte man GP dann mit dem Parameter 
+  /NOXMS starten.  (siehe 14.3) Den Debug-Modus von TFPCX kann man brigens
+  durch den Aufruf von "TFPCX -u" wieder beenden.
+
+
+  XMS: Ab Version 1.50 ben”tigt GP mehr XMS-Handles, als HIMEM.SYS im
+       Normalfall zur Verfgung stellt. Bei Verwendung von XMS kann es daher
+       vorkommen, daá GP nicht den vollen XMS-Speicher nutzen kann, weil
+       keine freien Handles mehr verfgbar sind. Sicherheitshalber sollte
+       deshalb HIMEM.SYS mit folgendem Paramerter installiert werden:
+
+       DEVICE = HIMEM.SYS /NUMHANDLES=64
+
+
+
+
+
+
+
+                                   ANHANG A
+                              LIZENZBESTIMMUNGEN
+
+  GP darf nur im Rahmen der allgemeinen Lizenz fr Amateurfunk Software (ALAS)
+  benutzt oder weitergegeben werden. Nachfolgend die Bestimmungen diese Lizenz:
+
+
+                Allgemeine Lizenz fr Amateurfunk Software (ALAS)
+
+  Copyright (C) 1992   Hans Georg Giese, DF2AU
+                       Hinter dem Berge 5
+                       D-3300 Braunschweig
+
+  Dieses Dokument darf beliebig vervielf„ltigt oder verteilt werden,
+  solange es nicht ver„ndert wird. Fr Anregungen, wie es zu verbessern ist,
+  bin ich dankbar. (DF2AU @ DK0MAV.DL.EU)
+
+
+1. Vorwort
+  Diese Lizenz entstand aus der General Public Licence der Free Software
+  Foundation (GPL). Ich habe versucht, den Sinn zu erhalten und mehr Klarheit
+  hineinzubringen. Einige Passagen sind vollst„ndig entfallen. Es ist aber
+  jedem Nutzer freigestellt, an Stelle dieser Lizenz die GPL Bedingungen
+  anzuwenden.
+ 
+  Der Sinn dieser Lizenz ist es, den Autor und den Anwender der Software zu
+  schtzen. Es sind daher einige Einschr„nkungen erforderlich und es entstehen
+  auch einige Pflichten fr den, der die mit dieser Lizenz verbundene Software
+  weitergibt oder ver„ndert.
+
+  Dies wird dadurch erreicht, dass die Software durch Copyright geschtzt
+  wird und der Nutzer durch diese Lizenz die M”glichkeit einer nahezu
+  unbeschr„nkten Nutzung erh„lt.
+
+
+2. Geltungsbereich
+  Diese Lizenz gilt fr jedes Programm oder Teil eines Programmpaketes, das
+  eine Copyright Notiz ausgibt, die sich auf diese Lizenz bezieht. Im folgenden
+  bedeutet "Programm" entweder das Programm oder einen Teil davon.
+  "Du" bist der Lizenznehmer.
+ 
+
+3. Deine Rechte:
+  Du darfst das Programm nutzen oder kopieren oder verteilen oder ver„ndern,
+  solange Du damit keine kommerziellen Absichten verbindest.
+
+
+4. Deine Pflichten:
+
+4.1. Du darfst den Copyright Vermerk und den Hinweis auf diese Lizenz nicht
+  ver„ndern und er muss bei jedem Start des Programms eindeutig fr den
+  Benutzer sichtbar sein.
+ 
+4.2. Du musst jedem Dritten, dem Du eine Kopie des Programms gibst, die
+  gleichen Rechte einr„umen, die auch Dir gegeben wurden. Du musst ihm
+  auch die gleichen Pflichten auferlegen.
+
+4.3. Du darfst fr die Weitergabe kein Geld verlangen ausser den
+  Kosten fr das Medium und Porto.
+
+4.4. Du darfst das Programm nur komplett weitergeben, so wie Du es bekommen
+  hast. (Anmerkung DH1DAE: 1:1-Kopie der Originaldiskette!)
+
+4.5. Wenn Du das Programm ver„nderst oder Teile davon fr eigene Arbeiten
+  verwendest - w”rtlich oder ver„ndert - so gelten die folgenden Punkte fr
+  das daraus entstehende neue Programm:
+
+4.5.1. Du musst deutlich sichtbar angeben:
+  - Deinen Namen und Deine Adresse und
+  - die Tatsache, dass Du das Programm ge„ndert hast oder Teile des
+    Programms verwendet hast.
+
+4.5.2. Du musst das Programm entweder mit dem kompletten Quelltext
+  weitergeben oder jedem auf Verlangen eine Kopie des Quelltextes gegen eine
+  Gebhr von maximal der Kosten des Mediums und der Portokosten aush„ndigen.
+
+4.5.3. Du darfst keine Beschr„nkungen aussprechen, die ber diese Lizenz
+  hinausgehen.
+
+
+5. Sonstiges
+  Du erh„lst das Programm ohne jede Garantie fr Funktion, Fehlerfreiheit oder
+  Anwendbarkeit fr eine bestimmte Sache. Du verzichtest auf jede
+  Schadensersatzforderung, gleich aus welchem Grunde.
+  Mit der Nutzung des Programms erkennst Du diese Lizenzbedingungen
+  vorbehaltlos an.
+
+
+  Vers. 1.0, 13-OCT-92
+
+  Ende ALAS
+
+
+
+
+
+
+
+                                   ANHANG B
+                                KONTAKTADRESSE
+
+  Wer Interesse an der neusten Version von GP hat, kann eine Leerdiskette und
+  ausreichend Rckporto an folgende Adresse schicken:
+
+  Ulf Saran                                  Bankverbindung:
+  DH1DAE                                     Konto:    674945
+  Veit-Stoá-Str. 36                          Institut: Sparkasse Siegen
+  57076 Siegen                               BLZ:      460 500 01
+
+  (Programmspenden sind nicht notwendig, werden aber dankbar angenommen) :-)
+
+
+
+
+
+
+
+                                   ANHANG C
+                               PROGRAMMAUTOREN
+
+  Das Programm GP wurde vollst„ndig von DH1DAE entwickelt, einige Routinen zur 
+  V24-Initialisierung stammen von DL5FBD. Idee und Gestaltung des GPRI 
+  (Graphic Packet Remote Interface) stammt von DH1DAE.
+  GP wurde mit Hilfe von TURBO PASCAL 6.0 ((c) Borland International 1990)
+  entwickelt. Fr die Programmierung der grafischen Benutzeroberfl„che wurden
+  die Standard-Units benutzt, d.h. keine sonstigen Toolkits. Der gesamte
+  Sourcecode hat inzwischen eine L„nge von knapp 26800 Zeilen (ca. 700kB)
+  erreicht...
+
+  Besonderer Dank fr Bug-Reports, Programmierung von Utility-Programmen, 
+  šbersetzungen, Verbesserungsvorschl„ge etc. an:
+  DL1ELY, DF3VI, DG9EP, DG3DBI, DG1EHE, DG1EH, DC1VL, DG0FT, DG1FAZ, DL1DBC,
+  DL7GAI, DJ1XK, G0KIU, F1HBN, PE1MHO und viele andere mehr.
+  (Diese Liste erhebt keinen Anspruch auf Vollst„ndigkeit) ;-)
+  Tnx auch an ADACOM e.V. und AMPACK Bayern e.V.
+
+
+
+
+
+
+nderungen vorbehalten.  
+
+Siegen, den 20.07.1994
+

@@ -5,7 +5,7 @@
 //! ```text
 //! Config.toml
 //! data/           ICONS.GP, *.GPI, MHEARD.json, KISS.INI, WA8DED.INI, sounds
-//! data/log/pads/  monitor and channel pads
+//! data/log/       gpng.log (shell), `<base call>.GPL` (journal), pads/
 //! ```
 //!
 //! Lookups try the current directory, the executable directory, then the

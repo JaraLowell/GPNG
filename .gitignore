@@ -6,3 +6,5 @@ Cargo.lock
 /data/MHEARD.json
 /data/USER/*
 !/data/USER/README.txt
+/data/mail/*
+!/data/mail/README.txt
