@@ -44,6 +44,13 @@ zoom = 1
 prompt = "%c to %y>"
 noname = "%c"
 remote_language = "EN"
+# Setup menu. Word wrapping and input columns are stored; the editor does not hard-wrap yet.
+input_columns = 81
+editor_wrap = 255
+editor_bak = false
+bbs_channel = 1
+list_channel = 1
+file_drawer = ""
 # Legacy LOG. When true, a disconnect appends one line to data/log/<base call>.GPL.
 log = false
 # Legacy UTC. Minutes added to the PC clock for that journal line.
@@ -68,7 +75,7 @@ allow_color_ansi = true
 qrg_mhz = 144.800
 ctext = "data/GTEXT.GPI"
 extended_ascii = true
-smooth_scroll = false
+smooth_scroll = true
 echo = true
 bell = true
 seven_plus = true
@@ -136,7 +143,7 @@ monitor_mode = "IUSC"
 
 # KISS wire: "serial" = Kenwood etc. via [serial] port/baud + KISS.INI;
 # "tcp" = Soundmodem / Direwolf raw KISS TCP (no KISS.INI).
-kiss_transport = "tcp"
+kiss_transport = "serial"
 kiss_tcp_host = "127.0.0.1"
 kiss_tcp_port = 8100          # UZ7HO Soundmodem KISS TCP; Direwolf often 8001
 
@@ -153,12 +160,14 @@ kiss_exit_delay_ms = 5000  # settle after RESTART (classic KISSINIT -D exit)
 clock_background = "Black"
 input_foreground = "White"
 input_background = "LightBlue"
+input_invers_attr = "White"
 monitor_foreground = "Yellow"
 monitor_background = "Blue"
 connect_foreground = "White"
 connect_background = "DarkGray"
 state_background = "Magenta"
 state_foreground = "White"
+state_invers_attr = "White"
 menu_background = "Red"
 menu_foreground = "LightGray"
 menu_invers_attr = "White"
@@ -181,6 +190,10 @@ spy_background = "Blue"
 spy_foreground = "White"
 spy_invers_attr = "LightCyan"
 
+[beacon]
+address = "CQ"
+text = ""
+period_minutes = 60
 [print]
 # Legacy ESC/P printer attribute byte sequences.
 default_print = [27, 53, 27, 70]

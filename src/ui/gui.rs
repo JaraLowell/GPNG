@@ -61,6 +61,7 @@ use super::icons::{
 use super::layout::ActivePane;
 use super::mheard::MheardList;
 use super::padlog::{self, PadKind, TextPad};
+use super::setup::{self, ColorSlot, EditKind, RowId, RowKind, View as SetupView};
 use super::session::{
     decode_rx_text, default_bell_wav, default_connect_wav, default_disconnect_wav,
     format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav, Ax25UiFrame, SessionChrome,
@@ -273,6 +274,13 @@ pub struct GpGuiApp {
     input_bg: Color32,
     #[allow(dead_code)]
     input_fg: Color32,
+    menu_bg: Color32,
+    editor_bg: Color32,
+    editor_fg: Color32,
+    check_bg: Color32,
+    list_bg: Color32,
+    mh_bg: Color32,
+    spy_bg: Color32,
     connect_bg: Color32,
     #[allow(dead_code)]
     connect_fg: Color32,
@@ -295,6 +303,14 @@ pub struct GpGuiApp {
     hour_gong: bool,
     /// Prevents double-fire within the same hour.
     last_gong: Option<(chrono::NaiveDate, u32)>,
+    show_setup: bool,
+    setup_pane: ActivePane,
+    setup_cursor: usize,
+    setup_view: SetupView,
+    show_tnc: bool,
+    tnc_cmd: String,
+    /// Last beacon UI. The next one waits `period_minutes`.
+    last_beacon: Instant,
 }
 
 impl GpGuiApp {
@@ -416,6 +432,13 @@ impl GpGuiApp {
             state_fg: egui_color(&colors.state_foreground),
             input_bg: egui_color(&colors.input_background),
             input_fg: egui_color(&colors.input_foreground),
+            menu_bg: egui_color(&colors.menu_background),
+            editor_bg: egui_color(&colors.editor_background),
+            editor_fg: egui_color(&colors.editor_foreground),
+            check_bg: egui_color(&colors.check_background),
+            list_bg: egui_color(&colors.list_background),
+            mh_bg: egui_color(&colors.mh_background),
+            spy_bg: egui_color(&colors.spy_background),
             connect_bg: egui_color(&colors.connect_background),
             connect_fg: egui_color(&colors.connect_foreground),
             cfg,
@@ -498,6 +521,13 @@ impl GpGuiApp {
             disconnect_wav: default_disconnect_wav(),
             hour_gong: true,
             last_gong: None,
+            show_setup: false,
+            setup_pane: ActivePane::Monitor,
+            setup_cursor: 0,
+            setup_view: SetupView::Main,
+            show_tnc: false,
+            tnc_cmd: String::new(),
+            last_beacon: Instant::now(),
         }
     }
 
@@ -521,6 +551,12 @@ impl GpGuiApp {
     }
 
     fn editor_save(&mut self) {
+        if self.cfg.session.editor_bak && self.editor.path.exists() {
+            let bak = self.editor.path.with_extension("BAK");
+            if let Err(e) = std::fs::copy(&self.editor.path, &bak) {
+                self.log_event(format!("BAK: {e}"));
+            }
+        }
         match self.editor.save() {
             Ok(()) => {
                 self.status = format!("saved {}", self.editor.display_name());
@@ -1868,6 +1904,9 @@ impl GpGuiApp {
             if !self.seven_capturing(channel) {
                 self.maybe_remote_line(channel, &text);
             }
+            if kind == PadKind::Incoming && !text.is_empty() {
+                self.maybe_rx_click(channel);
+            }
             if kind == PadKind::Incoming && channel >= 1 && !text.is_empty() {
                 self.note_autoroute_rx(channel, &text);
                 self.consider_gpw(channel, &text);
@@ -2046,17 +2085,22 @@ impl GpGuiApp {
                 }
             }
             ActivePane::Channel(_) => {
-                self.status = "KISS: not linked — Connect first, or type on Monitor (CQ)".into();
+                let (dest, vias) = ax25::parse_unproto(&self.cfg.beacon.address);
+                self.status = format!(
+                    "KISS: not linked — Connect first, or type on Monitor ({})",
+                    ax25::unproto_to(&dest, &vias)
+                );
             }
             _ => {
-                // Unproto: MYCALL → CQ
-                let frame = ax25::build_ui("CQ", &my, &[], info);
+                let (dest, vias) = ax25::parse_unproto(&self.cfg.beacon.address);
+                let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
+                let frame = ax25::build_ui(&dest, &my, &via_ref, info);
                 self.tx_kiss_payload(0, &frame);
                 self.push_kiss_mon(
                     PadKind::Own,
                     &my,
-                    "CQ",
-                    &[],
+                    &dest,
+                    &vias,
                     Ax25FrameType::Ui,
                     0,
                     0,
@@ -2064,7 +2108,7 @@ impl GpGuiApp {
                     true,
                     Some(shown),
                 );
-                self.status = format!("KISS UI {my} > CQ");
+                self.status = format!("KISS UI {my} {}", ax25::unproto_to(&dest, &vias));
             }
         }
     }
@@ -3486,17 +3530,704 @@ impl GpGuiApp {
         }
     }
 
+    fn open_setup(&mut self) {
+        self.show_setup = true;
+        self.setup_pane = self.active;
+        self.setup_cursor = 0;
+        self.setup_view = SetupView::Main;
+        self.show_tnc = false;
+    }
+
+    fn close_setup(&mut self) {
+        self.show_setup = false;
+        self.setup_view = SetupView::Main;
+        self.last_beacon = Instant::now();
+        if let Err(e) = self.cfg.persist_setup(&self.config_path) {
+            self.status = format!("setup: {e}");
+        } else {
+            self.status = "setup saved".into();
+        }
+        self.persist_session_chrome();
+    }
+
+    fn apply_palette(&mut self) {
+        let c = &self.cfg.colors;
+        self.monitor_bg = egui_color(&c.monitor_background);
+        self.monitor_fg = egui_color(&c.monitor_foreground);
+        self.state_bg = egui_color(&c.state_background);
+        self.state_fg = egui_color(&c.state_foreground);
+        self.input_bg = egui_color(&c.input_background);
+        self.input_fg = egui_color(&c.input_foreground);
+        self.menu_bg = egui_color(&c.menu_background);
+        self.editor_bg = egui_color(&c.editor_background);
+        self.editor_fg = egui_color(&c.editor_foreground);
+        self.check_bg = egui_color(&c.check_background);
+        self.list_bg = egui_color(&c.list_background);
+        self.mh_bg = egui_color(&c.mh_background);
+        self.spy_bg = egui_color(&c.spy_background);
+        self.connect_bg = egui_color(&c.connect_background);
+        self.connect_fg = egui_color(&c.connect_foreground);
+    }
+
+    fn color_triple(&self, slot: ColorSlot) -> [String; 3] {
+        let c = &self.cfg.colors;
+        match slot {
+            ColorSlot::Input => [
+                c.input_background.clone(),
+                c.input_foreground.clone(),
+                c.input_invers_attr.clone(),
+            ],
+            ColorSlot::State => [
+                c.state_background.clone(),
+                c.state_foreground.clone(),
+                c.state_invers_attr.clone(),
+            ],
+            ColorSlot::Menu => [
+                c.menu_background.clone(),
+                c.menu_foreground.clone(),
+                c.menu_invers_attr.clone(),
+            ],
+            ColorSlot::Output => match self.setup_pane {
+                ActivePane::Channel(_) => [
+                    c.connect_background.clone(),
+                    c.connect_foreground.clone(),
+                    c.connect_invers_attr.clone(),
+                ],
+                ActivePane::Editor => [
+                    c.editor_background.clone(),
+                    c.editor_foreground.clone(),
+                    c.editor_invers_attr.clone(),
+                ],
+                ActivePane::Check => [
+                    c.check_background.clone(),
+                    c.check_foreground.clone(),
+                    c.check_invers_attr.clone(),
+                ],
+                ActivePane::List => [
+                    c.list_background.clone(),
+                    c.list_foreground.clone(),
+                    c.list_invers_attr.clone(),
+                ],
+                ActivePane::Mh => [
+                    c.mh_background.clone(),
+                    c.mh_foreground.clone(),
+                    c.mh_invers_attr.clone(),
+                ],
+                ActivePane::Spy(_) => [
+                    c.spy_background.clone(),
+                    c.spy_foreground.clone(),
+                    c.spy_invers_attr.clone(),
+                ],
+                _ => [
+                    c.monitor_background.clone(),
+                    c.monitor_foreground.clone(),
+                    c.monitor_invers_attr.clone(),
+                ],
+            },
+        }
+    }
+
+    fn set_color_triple(&mut self, slot: ColorSlot, v: [String; 3]) {
+        let c = &mut self.cfg.colors;
+        match slot {
+            ColorSlot::Input => {
+                c.input_background = v[0].clone();
+                c.input_foreground = v[1].clone();
+                c.input_invers_attr = v[2].clone();
+            }
+            ColorSlot::State => {
+                c.state_background = v[0].clone();
+                c.state_foreground = v[1].clone();
+                c.state_invers_attr = v[2].clone();
+            }
+            ColorSlot::Menu => {
+                c.menu_background = v[0].clone();
+                c.menu_foreground = v[1].clone();
+                c.menu_invers_attr = v[2].clone();
+            }
+            ColorSlot::Output => match self.setup_pane {
+                ActivePane::Channel(_) => {
+                    c.connect_background = v[0].clone();
+                    c.connect_foreground = v[1].clone();
+                    c.connect_invers_attr = v[2].clone();
+                }
+                ActivePane::Editor => {
+                    c.editor_background = v[0].clone();
+                    c.editor_foreground = v[1].clone();
+                    c.editor_invers_attr = v[2].clone();
+                }
+                ActivePane::Check => {
+                    c.check_background = v[0].clone();
+                    c.check_foreground = v[1].clone();
+                    c.check_invers_attr = v[2].clone();
+                }
+                ActivePane::List => {
+                    c.list_background = v[0].clone();
+                    c.list_foreground = v[1].clone();
+                    c.list_invers_attr = v[2].clone();
+                }
+                ActivePane::Mh => {
+                    c.mh_background = v[0].clone();
+                    c.mh_foreground = v[1].clone();
+                    c.mh_invers_attr = v[2].clone();
+                }
+                ActivePane::Spy(_) => {
+                    c.spy_background = v[0].clone();
+                    c.spy_foreground = v[1].clone();
+                    c.spy_invers_attr = v[2].clone();
+                }
+                _ => {
+                    c.monitor_background = v[0].clone();
+                    c.monitor_foreground = v[1].clone();
+                    c.monitor_invers_attr = v[2].clone();
+                }
+            },
+        }
+        self.apply_palette();
+    }
+
+    fn setup_value(&self, id: RowId) -> String {
+        let s = &self.cfg.session;
+        match id {
+            RowId::Remote => on_off(self.session.remote).into(),
+            RowId::Backup => on_off(s.backup).into(),
+            RowId::Echo => on_off(self.session.echo).into(),
+            RowId::RxClick => s.rx_click.to_string(),
+            RowId::Umlaut => on_off(self.session.extended_ascii).into(),
+            RowId::InputColumns => s.input_columns.to_string(),
+            RowId::InsertMon => on_off(s.insert_mon_line).into(),
+            RowId::Softscroll => on_off(matches!(self.session.line_step, super::session::LineStep::Smooth)).into(),
+            RowId::Language => s.remote_language.clone(),
+            RowId::PacketLen => self.cfg.buffers.packet_payload.to_string(),
+            RowId::AutoSave => on_off(self.session.seven_plus).into(),
+            RowId::WordWrap => s.editor_wrap.to_string(),
+            RowId::EditorBak => on_off(s.editor_bak).into(),
+            RowId::RefChannel => {
+                if matches!(self.setup_pane, ActivePane::List) {
+                    s.list_channel.to_string()
+                } else {
+                    s.bbs_channel.to_string()
+                }
+            }
+            RowId::FileDrawer => s.file_drawer.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn nudge_setup(&mut self, id: RowId, step: i32) {
+        match id {
+            RowId::Remote => self.session.remote = !self.session.remote,
+            RowId::Backup => self.cfg.session.backup = !self.cfg.session.backup,
+            RowId::Echo => self.session.echo = !self.session.echo,
+            RowId::RxClick => {
+                let n = (self.cfg.session.rx_click as i32 + step).rem_euclid(3);
+                self.cfg.session.rx_click = n as u32;
+            }
+            RowId::Umlaut => self.session.extended_ascii = !self.session.extended_ascii,
+            RowId::InputColumns => {
+                let n = self.cfg.session.input_columns as i32 + step;
+                self.cfg.session.input_columns = n.clamp(20, 255) as u32;
+            }
+            RowId::InsertMon => self.cfg.session.insert_mon_line = !self.cfg.session.insert_mon_line,
+            RowId::Softscroll => {
+                self.session.line_step = self.session.line_step.cycle();
+            }
+            RowId::Language => {
+                self.cfg.session.remote_language =
+                    setup::next_name(setup::LANGUAGES, &self.cfg.session.remote_language, step);
+            }
+            RowId::PacketLen => {
+                let n = self.cfg.buffers.packet_payload as i32 + step;
+                self.cfg.buffers.packet_payload = n.clamp(16, 256) as u32;
+            }
+            RowId::AutoSave => self.set_seven_plus(!self.session.seven_plus),
+            RowId::WordWrap => {
+                let n = self.cfg.session.editor_wrap as i32 + step;
+                self.cfg.session.editor_wrap = n.clamp(20, 255) as u32;
+            }
+            RowId::EditorBak => self.cfg.session.editor_bak = !self.cfg.session.editor_bak,
+            RowId::RefChannel => {
+                let ch = if matches!(self.setup_pane, ActivePane::List) {
+                    &mut self.cfg.session.list_channel
+                } else {
+                    &mut self.cfg.session.bbs_channel
+                };
+                let n = *ch as i32 + step;
+                *ch = n.clamp(1, i32::from(self.channels)) as u32;
+            }
+            RowId::Beacon => {
+                let n = self.cfg.beacon.period_minutes as i32 + step;
+                self.cfg.beacon.period_minutes = n.clamp(0, 60) as u32;
+            }
+            _ => {}
+        }
+    }
+
+    fn activate_setup_row(&mut self) {
+        let rows = setup::rows_for(self.setup_pane);
+        let Some(row) = rows.get(self.setup_cursor).copied() else {
+            return;
+        };
+        match row.kind {
+            RowKind::Submenu => match row.id {
+                RowId::Beacon => self.setup_view = SetupView::Beacon { cursor: 0 },
+                RowId::Prompt => {
+                    self.setup_view = SetupView::Edit {
+                        kind: EditKind::Prompt,
+                        text: self.cfg.session.prompt.clone(),
+                        parent_beacon: false,
+                    };
+                }
+                RowId::FileDrawer => {
+                    self.setup_view = SetupView::Edit {
+                        kind: EditKind::FileDrawer,
+                        text: self.cfg.session.file_drawer.clone(),
+                        parent_beacon: false,
+                    };
+                }
+                id => {
+                    if let Some(slot) = id.color_slot() {
+                        let saved = self.color_triple(slot);
+                        self.setup_view = SetupView::Colors {
+                            slot,
+                            cursor: 0,
+                            draft: saved.clone(),
+                            saved,
+                        };
+                    }
+                }
+            },
+            RowKind::Toggle => self.nudge_setup(row.id, 1),
+            RowKind::Number => self.nudge_setup(row.id, 1),
+            RowKind::Action => self.insert_editor_list(),
+            RowKind::Exit => self.close_setup(),
+        }
+    }
+
+    fn insert_editor_list(&mut self) {
+        let text = self.editor.text.clone();
+        let pad = match self.setup_pane {
+            ActivePane::List => &mut self.box_pad,
+            _ => &mut self.bbs_pad,
+        };
+        pad.clear();
+        if text.trim().is_empty() {
+            self.status = "editor is empty".into();
+            return;
+        }
+        for line in text.lines() {
+            pad.push(PadKind::Incoming, line.to_string());
+        }
+        self.status = "list inserted from the editor".into();
+    }
+
+    fn commit_setup_edit(&mut self, kind: EditKind, text: String, parent_beacon: bool) {
+        match kind {
+            EditKind::Prompt => self.cfg.session.prompt = text,
+            EditKind::FileDrawer => self.cfg.session.file_drawer = text,
+            EditKind::BeaconAddress => self.cfg.beacon.address = text,
+            EditKind::BeaconText => self.cfg.beacon.text = text,
+        }
+        self.setup_view = if parent_beacon {
+            SetupView::Beacon { cursor: 0 }
+        } else {
+            SetupView::Main
+        };
+    }
+
+    fn poll_setup_keys(&mut self, ctx: &Context) {
+        let none = egui::Modifiers::NONE;
+        if !matches!(self.setup_view, SetupView::Edit { .. }) {
+            ctx.memory_mut(|m| m.stop_text_input());
+        }
+        if matches!(self.setup_view, SetupView::Edit { .. }) {
+            if eat_key(ctx, none, egui::Key::Escape) {
+                self.setup_view = match &self.setup_view {
+                    SetupView::Edit { parent_beacon: true, .. } => SetupView::Beacon { cursor: 0 },
+                    _ => SetupView::Main,
+                };
+            }
+            if eat_key(ctx, none, egui::Key::Enter) {
+                if let SetupView::Edit { kind, text, parent_beacon } = self.setup_view.clone() {
+                    self.commit_setup_edit(kind, text, parent_beacon);
+                }
+            }
+            return;
+        }
+        if eat_key(ctx, none, egui::Key::Escape) {
+            match &self.setup_view {
+                SetupView::Main => self.close_setup(),
+                _ => self.setup_view = SetupView::Main,
+            }
+            return;
+        }
+        let rows = setup::rows_for(self.setup_pane);
+        let n = rows.len().max(1);
+        if eat_key(ctx, none, egui::Key::ArrowUp) {
+            self.step_setup_cursor(-1, n);
+        }
+        if eat_key(ctx, none, egui::Key::ArrowDown) {
+            self.step_setup_cursor(1, n);
+        }
+        if eat_key(ctx, none, egui::Key::ArrowLeft) {
+            self.nudge_open_value(-1);
+        }
+        if eat_key(ctx, none, egui::Key::ArrowRight) {
+            self.nudge_open_value(1);
+        }
+        if eat_key(ctx, none, egui::Key::Enter) {
+            self.activate_open_row();
+        }
+    }
+
+    fn step_setup_cursor(&mut self, step: i32, len: usize) {
+        match &mut self.setup_view {
+            SetupView::Colors { cursor, .. } => {
+                let len = 4usize;
+                *cursor = (*cursor as i32 + step).rem_euclid(len as i32) as usize;
+            }
+            SetupView::Beacon { cursor } => {
+                *cursor = (*cursor as i32 + step).rem_euclid(4) as usize;
+            }
+            SetupView::Main => {
+                self.setup_cursor = (self.setup_cursor as i32 + step).rem_euclid(len as i32) as usize;
+            }
+            SetupView::Edit { .. } => {}
+        }
+    }
+
+    fn nudge_open_value(&mut self, step: i32) {
+        match &mut self.setup_view {
+            SetupView::Colors { cursor, draft, .. } if *cursor < 3 => {
+                draft[*cursor] = setup::next_name(setup::VGA_NAMES, &draft[*cursor], step);
+            }
+            SetupView::Beacon { cursor } if *cursor == 2 => {
+                self.nudge_setup(RowId::Beacon, step);
+            }
+            SetupView::Main => {
+                let rows = setup::rows_for(self.setup_pane);
+                if let Some(row) = rows.get(self.setup_cursor).copied() {
+                    if matches!(row.kind, RowKind::Toggle | RowKind::Number) {
+                        self.nudge_setup(row.id, step);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn activate_open_row(&mut self) {
+        match self.setup_view.clone() {
+            SetupView::Main => self.activate_setup_row(),
+            SetupView::Colors { slot, cursor, draft, .. } => {
+                if cursor >= 3 {
+                    self.set_color_triple(slot, draft);
+                    self.setup_view = SetupView::Main;
+                }
+            }
+            SetupView::Beacon { cursor } => match cursor {
+                0 => {
+                    self.setup_view = SetupView::Edit {
+                        kind: EditKind::BeaconAddress,
+                        text: self.cfg.beacon.address.clone(),
+                        parent_beacon: true,
+                    };
+                }
+                1 => {
+                    self.setup_view = SetupView::Edit {
+                        kind: EditKind::BeaconText,
+                        text: self.cfg.beacon.text.clone(),
+                        parent_beacon: true,
+                    };
+                }
+                3 => self.setup_view = SetupView::Main,
+                _ => self.nudge_setup(RowId::Beacon, 1),
+            },
+            SetupView::Edit { .. } => {}
+        }
+    }
+
+    fn paint_setup(&mut self, ctx: &Context) {
+        if !self.show_setup {
+            return;
+        }
+        let view = self.setup_view.clone();
+        match view {
+            SetupView::Edit { kind, mut text, parent_beacon } => {
+                let title = match kind {
+                    EditKind::Prompt => "Remote control prompt",
+                    EditKind::BeaconAddress => "Beacon address",
+                    EditKind::BeaconText => "Beacon text",
+                    EditKind::FileDrawer => "File drawer",
+                };
+                egui::Area::new(egui::Id::new("gp_setup_edit"))
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .order(egui::Order::Foreground)
+                    .show(ctx, |ui| {
+                        setup_frame(ui, title, |ui| {
+                            let edit = ui.add(
+                                egui::TextEdit::singleline(&mut text)
+                                    .desired_width(280.0)
+                                    .font(egui::FontId::monospace(14.0)),
+                            );
+                            edit.request_focus();
+                        });
+                    });
+                if let SetupView::Edit { text: slot, .. } = &mut self.setup_view {
+                    *slot = text;
+                }
+                let _ = parent_beacon;
+            }
+            SetupView::Colors { slot, cursor, draft, .. } => {
+                let title = match slot {
+                    ColorSlot::Input => "Colours of input window",
+                    ColorSlot::Output => "Colours of output window",
+                    ColorSlot::State => "Colours of state window",
+                    ColorSlot::Menu => "Colours of menu window",
+                };
+                let labels = ["Background", "Foreground", "Inverse", "Use these colours and exit"];
+                egui::Area::new(egui::Id::new("gp_setup_colors"))
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .order(egui::Order::Foreground)
+                    .show(ctx, |ui| {
+                        setup_frame(ui, title, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    for (i, label) in labels.iter().enumerate() {
+                                        let value = if i < 3 {
+                                            draft[i].to_ascii_uppercase()
+                                        } else {
+                                            String::new()
+                                        };
+                                        let line = if value.is_empty() {
+                                            (*label).to_string()
+                                        } else {
+                                            dotted(label, &value, 36)
+                                        };
+                                        let color = if i == 3 {
+                                            Color32::from_rgb(255, 255, 85)
+                                        } else {
+                                            Color32::from_rgb(85, 255, 85)
+                                        };
+                                        let resp = setup_row(ui, &line, color, i == cursor);
+                                        if resp.clicked() {
+                                            if let SetupView::Colors { cursor, .. } = &mut self.setup_view {
+                                                *cursor = i;
+                                            }
+                                        }
+                                        if resp.double_clicked() {
+                                            if let SetupView::Colors { cursor, .. } = &mut self.setup_view {
+                                                *cursor = i;
+                                            }
+                                            self.activate_open_row();
+                                        }
+                                    }
+                                });
+                                let bg = egui_color(&draft[0]);
+                                let fg = egui_color(&draft[1]);
+                                let inv = egui_color(&draft[2]);
+                                ui.vertical(|ui| {
+                                    color_sample(ui, "Normal text", fg, bg);
+                                    color_sample(ui, "Inverted text", bg, inv);
+                                });
+                            });
+                        });
+                    });
+                let _ = cursor;
+            }
+            SetupView::Beacon { cursor } => {
+                let addr = self.cfg.beacon.address.clone();
+                let text = self.cfg.beacon.text.clone();
+                let period = if self.cfg.beacon.period_minutes == 0 {
+                    String::new()
+                } else {
+                    self.cfg.beacon.period_minutes.to_string()
+                };
+                let lines = [
+                    dotted("Beacon address", &addr, 32),
+                    dotted("Beacon text", &text, 32),
+                    dotted("Period (Minutes)", &period, 32),
+                    "OK".to_string(),
+                ];
+                egui::Area::new(egui::Id::new("gp_setup_beacon"))
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::new(0.0, 30.0))
+                    .order(egui::Order::Foreground)
+                    .show(ctx, |ui| {
+                        setup_frame(ui, "Beacon parameters", |ui| {
+                            for (i, line) in lines.iter().enumerate() {
+                                let color = if i == 3 {
+                                    Color32::from_rgb(255, 255, 85)
+                                } else {
+                                    Color32::from_rgb(85, 255, 85)
+                                };
+                                let resp = setup_row(ui, line, color, i == cursor);
+                                if resp.clicked() {
+                                    if let SetupView::Beacon { cursor } = &mut self.setup_view {
+                                        *cursor = i;
+                                    }
+                                }
+                                if resp.double_clicked() {
+                                    if let SetupView::Beacon { cursor } = &mut self.setup_view {
+                                        *cursor = i;
+                                    }
+                                    self.activate_open_row();
+                                }
+                            }
+                        });
+                    });
+            }
+            SetupView::Main => {
+                let rows = setup::rows_for(self.setup_pane);
+                let cursor = self.setup_cursor.min(rows.len().saturating_sub(1));
+                egui::Area::new(egui::Id::new("gp_setup_main"))
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .order(egui::Order::Foreground)
+                    .show(ctx, |ui| {
+                        setup_frame(ui, "Program parameters", |ui| {
+                            for (i, row) in rows.iter().enumerate() {
+                                let value = self.setup_value(row.id);
+                                let line = if value.is_empty() {
+                                    row.id.label().to_string()
+                                } else {
+                                    dotted(row.id.label(), &value, 42)
+                                };
+                                let color = match row.kind {
+                                    RowKind::Toggle | RowKind::Number => Color32::from_rgb(85, 255, 85),
+                                    _ => Color32::from_rgb(255, 255, 85),
+                                };
+                                let resp = setup_row(ui, &line, color, i == cursor);
+                                if resp.clicked() {
+                                    self.setup_cursor = i;
+                                }
+                                if resp.double_clicked() {
+                                    self.setup_cursor = i;
+                                    self.activate_setup_row();
+                                }
+                            }
+                        });
+                    });
+            }
+        }
+    }
+
+    fn paint_tnc_command(&mut self, ctx: &Context) {
+        if !self.show_tnc {
+            return;
+        }
+        let mut text = self.tnc_cmd.clone();
+        egui::Area::new(egui::Id::new("gp_tnc_cmd"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::new(0.0, -40.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                setup_frame(ui, "TNC command:", |ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut text)
+                            .desired_width(220.0)
+                            .font(egui::FontId::monospace(14.0)),
+                    );
+                    edit.request_focus();
+                });
+            });
+        self.tnc_cmd = text;
+    }
+
+    fn send_tnc_command(&mut self, cmd: &str) {
+        let cmd = cmd.trim();
+        if cmd.is_empty() {
+            return;
+        }
+        if let Some(mode) = parse_monitor_set(cmd) {
+            self.monitor_mode = mode.clone();
+            self.log_event(format!("monitor mode → {mode}"));
+        }
+        if self.kiss_mode() {
+            self.status = format!("KISS has no TNC command channel ({cmd})");
+            return;
+        }
+        self.tx_modem_line(0, cmd);
+        self.status = format!("TNC: {cmd}");
+        self.last_link_status = self.status.clone();
+    }
+
+    fn poll_beacon(&mut self) {
+        let mins = self.cfg.beacon.period_minutes;
+        if mins == 0 || self.cfg.beacon.text.trim().is_empty() {
+            return;
+        }
+        let wait = Duration::from_secs(u64::from(mins) * 60);
+        if self.last_beacon.elapsed() < wait {
+            return;
+        }
+        self.last_beacon = Instant::now();
+        self.send_beacon();
+    }
+
+    fn send_beacon(&mut self) {
+        let (dest, vias) = ax25::parse_unproto(&self.cfg.beacon.address);
+        let text = self.cfg.beacon.text.clone();
+        if !self.kiss_mode() {
+            self.status = "Beacon is stored. It is sent as a UI frame on KISS".into();
+            return;
+        }
+        let my = self.cfg.primary_mycall().to_string();
+        let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
+        let frame = ax25::build_ui(&dest, &my, &via_ref, text.as_bytes());
+        self.tx_kiss_payload(0, &frame);
+        self.push_kiss_mon(
+            PadKind::Own,
+            &my,
+            &dest,
+            &vias,
+            Ax25FrameType::Ui,
+            0,
+            0,
+            false,
+            true,
+            Some(&text),
+        );
+        self.status = format!("beacon {my} {}", ax25::unproto_to(&dest, &vias));
+    }
+
+    fn maybe_rx_click(&self, channel: u8) {
+        let play = match self.cfg.session.rx_click {
+            0 => false,
+            1 => match self.active {
+                ActivePane::Channel(n) => channel != n,
+                _ => channel != 0,
+            },
+            _ => true,
+        };
+        if play {
+            play_bell_wav(&self.bell_wav);
+        }
+    }
+
     /// DOS chapter 4 keys. A key with no product yet answers on the status line.
     fn poll_hotkeys(&mut self, ctx: &Context) {
         let alt = egui::Modifiers::ALT;
-        let ctrl = egui::Modifiers::CTRL;
-        let shift = egui::Modifiers::SHIFT;
         let none = egui::Modifiers::NONE;
-
         if eat_key(ctx, alt, egui::Key::X) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
+        if self.show_tnc {
+            if eat_key(ctx, none, egui::Key::Escape) {
+                self.show_tnc = false;
+            }
+            if eat_key(ctx, none, egui::Key::Enter) {
+                let cmd = std::mem::take(&mut self.tnc_cmd);
+                self.show_tnc = false;
+                self.send_tnc_command(&cmd);
+            }
+            return;
+        }
+        if self.show_setup {
+            self.poll_setup_keys(ctx);
+            return;
+        }
+        let ctrl = egui::Modifiers::CTRL;
+        let shift = egui::Modifiers::SHIFT;
+
         if self.modal_open() {
             return;
         }
@@ -3568,7 +4299,7 @@ impl GpGuiApp {
             return;
         }
         if eat_key(ctx, alt, egui::Key::U) {
-            self.status = "Setup menu is not built yet".into();
+            self.open_setup();
             return;
         }
         if eat_key(ctx, alt, egui::Key::Z) {
@@ -3690,6 +4421,11 @@ impl GpGuiApp {
         }
         if eat_key(ctx, none, egui::Key::Insert) {
             self.status = "Insert/overwrite is not built yet".into();
+            return;
+        }
+        if eat_key(ctx, none, egui::Key::Escape) {
+            self.show_tnc = true;
+            self.tnc_cmd.clear();
         }
     }
 
@@ -4047,6 +4783,71 @@ fn fn_key(n: u8) -> Option<egui::Key> {
     })
 }
 
+fn dotted(label: &str, value: &str, width: usize) -> String {
+    let mut s = label.to_string();
+    let value_len = value.chars().count();
+    while s.chars().count() + value_len + 1 < width {
+        s.push('.');
+    }
+    if !value.is_empty() {
+        s.push(' ');
+        s.push_str(value);
+    }
+    s
+}
+
+fn setup_frame(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
+    Frame::none()
+        .fill(Color32::BLACK)
+        .stroke(Stroke::new(2.0, Color32::from_rgb(255, 255, 85)))
+        .inner_margin(6.0)
+        .show(ui, |ui| {
+            ui.set_min_width(420.0);
+            Frame::none()
+                .fill(Color32::from_rgb(170, 0, 170))
+                .inner_margin(4.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(title)
+                            .color(Color32::WHITE)
+                            .font(FontId::monospace(14.0)),
+                    );
+                });
+            ui.add_space(4.0);
+            body(ui);
+        });
+}
+
+fn setup_row(ui: &mut Ui, line: &str, color: Color32, selected: bool) -> egui::Response {
+    let bg = if selected {
+        Color32::from_rgb(85, 85, 85)
+    } else {
+        Color32::BLACK
+    };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(400.0, 18.0), Sense::click());
+    ui.painter().rect_filled(rect, 0.0, bg);
+    ui.painter().text(
+        rect.left_center() + Vec2::new(6.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        line,
+        FontId::monospace(14.0),
+        color,
+    );
+    resp
+}
+
+fn color_sample(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(150.0, 40.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, bg);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        FontId::monospace(14.0),
+        fg,
+    );
+}
+
 fn mods_match(have: egui::Modifiers, want: egui::Modifiers) -> bool {
     have.alt == want.alt
         && have.shift == want.shift
@@ -4067,13 +4868,16 @@ fn eat_key(ctx: &Context, mods: egui::Modifiers, key: egui::Key) -> bool {
 
 impl eframe::App for GpGuiApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.save_pad_logs();
+        if self.cfg.session.backup {
+            self.save_pad_logs();
+        }
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.drain_tnc();
         self.kiss_link_timers();
         self.maybe_hour_gong();
+        self.poll_beacon();
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
         self.poll_hotkeys(ctx);
 
@@ -4163,6 +4967,8 @@ impl eframe::App for GpGuiApp {
                 self.connect_dialog(ctx);
                 self.name_dialog(ctx);
             });
+        self.paint_setup(ctx);
+        self.paint_tnc_command(ctx);
     }
 }
 
@@ -4264,7 +5070,11 @@ impl GpGuiApp {
                             .text_color(Color32::WHITE)
                             .font(FontId::monospace(14.0)),
                     );
-                    if edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if edit.has_focus()
+                        && !self.show_setup
+                        && !self.show_tnc
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
                         let mods = ui.input(|i| i.modifiers);
                         if !mods.shift && !mods.ctrl {
                             if self.input.ends_with('\n') {
@@ -4519,7 +5329,7 @@ impl GpGuiApp {
 
     fn draw_channel_grid(&mut self, ui: &mut Ui, rect: Rect) {
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, VGA_DARK_RED);
+        painter.rect_filled(rect, 0.0, self.menu_bg);
 
         let cols = 6usize;
         let rows = 2usize;
@@ -4597,8 +5407,9 @@ impl GpGuiApp {
         }
         let bg = match self.active {
             ActivePane::Channel(_) => self.connect_bg,
-            ActivePane::Spy(_) => Color32::from_rgb(0, 0, 128), // classic spy blue
-            ActivePane::Check | ActivePane::List => Color32::from_rgb(170, 170, 170),
+            ActivePane::Spy(_) => self.spy_bg,
+            ActivePane::Check => self.check_bg,
+            ActivePane::List => self.list_bg,
             _ => self.monitor_bg,
         };
         let job = self.active_layout();
@@ -4613,7 +5424,7 @@ impl GpGuiApp {
 
     /// Clickable MHeard list (row select → SPY confirm).
     fn mheard_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
-        let bg = Color32::from_rgb(170, 170, 170);
+        let bg = self.mh_bg;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         let show_bar = self.session.scrollbar;
         let stick = !self.session.scr_lock;
@@ -4722,8 +5533,8 @@ impl GpGuiApp {
 
     /// Full-pane monospace editor (CP437 GPI files).
     fn editor_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
-        let bg = Color32::from_rgb(0, 0, 0);
-        let fg = Color32::from_rgb(170, 170, 170);
+        let bg = self.editor_bg;
+        let fg = self.editor_fg;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
             Frame::none()
@@ -4826,6 +5637,25 @@ impl GpGuiApp {
                         mark,
                     );
                 }
+                CellGlyph::Stairs => {
+                    // Solid stair rising to the right. A Unicode stair is a box.
+                    let c = cell.center();
+                    let sw = 5.0;
+                    let sh = 4.0;
+                    let left = c.x - sw * 1.5;
+                    let bottom = c.y + sh * 1.5;
+                    for i in 0..3 {
+                        let i = i as f32;
+                        painter.rect_filled(
+                            Rect::from_min_max(
+                                Pos2::new(left + i * sw, bottom - (i + 1.0) * sh),
+                                Pos2::new(left + (i + 1.0) * sw, bottom),
+                            ),
+                            0.0,
+                            mark,
+                        );
+                    }
+                }
                 CellGlyph::TriUp | CellGlyph::TriDown => {
                     // Drawn triangles — egui default fonts often lack ▲/▼ (tofu boxes).
                     let c = cell.center();
@@ -4905,24 +5735,29 @@ impl GpGuiApp {
         let qrg = self.session.qrg_label();
         let ct = self.session.ctext_label();
         let lead_owned = [
-            (qrg.as_str(), false, SessionClick::Qrg, 86.0_f32),
-            (ct.as_str(), false, SessionClick::Ctext, 70.0),
-            ("äöü", self.session.extended_ascii, SessionClick::Ascii, 34.0),
+            (qrg.as_str(), false, SessionClick::Qrg, 86.0_f32, CellGlyph::Text),
+            (ct.as_str(), false, SessionClick::Ctext, 70.0, CellGlyph::Text),
+            ("äöü", self.session.extended_ascii, SessionClick::Ascii, 34.0, CellGlyph::Text),
             (
                 self.session.line_step.label(),
                 matches!(self.session.line_step, super::session::LineStep::Smooth),
                 SessionClick::LineStep,
                 26.0,
+                if matches!(self.session.line_step, super::session::LineStep::Smooth) {
+                    CellGlyph::Stairs
+                } else {
+                    CellGlyph::Text
+                },
             ),
-            ("Echo", self.session.echo, SessionClick::Echo, 38.0),
-            ("♪", self.session.bell, SessionClick::Bell, 26.0),
-            ("Clear", false, SessionClick::Clear, 46.0),
+            ("Echo", self.session.echo, SessionClick::Echo, 38.0, CellGlyph::Text),
+            ("♪", self.session.bell, SessionClick::Bell, 26.0, CellGlyph::Text),
+            ("Clear", false, SessionClick::Clear, 46.0, CellGlyph::Text),
         ];
-        for (label, lit, action, w) in lead_owned {
+        for (label, lit, action, w, glyph) in lead_owned {
             if x + w > left_limit {
                 break;
             }
-            x += paint_cell(ui, x, label, lit, action, w, CellGlyph::Text);
+            x += paint_cell(ui, x, label, lit, action, w, glyph);
         }
 
         match self.active {
@@ -5901,6 +6736,7 @@ impl GpGuiApp {
 
         if let Some(label) = clicked {
             match label {
+                "SETUP" => self.open_setup(),
                 "MONITOR" => self.select(ActivePane::Monitor),
                 "EDIT" => self.open_editor_default(),
                 "SAVE" => {
@@ -5956,6 +6792,8 @@ enum CellGlyph {
     Text,
     TriUp,
     TriDown,
+    /// Soft-scroll mark: three steps rising to the right.
+    Stairs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

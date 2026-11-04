@@ -51,6 +51,7 @@ pub struct Config {
     pub paths: PathConfig,
     pub tnc: TncConfig,
     pub colors: ColorConfig,
+    pub beacon: BeaconConfig,
     pub print: PrintConfig,
 }
 
@@ -64,6 +65,7 @@ impl Default for Config {
             paths: PathConfig::default(),
             tnc: TncConfig::default(),
             colors: ColorConfig::default(),
+            beacon: BeaconConfig::default(),
             print: PrintConfig::default(),
         }
     }
@@ -492,14 +494,87 @@ impl Config {
         // Prefer updating existing key; if missing, append under [session].
         match upsert_toml_key(path, None, "spy_calls", &format!("[{list}]")) {
             Ok(()) => Ok(()),
-            Err(_) => append_session_key(path, "spy_calls", &format!("[{list}]")),
+            Err(_) => append_section_key(path, "session", "spy_calls", &format!("[{list}]")),
         }
+    }
+
+    /// Setup menu values. Written into Config.toml (DOS used `CSTAT.GPB`).
+    pub fn persist_setup(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let s = &self.session;
+        put_key(path, "session", "backup", if s.backup { "true" } else { "false" })?;
+        put_key(path, "session", "rx_click", &s.rx_click.to_string())?;
+        put_key(
+            path,
+            "session",
+            "insert_mon_line",
+            if s.insert_mon_line { "true" } else { "false" },
+        )?;
+        put_key(path, "session", "prompt", &toml_string(&s.prompt))?;
+        put_key(path, "session", "remote_language", &toml_string(&s.remote_language))?;
+        put_key(path, "session", "input_columns", &s.input_columns.to_string())?;
+        put_key(path, "session", "editor_wrap", &s.editor_wrap.to_string())?;
+        put_key(path, "session", "editor_bak", if s.editor_bak { "true" } else { "false" })?;
+        put_key(path, "session", "bbs_channel", &s.bbs_channel.to_string())?;
+        put_key(path, "session", "list_channel", &s.list_channel.to_string())?;
+        put_key(path, "session", "file_drawer", &toml_string(&s.file_drawer))?;
+        put_key(path, "buffers", "packet_payload", &self.buffers.packet_payload.to_string())?;
+        let c = &self.colors;
+        for (key, value) in [
+            ("input_background", c.input_background.as_str()),
+            ("input_foreground", c.input_foreground.as_str()),
+            ("input_invers_attr", c.input_invers_attr.as_str()),
+            ("monitor_background", c.monitor_background.as_str()),
+            ("monitor_foreground", c.monitor_foreground.as_str()),
+            ("monitor_invers_attr", c.monitor_invers_attr.as_str()),
+            ("connect_background", c.connect_background.as_str()),
+            ("connect_foreground", c.connect_foreground.as_str()),
+            ("connect_invers_attr", c.connect_invers_attr.as_str()),
+            ("editor_background", c.editor_background.as_str()),
+            ("editor_foreground", c.editor_foreground.as_str()),
+            ("editor_invers_attr", c.editor_invers_attr.as_str()),
+            ("check_background", c.check_background.as_str()),
+            ("check_foreground", c.check_foreground.as_str()),
+            ("check_invers_attr", c.check_invers_attr.as_str()),
+            ("list_background", c.list_background.as_str()),
+            ("list_foreground", c.list_foreground.as_str()),
+            ("list_invers_attr", c.list_invers_attr.as_str()),
+            ("mh_background", c.mh_background.as_str()),
+            ("mh_foreground", c.mh_foreground.as_str()),
+            ("mh_invers_attr", c.mh_invers_attr.as_str()),
+            ("spy_background", c.spy_background.as_str()),
+            ("spy_foreground", c.spy_foreground.as_str()),
+            ("spy_invers_attr", c.spy_invers_attr.as_str()),
+            ("state_background", c.state_background.as_str()),
+            ("state_foreground", c.state_foreground.as_str()),
+            ("state_invers_attr", c.state_invers_attr.as_str()),
+            ("menu_background", c.menu_background.as_str()),
+            ("menu_foreground", c.menu_foreground.as_str()),
+            ("menu_invers_attr", c.menu_invers_attr.as_str()),
+        ] {
+            put_key(path, "colors", key, &toml_string(value))?;
+        }
+        let b = &self.beacon;
+        let body = format!(
+            "address = {}\ntext = {}\nperiod_minutes = {}\n",
+            toml_string(&b.address),
+            toml_string(&b.text),
+            b.period_minutes,
+        );
+        upsert_toml_section(path, "beacon", &body)
     }
 }
 
-fn append_session_key(path: &Path, key: &str, value: &str) -> Result<(), String> {
+fn put_key(path: &Path, section: &str, key: &str, value: &str) -> Result<(), String> {
+    match upsert_toml_key(path, None, key, value) {
+        Ok(()) => Ok(()),
+        Err(_) => append_section_key(path, section, key, value),
+    }
+}
+
+fn append_section_key(path: &Path, section: &str, key: &str, value: &str) -> Result<(), String> {
     let text = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let header = "[session]";
+    let header = format!("[{section}]");
     let mut out = String::with_capacity(text.len() + 64);
     let mut inserted = false;
     let ends_nl = text.ends_with('\n');
@@ -508,7 +583,7 @@ fn append_session_key(path: &Path, key: &str, value: &str) -> Result<(), String>
     while i < lines.len() {
         out.push_str(lines[i]);
         out.push('\n');
-        if !inserted && lines[i].trim().eq_ignore_ascii_case(header) {
+        if !inserted && lines[i].trim().eq_ignore_ascii_case(&header) {
             // Insert after [session] header (before next section or at end of session keys).
             let mut j = i + 1;
             while j < lines.len() {
@@ -764,6 +839,18 @@ pub struct SessionConfig {
     pub utc_offset_min: i32,
     /// `QRG=` text, at most 7 characters (`430.625` or `70cm`).
     pub qrg_text: String,
+    /// Compose line length from the setup menu.
+    pub input_columns: u32,
+    /// Editor "Word wrapping" value. The editor does not hard-wrap yet.
+    pub editor_wrap: u32,
+    /// Copy the previous file to `name.BAK` before an editor save.
+    pub editor_bak: bool,
+    /// BBS-Menu reference channel.
+    pub bbs_channel: u32,
+    /// Box-List reference channel.
+    pub list_channel: u32,
+    /// Box-List file drawer name.
+    pub file_drawer: String,
     pub security: bool,
     pub remote: Vec<String>,
     pub no_remote: Vec<String>,
@@ -809,6 +896,12 @@ impl Default for SessionConfig {
             log: false,
             utc_offset_min: 0,
             qrg_text: String::new(),
+            input_columns: 80,
+            editor_wrap: 255,
+            editor_bak: false,
+            bbs_channel: 1,
+            list_channel: 1,
+            file_drawer: String::new(),
             security: false,
             remote: Vec::new(),
             no_remote: Vec::new(),
@@ -1020,6 +1113,29 @@ pub enum HostProtocol {
     Kiss,
 }
 
+fn default_white_name() -> String {
+    "White".into()
+}
+
+/// Monitor beacon (setup menu). `period_minutes = 0` is off.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BeaconConfig {
+    pub address: String,
+    pub text: String,
+    pub period_minutes: u32,
+}
+
+impl Default for BeaconConfig {
+    fn default() -> Self {
+        Self {
+            address: "CQ".into(),
+            text: String::new(),
+            period_minutes: 0,
+        }
+    }
+}
+
 /// Classic VGA colour attribute names (kept as strings for theme migration).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1027,12 +1143,16 @@ pub struct ColorConfig {
     pub clock_background: String,
     pub input_foreground: String,
     pub input_background: String,
+    #[serde(default = "default_white_name")]
+    pub input_invers_attr: String,
     pub monitor_foreground: String,
     pub monitor_background: String,
     pub connect_foreground: String,
     pub connect_background: String,
     pub state_background: String,
     pub state_foreground: String,
+    #[serde(default = "default_white_name")]
+    pub state_invers_attr: String,
     pub menu_background: String,
     pub menu_foreground: String,
     pub menu_invers_attr: String,
@@ -1062,12 +1182,14 @@ impl Default for ColorConfig {
             clock_background: "Black".into(),
             input_foreground: "White".into(),
             input_background: "LightBlue".into(),
+            input_invers_attr: "White".into(),
             monitor_foreground: "Yellow".into(),
             monitor_background: "Blue".into(),
             connect_foreground: "White".into(),
             connect_background: "DarkGray".into(),
             state_background: "Magenta".into(),
             state_foreground: "White".into(),
+            state_invers_attr: "White".into(),
             menu_background: "Red".into(),
             menu_foreground: "LightGray".into(),
             menu_invers_attr: "White".into(),

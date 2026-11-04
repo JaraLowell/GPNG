@@ -52,7 +52,7 @@ These are the DOS features an operator would notice first.
    `//C` answer “not implemented”. `REMOTE=` / `NOREMOTE=` are loaded and
    not enforced. A mailbox marked type `B` in `NAMES.GP` is not auto-blocked,
    because that file is not read.
-5. **Beacon is still missing.** The station journal runs when `LOG=ON`
+5. **The journal and the sysop helper are in.** The station journal runs when `LOG=ON`
    (or `log = true`). A disconnect appends one line to
    `data/log/<base call>.GPL`. One file per base call, not per SSID.
    `QRG` (at most 7 characters) and `UTC` (minutes from the PC clock) are
@@ -60,16 +60,21 @@ These are the DOS features an operator would notice first.
    because a release build has no console. `*.GPW` answers TheNet / BayCom
    character positions and the old FlexNet 5-digit sum, and puts the reply
    in the compose box. Ctrl-B pastes it again. A DieBox / FALCon 60×27 grid
-   is recognised and not calculated. There is still no beacon menu.
-6. **Setup (ALT-U) is not a menu.** Colours, prompt text, line length, packet
-   length, RX-click mode, backup, and the beacon live in `Config.toml` or
-   are unused. The session bar covers only a subset (QRG, connect-text file,
-   extended ASCII, line step, echo, bell, 7+, remote, BIN flags, scroll
-   lock). Settings are not saved as `CSTAT.GPB`.
+   is recognised and not calculated. The monitor beacon menu sends a UI frame
+   on KISS. Hostmode stores the beacon and does not invent a TNC command.
+6. **Setup (ALT-U) is a menu.** The rows follow the window that was open
+   (monitor, channel, editor, BBS, Box-List, MHeard, spy). Yellow rows open
+   colours, the prompt, the file drawer, or the beacon. Green rows toggle
+   or step a number. Esc from the main menu saves. Colours, the beacon, and
+   the other setup values are written to `Config.toml`. DOS wrote
+   `CSTAT.GPB`, and the manual left colours out of that file unless
+   `CONFIG.GP` was edited. Word wrapping and input columns are stored and
+   do not wrap the editor yet. The reference channel and the file drawer
+   are stored; the BBS and Box-List parsers are still item 3.
 7. **A few DOS keys still have nothing to run.** The pixel UI binds the
    chapter 4 keys that already have an action (channels, panes, connect,
-   QRG, Shift-F macros, compose Ctrl keys). Still ahead: the setup menu
-   (ALT-U), continuous save (ALT-S on a channel), file send (ALT-F),
+   QRG, Shift-F macros, compose Ctrl keys). Still ahead: continuous save
+   (ALT-S on a channel), file send (ALT-F),
    BBS mark / `READ`, insert/overwrite, and copying marked QSO text
    (Ctrl-K). ALT-Z zoom stays a DOS VGA function.
 
@@ -90,7 +95,7 @@ These are the DOS features an operator would notice first.
 
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
-| VGA colour names for every window | **Partial** | Loaded from config and applied. No live colour picker (manual 11.1) |
+| VGA colour names for every window | **Have** | The setup colour box cycles them. Confirming writes the names into `Config.toml` and refreshes the pane |
 | Scroll-back sizes (`TextBuffer`, `EditBuffer`, `CheckBuffer`, `ListBuffer`, `SpyBuffer`, `MHBuffer`, `InputBuffer`) | **Partial** | Used as line caps. Not the DOS 40–780 × 84-byte segment model |
 | `Screensave`, `PopUpTime`, `Time`, `Zone`, `ConnectBell` | **Partial** | `Zone` feeds `%Z`. `Time` offset is stored. Screensaver, popup lifetime, and connect-bell repeat count are stored and not acted on. Connect / disconnect WAVs play once |
 | Serial `SerNr` / `SerBaud` | **Have** | Modern port name + baud. Raw `SerPort` / `SerIRQ` are stored and unused (the OS owns the UART) |
@@ -108,8 +113,8 @@ These are the DOS features an operator would notice first.
 | `<call>.GPC` / `<call>.GPM` | **Missing** | |
 | `MHEARD.GP` | **Partial** | JSON list, up to 500 UI frames. Names are not stored here. Not the DOS 40-line MH file |
 | `NAMES.GP` | **Have** | `data/NAMES.GP`. Call, ident, and name lookup. `%N`, `//Name`, and the channel **Name** button read and write it |
-| `*.GPB` (including `CSTAT.GPB` and startup `BINDATA.GP`) | **Missing** | No greeting screen from `BINDATA.GP`. Session chrome is written back into `Config.toml` |
-| `ICONS.GP` | **Have** | Decoded and shown. Clicks that have no action yet: **SETUP**, **FILETRANS**, **SORT**, **FIND** |
+| `*.GPB` (including `CSTAT.GPB` and startup `BINDATA.GP`) | **Missing** | No greeting screen from `BINDATA.GP`. Setup and session chrome are written back into `Config.toml`, not `CSTAT.GPB` |
+| `ICONS.GP` | **Have** | Decoded and shown. **SETUP** opens the same menu as ALT-U. Clicks that have no action yet: **FILETRANS**, **SORT**, **FIND** |
 | `<mycall>.GPL` journal | **Have** | `data/log/<base call>.GPL` when `LOG=ON`. One file per base call. A disconnect appends date, UTC time, the other call, QRG, and the duration |
 | `*.GPT` system texts, `*.GPH` remote help | **Partial** | `//Help` sends the overview or one `@TAG` section from the language pack. `G.GPH` is English. `//Language` switches `NL`, `DL`, `F`, `PL`, `SLO`, `OK`, `HA`. `*.GPT` system texts are still unused |
 
@@ -122,14 +127,14 @@ These are the DOS features an operator would notice first.
 | ALT-C connect, ALT-D disconnect, ALT-Y mycall | **Have** | Same dialogs as the icons. ALT-Y only while that channel is disconnected |
 | ALT-O DOS shell | **DOS-only** | ALT-O and the **DOS** icon minimise the window. They do not run a shell or apply `TNCDOS` |
 | ALT-R softscroll, ALT-Z zoom | **Partial** / **DOS-only** | ALT-R cycles the session line step. Zoom is a DOS VGA function; ALT-Z says so |
-| ALT-U setup | **Missing** | ALT-U answers that the setup menu is not built yet |
+| ALT-U setup | **Have** | ALT-U and the **SETUP** icon open Program parameters for the current window. Esc outside BBS-Menu and Box-List opens the TNC command box. On hostmode that line is sent to the TNC. On KISS the status line says there is no command channel |
 | ALT-F4 clear window, ALT-F6 last link status, ALT-F7 last error | **Have** | ALT-F4 clears the visible pad (or the editor buffer). ALT-F6 and ALT-F7 show the last link report and the last modem warning on the status line |
 | ALT-G hourly gong | **Have** | ALT-G and the clock double-note toggle it |
 | ALT-B scroll lock, ALT-S continuous save, ALT-F send file, ALT-Q QRG, ALT-N save name, ALT-T connect text | **Partial** | ALT-B, ALT-Q, ALT-N, and ALT-T (sends the connect text on a live channel) work. ALT-S on a channel and ALT-F answer that continuous save and file send are not built yet. In the editor, ALT-S saves and ALT-L loads |
 | ALT-F8/F9/F10 splitscreen | **Have** | Pixel UI, channel only (`docs/screenshots/SplitScreen.png`). ALT-F8 or a right-click on the QSO, the session bar, or the lower pane toggles it. ALT-F9 / ▲ move the bar up (more monitor); ALT-F10 / ▼ move it down. Drag the ▲▼ pair as well. The lower pane is the same monitor pad, not a second buffer. On Monitor the arrows still nudge that pad. They do nothing on Spy |
 | Shift-F1…F12 macro send | **Have** | On a channel, sends `data/F1.GPI` … `F12.GPI` with the `%` macros expanded |
 | Ctrl-D date, Ctrl-T time, Ctrl-O origin line, Ctrl-Y / Ctrl-C / Ctrl-P line clipboard, Ctrl-K copy to editor, Ctrl-Enter send without CR, Ins insert/overwrite | **Partial** | Ctrl-D, Ctrl-T, and Ctrl-O insert into the compose box (or the editor line). Ctrl-Y / Ctrl-C / Ctrl-P cut, copy, and paste that line. Ctrl-B pastes the last sysop reply. Enter sends the compose line with a CR; Ctrl-Enter sends it without one. Ctrl-K (marked QSO text) and Insert/overwrite are not built yet |
-| BBS cursor / Space mark / Enter = `READ` / Esc leave | **Partial** | Esc on BBS-Menu or Box-List returns to Monitor. Space and Enter answer that mark and `READ` are not built yet |
+| BBS cursor / Space mark / Enter = `READ` / Esc leave | **Partial** | Esc on BBS-Menu or Box-List returns to Monitor. Elsewhere Esc opens the TNC command box. Space and Enter answer that mark and `READ` are not built yet |
 | ALT + numpad for ASCII 1–31 | **DOS-only** | The OS keyboard does this |
 
 ### 5 QSO operation
@@ -210,18 +215,22 @@ A mailbox marked `B` is stored and still does not block remotes. `MultiPort` in 
 
 | Menu item | Status |
 |-----------|--------|
-| Colours, with ENTER/ESC, not written back unless `CONFIG.GP` is edited | **Missing** as a menu. Colours load from config |
-| Remote prompt template (`PROMPT`, macros, `//PRompt ON`) | **Have**. `//PRompt ON` sends the stored `prompt` template after each remote command. `//PRompt OFF` stops that |
+| Colours, with ENTER/ESC | **Have**. Left/right cycle the VGA name. Esc leaves the draft. “Use these colours and exit” applies them and they are written to `Config.toml` with the rest of the menu. DOS did not write colours back unless `CONFIG.GP` was edited |
+| Remote prompt template (`PROMPT`, macros, `//PRompt ON`) | **Have**. The channel menu edits the template. `//PRompt ON` sends it after each remote command. `//PRompt OFF` stops that |
 | Remote on/off for this channel | **Partial**. Session **Remote** flag, one global switch |
-| Backup of the scroll buffer (`BACKUP`) | **Missing**. Flag stored. Pads are saved as `log/*.txt` on exit, which is a different mechanism |
-| Echo | **Have** (session bar; monitor mirror, not strictly per channel) |
-| RX click 0 / 1 / 2 | **Missing**. Connect bell audio exists; RX click mode is stored and unused |
-| Line break per channel | **Missing** |
-| Packet length for all channels | **Partial**. `PACLEN` / `packet_payload` is in config. No setup control |
-| Softscroll | **Partial**. Cosmetic line-step only. Chapter 15’s pixel soft-scroll is **DOS-only** |
-| 7Plus / LCplus Code AutoSave per channel | **Partial**. One **7+** switch covers every channel and writes parts into `data/USER`. It is not a separate switch per channel |
-| Beacon menu (monitor only) | **Missing** |
-| Session-bar switches: QRG, CT, umlauts, echo, line step, bell, 7+, remote, BIN-RX, BIN-TX, Name, ScrLock | **Partial**. **7+** saves parts into `data/USER`. **Name** writes `NAMES.GP`. BIN-RX / BIN-TX still only flip a flag. ScrLock does not freeze a TNC poll |
+| Backup of the scroll buffer (`BACKUP`) | **Have**. When it is on, exit still writes the pads as `data/log/*.txt`. When it is off, that write is skipped |
+| Echo | **Have** (session bar and the menu; monitor mirror, not strictly per channel) |
+| RX click 0 / 1 / 2 | **Have**. 0 is off, 1 plays the bell when the incoming line is not the active channel, 2 always plays it |
+| Line break per channel | **Missing**. Input columns are stored and do not wrap the compose box |
+| Packet length for all channels | **Have**. The channel menu sets `packet_payload`, which is the size used when a line is sent |
+| Softscroll | **Partial**. The menu cycles the same line-step as ALT-R. Chapter 15’s pixel soft-scroll is **DOS-only** |
+| 7Plus / LCplus Code AutoSave per channel | **Partial**. The channel menu flips the one **7+** switch. It covers every channel and writes parts into `data/USER` |
+| Word wrapping, `*.BAK` | **Partial**. `*.BAK` is copied before an editor save when the toggle is on. Word wrapping is stored and the editor does not hard-wrap yet |
+| Insert list from editor, reference channel, file drawer | **Partial**. Insert copies the editor into the BBS or Box-List pad. The reference channel and the file drawer are stored. The mailbox parsers are still item 3 |
+| Beacon menu (monitor only) | **Partial**. Address, text, and period are saved. Period 0 is off. The address is the same unproto path the monitor uses: `CQ`, or `APMI03 WIDE1-1 WIDE2-2`, which the monitor shows as `to APMI03 via WIDE1-1,WIDE2-2`. On KISS the period sends that UI frame. On hostmode the values are stored and no TNC beacon command is invented |
+| InsertMonLine | **Partial**. Stored. Monitor blank lines are not inserted |
+| System language | **Have**. Cycles `EN`, `NL`, `DL`, `F`, `PL`, `SLO`, `OK`, `HA` into `remote_language` |
+| Session-bar switches: QRG, CT, umlauts, echo, line step, bell, 7+, remote, BIN-RX, BIN-TX, Name, ScrLock | **Partial**. Umlauts are also the setup toggle. **7+** saves parts into `data/USER`. **Name** writes `NAMES.GP`. BIN-RX / BIN-TX still only flip a flag. ScrLock does not freeze a TNC poll |
 
 ### 12–18 and the appendices
 
@@ -282,5 +291,5 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 3. BBS-Menu and Box-List parsers (DieBox first), mark, and `READ`.
 4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language. **Done.** Help follows `data/G.GPH` (English) and the other language packs. Catalog, read, write, and delete stay in `data/USER`. `//CD` cannot leave that folder. AutoBin `//RPrg` / `//WPrg` / `//CUT` remain with item 1.
 5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper. **Done** for the journal and for TheNet, BayCom, and FlexNet. Shell and debug lines go to `data/log/gpng.log`. The DieBox 60×27 grid is not calculated. The beacon stays with item 6.
-6. Setup menu for the items that are still config-only: colours, line length, paclen, RX click, beacon.
-7. Pixel-UI hotkeys that match DOS GP chapter 4. **Done** for the keys that already have an action: F1–F12, ALT-M/E/X/O/R/G/Q/C/D/Y/N/T/B, ALT-F1/F2/F4/F6/F7/F8/F9/F10, Shift-F1–F12, Ctrl-D/T/Y/C/P/O/B, Ctrl-Enter, and editor ALT-L/S. Still ahead: ALT-U setup, ALT-S continuous save, ALT-F file send, BBS mark/`READ`, Insert/overwrite, and Ctrl-K. ALT-Z stays DOS VGA zoom.
+6. Setup menu. **Done** for the DOS rows that have a live effect: colours, prompt, remote, backup, echo, RX click, umlauts, softscroll, packet length, Code-AutoSave, language, editor `*.BAK`, insert-from-editor, the KISS beacon, and the Esc TNC command box. Word wrapping, input columns, InsertMonLine, the reference channel, and the file drawer are stored. Hostmode does not send the beacon. Settings go to `Config.toml`, not `CSTAT.GPB`.
+7. Pixel-UI hotkeys that match DOS GP chapter 4. **Done** for the keys that already have an action: F1–F12, ALT-M/E/X/U/O/R/G/Q/C/D/Y/N/T/B, ALT-F1/F2/F4/F6/F7/F8/F9/F10, Shift-F1–F12, Ctrl-D/T/Y/C/P/O/B, Ctrl-Enter, Esc (TNC command, or back to Monitor from BBS/List), and editor ALT-L/S. Still ahead: ALT-S continuous save, ALT-F file send, BBS mark/`READ`, Insert/overwrite, and Ctrl-K. ALT-Z stays DOS VGA zoom.

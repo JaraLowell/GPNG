@@ -3,7 +3,8 @@
 //! Encoding/decoding uses the [`ax25`] crate. WA8DED/TFPCX keep L2 inside the
 //! TNC via hostmode and do **not** use this module.
 //!
-//! Monitor / unproto → **UI** frames (`dest=CQ`, `src=MYCALL` by default).
+//! Monitor / unproto → **UI** frames. The path is the beacon address (`CQ`, or
+//! `APMI03 WIDE1-1 WIDE2-2`). Source is the active mycall.
 //! Connected channels → **SABM** / **I** / **RR** / **DISC**.
 
 use ax25::frame::{
@@ -229,7 +230,35 @@ fn response_frame(dest: &str, src: &str, via: &[&str], content: FrameContent) ->
     })
 }
 
-/// Unproto / APRS-style **UI** frame (Monitor → CQ, etc.).
+/// Unproto path used by the monitor and the beacon.
+///
+/// `CQ`, `ALL DB0FN`, `APMI03 WIDE1-1 WIDE2-2`, or `APMI03 via WIDE1-1,WIDE2-2`.
+/// The first call is the destination. The rest are digipeaters. Words `to` and
+/// `via` are skipped. An empty path is `CQ`.
+pub fn parse_unproto(raw: &str) -> (String, Vec<String>) {
+    let tokens: Vec<String> = raw
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| !s.eq_ignore_ascii_case("to") && !s.eq_ignore_ascii_case("via"))
+        .map(|s| s.to_ascii_uppercase())
+        .collect();
+    if tokens.is_empty() {
+        return ("CQ".into(), Vec::new());
+    }
+    (tokens[0].clone(), tokens[1..].to_vec())
+}
+
+/// `to CQ` or `to APMI03 via WIDE1-1,WIDE2-2`.
+pub fn unproto_to(dest: &str, vias: &[String]) -> String {
+    if vias.is_empty() {
+        format!("to {dest}")
+    } else {
+        format!("to {dest} via {}", vias.join(","))
+    }
+}
+
+/// Unproto / APRS-style **UI** frame (Monitor and beacon).
 pub fn build_ui(dest: &str, src: &str, via: &[&str], info: &[u8]) -> Vec<u8> {
     command_frame(
         dest,
@@ -401,6 +430,26 @@ pub fn parse_frame(payload: &[u8]) -> Option<Ax25Frame> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aprs_path_is_dest_then_digis() {
+        let (dest, vias) = parse_unproto("APMI03 WIDE1-1 WIDE2-2");
+        assert_eq!(dest, "APMI03");
+        assert_eq!(vias, ["WIDE1-1", "WIDE2-2"]);
+        assert_eq!(unproto_to(&dest, &vias), "to APMI03 via WIDE1-1,WIDE2-2");
+        let (dest, vias) = parse_unproto("apmi03 via WIDE1-1,WIDE2-2");
+        assert_eq!(dest, "APMI03");
+        assert_eq!(vias, ["WIDE1-1", "WIDE2-2"]);
+        assert_eq!(parse_unproto("  ").0, "CQ");
+        let raw = build_ui("APMI03", "NL0MSK", &["WIDE1-1", "WIDE2-2"], b"hi");
+        let f = parse_frame(&raw).unwrap();
+        assert_eq!(f.dest, "APMI03");
+        assert_eq!(f.via, ["WIDE1-1", "WIDE2-2"]);
+        assert_eq!(
+            monitor_ctl_line("NL0MSK", &f.dest, &f.via, f.kind, 0, 0, false, true),
+            "fm NL0MSK to APMI03 via WIDE1-1,WIDE2-2 ctl UI^ pid F0"
+        );
+    }
 
     #[test]
     fn ui_cq_roundtrip_addrs() {

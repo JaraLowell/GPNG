@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn catalog_stays_in_the_folder() {
-        let dir = std::env::temp_dir().join(format!("gpng-user-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gpng-userdir-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("keep.txt"), b"hi").unwrap();
