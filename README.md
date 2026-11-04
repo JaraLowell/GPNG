@@ -4,6 +4,8 @@ Asynchronous Rust foundation for a cross-platform rewrite of **Graphic Packet (G
 
 This crate targets modern Windows / macOS / Linux hosts talking to USB-to-serial TNCs (WA8DED hostmode, TFPCX, Kenwood KISS) and soft TNCs over **TCP KISS** (Soundmodem, Direwolf, …).
 
+![afbeelding](https://i.gyazo.com/46a3ab4f6aa8144a012251ea9ce2b73f.png)
+
 ## Development status
 
 This project is still under active development, and some features may not work
@@ -20,6 +22,8 @@ File transfer is still open. 7Plus is the packet-radio text coding (not
 7-Zip). Encoding a file into parts, and joining those parts back to the
 original name, is a Rust port in `transfer::sevenplus_codec`. The MS-DOS
 `7PLUS.EXE` is not used.
+
+![Language](https://img.shields.io/badge/language-RUST-red.svg) 
 
 ## Layout
 
