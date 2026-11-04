@@ -1,0 +1,91 @@
+name: Build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+            target: x86_64-pc-windows-msvc
+            asset: graphic-packet-windows-x64.zip
+          - os: ubuntu-22.04
+            name: linux-x64
+            target: x86_64-unknown-linux-gnu
+            asset: graphic-packet-linux-x64.zip
+          - os: macos-latest
+            name: macos-arm64
+            target: aarch64-apple-darwin
+            asset: graphic-packet-macos-arm64.zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Linux build packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libudev-dev libasound2-dev \
+            libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcb1-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev zip
+
+      - name: Test
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Build release
+        env:
+          # Puts the C runtime inside the .exe, so testers skip the VC++ redistributable.
+          RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=+crt-static' || '' }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage folder
+        shell: bash
+        run: |
+          mkdir -p stage/data
+          bin="target/${{ matrix.target }}/release/graphic-packet"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            bin="${bin}.exe"
+          fi
+          cp "$bin" stage/
+          cp Config.toml stage/
+          cp -R data/. stage/data/
+          rm -rf stage/data/log
+          mkdir -p stage/data/log
+
+      - name: Zip (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path stage\* -DestinationPath ${{ matrix.asset }}
+
+      - name: Zip (macOS and Linux)
+        if: runner.os != 'Windows'
+        run: (cd stage && zip -r "../${{ matrix.asset }}" .)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ matrix.asset }}
