@@ -66,11 +66,12 @@ These are the DOS features an operator would notice first.
    are unused. The session bar covers only a subset (QRG, connect-text file,
    extended ASCII, line step, echo, bell, 7+, remote, BIN flags, scroll
    lock). Settings are not saved as `CSTAT.GPB`.
-7. **Classic hotkeys are missing on the pixel UI.** Channels, icons, and the
-   session bar are mouse-driven. F1–F12, ALT-C/D/S/T/Y/N/U/H, Shift-F1–F12
-   (`F1.GPI`…`F12.GPI`), Ctrl-D/T/Y/C/P/O, and Ctrl-Enter are not bound.
-   The text UI binds a few of them (F-keys, ALT-M/E/X, ALT-F1/F2, split
-   ALT-F8/F9/F10) and still stubs setup, save, and ESC TNC commands.
+7. **A few DOS keys still have nothing to run.** The pixel UI binds the
+   chapter 4 keys that already have an action (channels, panes, connect,
+   QRG, Shift-F macros, compose Ctrl keys). Still ahead: the setup menu
+   (ALT-U), continuous save (ALT-S on a channel), file send (ALT-F),
+   BBS mark / `READ`, insert/overwrite, and copying marked QSO text
+   (Ctrl-K). ALT-Z zoom stays a DOS VGA function.
 
 ---
 
@@ -103,7 +104,7 @@ These are the DOS features an operator would notice first.
 | `Questions`, `PopEnableKeyboard`, `MultiPort` | **Missing** | Parsed only. No yes/no/cancel prompts. No DRSI / TFPCX multiport |
 | `<IF>` / `<ELSE>` / `<END>` / `%TFPCX200` in `CONFIG.GP` | **Missing** | Legacy overlay is flat `KEY = value` |
 | `*.GPI` and the fifteen `%` macros | **Have** | `%V %C %N %Y %K %T %D %B %I %Z %_ %% %O %? %>`, plus width `#nn`. `%DIGI%` expands from context but nothing fills a real digi path |
-| `CTEXT???.GPI`, `NEWS.GPI`, `QRT.GPI`, `RUN.GPI`, `ORIGIN.GPI`, `F1.GPI`–`F12.GPI` | **Partial** | Files can sit in `data/` and be served by name. Shift-F1…F12 does not send them. `RUN.GPI` is sent as text; it does not launch a program |
+| `CTEXT???.GPI`, `NEWS.GPI`, `QRT.GPI`, `RUN.GPI`, `ORIGIN.GPI`, `F1.GPI`–`F12.GPI` | **Partial** | Files in `data/` are served by name. Shift-F1…F12 sends `F1.GPI`…`F12.GPI` on a channel. `RUN.GPI` is not sent; `//RUN` answers `not supported` |
 | `<call>.GPC` / `<call>.GPM` | **Missing** | |
 | `MHEARD.GP` | **Partial** | JSON list, up to 500 UI frames. Names are not stored here. Not the DOS 40-line MH file |
 | `NAMES.GP` | **Have** | `data/NAMES.GP`. Call, ident, and name lookup. `%N`, `//Name`, and the channel **Name** button read and write it |
@@ -116,19 +117,19 @@ These are the DOS features an operator would notice first.
 
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
-| F1–F10 channels, ALT-M monitor, ALT-E editor, ALT-X quit | **Partial** | Mouse (and TUI keys). Pixel UI has no ALT/F-key map |
-| F11 / ALT-F1 BBS-Menu, F12 / ALT-F2 Box-List | **Partial** | Panes exist. TUI can switch to them. They are not mailbox menus |
-| ALT-C connect, ALT-D disconnect, ALT-Y mycall | **Partial** | Icons and dialogs, not the ALT keys |
-| ALT-O DOS shell | **DOS-only** | Pixel **DOS** icon minimises the window. It does not run a shell or apply `TNCDOS` |
-| ALT-R softscroll, ALT-Z zoom | **Partial** / **DOS-only** | Session line-step toggles a scroll feel. VGA zoom and the three-button mouse do not apply |
-| ALT-U setup | **Missing** | |
-| ALT-F4 clear window, ALT-F6 last link status, ALT-F7 last error | **Partial** | Session clear-pad button empties the visible log. No “last status” / “last error” popup |
-| ALT-G hourly gong | **Have** | Clock double-note toggles it |
-| ALT-B scroll lock, ALT-S continuous save, ALT-F send file, ALT-Q QRG, ALT-N save name, ALT-T connect text | **Partial** | Scroll lock, QRG, connect-text, and **Name** (ALT-N → `NAMES.GP`) are on the session bar. Continuous save and file send are not. The pixel UI has no ALT key |
+| F1–F10 channels, ALT-M monitor, ALT-E editor, ALT-X quit | **Have** | Pixel UI and the mouse. ALT-X closes the window |
+| F11 / ALT-F1 BBS-Menu, F12 / ALT-F2 Box-List | **Partial** | The keys open the panes. The panes are not mailbox menus yet |
+| ALT-C connect, ALT-D disconnect, ALT-Y mycall | **Have** | Same dialogs as the icons. ALT-Y only while that channel is disconnected |
+| ALT-O DOS shell | **DOS-only** | ALT-O and the **DOS** icon minimise the window. They do not run a shell or apply `TNCDOS` |
+| ALT-R softscroll, ALT-Z zoom | **Partial** / **DOS-only** | ALT-R cycles the session line step. Zoom is a DOS VGA function; ALT-Z says so |
+| ALT-U setup | **Missing** | ALT-U answers that the setup menu is not built yet |
+| ALT-F4 clear window, ALT-F6 last link status, ALT-F7 last error | **Have** | ALT-F4 clears the visible pad (or the editor buffer). ALT-F6 and ALT-F7 show the last link report and the last modem warning on the status line |
+| ALT-G hourly gong | **Have** | ALT-G and the clock double-note toggle it |
+| ALT-B scroll lock, ALT-S continuous save, ALT-F send file, ALT-Q QRG, ALT-N save name, ALT-T connect text | **Partial** | ALT-B, ALT-Q, ALT-N, and ALT-T (sends the connect text on a live channel) work. ALT-S on a channel and ALT-F answer that continuous save and file send are not built yet. In the editor, ALT-S saves and ALT-L loads |
 | ALT-F8/F9/F10 splitscreen | **Have** | Pixel UI, channel only (`docs/screenshots/SplitScreen.png`). ALT-F8 or a right-click on the QSO, the session bar, or the lower pane toggles it. ALT-F9 / ▲ move the bar up (more monitor); ALT-F10 / ▼ move it down. Drag the ▲▼ pair as well. The lower pane is the same monitor pad, not a second buffer. On Monitor the arrows still nudge that pad. They do nothing on Spy |
-| Shift-F1…F12 macro send | **Missing** | |
-| Ctrl-D date, Ctrl-T time, Ctrl-O origin line, Ctrl-Y / Ctrl-C / Ctrl-P line clipboard, Ctrl-K copy to editor, Ctrl-Enter send without CR, Ins insert/overwrite | **Missing** | Compose is a normal text field with history. Ctrl-B pastes the last sysop reply |
-| BBS cursor / Space mark / Enter = `READ` / Esc leave | **Missing** | |
+| Shift-F1…F12 macro send | **Have** | On a channel, sends `data/F1.GPI` … `F12.GPI` with the `%` macros expanded |
+| Ctrl-D date, Ctrl-T time, Ctrl-O origin line, Ctrl-Y / Ctrl-C / Ctrl-P line clipboard, Ctrl-K copy to editor, Ctrl-Enter send without CR, Ins insert/overwrite | **Partial** | Ctrl-D, Ctrl-T, and Ctrl-O insert into the compose box (or the editor line). Ctrl-Y / Ctrl-C / Ctrl-P cut, copy, and paste that line. Ctrl-B pastes the last sysop reply. Enter sends the compose line with a CR; Ctrl-Enter sends it without one. Ctrl-K (marked QSO text) and Insert/overwrite are not built yet |
+| BBS cursor / Space mark / Enter = `READ` / Esc leave | **Partial** | Esc on BBS-Menu or Box-List returns to Monitor. Space and Enter answer that mark and `READ` are not built yet |
 | ALT + numpad for ASCII 1–31 | **DOS-only** | The OS keyboard does this |
 
 ### 5 QSO operation
@@ -282,4 +283,4 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language. **Done.** Help follows `data/G.GPH` (English) and the other language packs. Catalog, read, write, and delete stay in `data/USER`. `//CD` cannot leave that folder. AutoBin `//RPrg` / `//WPrg` / `//CUT` remain with item 1.
 5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper. **Done** for the journal and for TheNet, BayCom, and FlexNet. Shell and debug lines go to `data/log/gpng.log`. The DieBox 60×27 grid is not calculated. The beacon stays with item 6.
 6. Setup menu for the items that are still config-only: colours, line length, paclen, RX click, beacon.
-7. Pixel-UI hotkeys that operators still hit from muscle memory (F-keys, ALT-C/D/X, Shift-F macros, Ctrl-D/T/O).
+7. Pixel-UI hotkeys that match DOS GP chapter 4. **Done** for the keys that already have an action: F1–F12, ALT-M/E/X/O/R/G/Q/C/D/Y/N/T/B, ALT-F1/F2/F4/F6/F7/F8/F9/F10, Shift-F1–F12, Ctrl-D/T/Y/C/P/O/B, Ctrl-Enter, and editor ALT-L/S. Still ahead: ALT-U setup, ALT-S continuous save, ALT-F file send, BBS mark/`READ`, Insert/overwrite, and Ctrl-K. ALT-Z stays DOS VGA zoom.

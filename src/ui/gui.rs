@@ -162,6 +162,12 @@ pub struct GpGuiApp {
     /// Pointer travel on the ▲▼ pair this gesture. A click steps; a drag resizes.
     split_drag_dy: f32,
     status: String,
+    /// Last TNC link report (ALT-F6).
+    last_link_status: String,
+    /// Last modem warning (ALT-F7).
+    last_error: String,
+    /// Ctrl-Y / Ctrl-C line, pasted with Ctrl-P.
+    line_clip: String,
     /// Current compose buffer (shown in a 3-line editor).
     input: String,
     /// Last typed lines (pre-write history), newest at the end.
@@ -422,6 +428,9 @@ impl GpGuiApp {
             split_body_h: 0.0,
             split_drag_dy: 0.0,
             status,
+            last_link_status: String::new(),
+            last_error: String::new(),
+            line_clip: String::new(),
             input: String::new(),
             typed_history: VecDeque::new(),
             pads,
@@ -602,6 +611,7 @@ impl GpGuiApp {
                 }
                 TncEvent::Warning(m) => {
                     self.status = m.clone();
+                    self.last_error = m.clone();
                     // Keep real failures; skip routine serial `KISS.INI:` bring-up noise.
                     let low = m.to_ascii_lowercase();
                     if !low.starts_with("kiss.ini") {
@@ -780,6 +790,7 @@ impl GpGuiApp {
             return;
         }
         let idx = channel as usize;
+        self.last_link_status = text.to_string();
         let upper = text.to_ascii_uppercase();
         let was_linked = self.channel_peer.get(idx).and_then(|p| p.as_ref()).is_some();
 
@@ -1238,6 +1249,7 @@ impl GpGuiApp {
             self.restore_global_identities();
         }
         self.status = format!("Disconnect ch{channel}");
+        self.last_link_status = self.status.clone();
     }
 
     fn kiss_send_disc(&mut self, channel: u8) {
@@ -2174,6 +2186,7 @@ impl GpGuiApp {
                 self.note_link_up(ch);
                 self.send_connect_text(ch);
                 self.status = format!("KISS linked ch{ch} ← {}", frame.src);
+                self.last_link_status = self.status.clone();
             }
             Ax25FrameType::Ua => {
                 self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
@@ -2211,6 +2224,7 @@ impl GpGuiApp {
                 }
                 self.finish_link_up(ch);
                 self.status = format!("KISS linked ch{ch} → {}", frame.src);
+                self.last_link_status = self.status.clone();
             }
             Ax25FrameType::Info => {
                 // Route to channel whose peer is the sender (or dest is our call).
@@ -2297,6 +2311,7 @@ impl GpGuiApp {
                     if let Some(pad) = self.pads.get_mut(ch as usize) {
                         pad.push(PadKind::System, "*** DISCONNECTED");
                     }
+                    self.last_link_status = format!("*** DISCONNECTED ch{ch}");
                 }
             }
             Ax25FrameType::Rr => {
@@ -2623,8 +2638,17 @@ impl GpGuiApp {
     }
 
     fn submit(&mut self) {
+        self.finish_compose(true);
+    }
+
+    /// Enter sends the compose line with a trailing CR. Ctrl-Enter leaves the CR off.
+    fn finish_compose(&mut self, carriage_return: bool) {
         let line = std::mem::take(&mut self.input);
-        let line = line.trim_end().to_string();
+        let line = if carriage_return {
+            line.trim_end().to_string()
+        } else {
+            line.trim_end_matches(['\r', '\n']).to_string()
+        };
         if line.is_empty() {
             return;
         }
@@ -2676,7 +2700,7 @@ impl GpGuiApp {
             }
         }
 
-        self.send_operator_text(&line);
+        self.write_operator_text(&line, carriage_return);
     }
 
     fn linked_call(&self, channel: u8) -> Option<String> {
@@ -2792,9 +2816,28 @@ impl GpGuiApp {
     /// Typed text and text files: normalize breaks to `\n`, then one packet
     /// per `packet_payload` bytes. Same chunks for KISS and hostmode.
     fn send_operator_text(&mut self, text: &str) {
+        self.write_operator_text(text, false);
+    }
+
+    /// `carriage_return` appends a CR after the text. Enter does. Ctrl-Enter does not.
+    fn write_operator_text(&mut self, text: &str, carriage_return: bool) {
         self.note_sysop_command(text);
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
-        for chunk in pack_text_payloads(text, max) {
+        let mut chunks = pack_text_payloads(text, max);
+        if chunks.is_empty() {
+            return;
+        }
+        if carriage_return {
+            let used = chunks.last().map(String::len).unwrap_or(0);
+            if used + 1 <= max {
+                if let Some(last) = chunks.last_mut() {
+                    last.push('\r');
+                }
+            } else {
+                chunks.push("\r".into());
+            }
+        }
+        for chunk in chunks {
             if self.kiss_mode() {
                 self.send_kiss_text(&chunk);
             } else {
@@ -3427,6 +3470,347 @@ impl GpGuiApp {
         self.split_on && matches!(self.active, ActivePane::Channel(_))
     }
 
+    fn modal_open(&self) -> bool {
+        self.session.show_qrg_dialog
+            || self.session.show_connect_dialog
+            || self.session.show_mycall_dialog
+            || self.session.show_spy_dialog
+            || self.show_name_dialog
+            || self.show_mheard_spy_confirm
+    }
+
+    fn active_channel(&self) -> Option<u8> {
+        match self.active {
+            ActivePane::Channel(n) if (1..=self.channels).contains(&n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// DOS chapter 4 keys. A key with no product yet answers on the status line.
+    fn poll_hotkeys(&mut self, ctx: &Context) {
+        let alt = egui::Modifiers::ALT;
+        let ctrl = egui::Modifiers::CTRL;
+        let shift = egui::Modifiers::SHIFT;
+        let none = egui::Modifiers::NONE;
+
+        if eat_key(ctx, alt, egui::Key::X) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        if self.modal_open() {
+            return;
+        }
+        self.poll_split_keys(ctx);
+        self.poll_gpw_key(ctx);
+
+        for n in 1..=12u8 {
+            let Some(key) = fn_key(n) else { continue };
+            if eat_key(ctx, shift, key) {
+                self.send_shift_macro(n);
+                return;
+            }
+        }
+        if eat_key(ctx, none, egui::Key::F11) || eat_key(ctx, alt, egui::Key::F1) {
+            self.select(ActivePane::Check);
+            return;
+        }
+        if eat_key(ctx, none, egui::Key::F12) || eat_key(ctx, alt, egui::Key::F2) {
+            self.select(ActivePane::List);
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::F4) {
+            self.clear_active_pad();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::F6) {
+            self.status = if self.last_link_status.is_empty() {
+                "no link status yet".into()
+            } else {
+                self.last_link_status.clone()
+            };
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::F7) {
+            self.status = if self.last_error.is_empty() {
+                "no error yet".into()
+            } else {
+                self.last_error.clone()
+            };
+            return;
+        }
+        for n in 1..=10u8 {
+            let Some(key) = fn_key(n) else { continue };
+            if eat_key(ctx, none, key) {
+                if n <= self.channels {
+                    self.select(ActivePane::Channel(n));
+                }
+                return;
+            }
+        }
+
+        if eat_key(ctx, alt, egui::Key::M) {
+            self.select(ActivePane::Monitor);
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::E) {
+            self.open_editor_default();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::O) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            self.status = "minimized".into();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::R) {
+            self.session.line_step = self.session.line_step.cycle();
+            self.status = format!("line step: {:?}", self.session.line_step);
+            self.persist_session_chrome();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::U) {
+            self.status = "Setup menu is not built yet".into();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::Z) {
+            self.status = "Zoom is a DOS VGA function".into();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::G) {
+            self.hour_gong = !self.hour_gong;
+            self.status = format!(
+                "Hourly gong {}",
+                if self.hour_gong { "ON" } else { "OFF" }
+            );
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::Q) {
+            self.session.open_qrg_dialog();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::C) {
+            self.hotkey_connect();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::D) {
+            if let Some(ch) = self.active_channel() {
+                self.disconnect_channel(ch);
+            } else {
+                self.status = "Disconnect — select a channel".into();
+            }
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::Y) {
+            self.hotkey_mycall();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::N) {
+            self.open_name_dialog();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::T) {
+            self.hotkey_connect_text();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::B) {
+            self.session.scr_lock = !self.session.scr_lock;
+            self.status = format!("ScrLock {}", on_off(self.session.scr_lock));
+            self.persist_session_chrome();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::S) {
+            self.hotkey_alt_s();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::F) {
+            self.hotkey_file_send();
+            return;
+        }
+        if eat_key(ctx, alt, egui::Key::L) {
+            if matches!(self.active, ActivePane::Editor) {
+                self.editor_load_dialog();
+            } else {
+                self.status = "Load — switch to the editor (ALT-E)".into();
+            }
+            return;
+        }
+
+        if eat_key(ctx, ctrl, egui::Key::Enter) {
+            self.finish_compose(false);
+            return;
+        }
+        if eat_key(ctx, ctrl, egui::Key::D) {
+            let text = self.macro_ctx().date;
+            self.insert_buffer_text(&text);
+            return;
+        }
+        if eat_key(ctx, ctrl, egui::Key::T) {
+            let text = self.macro_ctx().time;
+            self.insert_buffer_text(&text);
+            return;
+        }
+        if eat_key(ctx, ctrl, egui::Key::O) {
+            let text = gpi::random_origin_line();
+            if text.is_empty() {
+                self.status = "ORIGIN.GPI has no line".into();
+            } else {
+                self.insert_buffer_text(&text);
+            }
+            return;
+        }
+        if eat_key(ctx, ctrl, egui::Key::Y) {
+            self.cut_edit_line();
+            return;
+        }
+        if eat_key(ctx, ctrl, egui::Key::C) {
+            self.copy_edit_line();
+            return;
+        }
+        if eat_key(ctx, ctrl, egui::Key::P) {
+            self.paste_edit_line();
+            return;
+        }
+        if eat_key(ctx, ctrl, egui::Key::K) {
+            self.status = "Copying marked QSO text is not built yet".into();
+            return;
+        }
+
+        if matches!(self.active, ActivePane::Check | ActivePane::List) {
+            if eat_key(ctx, none, egui::Key::Escape) {
+                self.select(ActivePane::Monitor);
+                return;
+            }
+            if eat_key(ctx, none, egui::Key::Space) {
+                self.status = "BBS mark is not built yet".into();
+                return;
+            }
+            if eat_key(ctx, none, egui::Key::Enter) {
+                self.status = "BBS READ is not built yet".into();
+                return;
+            }
+        }
+        if eat_key(ctx, none, egui::Key::Insert) {
+            self.status = "Insert/overwrite is not built yet".into();
+        }
+    }
+
+    fn hotkey_connect(&mut self) {
+        match self.active {
+            ActivePane::Mh => self.connect_from_mheard(),
+            ActivePane::Channel(n) => self.open_connect_dialog_for_channel(n),
+            _ => {
+                if let Some(ch) = self.first_free_channel() {
+                    self.open_connect_dialog_for_channel(ch);
+                } else {
+                    self.status = "no free channel for Connect".into();
+                }
+            }
+        }
+    }
+
+    fn hotkey_mycall(&mut self) {
+        let Some(ch) = self.active_channel() else {
+            self.status = "Mycall — select a channel".into();
+            return;
+        };
+        if self.channel_linked(ch) {
+            self.status = "Mycall — only while disconnected".into();
+            return;
+        }
+        self.open_mycall_dialog();
+    }
+
+    fn hotkey_connect_text(&mut self) {
+        let Some(ch) = self.active_channel() else {
+            self.status = "Connect text — select a channel".into();
+            return;
+        };
+        if !self.channel_linked(ch) {
+            self.status = "Connect text — not connected".into();
+            return;
+        }
+        self.send_connect_text(ch);
+        self.status = "connect text sent".into();
+    }
+
+    fn hotkey_alt_s(&mut self) {
+        match self.active {
+            ActivePane::Editor => self.editor_save(),
+            ActivePane::Check => self.status = "BBS sort is not built yet".into(),
+            ActivePane::Channel(_) => self.status = "Continuous save is not built yet".into(),
+            _ => self.status = "Continuous save is not built yet".into(),
+        }
+    }
+
+    fn hotkey_file_send(&mut self) {
+        let ready = self
+            .active_channel()
+            .is_some_and(|ch| self.channel_linked(ch));
+        self.status = if ready {
+            "File send is not built yet".into()
+        } else {
+            "File send — connect a station first".into()
+        };
+    }
+
+    fn send_shift_macro(&mut self, n: u8) {
+        if self.active_channel().is_none() {
+            self.status = format!("F{n}.GPI — select a channel");
+            return;
+        }
+        let ctx = self.macro_ctx();
+        let Some(text) = gpi::load_expanded(&format!("F{n}"), &ctx) else {
+            self.status = format!("F{n}.GPI not found");
+            return;
+        };
+        self.send_gpi_text(&text);
+        self.status = format!("sent F{n}.GPI");
+    }
+
+    fn insert_buffer_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if matches!(self.active, ActivePane::Editor) {
+            self.editor.append_on_cursor_line(text);
+            return;
+        }
+        if !self.input.is_empty() && !self.input.ends_with(' ') && !self.input.ends_with('\n') {
+            self.input.push(' ');
+        }
+        self.input.push_str(text);
+    }
+
+    fn cut_edit_line(&mut self) {
+        if matches!(self.active, ActivePane::Editor) {
+            self.line_clip = self.editor.cut_cursor_line();
+        } else {
+            self.line_clip = std::mem::take(&mut self.input);
+        }
+        self.status = "line cut".into();
+    }
+
+    fn copy_edit_line(&mut self) {
+        self.line_clip = if matches!(self.active, ActivePane::Editor) {
+            self.editor.copy_cursor_line()
+        } else {
+            self.input.clone()
+        };
+        self.status = "line copied".into();
+    }
+
+    fn paste_edit_line(&mut self) {
+        if self.line_clip.is_empty() {
+            self.status = "nothing to paste".into();
+            return;
+        }
+        let clip = self.line_clip.clone();
+        if matches!(self.active, ActivePane::Editor) {
+            self.editor.paste_line(&clip);
+        } else {
+            self.insert_buffer_text(&clip);
+        }
+    }
+
     fn poll_split_keys(&mut self, ctx: &Context) {
         if !matches!(self.active, ActivePane::Channel(_)) {
             return;
@@ -3561,7 +3945,26 @@ impl GpGuiApp {
                 }
                 self.status = format!("Spy {n} cleared");
             }
-            _ => {}
+            ActivePane::Check => {
+                self.bbs_pad.clear();
+                self.bbs_pad.save_log(&padlog::bbs_path(&dir));
+                self.status = "BBS menu cleared".into();
+            }
+            ActivePane::List => {
+                self.box_pad.clear();
+                self.box_pad.save_log(&padlog::box_path(&dir));
+                self.status = "Box list cleared".into();
+            }
+            ActivePane::Editor => {
+                self.editor.text.clear();
+                self.editor.dirty = true;
+                self.editor.cursor_line = 1;
+                self.editor.cursor_col = 1;
+                self.status = "Editor cleared".into();
+            }
+            ActivePane::Mh => {
+                self.status = "MHeard is not cleared from the keyboard".into();
+            }
         }
     }
 
@@ -3626,6 +4029,42 @@ impl GpGuiApp {
     }
 }
 
+fn fn_key(n: u8) -> Option<egui::Key> {
+    Some(match n {
+        1 => egui::Key::F1,
+        2 => egui::Key::F2,
+        3 => egui::Key::F3,
+        4 => egui::Key::F4,
+        5 => egui::Key::F5,
+        6 => egui::Key::F6,
+        7 => egui::Key::F7,
+        8 => egui::Key::F8,
+        9 => egui::Key::F9,
+        10 => egui::Key::F10,
+        11 => egui::Key::F11,
+        12 => egui::Key::F12,
+        _ => return None,
+    })
+}
+
+fn mods_match(have: egui::Modifiers, want: egui::Modifiers) -> bool {
+    have.alt == want.alt
+        && have.shift == want.shift
+        && have.ctrl == want.ctrl
+        && have.command == want.command
+}
+
+/// Consume `key` only when the modifier set matches. Shift-F is not F.
+fn eat_key(ctx: &Context, mods: egui::Modifiers, key: egui::Key) -> bool {
+    let pressed = ctx.input(|i| i.key_pressed(key) && mods_match(i.modifiers, mods));
+    if pressed {
+        ctx.input_mut(|i| {
+            i.consume_key(mods, key);
+        });
+    }
+    pressed
+}
+
 impl eframe::App for GpGuiApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_pad_logs();
@@ -3636,8 +4075,7 @@ impl eframe::App for GpGuiApp {
         self.kiss_link_timers();
         self.maybe_hour_gong();
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
-        self.poll_split_keys(ctx);
-        self.poll_gpw_key(ctx);
+        self.poll_hotkeys(ctx);
 
         // Panels own reserved bands so CentralPanel (RX) cannot paint over them.
         // Strip height stays fixed; icons scale to fill it (1 px top/bottom).
@@ -3827,7 +4265,8 @@ impl GpGuiApp {
                             .font(FontId::monospace(14.0)),
                     );
                     if edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        if !ui.input(|i| i.modifiers.shift) {
+                        let mods = ui.input(|i| i.modifiers);
+                        if !mods.shift && !mods.ctrl {
                             if self.input.ends_with('\n') {
                                 self.input.pop();
                             }

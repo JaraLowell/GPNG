@@ -127,6 +127,70 @@ impl GpEditor {
         Ok(())
     }
 
+    /// The cursor line, 0-based, clamped to the buffer.
+    fn cursor_row(&self) -> usize {
+        let n = self.text.split('\n').count().max(1);
+        self.cursor_line.saturating_sub(1).min(n - 1)
+    }
+
+    pub fn copy_cursor_line(&self) -> String {
+        self.text
+            .split('\n')
+            .nth(self.cursor_row())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    /// Ctrl-Y: lift the cursor line out of the buffer.
+    pub fn cut_cursor_line(&mut self) -> String {
+        let mut lines: Vec<String> = self.text.split('\n').map(str::to_string).collect();
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        let i = self.cursor_row().min(lines.len() - 1);
+        let line = lines.remove(i);
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        self.text = lines.join("\n");
+        self.dirty = true;
+        self.cursor_line = (i + 1).min(lines.len());
+        self.cursor_col = 1;
+        line
+    }
+
+    /// Ctrl-P: put a cut or copied line back at the cursor.
+    pub fn paste_line(&mut self, line: &str) {
+        let mut lines: Vec<String> = self.text.split('\n').map(str::to_string).collect();
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        let i = self.cursor_row().min(lines.len() - 1);
+        if lines.len() == 1 && lines[0].is_empty() {
+            lines[0] = line.to_string();
+        } else {
+            lines.insert(i, line.to_string());
+        }
+        self.text = lines.join("\n");
+        self.dirty = true;
+    }
+
+    /// Ctrl-D / Ctrl-T / Ctrl-O: append to the cursor line.
+    pub fn append_on_cursor_line(&mut self, text: &str) {
+        let mut lines: Vec<String> = self.text.split('\n').map(str::to_string).collect();
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        let i = self.cursor_row().min(lines.len() - 1);
+        let row = &mut lines[i];
+        if !row.is_empty() && !row.ends_with(' ') {
+            row.push(' ');
+        }
+        row.push_str(text);
+        self.text = lines.join("\n");
+        self.dirty = true;
+    }
+
     pub fn update_cursor_from_galley(&mut self, text: &str, cursor_cc: usize) {
         let cursor_cc = cursor_cc.min(text.len());
         let before = &text[..cursor_cc];
@@ -150,5 +214,16 @@ mod tests {
         let back = decode_cp437(&bytes);
         assert!(back.contains('ä') || back.contains('?'));
         assert_eq!(decode_cp437(&encode_cp437("ABC\n")), "ABC\n");
+    }
+
+    #[test]
+    fn cut_and_paste_the_cursor_line() {
+        let mut ed = GpEditor::default();
+        ed.text = "one\ntwo\nthree".into();
+        ed.cursor_line = 2;
+        assert_eq!(ed.cut_cursor_line(), "two");
+        assert_eq!(ed.text, "one\nthree");
+        ed.paste_line("two");
+        assert_eq!(ed.text, "one\ntwo\nthree");
     }
 }
