@@ -70,7 +70,7 @@ Minimum significant letters come from `@TAG,N` in `*.GPH` (e.g. `@VERSION,3` →
 | `//Info` | `I` | `<mycall>.GPI` / `INFO.GPI` |
 | `//Language <lang>` | `L` | Switch remote `*.GPT` / help language |
 | `//MHeard [n\|call]` | `MH` | MH list or last-heard for call |
-| `//Name <name>` | `N` | Store opposite station name on the MHeard disk list (not shown in the pane) |
+| `//Name <name>` | `N` | Store the linked station's name in `NAMES.GP` (used by `%N`; not shown in the MHeard pane) |
 | `//NEws` | `NE` | `NEWS.GPI` |
 | `//PARameters` | `PAR` | TNC/system parameters (**DL/F** help) |
 | `//PRompt <ON/OFF>` | `PR` | Remote prompt (`PROMPT=` template) |

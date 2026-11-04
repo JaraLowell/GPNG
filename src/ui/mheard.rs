@@ -1,7 +1,7 @@
 //! MHeard — stations heard (APRS / AX.25 UI), persisted as JSON.
 //!
-//! `//Name` stores the opposite station's name on the same disk list.
-//! That name is not drawn in the MHeard pane; `%N` reads it from here.
+//! Station names live in `NAMES.GP`, not on this list. `%N` and `//Name`
+//! read and write that file.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,17 +26,6 @@ pub struct HeardStation {
     pub via: String,
     /// Sort key — last heard UTC millis.
     pub heard_ms: i64,
-    /// Name from `//Name`. Kept on disk for `%N`; omitted from the pane.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
-    /// Row exists only to remember a name for a call that has not been heard.
-    /// Saved with the list, hidden in the software MHeard view.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub name_only: bool,
-}
-
-fn is_false(v: &bool) -> bool {
-    !*v
 }
 
 impl HeardStation {
@@ -48,14 +37,12 @@ impl HeardStation {
             to: frame.dest.clone(),
             via: frame.via.join(","),
             heard_ms: when.timestamp_millis(),
-            name: String::new(),
-            name_only: false,
         }
     }
 
-    /// Shown in the MHeard pane and in `//MHeard`. Name-only rows stay on disk.
+    /// Shown in the MHeard pane and in `//MHeard`.
     pub fn listed(&self) -> bool {
-        !self.name_only
+        !self.call.is_empty() && !self.date.is_empty()
     }
 
     /// `yyyy/mm/dd hh:mm  CALL_____ > TO______  via PATH`
@@ -96,6 +83,8 @@ impl MheardList {
                 list.entries = entries;
             }
         }
+        // Older lists kept `//Name` rows that had never been heard.
+        list.entries.retain(|e| e.listed());
         list.sort_newest_first();
         list
     }
@@ -136,8 +125,6 @@ impl MheardList {
                 prev.to = entry.to;
                 prev.via = entry.via; // "" when heard direct / no digis
                 prev.heard_ms = entry.heard_ms;
-                prev.name_only = false;
-                // `name` stays — a later hear must not wipe `//Name`.
             }
             let updated = self.entries.remove(pos);
             self.entries.insert(0, updated);
@@ -162,56 +149,7 @@ impl MheardList {
         Ok(())
     }
 
-    /// Remember `name` for `call`. An already-heard row keeps its place and
-    /// stays visible; a call that has never been heard is stored hidden.
-    /// Returns false when `call` or `name` is empty after cleanup.
-    pub fn set_name(&mut self, call: &str, name: &str) -> bool {
-        let call = call.trim();
-        let name = normalize_name(name);
-        if call.is_empty() || name.is_empty() {
-            return false;
-        }
-        if let Some(prev) = self
-            .entries
-            .iter_mut()
-            .find(|e| e.call.eq_ignore_ascii_case(call))
-        {
-            if prev.name == name {
-                return true;
-            }
-            prev.name = name;
-        } else {
-            self.entries.push(HeardStation {
-                date: String::new(),
-                time: String::new(),
-                call: call.to_string(),
-                to: String::new(),
-                via: String::new(),
-                heard_ms: 0,
-                name,
-                name_only: true,
-            });
-        }
-        self.dirty = true;
-        let _ = self.save();
-        true
-    }
-
-    /// Stored `//Name` for `call`, if one was set.
-    pub fn name_for(&self, call: &str) -> Option<String> {
-        let call = call.trim();
-        if call.is_empty() {
-            return None;
-        }
-        self.entries
-            .iter()
-            .find(|e| e.call.eq_ignore_ascii_case(call))
-            .map(|e| e.name.trim())
-            .filter(|n| !n.is_empty())
-            .map(str::to_string)
-    }
-
-    /// Rows drawn in the MHeard pane (excludes disk-only names).
+    /// Rows drawn in the MHeard pane.
     pub fn listed_len(&self) -> usize {
         self.entries.iter().filter(|e| e.listed()).count()
     }
@@ -222,17 +160,6 @@ impl MheardList {
             .filter(|e| e.listed())
             .map(HeardStation::display_line)
             .collect()
-    }
-}
-
-/// One line, no control characters. Long enough for a personal name.
-fn normalize_name(raw: &str) -> String {
-    const MAX: usize = 40;
-    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() <= MAX {
-        collapsed
-    } else {
-        collapsed.chars().take(MAX).collect::<String>().trim_end().to_string()
     }
 }
 
@@ -268,39 +195,14 @@ mod tests {
     }
 
     #[test]
-    fn name_only_stays_off_the_list_until_heard() {
-        let path = scratch("name-only");
+    fn hear_lists_the_call() {
+        let path = scratch("hear");
         let mut list = MheardList::load_from(path.clone());
-        assert!(list.set_name("NL0MSK", "Jara"));
-        assert_eq!(list.name_for("nl0msk").as_deref(), Some("Jara"));
-        assert!(list.lines().is_empty());
-        assert_eq!(list.listed_len(), 0);
-
-        let raw = fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("Jara"));
-        assert!(raw.contains("NL0MSK"));
-        assert!(raw.contains("name_only"));
-
         list.hear(&ui("NL0MSK"));
         assert_eq!(list.listed_len(), 1);
-        assert_eq!(list.name_for("NL0MSK").as_deref(), Some("Jara"));
         let line = &list.lines()[0];
         assert!(line.contains("NL0MSK"));
-        assert!(!line.contains("Jara"));
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn hear_keeps_name_and_display_omits_it() {
-        let path = scratch("keep-name");
-        let mut list = MheardList::load_from(path.clone());
         list.hear(&ui("NL0MSK"));
-        assert!(list.set_name("nl0msk", "  Jara  "));
-        let line = list.lines()[0].clone();
-        assert!(line.contains("NL0MSK"));
-        assert!(!line.contains("Jara"));
-        list.hear(&ui("NL0MSK"));
-        assert_eq!(list.name_for("NL0MSK").as_deref(), Some("Jara"));
         assert_eq!(list.listed_len(), 1);
         let _ = fs::remove_file(&path);
     }

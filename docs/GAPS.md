@@ -28,16 +28,18 @@ These are the DOS features an operator would notice first.
    and keep a text log. They do not parse DieBox / F6FBB / DK5SG / DB0IE
    `CHECK` or `LIST` output, mark lines, or send `READ`. **SORT** and **FIND**
    icons on those toolbars do nothing.
-2. **No autorouter and no `NAMES.GP`.** Connect is a call (and optional via
-   list) typed by hand. There is no `TYPE>CALL NAME; path`, no recursive
-   paths, no idents, no `PORT0`…`PORT8`, no QRG-dependent `<IF>` blocks, and
-   no `%DIGI%` substitution while building a path. ALT-N “add the station I
-   am talking to” does not exist.
+2. **`NAMES.GP` is in use.** Connect accepts a call, an ident, or a name from
+   `data/NAMES.GP` and builds the path (digipeaters, then node `C` / `C!`).
+   **Name** on the channel strip is ALT-N, and `//Name` writes the same file.
+   `%N` reads it. MHeard no longer stores names. Still open: a type `B`
+   mailbox does not block remotes, and `PORTx` does not switch a multiport TNC.
 3. **AutoBin is not on the air.** The `#BIN#` state machine is tested and
    unused. **BIN-RX** / **BIN-TX** only flip a flag. The **FILETRANS** icon
-   does nothing. There is no send dialog or resume. The progress window is
-   **Partial**: the fields are listed in `docs/TRANSFER.md`, and the layout
-   waits on a screenshot of a DOS file transfer.
+   does nothing. There is no send dialog or resume. The progress grid is
+   **Partial**: DOS GP 1.63 rewrites the magenta status rows (file, bytes,
+   green bar, elapsed, Eff. Baud, estimate). The shots are
+   `docs/screenshots/Transfer30.png` and `Transfer80.png`. See
+   `docs/TRANSFER.md`. The window is not built here yet.
    **7Plus is wired:** with **7+** on, `go_7+.` … `stop_7+.` parts are saved
    in `data/USER`, and `//Read` sends a file from that folder. Decoding the
    parts still needs the external [7plus](https://github.com/hb9xar/7plus)
@@ -74,7 +76,7 @@ These are the DOS features an operator would notice first.
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
 | Install to a directory, `CONFIG.GP` | **Partial** | `Config.toml`, with an optional `CONFIG.GP` overlay for recognised keys |
-| `UserDir`, `ExternalDir`, `SaveDir`, `LogDir`, `SpyDir` | **Partial** | `data/USER` is created and used by 7Plus autosave and `//Read`. The other directories are remembered only |
+| `UserDir`, `ExternalDir`, `SaveDir`, `LogDir`, `SpyDir` | **Partial** | `data/USER` is created and used by 7Plus autosave and `//Read`. Incoming parts are intended for `data/SAVE`, joined by `transfer::sevenplus_codec`. `data/TEMP` is where a send is split. Those folders are not wired to the channel yet |
 | Per-call `CTEXT???.GPI`, `<call>.GPC`, `<call>.GPM`, `<mycall>.GPI`, `QRT.GPI` | **Partial** | One connect-text file (session **CT**, default `GTEXT.GPI`) and `QRT.GPI` on `//Quit`. No per-call `.GPC` / `.GPM`, and no “try MYCALL file, then shared file” search |
 | `GP.EXE` vs `GP286.EXE`, overlay, EMS/XMS | **DOS-only** | One native binary. QSO spy is included (it was the GP286-only extra) |
 
@@ -98,8 +100,8 @@ These are the DOS features an operator would notice first.
 | `*.GPI` and the fifteen `%` macros | **Have** | `%V %C %N %Y %K %T %D %B %I %Z %_ %% %O %? %>`, plus width `#nn`. `%DIGI%` expands from context but nothing fills a real digi path |
 | `CTEXT???.GPI`, `NEWS.GPI`, `QRT.GPI`, `RUN.GPI`, `ORIGIN.GPI`, `F1.GPI`–`F12.GPI` | **Partial** | Files can sit in `data/` and be served by name. Shift-F1…F12 does not send them. `RUN.GPI` is sent as text; it does not launch a program |
 | `<call>.GPC` / `<call>.GPM` | **Missing** | |
-| `MHEARD.GP` | **Partial** | JSON list, up to 500 UI frames, names via `//Name` (hidden in the pane, used by `%N`). Not the DOS 40-line MH file, and not a link into `NAMES.GP` |
-| `NAMES.GP` | **Missing** | |
+| `MHEARD.GP` | **Partial** | JSON list, up to 500 UI frames. Names are not stored here. Not the DOS 40-line MH file |
+| `NAMES.GP` | **Have** | `data/NAMES.GP`. Call, ident, and name lookup. `%N`, `//Name`, and the channel **Name** button read and write it |
 | `*.GPB` (including `CSTAT.GPB` and startup `BINDATA.GP`) | **Missing** | No greeting screen from `BINDATA.GP`. Session chrome is written back into `Config.toml` |
 | `ICONS.GP` | **Have** | Decoded and shown. Clicks that have no action yet: **SETUP**, **FILETRANS**, **SORT**, **FIND** |
 | `<mycall>.GPL` journal | **Missing** | |
@@ -117,8 +119,8 @@ These are the DOS features an operator would notice first.
 | ALT-U setup | **Missing** | |
 | ALT-F4 clear window, ALT-F6 last link status, ALT-F7 last error | **Partial** | Session clear-pad button empties the visible log. No “last status” / “last error” popup |
 | ALT-G hourly gong | **Have** | Clock double-note toggles it |
-| ALT-B scroll lock, ALT-S continuous save, ALT-F send file, ALT-Q QRG, ALT-N save name, ALT-T connect text | **Partial** | Scroll lock, QRG, and connect-text picker exist on the session bar. Continuous save, file send, and “store this station in `NAMES.GP`” do not |
-| ALT-F8/F9/F10 splitscreen | **Partial** | Text UI only. Pixel UI has no monitor split under the QSO |
+| ALT-B scroll lock, ALT-S continuous save, ALT-F send file, ALT-Q QRG, ALT-N save name, ALT-T connect text | **Partial** | Scroll lock, QRG, connect-text, and **Name** (ALT-N → `NAMES.GP`) are on the session bar. Continuous save and file send are not. The pixel UI has no ALT key |
+| ALT-F8/F9/F10 splitscreen | **Partial** | DOS shows it only on a channel (`docs/screenshots/SplitScreen.png`): QSO on top, monitor under a bar. ▲▼ next to ScrLock change how much monitor is visible, and the bar drags with the mouse. Those arrows are not clickable on Spy, BBS-Menu, Box-List, or the other panes. Pixel UI has no split; its ▲▼ only nudge the pad |
 | Shift-F1…F12 macro send | **Missing** | |
 | Ctrl-D date, Ctrl-T time, Ctrl-O origin line, Ctrl-Y / Ctrl-C / Ctrl-P line clipboard, Ctrl-K copy to editor, Ctrl-Enter send without CR, Ins insert/overwrite | **Missing** | Compose is a normal text field with history |
 | BBS cursor / Space mark / Enter = `READ` / Esc leave | **Missing** | |
@@ -129,16 +131,16 @@ These are the DOS features an operator would notice first.
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
 | 10 QSO channels, unread-channel colour | **Partial** | Channel buttons and link state are there. A channel with unseen text does not change menu colour the way `MenuInverzAttr` describes |
-| Connect with digipeaters from `NAMES.GP`, or typed `CALL via via` | **Partial** | Typed via works. Name lookup does not |
+| Connect with digipeaters from `NAMES.GP`, or typed `CALL via via` | **Have** | A single token is a call, ident, or name in `NAMES.GP`. `CALL,VIA` is still an explicit path and skips the file |
 | Compose window, auto line wrap, auto-send of a full line | **Partial** | Pre-write history and a compose box. No per-channel line length (80, or 65 in CONVERSE) and no automatic send when the line fills |
 | ALT-T file send: text, raw binary, AutoBin, editor contents | **Missing** | See `docs/TRANSFER.md` for the protocol we intend to match |
-| Transfer progress (bytes, percent, elapsed, estimate) and resume after quit | **Partial** | Fields from the 1.61 manual are in `docs/TRANSFER.md` (name, size, bytes moved, percent bar, speed, elapsed, estimate). Awaiting a screenshot of the DOS file-transfer window before the layout is built. Resume after quit is still missing |
+| Transfer progress (bytes, percent, elapsed, estimate) and resume after quit | **Partial** | Layout is the magenta status grid, not a popup. `Transfer30.png` / `Transfer80.png`: path, `Bytes: sent/total`, green bar with the percent, `Elapsed Time`, `Eff. Baud`, `Estimated Time`, `Status: BIN-TX`, mode title `Information Transfer`. Details in `docs/TRANSFER.md`. The grid is not built yet. Resume after quit is still missing |
 | ALT-S continuous text save, print to LPT1–LPT4, save a marked range, AutoBin receive names `<call>.000`–`.999` | **Missing** | |
-| 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Have** | Channel RX is saved into `data/USER` when **7+** is on. Names follow 7plus 2.2 (`name.p01`, `name.7pl`, `name.p0a`). Decode with external `7plus`, not inside GP |
+| 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Partial** | Channel RX is saved into `data/USER` when **7+** is on. Names follow 7plus 2.2 (`name.p01`, `name.7pl`, `name.p0a`). `transfer::sevenplus_codec` encodes and joins parts in Rust (not the DOS exe). `.err` / `.cor` repair is not ported. Saving into `data/SAVE`, splitting a send into `data/TEMP`, and waiting for `ok`/`okay` before the next part are not wired to the channel yet |
 | Mouse-mark QSO lines and Ctrl-Ins / Ctrl-K into the editor | **Missing** | |
 | Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. ESC command entry is a TUI placeholder only |
 | External programs and GPRI (`ExternalDir`, `//RUN`) | **Missing** | `RUN.GPI` is sent as text |
-| Splitscreen while in QSO | **Partial** | Text UI only |
+| Splitscreen while in QSO | **Partial** | Channel only. Top pane is the QSO, bottom pane is the monitor, divider drags, ▲▼ beside ScrLock show more or less monitor. Not on Spy, BBS-Menu, or Box-List. Shot: `docs/screenshots/SplitScreen.png`. Pixel UI does not do this |
 | Scroll-lock per channel | **Partial** | One session-bar switch for the visible pad, not a TNC poll hold, and not per channel in the DOS 1.50+ sense |
 | ESC TNC command window | **Missing** | |
 | Station journal `LOG=ON` plus `QRG` | **Missing** | QRG on the session bar is a label and a log line, not a `<mycall>.GPL` entry |
@@ -171,7 +173,7 @@ These are the DOS features an operator would notice first.
 |-------------|--------|-------|
 | Live list from the monitor | **Have** | UI frames on KISS. Hostmode monitor text is not folded into the same list yet |
 | `//MHeard` sends the list | **Have** | |
-| Enter on a row checks `NAMES.GP` / starts a connect the way the BBS menu does | **Partial** | **CONNECT** uses the selected call on the first free channel. No `NAMES.GP` test |
+| Enter on a row checks `NAMES.GP` / starts a connect the way the BBS menu does | **Partial** | **CONNECT** uses the selected call on the first free channel and applies a `NAMES.GP` path when that call is listed. There is still no BBS-menu behaviour |
 | Fixed 40-entry DOS window | **Partial** | Cap is 500 |
 
 ### 9 QSO spy (GP286)
@@ -186,18 +188,17 @@ These are the DOS features an operator would notice first.
 
 ### 10 Autorouter
 
-All of chapter 10 is **missing**:
+| DOS feature | Status | Notes |
+|-------------|--------|-------|
+| `TYPE>CALL NAME; path` and `TYPE>IDENT:CALL` | **Have** | Types `B` `D` `F` `N` `!` `T`. The first 22 letters of the name are what Connect and `%N` use |
+| Recursive paths and idents | **Have** | A hop that names another station is replaced by that station's path |
+| Digipeater connect and node `C` / `C!` | **Have** | A path of only `D>` hops is one connect. `N` / `F` / `!` connect the first node, then send `C` or `C!` when the reply names that station. The first link is always plain `C`, even when that hop is `!` |
+| SP-gateway `D>0` | **Have** | A numeric `D>` hop becomes `-port` on the next call (`C DB0XYZ-0`) |
+| `<IF qrg>` / `<ELSE>` / `<END>` | **Have** | The block is used when `qrg` equals the session QRG printed with a dot (`430.625`). The comma form (`430,625`) stays a different key, as in the manual, and does not match that number |
+| `%DIGI%` and `PORTx = digi, qrg` | **Partial** | `%DIGI%` becomes the digi whose `PORTx` QRG matches. `PORTx` does not switch a multiport TNC or a radio |
+| ALT-N | **Have** | Channel **Name** button, and `//Name`. Updates the first line for that call, or appends `T>CALL NAME;` |
 
-- `NAMES.GP` syntax `TYPE>CALL NAME; path` and `TYPE>IDENT:CALL`
-- Types `B` mailbox, `D` L2, `F` FlexNet, `N` NetRom, `!` (`C!`), `T` terminal
-- Recursive paths and idents
-- SP-gateway dummy node (`D>0` port trick)
-- `PORTx = digi, qrg` for multiport TNCs (0–8)
-- QRG `<IF>` blocks inside `NAMES.GP`
-- `%DIGI%` meaning “digi on the port that matches the current QRG”
-- ALT-N append the connected station onto `NAMES.GP`
-
-`MultiPort` in config does not select a port or a frequency.
+A mailbox marked `B` is stored and still does not block remotes. `MultiPort` in config does not select a port.
 
 ### 11 Setup (ALT-U)
 
@@ -214,7 +215,7 @@ All of chapter 10 is **missing**:
 | Softscroll | **Partial**. Cosmetic line-step only. Chapter 15’s pixel soft-scroll is **DOS-only** |
 | 7Plus / LCplus Code AutoSave per channel | **Partial**. One **7+** switch covers every channel and writes parts into `data/USER`. It is not a separate switch per channel |
 | Beacon menu (monitor only) | **Missing** |
-| Session-bar switches: QRG, CT, umlauts, echo, line step, bell, 7+, remote, BIN-RX, BIN-TX, ScrLock | **Partial**. **7+** saves parts into `data/USER`. BIN-RX / BIN-TX still only flip a flag. ScrLock does not freeze a TNC poll |
+| Session-bar switches: QRG, CT, umlauts, echo, line step, bell, 7+, remote, BIN-RX, BIN-TX, Name, ScrLock | **Partial**. **7+** saves parts into `data/USER`. **Name** writes `NAMES.GP`. BIN-RX / BIN-TX still only flip a flag. ScrLock does not freeze a TNC poll |
 
 ### 12–18 and the appendices
 
@@ -254,7 +255,7 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 - Pixel layout: channel grid, analog clock with hourly gong, status grid, monitor and channel pads, compose history, icon strip from `ICONS.GP`, session bar.
 - KISS AX.25: UI monitor, SABM/UA connect, I + RR, DISC, idle RR, self-connect between two local channels, TCP KISS (Soundmodem / Direwolf) and serial KISS.
 - Hostmode drivers for WA8DED and TFPCX (untested on a real TNC).
-- Per-channel callsigns, connect and disconnect, connect text with `%` macros, MHeard with `//Name`.
+- Per-channel callsigns, connect and disconnect, connect text with `%` macros. Names and the autorouter come from `data/NAMES.GP` (`//Name`, channel **Name**). MHeard is heard stations only.
 - Manual spy slots that follow a callsign on the monitor.
 - Editor load/save in CP437.
 - Pad logs under `log/` for monitor, channels, spy, BBS, and box.
@@ -266,7 +267,7 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 ## Suggested build order
 
 1. Wire 7Plus AutoSave and AutoBin to the channel that has **7+** / **BIN-RX** / **BIN-TX** on, including `//RPrg`, `//WPrg`, `//Read`, `//Write`, `//CUT`.
-2. `NAMES.GP` plus autorouter on Connect, then ALT-N.
+2. `NAMES.GP` plus autorouter on Connect, then ALT-N. **Done.** Connect uses `data/NAMES.GP`. **Name** is ALT-N. A type `B` mailbox still does not block remotes, and `PORTx` does not change the radio.
 3. BBS-Menu and Box-List parsers (DieBox first), mark, and `READ`.
 4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language.
 5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper.

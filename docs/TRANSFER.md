@@ -99,12 +99,35 @@ menu item. When ON, AutoBin extended receive is also armed (GP ≥ 1.50).
 
 ### Implementing encode/decode
 
-Do **not** reinvent radix-216 in v0.1 unless needed:
+The sniffer only stores text parts. Rebuilding the original file, and
+cutting a file into parts before a send, is
+`transfer::sevenplus_codec`. That is a Rust port of 7PLUS 2.2. The
+MS-DOS `7PLUS.EXE` is not invoked, so the same code runs on Windows,
+Linux, and macOS. The port stays under the 7PLUS terms (no commercial
+use, no sale, circulate freely). It is not MIT / Apache-2.0. Error
+reports (`.err` / `.cor`) are not ported yet.
 
-- Ship or path-configure the classic `7PLUS.EXE` / modern `7plus` port for
-  encode/decode/repair (`.cor`).
-- Rust side: stream sniffer + autosave + optional “encode file then `//Read` /
-  plain send” helper.
+**Receive.** Parts go to `SaveDir` (`data/SAVE`), not `UserDir`.
+`UserDir` stays the `//Read` folder. The header says which part this is
+and how many exist (`001 of 003`). When every part of that name is in
+`SAVE`, `decode_parts` writes the original filename.
+
+**Send.** On “send this file”, encode into `data/TEMP` with
+`encode_parts(name, bytes, part_bytes)`. `part_bytes` is 7plus `-sb`:
+a part ends once at least that many source bytes are in it, in steps of
+62. Send part 1, then wait. The next part goes out only after the other
+station sends a line that is `ok` or `okay`. That word is not a 7plus
+command and it is not AutoBin `#OK#`. 7plus itself never acks a part.
+Each part is still cut into AX.25 frames of `packet_payload` bytes.
+`-sb` is the size of one part, not that frame size. The 7plus help uses
+`-sb 3000` (about 3000 bytes; the encoder also caps a part at 512
+lines). Setting `-sb` equal to `packet_payload` (128) makes very small
+parts and a long chain of okay round-trips. Keep the two numbers
+separate unless a transfer is deliberately that fine.
+
+The sniffer still writes `data/USER` today. `SAVE`, `TEMP`, and the
+okay-gated send are not wired to the channel yet. The codec itself
+round-trips.
 
 Interoperability test matrix:
 
@@ -150,23 +173,28 @@ switch as the session button. AutoBin is still not on the air.
 
 ## 5. Progress window (DOS GP 1.50+)
 
-During a send or a sized save, DOS GP **changes the screen** and opens a
-status window. The 1.61 manual (section 5.2 and 5.3) lists what it shows:
+A sized send does not open a separate dialog. It rewrites the magenta
+status grid and leaves the channel pad in place. Captured on DOS GP 1.63
+while BIN-TX sends a file (`docs/screenshots/Transfer30.png` at 31%,
+`Transfer80.png` at 83%, and `SplitScreen.png` at 57% with the monitor
+split open).
 
-| Field | Meaning |
-|-------|---------|
-| File name | Part or binary being moved |
-| Size | Total length, when known |
-| Sent / saved | Bytes already moved |
-| Bar | Graphic percent of the total |
-| Speed | Effective rate |
-| Elapsed | Time so far |
-| Estimate | Rough time left. The manual says this swings with the path |
+The grid becomes four rows:
 
-The bar and the estimate exist only when the total size is known. That is
-AutoBin and 7Plus AutoSave. A plain text capture has no total, so no bar.
-Starting ALT-S also changes the menu for as long as the save is on.
+| Row | Left | Right |
+|-----|------|-------|
+| 1 | `Channel N: CALL`, then `Name not saved` | `Information Transfer` |
+| 2 | `My:CALL` and the usual Buffers / Not disp / Not sent / Tries / Unack | `GP V1.63` |
+| 3 | Full path (`C:\GP\ALAS.DOC`) and `Bytes: 2048/6558` | `Status: BIN-TX` |
+| 4 | Green block bar, percent in a small box at the bar's end (`31%`, `83%`) | `Elapsed Time: 00:00:05`, `Eff. Baud: 2662`, and under those `Estimated Time: 00:00:20` |
 
-There is no screenshot of this window in `docs/screenshots/`. The exact
-layout stays open until a transfer is run on the original DOS GP and the
-screen is captured. Do not invent the chrome before that.
+Bytes are sent/total. The percent is the bar label, not a second copy of
+the byte counts. Eff. Baud is the effective rate; it moved from 2662 at
+31% to 1914 at 83% on the same file, and the estimate moved with it
+(`00:00:20` then `00:00:27`). Times are `hh:mm:ss`.
+
+The bar and the estimate need a known total (AutoBin, 7Plus AutoSave).
+A plain text capture has no total, so no bar. The channel pad keeps
+showing traffic under this grid. In the ALAS.DOC shots that traffic is
+the file itself; in `SplitScreen.png` the top pane is still the QSO
+while `C:\GP\FREQ.GPI` is the file named in the grid.

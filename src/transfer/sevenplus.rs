@@ -4,9 +4,9 @@
 //! radio text encoding: a binary file is written as ASCII lines so it can
 //! travel inside AX.25, which cannot carry every byte safely. GP watches
 //! the QSO for `go_7+.` … `stop_7+.` (strings present in `GP2862K.EXE`) and
-//! writes the enclosed lines into the USER directory. An external `7plus`
-//! program decodes the parts. This module does not encode or decode the
-//! radix-216 payload.
+//! writes the enclosed lines into the USER directory. Joining those parts
+//! back to the original file, and splitting a file before send, is
+//! [`super::sevenplus_codec`] (a Rust port of 7PLUS 2.2, not the DOS exe).
 
 use std::fs;
 use std::io;

@@ -219,11 +219,11 @@ fn command_frame(dest: &str, src: &str, via: &[&str], content: FrameContent) -> 
     })
 }
 
-fn response_frame(dest: &str, src: &str, content: FrameContent) -> Vec<u8> {
+fn response_frame(dest: &str, src: &str, via: &[&str], content: FrameContent) -> Vec<u8> {
     encode(LibFrame {
         source: address(src),
         destination: address(dest),
-        route: Vec::new(),
+        route: route_entries(via),
         command_or_response: Some(CommandResponse::Response),
         content,
     })
@@ -243,22 +243,32 @@ pub fn build_ui(dest: &str, src: &str, via: &[&str], info: &[u8]) -> Vec<u8> {
     )
 }
 
-/// SABM (connect), poll bit set.
+/// SABM (connect), poll bit set, no digipeaters.
 pub fn build_sabm(dest: &str, src: &str) -> Vec<u8> {
+    build_sabm_via(dest, src, &[])
+}
+
+/// SABM through `via` (digipeaters, not yet repeated).
+pub fn build_sabm_via(dest: &str, src: &str, via: &[&str]) -> Vec<u8> {
     command_frame(
         dest,
         src,
-        &[],
+        via,
         FrameContent::SetAsynchronousBalancedMode(SetAsynchronousBalancedMode { poll: true }),
     )
 }
 
-/// DISC (disconnect), poll bit set.
+/// DISC (disconnect), poll bit set, no digipeaters.
 pub fn build_disc(dest: &str, src: &str) -> Vec<u8> {
+    build_disc_via(dest, src, &[])
+}
+
+/// DISC through the same digipeater path as the link.
+pub fn build_disc_via(dest: &str, src: &str, via: &[&str]) -> Vec<u8> {
     command_frame(
         dest,
         src,
-        &[],
+        via,
         FrameContent::Disconnect(Disconnect { poll: true }),
     )
 }
@@ -268,6 +278,7 @@ pub fn build_ua(dest: &str, src: &str, final_: bool) -> Vec<u8> {
     response_frame(
         dest,
         src,
+        &[],
         FrameContent::UnnumberedAcknowledge(UnnumberedAcknowledge {
             final_bit: final_,
         }),
@@ -279,18 +290,32 @@ pub fn build_dm(dest: &str, src: &str, final_: bool) -> Vec<u8> {
     response_frame(
         dest,
         src,
+        &[],
         FrameContent::DisconnectedMode(DisconnectedMode {
             final_bit: final_,
         }),
     )
 }
 
-/// Connected-mode **I** frame.
+/// Connected-mode **I** frame, no digipeaters.
 pub fn build_i(dest: &str, src: &str, ns: u8, nr: u8, poll: bool, info: &[u8]) -> Vec<u8> {
+    build_i_via(dest, src, ns, nr, poll, info, &[])
+}
+
+/// Connected-mode **I** frame through `via`.
+pub fn build_i_via(
+    dest: &str,
+    src: &str,
+    ns: u8,
+    nr: u8,
+    poll: bool,
+    info: &[u8],
+    via: &[&str],
+) -> Vec<u8> {
     command_frame(
         dest,
         src,
-        &[],
+        via,
         FrameContent::Information(Information {
             pid: ProtocolIdentifier::None,
             info: info.to_vec(),
@@ -303,14 +328,26 @@ pub fn build_i(dest: &str, src: &str, ns: u8, nr: u8, poll: bool, info: &[u8]) -
 
 /// RR — `as_command` + poll = T3 keepalive; response + final = ack / poll reply.
 pub fn build_rr(dest: &str, src: &str, nr: u8, poll_or_final: bool, as_command: bool) -> Vec<u8> {
+    build_rr_via(dest, src, nr, poll_or_final, as_command, &[])
+}
+
+/// RR through the same digipeater path as the link.
+pub fn build_rr_via(
+    dest: &str,
+    src: &str,
+    nr: u8,
+    poll_or_final: bool,
+    as_command: bool,
+    via: &[&str],
+) -> Vec<u8> {
     let content = FrameContent::ReceiveReady(ReceiveReady {
         receive_sequence: nr & 7,
         poll_or_final,
     });
     if as_command {
-        command_frame(dest, src, &[], content)
+        command_frame(dest, src, via, content)
     } else {
-        response_frame(dest, src, content)
+        response_frame(dest, src, via, content)
     }
 }
 

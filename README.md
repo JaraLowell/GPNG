@@ -16,9 +16,10 @@ clear because documentation for them has not been found. Remaining work
 includes completing the setup menu and adding a few utilities, such as log
 cleanup.
 
-File tranfer or BIN also needs investigating as we currelty cant use the DOS
-7Plus compression tool. But aiming for backwards compatibility we lookig in 
-to this at a later point
+File transfer is still open. 7Plus is the packet-radio text coding (not
+7-Zip). Encoding a file into parts, and joining those parts back to the
+original name, is a Rust port in `transfer::sevenplus_codec`. The MS-DOS
+`7PLUS.EXE` is not used.
 
 ## Layout
 
@@ -114,7 +115,7 @@ KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` str
 
 [https://github.com/hb9xar/7plus](https://github.com/hb9xar/7plus)
 
-That program is not linked or copied into this crate. GPNG only saves and sends the text parts. Decoding them still uses the external `7plus` tool. 7PLUS itself is free to circulate and is not covered by the MIT / Apache-2.0 licence below (“no commercial use, no sale”).
+The C sources are not compiled into this crate. `transfer::sevenplus_codec` is a Rust port of the 7PLUS 2.2 codec so the same parts can be built and joined on Windows, Linux, and macOS. 7PLUS itself is free to circulate and is not for sale or commercial use. That port stays under those terms, not under the MIT / Apache-2.0 licence below. Incoming parts are intended for `data/SAVE`, and a file chosen for send is split in `data/TEMP` (`-sb` is the part size, separate from the AX.25 packet length). Wiring those folders to the air is still ahead.
 
 ## License
 
