@@ -38,6 +38,7 @@ use crate::tnc::{
     pack_text_payloads, payload_lines, BufferReport, ChannelBuffers, HostCode, TncCommand,
     TncEvent, TNC_RAM,
 };
+use crate::transfer::sevenplus::{self, SevenPlusAutosave};
 use crate::version;
 
 use super::ansi::{strip_ansi, AnsiDecoder, AnsiStyle};
@@ -192,6 +193,10 @@ pub struct GpGuiApp {
     rx_cr: Vec<bool>,
     /// Colour pen for the channel. A packet cut does not reset it.
     rx_ansi: Vec<AnsiDecoder>,
+    /// Unfinished 7Plus row per channel (raw payload bytes, not the painted text).
+    seven_pending: Vec<Vec<u8>>,
+    /// One 7Plus sniffer per channel. Index 0 (monitor) is unused.
+    seven: Vec<SevenPlusAutosave>,
     /// Serial device for the session-bar badge (`COM6`).
     serial_port: String,
     /// Serial baud for the session-bar badge.
@@ -327,6 +332,10 @@ impl GpGuiApp {
             cfg.tnc.monitor_mode.clone()
         };
         let session = SessionChrome::from_config(&cfg.session.chrome);
+        let seven_on = session.seven_plus;
+        if let Err(err) = sevenplus::ensure_user_dir(&cfg.paths.user_dir) {
+            tracing::warn!("USER dir: {err}");
+        }
         Self {
             monitor_bg: egui_color(&colors.monitor_background),
             monitor_fg: egui_color(&colors.monitor_foreground),
@@ -374,6 +383,10 @@ impl GpGuiApp {
             rx_row: vec![None; slots],
             rx_cr: vec![false; slots],
             rx_ansi: vec![AnsiDecoder::new(); slots],
+            seven_pending: vec![Vec::new(); slots],
+            seven: (0..slots)
+                .map(|_| SevenPlusAutosave::new(seven_on))
+                .collect(),
             serial_port,
             serial_baud,
             serial_open: false,
@@ -625,6 +638,9 @@ impl GpGuiApp {
                     // the newline that finishes the line.
                     let reassemble = channel >= 1 && matches!(code, HostCode::Data);
                     if reassemble {
+                        if kind == PadKind::Incoming {
+                            self.note_seven_payload(channel, &payload);
+                        }
                         self.accept_rx_text(channel, &line, kind);
                     } else if !(skip_monitor_dup && idx == 0) {
                         if let Some(pad) = self.pads.get_mut(idx) {
@@ -1422,7 +1438,7 @@ impl GpGuiApp {
     }
 
     /// Self-connect: other channel sees this text as Incoming (no RF loopback).
-    fn deliver_self_connect_rx(&mut self, from_ch: u8, line: &str) {
+    fn deliver_self_connect_rx(&mut self, from_ch: u8, line: &str, raw: &[u8]) {
         let Some((c, a)) = self.self_connect_live else {
             return;
         };
@@ -1433,6 +1449,7 @@ impl GpGuiApp {
         } else {
             return;
         };
+        self.note_seven_payload(other, raw);
         self.accept_rx_text(other, line, PadKind::Incoming);
         self.kiss_link_activity(other, true);
     }
@@ -1449,15 +1466,15 @@ impl GpGuiApp {
             if bytes.first() == Some(&b'\n') {
                 i = 1;
             }
-            self.term_break(channel, kind);
+            self.finish_rx_line(channel, kind);
         }
         while i < bytes.len() {
             if bytes[i] == b'\n' {
-                self.term_break(channel, kind);
+                self.finish_rx_line(channel, kind);
                 i += 1;
             } else if bytes[i] == b'\r' {
                 if bytes.get(i + 1) == Some(&b'\n') {
-                    self.term_break(channel, kind);
+                    self.finish_rx_line(channel, kind);
                     i += 2;
                 } else if i + 1 == bytes.len() {
                     if let Some(flag) = self.rx_cr.get_mut(channel as usize) {
@@ -1465,7 +1482,7 @@ impl GpGuiApp {
                     }
                     i += 1;
                 } else {
-                    self.term_break(channel, kind);
+                    self.finish_rx_line(channel, kind);
                     i += 1;
                 }
             } else {
@@ -1521,6 +1538,10 @@ impl GpGuiApp {
         }
     }
 
+    fn finish_rx_line(&mut self, channel: u8, kind: PadKind) {
+        self.term_break(channel, kind);
+    }
+
     fn term_break(&mut self, channel: u8, kind: PadKind) {
         let idx = channel as usize;
         let open = self.rx_row.get(idx).copied().flatten();
@@ -1533,7 +1554,9 @@ impl GpGuiApp {
             if let Some(slot) = self.rx_row.get_mut(idx) {
                 *slot = None;
             }
-            self.maybe_remote_line(channel, &text);
+            if !self.seven_capturing(channel) {
+                self.maybe_remote_line(channel, &text);
+            }
         } else if let Some(pad) = self.pads.get_mut(idx) {
             pad.push(kind, "");
         }
@@ -1547,10 +1570,121 @@ impl GpGuiApp {
         }
     }
 
+    fn seven_capturing(&self, channel: u8) -> bool {
+        self.seven
+            .get(channel as usize)
+            .is_some_and(SevenPlusAutosave::is_capturing)
+    }
+
+    fn set_seven_plus(&mut self, on: bool) {
+        self.session.seven_plus = on;
+        for sniff in &mut self.seven {
+            sniff.set_enabled(on);
+        }
+        let dir = self.cfg.paths.user_dir.display().to_string();
+        self.status = if on {
+            format!("7+ ON — saving to {dir}")
+        } else {
+            "7+ OFF".into()
+        };
+        self.log_event(self.status.clone());
+        self.persist_session_chrome();
+    }
+
+    /// Split one payload on CR/LF and hand each finished row to the sniffer.
+    /// Bytes stay as Latin-1 so the 7Plus 8-bit check (`0xB0 0xB1`) survives.
+    fn note_seven_payload(&mut self, channel: u8, payload: &[u8]) {
+        if channel == 0 {
+            return;
+        }
+        let Some(buf) = self.seven_pending.get_mut(channel as usize) else {
+            return;
+        };
+        buf.extend_from_slice(payload);
+        let mut lines = Vec::new();
+        loop {
+            let Some(pos) = buf.iter().position(|&b| b == b'\n' || b == b'\r') else {
+                break;
+            };
+            if buf[pos] == b'\r' && pos + 1 == buf.len() {
+                break;
+            }
+            let line: String = buf[..pos]
+                .iter()
+                .map(|&b| char::from_u32(u32::from(b)).unwrap_or('?'))
+                .collect();
+            let mut next = pos + 1;
+            if buf[pos] == b'\r' && buf.get(pos + 1) == Some(&b'\n') {
+                next += 1;
+            }
+            buf.drain(..next);
+            lines.push(line);
+        }
+        for line in lines {
+            self.feed_sevenplus(channel, &line);
+        }
+    }
+
+    fn feed_sevenplus(&mut self, channel: u8, line: &str) {
+        if channel == 0 {
+            return;
+        }
+        if !self.session.seven_plus {
+            if sevenplus::is_opening_line(line) {
+                self.status = "7+ part seen — switch is OFF".into();
+                self.log_event(self.status.clone());
+            }
+            return;
+        }
+        if sevenplus::is_opening_line(line) {
+            let dir = self.cfg.paths.user_dir.display().to_string();
+            self.status = format!("7+ capturing → {dir}");
+        }
+        let idx = channel as usize;
+        let part = {
+            let Some(sniff) = self.seven.get_mut(idx) else {
+                return;
+            };
+            if !sniff.enabled {
+                sniff.set_enabled(true);
+            }
+            sniff.on_line(line)
+        };
+        let Some(part) = part else {
+            return;
+        };
+        let dir = self.cfg.paths.user_dir.clone();
+        let fallback = format!("ch{channel}");
+        match SevenPlusAutosave::write_part(&dir, &part, &fallback) {
+            Ok(path) => {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("part");
+                self.status = format!("7+ saved {name}");
+                self.log_event(format!("7+ saved {}", path.display()));
+            }
+            Err(err) => {
+                self.status = format!("7+ save: {err}");
+                self.log_event(self.status.clone());
+            }
+        }
+    }
+
     /// One already-packed chunk → AX.25 UI or I-frame. Bytes are sent as-is.
     fn send_kiss_text(&mut self, line: &str) {
+        self.send_kiss_bytes(line.as_bytes(), Some(line));
+    }
+
+    fn send_kiss_bytes(&mut self, info: &[u8], shown: Option<&str>) {
+        let owned;
+        let shown: &str = if let Some(text) = shown {
+            text
+        } else {
+            owned = latin1_string(info);
+            &owned
+        };
         let my = self.mycall_for_active();
-        let info = line.as_bytes();
         match self.active {
             ActivePane::Channel(n) if self.channel_linked(n) => {
                 let Some(peer) = self
@@ -1578,10 +1712,10 @@ impl GpGuiApp {
                     nr,
                     false,
                     true,
-                    Some(line),
+                    Some(shown),
                 );
                 // Self-connect peer channel sees the chat and answers with RR.
-                self.deliver_self_connect_rx(n, line);
+                self.deliver_self_connect_rx(n, shown, info);
                 if self
                     .self_connect_live
                     .is_some_and(|(c, a)| n == c || n == a)
@@ -1606,7 +1740,7 @@ impl GpGuiApp {
                     0,
                     false,
                     true,
-                    Some(line),
+                    Some(shown),
                 );
                 self.status = format!("KISS UI {my} > CQ");
             }
@@ -1810,6 +1944,7 @@ impl GpGuiApp {
                         None,
                     );
                     self.kiss_link_activity(ch, true);
+                    self.note_seven_payload(ch, &frame.info);
                     self.accept_rx_text(ch, &info_text, PadKind::Incoming);
                 }
             }
@@ -2211,6 +2346,62 @@ impl GpGuiApp {
         self.send_operator_text(&line);
     }
 
+    /// `//Read` — list USER, or send one file from that folder.
+    fn read_from_user(&mut self, args: &str) {
+        let dir = self.cfg.paths.user_dir.clone();
+        let _ = sevenplus::ensure_user_dir(&dir);
+        let name = args.trim();
+        if name.is_empty() {
+            let listing = sevenplus::list_user_dir(&dir);
+            self.status = format!("USER {}", dir.display());
+            self.send_file_bytes(listing.as_bytes());
+            return;
+        }
+        match sevenplus::read_user_file(&dir, name) {
+            Ok(bytes) => {
+                self.status = format!("//Read {name}");
+                self.log_event(format!("//Read {} ({} bytes)", name, bytes.len()));
+                self.send_file_bytes(&bytes);
+            }
+            Err(err) => {
+                self.status = err.clone();
+                self.send_gpi_text(&err);
+            }
+        }
+    }
+
+    /// Send a USER file with CR row ends (what DOS 7Plus `-p` puts on packet).
+    fn send_file_bytes(&mut self, raw: &[u8]) {
+        let wire = sevenplus::to_cr_bytes(raw);
+        if wire.is_empty() {
+            self.status = "USER file is empty".into();
+            return;
+        }
+        let display = latin1_string(&wire);
+        let mut lines: Vec<&str> = display.split('\r').collect();
+        if lines.last().is_some_and(|s| s.is_empty()) {
+            lines.pop();
+        }
+        for line in lines {
+            self.echo_own_line(line);
+        }
+        let max = self.cfg.buffers.packet_payload.max(1) as usize;
+        for chunk in wire.chunks(max) {
+            if self.kiss_mode() {
+                self.send_kiss_bytes(chunk, None);
+            } else {
+                let channel = match self.active {
+                    ActivePane::Channel(n) => n,
+                    _ => 0,
+                };
+                let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
+                    channel,
+                    data: chunk.to_vec(),
+                });
+            }
+        }
+    }
+
     /// Typed text and text files: normalize breaks to `\n`, then one packet
     /// per `packet_payload` bytes. Same chunks for KISS and hostmode.
     fn send_operator_text(&mut self, text: &str) {
@@ -2342,6 +2533,31 @@ impl GpGuiApp {
         }
 
         match action {
+            RemoteAction::SevenPlusAutoSave => {
+                let on = match args.trim().to_ascii_lowercase().as_str() {
+                    "on" | "1" | "yes" => Some(true),
+                    "off" | "0" | "no" => Some(false),
+                    "" => Some(!self.session.seven_plus),
+                    _ => None,
+                };
+                match on {
+                    Some(v) => {
+                        self.set_seven_plus(v);
+                        self.send_gpi_text(&format!("7+ {}", on_off(v)));
+                    }
+                    None => {
+                        self.status = "7+ ON or OFF".into();
+                        self.send_gpi_text("7+ ON or OFF");
+                    }
+                }
+                self.active = prev;
+                return;
+            }
+            RemoteAction::Read => {
+                self.read_from_user(args);
+                self.active = prev;
+                return;
+            }
             RemoteAction::Version => {
                 let line = version::startup_credits();
                 self.send_gpi_text(&line);
@@ -3441,10 +3657,7 @@ impl GpGuiApp {
                 };
             }
             SessionClick::SevenPlus => {
-                self.session.seven_plus = !self.session.seven_plus;
-                self.status = format!("7+ {}", on_off(self.session.seven_plus));
-                self.log_event(format!("7Plus {}", on_off(self.session.seven_plus)));
-                self.persist_session_chrome();
+                self.set_seven_plus(!self.session.seven_plus);
             }
             SessionClick::Remote => {
                 self.session.remote = !self.session.remote;
@@ -4222,6 +4435,14 @@ enum SessionClick {
 
 fn on_off(v: bool) -> &'static str {
     if v { "ON" } else { "OFF" }
+}
+
+/// Each byte becomes the Unicode scalar of the same value (DOS Latin-1).
+fn latin1_string(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|&b| char::from_u32(u32::from(b)).unwrap_or('?'))
+        .collect()
 }
 
 /// Local 24-hour `hh:mm` with leading zeros, inserted after `fm`.

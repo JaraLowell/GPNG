@@ -33,12 +33,15 @@ These are the DOS features an operator would notice first.
    paths, no idents, no `PORT0`…`PORT8`, no QRG-dependent `<IF>` blocks, and
    no `%DIGI%` substitution while building a path. ALT-N “add the station I
    am talking to” does not exist.
-3. **File transfer is not on the air.** `src/transfer/` has an AutoBin
-   `#BIN#` state machine and a 7Plus `go_7+.` / `stop_7+.` sniffer, with
-   tests. The QSO path never calls them. **BIN-RX**, **BIN-TX**, and **7+**
-   on the session bar only flip a flag. The **FILETRANS** icon does nothing.
-   There is no send dialog (text / raw binary / AutoBin / editor), no
-   progress window, and no resume after quit.
+3. **AutoBin is not on the air.** The `#BIN#` state machine is tested and
+   unused. **BIN-RX** / **BIN-TX** only flip a flag. The **FILETRANS** icon
+   does nothing. There is no send dialog or resume. The progress window is
+   **Partial**: the fields are listed in `docs/TRANSFER.md`, and the layout
+   waits on a screenshot of a DOS file transfer.
+   **7Plus is wired:** with **7+** on, `go_7+.` … `stop_7+.` parts are saved
+   in `data/USER`, and `//Read` sends a file from that folder. Decoding the
+   parts still needs the external [7plus](https://github.com/hb9xar/7plus)
+   program (this is not 7-Zip).
 4. **Most `//` remotes are recognised and then refused.** The parser covers
    the classic set. Only quit, disconnect, version, echo, bell, MHeard,
    `//Name`, and a GPI text file (`INFO`, `NEWS`, `QRT`, `RUN`, other
@@ -71,7 +74,7 @@ These are the DOS features an operator would notice first.
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
 | Install to a directory, `CONFIG.GP` | **Partial** | `Config.toml`, with an optional `CONFIG.GP` overlay for recognised keys |
-| `UserDir`, `ExternalDir`, `SaveDir`, `LogDir`, `SpyDir` | **Partial** | Paths are created and remembered. Remote file commands, external programs, continuous save, the journal, and spy-to-disk do not use them yet |
+| `UserDir`, `ExternalDir`, `SaveDir`, `LogDir`, `SpyDir` | **Partial** | `data/USER` is created and used by 7Plus autosave and `//Read`. The other directories are remembered only |
 | Per-call `CTEXT???.GPI`, `<call>.GPC`, `<call>.GPM`, `<mycall>.GPI`, `QRT.GPI` | **Partial** | One connect-text file (session **CT**, default `GTEXT.GPI`) and `QRT.GPI` on `//Quit`. No per-call `.GPC` / `.GPM`, and no “try MYCALL file, then shared file” search |
 | `GP.EXE` vs `GP286.EXE`, overlay, EMS/XMS | **DOS-only** | One native binary. QSO spy is included (it was the GP286-only extra) |
 
@@ -129,9 +132,9 @@ These are the DOS features an operator would notice first.
 | Connect with digipeaters from `NAMES.GP`, or typed `CALL via via` | **Partial** | Typed via works. Name lookup does not |
 | Compose window, auto line wrap, auto-send of a full line | **Partial** | Pre-write history and a compose box. No per-channel line length (80, or 65 in CONVERSE) and no automatic send when the line fills |
 | ALT-T file send: text, raw binary, AutoBin, editor contents | **Missing** | See `docs/TRANSFER.md` for the protocol we intend to match |
-| Transfer progress (bytes, percent, elapsed, estimate) and resume after quit | **Missing** | |
+| Transfer progress (bytes, percent, elapsed, estimate) and resume after quit | **Partial** | Fields from the 1.61 manual are in `docs/TRANSFER.md` (name, size, bytes moved, percent bar, speed, elapsed, estimate). Awaiting a screenshot of the DOS file-transfer window before the layout is built. Resume after quit is still missing |
 | ALT-S continuous text save, print to LPT1–LPT4, save a marked range, AutoBin receive names `<call>.000`–`.999` | **Missing** | |
-| 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Partial** | Sniffer in `src/transfer/sevenplus.rs`. Not attached to received I-frames. The **7+** button does not start a capture |
+| 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Have** | Channel RX is saved into `data/USER` when **7+** is on. Names follow 7plus 2.2 (`name.p01`, `name.7pl`, `name.p0a`). Decode with external `7plus`, not inside GP |
 | Mouse-mark QSO lines and Ctrl-Ins / Ctrl-K into the editor | **Missing** | |
 | Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. ESC command entry is a TUI placeholder only |
 | External programs and GPRI (`ExternalDir`, `//RUN`) | **Missing** | `RUN.GPI` is sent as text |
@@ -209,9 +212,9 @@ All of chapter 10 is **missing**:
 | Line break per channel | **Missing** |
 | Packet length for all channels | **Partial**. `PACLEN` / `packet_payload` is in config. No setup control |
 | Softscroll | **Partial**. Cosmetic line-step only. Chapter 15’s pixel soft-scroll is **DOS-only** |
-| 7Plus / LCplus Code AutoSave per channel | **Partial**. One **7+** flag, not wired to the sniffer |
+| 7Plus / LCplus Code AutoSave per channel | **Partial**. One **7+** switch covers every channel and writes parts into `data/USER`. It is not a separate switch per channel |
 | Beacon menu (monitor only) | **Missing** |
-| Session-bar switches: QRG, CT, umlauts, echo, line step, bell, 7+, remote, BIN-RX, BIN-TX, ScrLock | **Partial**. All of these buttons exist. Umlauts are an extended-ASCII decode toggle. BIN and 7+ do not transfer files. ScrLock does not freeze a TNC poll |
+| Session-bar switches: QRG, CT, umlauts, echo, line step, bell, 7+, remote, BIN-RX, BIN-TX, ScrLock | **Partial**. **7+** saves parts into `data/USER`. BIN-RX / BIN-TX still only flip a flag. ScrLock does not freeze a TNC poll |
 
 ### 12–18 and the appendices
 
@@ -239,7 +242,8 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 | `//Quit`, `//DISConnect` | **Have** |
 | `//Info`, `//NEws`, other `*.GPI` by stem or prefix | **Have** (file must exist under `data/`) |
 | `//VERsion`, `//Echo`, `//Bell`, `//MHeard`, `//Name` | **Have** |
-| `//7+`, `//Activity`, `//CATalog` / `//DIR`, `//CD`, `//CUT`, `//DELete` / `//Kill`, `//END`, `//Help`, `//Language`, `//PARameters`, `//PRompt`, `//Read`, `//RPrg`, `//RTt`, `//RUN`, `//Usage`, `//Write`, `//WPrg`, `//C`, `//<n> text`, chat `#` | **Missing** (parsed, then “not implemented”, except `//RUN` which only sends `RUN.GPI` if that file is present) |
+| `//7+`, `//Read` | **Have** | `//7+ ON\|OFF` is the session switch. `//Read file` sends a file from `data/USER`; bare `//Read` lists it |
+| `//Activity`, `//CATalog` / `//DIR`, `//CD`, `//CUT`, `//DELete` / `//Kill`, `//END`, `//Help`, `//Language`, `//PARameters`, `//PRompt`, `//RPrg`, `//RTt`, `//RUN`, `//Usage`, `//Write`, `//WPrg`, `//C`, `//<n> text`, chat `#` | **Missing** (parsed, then “not implemented”, except `//RUN` which only sends `RUN.GPI` if that file is present) |
 
 `#` as a chat allow-list token in `REMOTE=` is not applied.
 
@@ -255,7 +259,7 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 - Editor load/save in CP437.
 - Pad logs under `log/` for monitor, channels, spy, BBS, and box.
 - Remote command catalogue and macro expander, ready for the commands that are still stubs.
-- AutoBin and 7Plus libraries, documented in `docs/TRANSFER.md`, not yet hooked to a live channel.
+- 7Plus autosave on a live channel into `data/USER` (`//Read` sends a file back). AutoBin is still library-only. See `docs/TRANSFER.md`.
 
 ---
 

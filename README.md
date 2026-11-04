@@ -108,6 +108,14 @@ KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` str
 - Hostmode frame shape: `channel \| code \| len \| payload[len]`  
 - `[serial] fast_poll` (`on` / `off` / `auto`) sets the WA8DED/TFPCX poll interval
 
+## Credits
+
+7Plus Code-AutoSave follows the file format of **7PLUS 2.2** by Axel Bauda, DG1BBQ. The part names (`picture.p01`, a single part as `picture.7pl`, part 10 as `picture.p0a`) and the `go_7+.` / `stop_7+.` markers are taken from the C sources maintained by HB9XAR:
+
+[https://github.com/hb9xar/7plus](https://github.com/hb9xar/7plus)
+
+That program is not linked or copied into this crate. GPNG only saves and sends the text parts. Decoding them still uses the external `7plus` tool. 7PLUS itself is free to circulate and is not covered by the MIT / Apache-2.0 licence below (“no commercial use, no sale”).
+
 ## License
 
-MIT OR Apache-2.0. The original GP binaries and docs remain under their historical licence terms in the parent tree.
+MIT OR Apache-2.0. The original GP binaries and docs remain under their historical licence terms in the parent tree. The 7PLUS program credited above stays under its own terms.

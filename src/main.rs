@@ -41,6 +41,9 @@ fn main() -> Result<()> {
     let config_path = resolve_config_path();
     let cfg = Config::load(&config_path)
         .with_context(|| format!("loading config from {}", config_path.display()))?;
+    if let Err(err) = graphic_packet::transfer::sevenplus::ensure_user_dir(&cfg.paths.user_dir) {
+        tracing::warn!("USER dir {}: {err}", cfg.paths.user_dir.display());
+    }
 
     // eframe owns the main thread; drive Tokio in the background.
     let rt = tokio::runtime::Builder::new_multi_thread()

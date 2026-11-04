@@ -139,5 +139,34 @@ Interoperability test matrix:
 | `transfer::sevenplus` | Detect `go_7+.` / `stop_7+.`; autosave state |
 | `remote` `SevenPlusAutoSave` | Already wired to `//7+` |
 
-Next integration step: feed channel RX bytes through AutoBin + 7Plus sniffers
-before the UI pad, and drive TX from a file picker / `//RPrg`.
+7Plus Code-AutoSave is wired: with **7+** on, channel RX between `go_7+.`
+and `stop_7+.` (also `go_text.` / `go_info.`) is written into `UserDir`
+(`data/USER`). The part name follows hb9xar/7plus `extract.c`
+(`picture.p01`, single part `picture.7pl`, part 10 `picture.p0a`).
+`//Read name` sends a file from that folder; `//7+ ON|OFF` is the same
+switch as the session button. AutoBin is still not on the air.
+
+---
+
+## 5. Progress window (DOS GP 1.50+)
+
+During a send or a sized save, DOS GP **changes the screen** and opens a
+status window. The 1.61 manual (section 5.2 and 5.3) lists what it shows:
+
+| Field | Meaning |
+|-------|---------|
+| File name | Part or binary being moved |
+| Size | Total length, when known |
+| Sent / saved | Bytes already moved |
+| Bar | Graphic percent of the total |
+| Speed | Effective rate |
+| Elapsed | Time so far |
+| Estimate | Rough time left. The manual says this swings with the path |
+
+The bar and the estimate exist only when the total size is known. That is
+AutoBin and 7Plus AutoSave. A plain text capture has no total, so no bar.
+Starting ALT-S also changes the menu for as long as the save is on.
+
+There is no screenshot of this window in `docs/screenshots/`. The exact
+layout stays open until a transfer is run on the original DOS GP and the
+screen is captured. Do not invent the chrome before that.
