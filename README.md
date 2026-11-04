@@ -23,7 +23,7 @@ File transfer is still open. 7Plus is the packet-radio text coding (not
 original name, is a Rust port in `transfer::sevenplus_codec`. The MS-DOS
 `7PLUS.EXE` is not used.
 
-![Language](https://img.shields.io/badge/language-RUST-red.svg) 
+![Language](https://img.shields.io/badge/language-RUST-dea584.svg) 
 
 ## Layout
 
