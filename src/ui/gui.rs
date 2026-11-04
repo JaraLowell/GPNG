@@ -35,6 +35,7 @@ use eframe::egui::{
 use eframe::egui::text::LayoutJob;
 use tokio::sync::mpsc;
 
+use crate::bbs::{self, Entry as MailEntry};
 use crate::config::{Config, HostProtocol};
 use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
@@ -180,6 +181,20 @@ pub struct GpGuiApp {
     bbs_pad: TextPad,
     /// DieBox-List pad (`ActivePane::List`).
     box_pad: TextPad,
+    bbs_rows: Vec<MailEntry>,
+    box_rows: Vec<MailEntry>,
+    bbs_cursor: usize,
+    box_cursor: usize,
+    bbs_pending: Vec<MailEntry>,
+    box_pending: Vec<MailEntry>,
+    bbs_from: Option<u8>,
+    box_from: Option<u8>,
+    bbs_sort_desc: bool,
+    /// New DieBox list waiting for replace / append / interrupt.
+    list_offer: Option<ListOffer>,
+    find_open: bool,
+    find_text: String,
+    find_last: String,
     /// Soft event / command log (mode changes, etc.).
     event_log: VecDeque<String>,
     channels: u8,
@@ -460,6 +475,19 @@ impl GpGuiApp {
             spy_pads,
             bbs_pad,
             box_pad,
+            bbs_rows: Vec::new(),
+            box_rows: Vec::new(),
+            bbs_cursor: 0,
+            box_cursor: 0,
+            bbs_pending: Vec::new(),
+            box_pending: Vec::new(),
+            bbs_from: None,
+            box_from: None,
+            bbs_sort_desc: false,
+            list_offer: None,
+            find_open: false,
+            find_text: String::new(),
+            find_last: String::new(),
             event_log: VecDeque::new(),
             channels,
             channel_peer,
@@ -1275,9 +1303,11 @@ impl GpGuiApp {
                     self.tx_modem_line(other, "D");
                 }
                 self.clear_channel_link_state(other);
+                self.drop_mail_for(other);
             }
         }
         self.clear_channel_link_state(channel);
+        self.drop_mail_for(channel);
         if was_linked {
             play_wav(&self.disconnect_wav);
         }
@@ -1910,6 +1940,7 @@ impl GpGuiApp {
             if kind == PadKind::Incoming && channel >= 1 && !text.is_empty() {
                 self.note_autoroute_rx(channel, &text);
                 self.consider_gpw(channel, &text);
+                self.note_mail_line(channel, &text);
             }
         } else if let Some(pad) = self.pads.get_mut(idx) {
             pad.push(kind, "");
@@ -2030,6 +2061,41 @@ impl GpGuiApp {
         }
     }
 
+    /// Connected-mode I frame on one channel. Returns false when that channel
+    /// has no peer.
+    fn send_kiss_i(&mut self, n: u8, my: &str, info: &[u8], shown: &str) -> bool {
+        let Some(peer) = self.channel_peer.get(n as usize).and_then(|p| p.clone()) else {
+            return false;
+        };
+        let ns = *self.ax25_vs.get(n as usize).unwrap_or(&0);
+        let nr = *self.ax25_vr.get(n as usize).unwrap_or(&0);
+        let vias = self.link_vias(n);
+        let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
+        let frame = ax25::build_i_via(&peer, my, ns, nr, false, info, &via_ref);
+        if let Some(vs) = self.ax25_vs.get_mut(n as usize) {
+            *vs = (ns + 1) & 7;
+        }
+        self.tx_kiss_payload(0, &frame);
+        self.kiss_link_activity(n, false);
+        self.push_kiss_mon(
+            PadKind::Own,
+            my,
+            &peer,
+            &[],
+            Ax25FrameType::Info,
+            ns,
+            nr,
+            false,
+            true,
+            Some(shown),
+        );
+        self.deliver_self_connect_rx(n, shown, info);
+        if self.self_connect_live.is_some_and(|(c, a)| n == c || n == a) {
+            self.tx_local_rr(my, &peer, ns);
+        }
+        true
+    }
+
     /// One already-packed chunk → AX.25 UI or I-frame. Bytes are sent as-is.
     fn send_kiss_text(&mut self, line: &str) {
         self.send_kiss_bytes(line.as_bytes(), Some(line));
@@ -2046,43 +2112,7 @@ impl GpGuiApp {
         let my = self.mycall_for_active();
         match self.active {
             ActivePane::Channel(n) if self.channel_linked(n) => {
-                let Some(peer) = self
-                    .channel_peer
-                    .get(n as usize)
-                    .and_then(|p| p.clone())
-                else {
-                    return;
-                };
-                let ns = *self.ax25_vs.get(n as usize).unwrap_or(&0);
-                let nr = *self.ax25_vr.get(n as usize).unwrap_or(&0);
-                let vias = self.link_vias(n);
-                let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-                let frame = ax25::build_i_via(&peer, &my, ns, nr, false, info, &via_ref);
-                if let Some(vs) = self.ax25_vs.get_mut(n as usize) {
-                    *vs = (ns + 1) & 7;
-                }
-                self.tx_kiss_payload(0, &frame);
-                self.kiss_link_activity(n, false);
-                self.push_kiss_mon(
-                    PadKind::Own,
-                    &my,
-                    &peer,
-                    &[],
-                    Ax25FrameType::Info,
-                    ns,
-                    nr,
-                    false,
-                    true,
-                    Some(shown),
-                );
-                // Self-connect peer channel sees the chat and answers with RR.
-                self.deliver_self_connect_rx(n, shown, info);
-                if self
-                    .self_connect_live
-                    .is_some_and(|(c, a)| n == c || n == a)
-                {
-                    self.tx_local_rr(&my, &peer, ns);
-                }
+                self.send_kiss_i(n, &my, info, shown);
             }
             ActivePane::Channel(_) => {
                 let (dest, vias) = ax25::parse_unproto(&self.cfg.beacon.address);
@@ -3804,21 +3834,298 @@ impl GpGuiApp {
         }
     }
 
-    fn insert_editor_list(&mut self) {
-        let text = self.editor.text.clone();
-        let pad = match self.setup_pane {
-            ActivePane::List => &mut self.box_pad,
-            _ => &mut self.bbs_pad,
+    fn note_mail_line(&mut self, channel: u8, text: &str) {
+        let line = text.trim();
+        if line.is_empty() {
+            return;
+        }
+        let prompt = bbs::is_diebox_prompt(line);
+        if channel as u32 == self.cfg.session.bbs_channel {
+            if prompt {
+                self.flush_mail(false, channel);
+            } else if let Some(entry) = bbs::parse_check(line) {
+                self.bbs_pending.push(entry);
+            }
+        }
+        if channel as u32 == self.cfg.session.list_channel {
+            if prompt {
+                self.flush_mail(true, channel);
+            } else if let Some(entry) = bbs::parse_list(line) {
+                self.box_pending.push(entry);
+            }
+        }
+    }
+
+    fn flush_mail(&mut self, list: bool, channel: u8) {
+        let pending = if list {
+            std::mem::take(&mut self.box_pending)
+        } else {
+            std::mem::take(&mut self.bbs_pending)
+        };
+        if pending.is_empty() {
+            return;
+        }
+        let existing = if list {
+            &self.box_rows
+        } else {
+            &self.bbs_rows
+        };
+        if existing.is_empty() {
+            self.commit_mail(list, pending, channel);
+        } else {
+            self.list_offer = Some(ListOffer {
+                list,
+                rows: pending,
+                channel,
+            });
+            self.status = "new list — replace, append, or interrupt".into();
+        }
+    }
+
+    fn commit_mail(&mut self, list: bool, rows: Vec<MailEntry>, channel: u8) {
+        let n = rows.len();
+        let shown: Vec<String> = rows.iter().map(MailEntry::display).collect();
+        let pad = if list {
+            self.box_from = Some(channel);
+            self.box_cursor = 0;
+            self.box_rows = rows;
+            &mut self.box_pad
+        } else {
+            self.bbs_from = Some(channel);
+            self.bbs_cursor = 0;
+            self.bbs_rows = rows;
+            &mut self.bbs_pad
         };
         pad.clear();
+        for line in shown {
+            pad.push(PadKind::Incoming, line);
+        }
+        self.status = format!(
+            "{} list: {n} from channel {channel}",
+            if list { "Box" } else { "BBS" }
+        );
+    }
+
+    fn append_mail(&mut self, list: bool, rows: Vec<MailEntry>, channel: u8) {
+        let lines: Vec<String> = rows.iter().map(MailEntry::display).collect();
+        if list {
+            self.box_from = Some(channel);
+            for line in lines {
+                self.box_pad.push(PadKind::Incoming, line);
+            }
+            self.box_rows.extend(rows);
+        } else {
+            self.bbs_from = Some(channel);
+            for line in lines {
+                self.bbs_pad.push(PadKind::Incoming, line);
+            }
+            self.bbs_rows.extend(rows);
+        }
+    }
+
+    fn drop_mail_for(&mut self, channel: u8) {
+        if self.bbs_from == Some(channel) {
+            self.bbs_rows.clear();
+            self.bbs_pending.clear();
+            self.bbs_cursor = 0;
+            self.bbs_from = None;
+            self.bbs_pad.clear();
+        }
+        if self.box_from == Some(channel) {
+            self.box_rows.clear();
+            self.box_pending.clear();
+            self.box_cursor = 0;
+            self.box_from = None;
+            self.box_pad.clear();
+        }
+    }
+
+    fn mail_rows(&self, list: bool) -> &[MailEntry] {
+        if list {
+            &self.box_rows
+        } else {
+            &self.bbs_rows
+        }
+    }
+
+    fn mail_cursor(&self, list: bool) -> usize {
+        if list {
+            self.box_cursor
+        } else {
+            self.bbs_cursor
+        }
+    }
+
+    fn set_mail_cursor(&mut self, list: bool, cursor: usize) {
+        let n = self.mail_rows(list).len();
+        let cursor = if n == 0 { 0 } else { cursor % n };
+        if list {
+            self.box_cursor = cursor;
+        } else {
+            self.bbs_cursor = cursor;
+        }
+    }
+
+    fn step_mail_cursor(&mut self, list: bool, step: i32) {
+        let n = self.mail_rows(list).len() as i32;
+        if n == 0 {
+            return;
+        }
+        let cur = self.mail_cursor(list) as i32;
+        self.set_mail_cursor(list, (cur + step).rem_euclid(n) as usize);
+    }
+
+    fn toggle_mail_mark(&mut self, list: bool) {
+        let cursor = self.mail_cursor(list);
+        let row = if list {
+            self.box_rows.get_mut(cursor)
+        } else {
+            self.bbs_rows.get_mut(cursor)
+        };
+        if let Some(row) = row {
+            row.marked = !row.marked;
+        }
+    }
+
+    fn sort_bbs(&mut self) {
+        self.bbs_sort_desc = !self.bbs_sort_desc;
+        let desc = self.bbs_sort_desc;
+        self.bbs_rows.sort_by(|a, b| {
+            let key = a
+                .rubric
+                .to_ascii_uppercase()
+                .cmp(&b.rubric.to_ascii_uppercase())
+                .then(a.number.cmp(&b.number));
+            if desc {
+                key.reverse()
+            } else {
+                key
+            }
+        });
+        self.bbs_cursor = 0;
+        self.status = if desc {
+            "BBS list sorted by rubric, descending".into()
+        } else {
+            "BBS list sorted by rubric".into()
+        };
+    }
+
+    fn run_find(&mut self) {
+        let list = matches!(self.active, ActivePane::List);
+        let term = self.find_text.trim().to_string();
+        if term.is_empty() {
+            self.status = "find needs a word".into();
+            return;
+        }
+        let fresh = !term.eq_ignore_ascii_case(&self.find_last);
+        self.find_last = term.clone();
+        let n = self.mail_rows(list).len();
+        if n == 0 {
+            self.status = "find: the list is empty".into();
+            return;
+        }
+        let start = if fresh {
+            0
+        } else {
+            self.mail_cursor(list).saturating_add(1)
+        };
+        let hit = (0..n).map(|i| (start + i) % n).find(|&i| {
+            self.mail_rows(list)[i].matches(&term)
+        });
+        match hit {
+            Some(i) => {
+                self.set_mail_cursor(list, i);
+                self.status = format!("find: line {}", i + 1);
+            }
+            None => self.status = format!("find: {term} is not in the list"),
+        }
+        self.find_open = false;
+    }
+
+    fn read_mail(&mut self, list: bool) {
+        let channel = if list {
+            self.cfg.session.list_channel
+        } else {
+            self.cfg.session.bbs_channel
+        } as u8;
+        let drawer = self.cfg.session.file_drawer.clone();
+        let cursor = self.mail_cursor(list);
+        let cmds: Vec<String> = {
+            let rows = self.mail_rows(list);
+            let marked: Vec<String> = rows
+                .iter()
+                .filter(|e| e.marked)
+                .map(|e| e.read_command(list, &drawer))
+                .collect();
+            if !marked.is_empty() {
+                marked
+            } else {
+                rows.get(cursor)
+                    .map(|e| e.read_command(list, &drawer))
+                    .into_iter()
+                    .collect()
+            }
+        };
+        if cmds.is_empty() {
+            self.status = "no list line".into();
+            return;
+        }
+        for cmd in &cmds {
+            self.send_channel_command(channel, cmd);
+        }
+        self.status = cmds.join("  ");
+    }
+
+    fn send_channel_command(&mut self, channel: u8, line: &str) {
+        if !(1..=self.channels).contains(&channel) {
+            self.status = format!("channel {channel} is not open");
+            return;
+        }
+        if !self.channel_linked(channel) {
+            self.status = format!("channel {channel} is not connected");
+            return;
+        }
+        if self.kiss_mode() {
+            let my = self.effective_mycall(channel);
+            if self.send_kiss_i(channel, &my, line.as_bytes(), line) {
+                if let Some(pad) = self.pads.get_mut(channel as usize) {
+                    pad.push(PadKind::Own, line.to_string());
+                }
+            }
+        } else {
+            self.tx_modem_line(channel, line);
+        }
+    }
+
+    fn insert_editor_list(&mut self) {
+        let list = matches!(self.setup_pane, ActivePane::List);
+        let text = self.editor.text.clone();
         if text.trim().is_empty() {
             self.status = "editor is empty".into();
             return;
         }
+        let mut found = Vec::new();
         for line in text.lines() {
-            pad.push(PadKind::Incoming, line.to_string());
+            if let Some(entry) = if list {
+                bbs::parse_list(line)
+            } else {
+                bbs::parse_check(line)
+            } {
+                found.push(entry);
+            }
         }
-        self.status = "list inserted from the editor".into();
+        if found.is_empty() {
+            self.status = "editor has no DieBox list lines".into();
+            return;
+        }
+        let n = found.len();
+        let channel = if list {
+            self.cfg.session.list_channel
+        } else {
+            self.cfg.session.bbs_channel
+        } as u8;
+        self.append_mail(list, found, channel);
+        self.status = format!("appended {n} list lines");
     }
 
     fn commit_setup_edit(&mut self, kind: EditKind, text: String, parent_beacon: bool) {
@@ -4110,6 +4417,76 @@ impl GpGuiApp {
         }
     }
 
+    fn answer_list_offer(&mut self, answer: ListAnswer) {
+        let Some(offer) = self.list_offer.take() else {
+            return;
+        };
+        match answer {
+            ListAnswer::Replace => self.commit_mail(offer.list, offer.rows, offer.channel),
+            ListAnswer::Append => {
+                let n = offer.rows.len();
+                self.append_mail(offer.list, offer.rows, offer.channel);
+                self.status = format!("appended {n} lines");
+            }
+            ListAnswer::Interrupt => self.status = "list left as it was".into(),
+        }
+    }
+
+    fn paint_list_offer(&mut self, ctx: &Context) {
+        if self.list_offer.is_none() {
+            return;
+        }
+        let n = self.list_offer.as_ref().map(|o| o.rows.len()).unwrap_or(0);
+        let mut answer = None;
+        egui::Area::new(egui::Id::new("gp_list_offer"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                setup_frame(ui, "Cancel the old list?", |ui| {
+                    ui.label(
+                        RichText::new(format!("{n} new lines"))
+                            .color(Color32::from_rgb(85, 255, 85))
+                            .font(FontId::monospace(14.0)),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes — replace").clicked() {
+                            answer = Some(ListAnswer::Replace);
+                        }
+                        if ui.button("No — append").clicked() {
+                            answer = Some(ListAnswer::Append);
+                        }
+                        if ui.button("Interrupt").clicked() {
+                            answer = Some(ListAnswer::Interrupt);
+                        }
+                    });
+                });
+            });
+        if let Some(answer) = answer {
+            self.answer_list_offer(answer);
+        }
+    }
+
+    fn paint_find(&mut self, ctx: &Context) {
+        if !self.find_open {
+            return;
+        }
+        let mut text = self.find_text.clone();
+        egui::Area::new(egui::Id::new("gp_find"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::new(0.0, -40.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                setup_frame(ui, "Find", |ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut text)
+                            .desired_width(220.0)
+                            .font(FontId::monospace(14.0)),
+                    );
+                    edit.request_focus();
+                });
+            });
+        self.find_text = text;
+    }
+
     fn paint_tnc_command(&mut self, ctx: &Context) {
         if !self.show_tnc {
             return;
@@ -4208,6 +4585,25 @@ impl GpGuiApp {
         let none = egui::Modifiers::NONE;
         if eat_key(ctx, alt, egui::Key::X) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        if self.list_offer.is_some() {
+            if eat_key(ctx, none, egui::Key::Y) {
+                self.answer_list_offer(ListAnswer::Replace);
+            } else if eat_key(ctx, none, egui::Key::N) {
+                self.answer_list_offer(ListAnswer::Append);
+            } else if eat_key(ctx, none, egui::Key::Escape) {
+                self.answer_list_offer(ListAnswer::Interrupt);
+            }
+            return;
+        }
+        if self.find_open {
+            if eat_key(ctx, none, egui::Key::Escape) {
+                self.find_open = false;
+            }
+            if eat_key(ctx, none, egui::Key::Enter) {
+                self.run_find();
+            }
             return;
         }
         if self.show_tnc {
@@ -4406,16 +4802,26 @@ impl GpGuiApp {
         }
 
         if matches!(self.active, ActivePane::Check | ActivePane::List) {
+            let list = matches!(self.active, ActivePane::List);
             if eat_key(ctx, none, egui::Key::Escape) {
                 self.select(ActivePane::Monitor);
                 return;
             }
+            if eat_key(ctx, none, egui::Key::ArrowUp) {
+                self.step_mail_cursor(list, -1);
+                return;
+            }
+            if eat_key(ctx, none, egui::Key::ArrowDown) {
+                self.step_mail_cursor(list, 1);
+                return;
+            }
             if eat_key(ctx, none, egui::Key::Space) {
-                self.status = "BBS mark is not built yet".into();
+                self.toggle_mail_mark(list);
+                self.step_mail_cursor(list, 1);
                 return;
             }
             if eat_key(ctx, none, egui::Key::Enter) {
-                self.status = "BBS READ is not built yet".into();
+                self.read_mail(list);
                 return;
             }
         }
@@ -4471,13 +4877,18 @@ impl GpGuiApp {
     fn hotkey_alt_s(&mut self) {
         match self.active {
             ActivePane::Editor => self.editor_save(),
-            ActivePane::Check => self.status = "BBS sort is not built yet".into(),
+            ActivePane::Check => self.sort_bbs(),
             ActivePane::Channel(_) => self.status = "Continuous save is not built yet".into(),
             _ => self.status = "Continuous save is not built yet".into(),
         }
     }
 
     fn hotkey_file_send(&mut self) {
+        if matches!(self.active, ActivePane::Check | ActivePane::List) {
+            self.find_open = true;
+            self.find_text.clear();
+            return;
+        }
         let ready = self
             .active_channel()
             .is_some_and(|ch| self.channel_linked(ch));
@@ -4682,11 +5093,19 @@ impl GpGuiApp {
                 self.status = format!("Spy {n} cleared");
             }
             ActivePane::Check => {
+                self.bbs_rows.clear();
+                self.bbs_pending.clear();
+                self.bbs_cursor = 0;
+                self.bbs_from = None;
                 self.bbs_pad.clear();
                 self.bbs_pad.save_log(&padlog::bbs_path(&dir));
                 self.status = "BBS menu cleared".into();
             }
             ActivePane::List => {
+                self.box_rows.clear();
+                self.box_pending.clear();
+                self.box_cursor = 0;
+                self.box_from = None;
                 self.box_pad.clear();
                 self.box_pad.save_log(&padlog::box_path(&dir));
                 self.status = "Box list cleared".into();
@@ -4969,6 +5388,8 @@ impl eframe::App for GpGuiApp {
             });
         self.paint_setup(ctx);
         self.paint_tnc_command(ctx);
+        self.paint_list_offer(ctx);
+        self.paint_find(ctx);
     }
 }
 
@@ -5073,6 +5494,8 @@ impl GpGuiApp {
                     if edit.has_focus()
                         && !self.show_setup
                         && !self.show_tnc
+                        && !self.find_open
+                        && self.list_offer.is_none()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     {
                         let mods = ui.input(|i| i.modifiers);
@@ -5282,17 +5705,36 @@ impl GpGuiApp {
                     ],
                 )
             }
-            ActivePane::Check => (
-                vec!["Selected file:".into()],
-                vec!["Reference: not computed".into()],
-            ),
-            ActivePane::List => (
-                vec![
-                    "Selected file:".into(),
-                    "Reference: not computed".into(),
-                ],
-                vec!["File drawer:".into()],
-            ),
+            ActivePane::Check => {
+                let sel = self
+                    .bbs_rows
+                    .get(self.bbs_cursor)
+                    .map(|e| format!("{} {}", e.rubric, e.number))
+                    .unwrap_or_else(|| "(none)".into());
+                (
+                    vec![format!("Selected: {sel}")],
+                    vec![format!("Reference: ch {}", self.cfg.session.bbs_channel)],
+                )
+            }
+            ActivePane::List => {
+                let sel = self
+                    .box_rows
+                    .get(self.box_cursor)
+                    .map(|e| e.number.to_string())
+                    .unwrap_or_else(|| "(none)".into());
+                let drawer = if self.cfg.session.file_drawer.trim().is_empty() {
+                    "(current)".into()
+                } else {
+                    self.cfg.session.file_drawer.clone()
+                };
+                (
+                    vec![
+                        format!("Selected: {sel}"),
+                        format!("Reference: ch {}", self.cfg.session.list_channel),
+                    ],
+                    vec![format!("File drawer: {drawer}")],
+                )
+            }
             ActivePane::Mh => {
                 let sel = self
                     .mheard_selected
@@ -5396,6 +5838,58 @@ impl GpGuiApp {
         }
     }
 
+    fn mail_list_pane(&mut self, ui: &mut Ui, width: f32, height: f32, list: bool) {
+        let bg = if list { self.list_bg } else { self.check_bg };
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+        let cursor = self.mail_cursor(list);
+        let lines: Vec<String> = self.mail_rows(list).iter().map(MailEntry::display).collect();
+        let mut pick: Option<(usize, bool, bool)> = None;
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+            Frame::none().fill(bg).show(ui, |ui| {
+                ui.set_min_size(rect.size());
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(false)
+                    .id_salt(if list { "box_list" } else { "bbs_list" })
+                    .show(ui, |ui| {
+                        for (i, line) in lines.iter().enumerate() {
+                            let selected = i == cursor;
+                            let fill = if selected { Color32::WHITE } else { Color32::TRANSPARENT };
+                            let fg = if selected { Color32::BLACK } else { Color32::WHITE };
+                            let (row, resp) = ui.allocate_exact_size(
+                                Vec2::new(ui.available_width().max(20.0), 16.0),
+                                Sense::click(),
+                            );
+                            ui.painter().rect_filled(row, 0.0, fill);
+                            ui.painter().text(
+                                row.left_center() + Vec2::new(4.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                line,
+                                FontId::monospace(14.0),
+                                fg,
+                            );
+                            if resp.double_clicked() {
+                                pick = Some((i, false, true));
+                            } else if resp.secondary_clicked() {
+                                pick = Some((i, true, false));
+                            } else if resp.clicked() {
+                                pick = Some((i, false, false));
+                            }
+                        }
+                    });
+            });
+        });
+        if let Some((i, mark, read)) = pick {
+            self.set_mail_cursor(list, i);
+            if mark {
+                self.toggle_mail_mark(list);
+            }
+            if read {
+                self.read_mail(list);
+            }
+        }
+    }
+
     fn rx_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
         if matches!(self.active, ActivePane::Editor) {
             self.editor_pane(ui, width, height);
@@ -5403,6 +5897,14 @@ impl GpGuiApp {
         }
         if matches!(self.active, ActivePane::Mh) {
             self.mheard_pane(ui, width, height);
+            return;
+        }
+        if matches!(self.active, ActivePane::Check) && !self.bbs_rows.is_empty() {
+            self.mail_list_pane(ui, width, height, false);
+            return;
+        }
+        if matches!(self.active, ActivePane::List) && !self.box_rows.is_empty() {
+            self.mail_list_pane(ui, width, height, true);
             return;
         }
         let bg = match self.active {
@@ -6737,6 +7239,21 @@ impl GpGuiApp {
         if let Some(label) = clicked {
             match label {
                 "SETUP" => self.open_setup(),
+                "SORT" => {
+                    if matches!(self.active, ActivePane::Check) {
+                        self.sort_bbs();
+                    } else {
+                        self.status = "Sort is the BBS menu".into();
+                    }
+                }
+                "FIND" => {
+                    if matches!(self.active, ActivePane::Check | ActivePane::List) {
+                        self.find_open = true;
+                        self.find_text.clear();
+                    } else {
+                        self.status = "Find is the BBS menu or the Box list".into();
+                    }
+                }
                 "MONITOR" => self.select(ActivePane::Monitor),
                 "EDIT" => self.open_editor_default(),
                 "SAVE" => {
@@ -6787,7 +7304,19 @@ impl GpGuiApp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ListOffer {
+    list: bool,
+    rows: Vec<MailEntry>,
+    channel: u8,
+}
+
+enum ListAnswer {
+    Replace,
+    Append,
+    Interrupt,
+}
+
 enum CellGlyph {
     Text,
     TriUp,

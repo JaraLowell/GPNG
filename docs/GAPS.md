@@ -24,10 +24,10 @@ proven against a real TNC.
 
 These are the DOS features an operator would notice first.
 
-1. **BBS-Menu and Box-List do not understand mailbox lists.** The panes exist
-   and keep a text log. They do not parse DieBox / F6FBB / DK5SG / DB0IE
-   `CHECK` or `LIST` output, mark lines, or send `READ`. **SORT** and **FIND**
-   icons on those toolbars do nothing.
+1. **Mailbox lists other than DieBox are still missing.** DieBox `CHECK`
+   fills the BBS menu and DieBox `LIST` fills the Box list, on the setup
+   reference channel. F6FBB 5.15, DK5SG, and DB0IE are not parsed. A CHECK
+   list is not split into rubric sections (manual 6.1).
 2. **`NAMES.GP` is in use.** Connect accepts a call, an ident, or a name from
    `data/NAMES.GP` and builds the path (digipeaters, then node `C` / `C!`).
    **Name** on the channel strip is ALT-N, and `//Name` writes the same file.
@@ -69,13 +69,13 @@ These are the DOS features an operator would notice first.
    the other setup values are written to `Config.toml`. DOS wrote
    `CSTAT.GPB`, and the manual left colours out of that file unless
    `CONFIG.GP` was edited. Word wrapping and input columns are stored and
-   do not wrap the editor yet. The reference channel and the file drawer
-   are stored; the BBS and Box-List parsers are still item 3.
+   do not wrap the editor yet. The reference channel is where the DieBox
+   list is read, and the file drawer is the Box-List rubric.
 7. **A few DOS keys still have nothing to run.** The pixel UI binds the
    chapter 4 keys that already have an action (channels, panes, connect,
    QRG, Shift-F macros, compose Ctrl keys). Still ahead: continuous save
    (ALT-S on a channel), file send (ALT-F),
-   BBS mark / `READ`, insert/overwrite, and copying marked QSO text
+   insert/overwrite, and copying marked QSO text
    (Ctrl-K). ALT-Z zoom stays a DOS VGA function.
 
 ---
@@ -106,7 +106,7 @@ These are the DOS features an operator would notice first.
 | `Channels`, per-channel `MYCALL` | **Have** | Up to 10. Empty slots follow the monitor call. Pixel UI can edit the call for the active pane |
 | `NoName`, `InsertMonLine`, `RemoteLanguage` | **Partial** | Stored. `%N` falls back to the callsign, not the `NoName` salutation. Monitor blank lines and `*.GPT` language packs are not applied |
 | `REMOTE` / `NOREMOTE` | **Partial** | Stored. The session **Remote** switch is a single on/off for the channel, not the allow-list |
-| `Questions`, `PopEnableKeyboard`, `MultiPort` | **Missing** | Parsed only. No yes/no/cancel prompts. No DRSI / TFPCX multiport |
+| `Questions`, `PopEnableKeyboard`, `MultiPort` | **Partial** | A new DieBox list asks replace, append, or interrupt. `Questions=OFF` does not suppress that. Popup keyboard dismissal is unused. No DRSI / TFPCX multiport |
 | `<IF>` / `<ELSE>` / `<END>` / `%TFPCX200` in `CONFIG.GP` | **Missing** | Legacy overlay is flat `KEY = value` |
 | `*.GPI` and the fifteen `%` macros | **Have** | `%V %C %N %Y %K %T %D %B %I %Z %_ %% %O %? %>`, plus width `#nn`. `%DIGI%` expands from context but nothing fills a real digi path |
 | `CTEXT???.GPI`, `NEWS.GPI`, `QRT.GPI`, `RUN.GPI`, `ORIGIN.GPI`, `F1.GPI`–`F12.GPI` | **Partial** | Files in `data/` are served by name. Shift-F1…F12 sends `F1.GPI`…`F12.GPI` on a channel. `RUN.GPI` is not sent; `//RUN` answers `not supported` |
@@ -114,7 +114,7 @@ These are the DOS features an operator would notice first.
 | `MHEARD.GP` | **Partial** | JSON list, up to 500 UI frames. Names are not stored here. Not the DOS 40-line MH file |
 | `NAMES.GP` | **Have** | `data/NAMES.GP`. Call, ident, and name lookup. `%N`, `//Name`, and the channel **Name** button read and write it |
 | `*.GPB` (including `CSTAT.GPB` and startup `BINDATA.GP`) | **Missing** | No greeting screen from `BINDATA.GP`. Setup and session chrome are written back into `Config.toml`, not `CSTAT.GPB` |
-| `ICONS.GP` | **Have** | Decoded and shown. **SETUP** opens the same menu as ALT-U. Clicks that have no action yet: **FILETRANS**, **SORT**, **FIND** |
+| `ICONS.GP` | **Have** | Decoded and shown. **SETUP** opens the same menu as ALT-U. **SORT** sorts the BBS menu. **FIND** searches the BBS menu or the Box list. **FILETRANS** still has no action |
 | `<mycall>.GPL` journal | **Have** | `data/log/<base call>.GPL` when `LOG=ON`. One file per base call. A disconnect appends date, UTC time, the other call, QRG, and the duration |
 | `*.GPT` system texts, `*.GPH` remote help | **Partial** | `//Help` sends the overview or one `@TAG` section from the language pack. `G.GPH` is English. `//Language` switches `NL`, `DL`, `F`, `PL`, `SLO`, `OK`, `HA`. `*.GPT` system texts are still unused |
 
@@ -123,18 +123,18 @@ These are the DOS features an operator would notice first.
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
 | F1–F10 channels, ALT-M monitor, ALT-E editor, ALT-X quit | **Have** | Pixel UI and the mouse. ALT-X closes the window |
-| F11 / ALT-F1 BBS-Menu, F12 / ALT-F2 Box-List | **Partial** | The keys open the panes. The panes are not mailbox menus yet |
+| F11 / ALT-F1 BBS-Menu, F12 / ALT-F2 Box-List | **Partial** | The keys open the panes. DieBox `CHECK` and `LIST` lines from the reference channel become the list. F6FBB, DK5SG, and DB0IE do not |
 | ALT-C connect, ALT-D disconnect, ALT-Y mycall | **Have** | Same dialogs as the icons. ALT-Y only while that channel is disconnected |
 | ALT-O DOS shell | **DOS-only** | ALT-O and the **DOS** icon minimise the window. They do not run a shell or apply `TNCDOS` |
-| ALT-R softscroll, ALT-Z zoom | **Partial** / **DOS-only** | ALT-R cycles the session line step. Zoom is a DOS VGA function; ALT-Z says so |
+| ALT-R softscroll, ALT-Z zoom | **Partial** / **DOS-only** | ALT-R cycles the session line step. The button shows `/` or a drawn stair (manual 11.12). Chapter 15’s pixel soft-scroll is **DOS-only**. ALT-Z zoom says so |
 | ALT-U setup | **Have** | ALT-U and the **SETUP** icon open Program parameters for the current window. Esc outside BBS-Menu and Box-List opens the TNC command box. On hostmode that line is sent to the TNC. On KISS the status line says there is no command channel |
 | ALT-F4 clear window, ALT-F6 last link status, ALT-F7 last error | **Have** | ALT-F4 clears the visible pad (or the editor buffer). ALT-F6 and ALT-F7 show the last link report and the last modem warning on the status line |
 | ALT-G hourly gong | **Have** | ALT-G and the clock double-note toggle it |
-| ALT-B scroll lock, ALT-S continuous save, ALT-F send file, ALT-Q QRG, ALT-N save name, ALT-T connect text | **Partial** | ALT-B, ALT-Q, ALT-N, and ALT-T (sends the connect text on a live channel) work. ALT-S on a channel and ALT-F answer that continuous save and file send are not built yet. In the editor, ALT-S saves and ALT-L loads |
+| ALT-B scroll lock, ALT-S continuous save, ALT-F send file, ALT-Q QRG, ALT-N save name, ALT-T connect text | **Partial** | ALT-B, ALT-Q, ALT-N, and ALT-T (sends the connect text on a live channel) work. On the BBS menu ALT-S sorts and ALT-F finds. On the Box list ALT-F finds. Elsewhere ALT-S on a channel and ALT-F answer that continuous save and file send are not built yet. In the editor, ALT-S saves and ALT-L loads |
 | ALT-F8/F9/F10 splitscreen | **Have** | Pixel UI, channel only (`docs/screenshots/SplitScreen.png`). ALT-F8 or a right-click on the QSO, the session bar, or the lower pane toggles it. ALT-F9 / ▲ move the bar up (more monitor); ALT-F10 / ▼ move it down. Drag the ▲▼ pair as well. The lower pane is the same monitor pad, not a second buffer. On Monitor the arrows still nudge that pad. They do nothing on Spy |
 | Shift-F1…F12 macro send | **Have** | On a channel, sends `data/F1.GPI` … `F12.GPI` with the `%` macros expanded |
 | Ctrl-D date, Ctrl-T time, Ctrl-O origin line, Ctrl-Y / Ctrl-C / Ctrl-P line clipboard, Ctrl-K copy to editor, Ctrl-Enter send without CR, Ins insert/overwrite | **Partial** | Ctrl-D, Ctrl-T, and Ctrl-O insert into the compose box (or the editor line). Ctrl-Y / Ctrl-C / Ctrl-P cut, copy, and paste that line. Ctrl-B pastes the last sysop reply. Enter sends the compose line with a CR; Ctrl-Enter sends it without one. Ctrl-K (marked QSO text) and Insert/overwrite are not built yet |
-| BBS cursor / Space mark / Enter = `READ` / Esc leave | **Partial** | Esc on BBS-Menu or Box-List returns to Monitor. Elsewhere Esc opens the TNC command box. Space and Enter answer that mark and `READ` are not built yet |
+| BBS cursor / Space mark / Enter = `READ` / Esc leave | **Have** | Up and down move the bar. Space marks and steps. Enter sends `R` for every marked line, or for the bar when nothing is marked. Esc returns to Monitor. A right-click marks. Elsewhere Esc opens the TNC command box |
 | ALT + numpad for ASCII 1–31 | **DOS-only** | The OS keyboard does this |
 
 ### 5 QSO operation
@@ -149,11 +149,11 @@ These are the DOS features an operator would notice first.
 | ALT-S continuous text save, print to LPT1–LPT4, save a marked range, AutoBin receive names `<call>.000`–`.999` | **Missing** | |
 | 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Partial** | Channel RX is saved into `data/USER` when **7+** is on. Names follow 7plus 2.2 (`name.p01`, `name.7pl`, `name.p0a`). `transfer::sevenplus_codec` encodes and joins parts in Rust (not the DOS exe). `.err` / `.cor` repair is not ported. Saving into `data/SAVE`, splitting a send into `data/TEMP`, and waiting for `ok`/`okay` before the next part are not wired to the channel yet |
 | Mouse-mark QSO lines and Ctrl-Ins / Ctrl-K into the editor | **Missing** | |
-| Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. ESC command entry is a TUI placeholder only |
+| Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. Esc opens the TNC command box (manual 5.9). A line that starts with `//` is not run as the operator’s own remote (manual 5.5, `ESC //h`). On KISS the box does not send |
 | External programs and GPRI (`ExternalDir`, `//RUN`) | **Missing** | `//RUN` answers `not supported`. It does not start a program |
 | Splitscreen while in QSO | **Have** | Channel only. Top pane is the QSO, the session bar is the divider, and the monitor pad is drawn under it. Not on Spy, BBS-Menu, or Box-List. Shot: `docs/screenshots/SplitScreen.png`. ALT-F8, right-click, ▲▼, and dragging the arrows |
 | Scroll-lock per channel | **Partial** | One session-bar switch for the visible pad, not a TNC poll hold, and not per channel in the DOS 1.50+ sense |
-| ESC TNC command window | **Missing** | |
+| ESC TNC command window | **Partial** | Esc opens the box. Esc again closes it without sending. Enter sends the line on hostmode. KISS has no TNC command channel. ALT-O does not restore `TNCINI` |
 | Station journal `LOG=ON` plus `QRG` | **Have** | `LOG`, `QRG`, and `UTC` come from `CONFIG.GP` or `Config.toml`. The line is written under `data/log` (or `LogDir`). `gpng.log` in that folder is the shell log |
 | Alternate connect texts `CTEXT_A.GPI` and fallback to `CTEXT.GPI` | **Partial** | Any one GPI can be picked. No automatic fallback chain, no per-mycall file |
 | Sysop password (`SY`/`PW`, `*.GPW`, TheNet / BayCom / FlexNet / DieBox / FALCon types) | **Partial** | `DB0IZ-9` reads `data/DB0IZ9.GPW`. Type `N`, `D`, and `W` pick 1-based characters. Type `F` uses the old 5-digit product-sum, or character positions when the secret is longer. The reply is placed in the compose box; Ctrl-B pastes it again. A type `B` 60×27 grid is recognised and not calculated |
@@ -163,11 +163,11 @@ These are the DOS features an operator would notice first.
 
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
-| Recognise DieBox, F6FBB 5.15, DK5SG, DB0IE check/list formats | **Missing** | |
-| BBS-Menu (F11): mark, Enter sends mailbox `READ`, keep list across a timeout on the same channel, replace-or-append prompt | **Missing** | One shared buffer, as in DOS, is the right model when this is built |
-| Box-List (F12): one rubric, same mark/read behaviour, DieBox only | **Missing** | |
-| ALT-F find, ALT-S sort (BBS menu only) | **Missing** | Icons are on the strip |
-| Import a list from the editor, change reference channel / rubric | **Missing** | |
+| Recognise DieBox, F6FBB 5.15, DK5SG, DB0IE check/list formats | **Partial** | DieBox `CHECK` (`CALL > BOARD......nr date`) and `LIST` (`nr CALL date time bytes title`) from the DB0HB handbook. F6FBB, DK5SG, and DB0IE are not parsed |
+| BBS-Menu (F11): mark, Enter sends mailbox `READ`, keep list across a timeout on the same channel, replace-or-append prompt | **Have** | One shared buffer. Space marks (manual 4.4). Enter sends `R BOARD nr` on the BBS reference channel for every marked line, or for the bar when nothing is marked. The list stays until that channel is disconnected locally. Rubric sections are not split out |
+| Box-List (F12): one rubric, same mark/read behaviour, DieBox only | **Have** | `R nr`, or `R drawer nr` when the file drawer is set. Same mark and read keys. The reference channel is the Box-List one |
+| ALT-F find, ALT-S sort (BBS menu only) | **Have** | Find (manual 6.3) opens an empty box. The same word continues from the bar; a different word starts at the top. Sort is rubric then number, and only on the BBS menu (manual 4.4). On a channel, ALT-S and ALT-F are still the unwired save and file send |
+| Import a list from the editor, change reference channel / rubric | **Have** | Insert appends DieBox lines from the editor. ALT-F4 clears the list. The reference channel and the file drawer are the setup values |
 | Unknown list formats | **Missing** | Manual 6.4 is an ongoing compatibility job, same as DOS GP |
 
 ### 7 Editor
@@ -184,7 +184,7 @@ These are the DOS features an operator would notice first.
 |-------------|--------|-------|
 | Live list from the monitor | **Have** | UI frames on KISS. Hostmode monitor text is not folded into the same list yet |
 | `//MHeard` sends the list | **Have** | |
-| Enter on a row checks `NAMES.GP` / starts a connect the way the BBS menu does | **Partial** | **CONNECT** uses the selected call on the first free channel and applies a `NAMES.GP` path when that call is listed. There is still no BBS-menu behaviour |
+| Enter on a row checks `NAMES.GP` / starts a connect the way the BBS menu does | **Partial** | **CONNECT** uses the selected call on the first free channel and applies a `NAMES.GP` path when that call is listed. Enter on the row still does not connect. The BBS menu’s Enter sends `READ`, which is a different window |
 | Fixed 40-entry DOS window | **Partial** | Cap is 500 |
 
 ### 9 QSO spy (GP286)
@@ -223,14 +223,14 @@ A mailbox marked `B` is stored and still does not block remotes. `MultiPort` in 
 | RX click 0 / 1 / 2 | **Have**. 0 is off, 1 plays the bell when the incoming line is not the active channel, 2 always plays it |
 | Line break per channel | **Missing**. Input columns are stored and do not wrap the compose box |
 | Packet length for all channels | **Have**. The channel menu sets `packet_payload`, which is the size used when a line is sent |
-| Softscroll | **Partial**. The menu cycles the same line-step as ALT-R. Chapter 15’s pixel soft-scroll is **DOS-only** |
+| Softscroll | **Partial**. The menu and ALT-R cycle the line step. The session button shows a stair when it is on and `/` when it is off (manual 11.12). Chapter 15’s pixel soft-scroll is **DOS-only** |
 | 7Plus / LCplus Code AutoSave per channel | **Partial**. The channel menu flips the one **7+** switch. It covers every channel and writes parts into `data/USER` |
 | Word wrapping, `*.BAK` | **Partial**. `*.BAK` is copied before an editor save when the toggle is on. Word wrapping is stored and the editor does not hard-wrap yet |
-| Insert list from editor, reference channel, file drawer | **Partial**. Insert copies the editor into the BBS or Box-List pad. The reference channel and the file drawer are stored. The mailbox parsers are still item 3 |
-| Beacon menu (monitor only) | **Partial**. Address, text, and period are saved. Period 0 is off. The address is the same unproto path the monitor uses: `CQ`, or `APMI03 WIDE1-1 WIDE2-2`, which the monitor shows as `to APMI03 via WIDE1-1,WIDE2-2`. On KISS the period sends that UI frame. On hostmode the values are stored and no TNC beacon command is invented |
+| Insert list from editor, reference channel, file drawer | **Have**. Insert appends DieBox lines from the editor. The reference channel is where the live list is read and where `READ` is sent. The file drawer is the Box-List rubric |
+| Beacon menu (monitor only) | **Partial**. Address, text, and period are saved. Period 0 is off. Manual 11.11: `ALL` is `fm CALL to ALL ctl UI^`, and `ALL DB0FN` is `fm CALL to ALL via DB0FN ctl UI^`. The same path is what a line typed on the monitor uses, so `APMI03 WIDE1-1 WIDE2-2` is `to APMI03 via WIDE1-1,WIDE2-2`. On KISS the period sends that one UI frame. The heard copy with `via DB0FN*` is the digipeater’s repeat, not a second send. On hostmode the values are stored and no TNC beacon command is invented |
 | InsertMonLine | **Partial**. Stored. Monitor blank lines are not inserted |
 | System language | **Have**. Cycles `EN`, `NL`, `DL`, `F`, `PL`, `SLO`, `OK`, `HA` into `remote_language` |
-| Session-bar switches: QRG, CT, umlauts, echo, line step, bell, 7+, remote, BIN-RX, BIN-TX, Name, ScrLock | **Partial**. Umlauts are also the setup toggle. **7+** saves parts into `data/USER`. **Name** writes `NAMES.GP`. BIN-RX / BIN-TX still only flip a flag. ScrLock does not freeze a TNC poll |
+| Session-bar switches: QRG, CT, umlauts, echo, stair or `/`, bell, 7+, remote, BIN-RX, BIN-TX, Name, ScrLock | **Partial**. The soft-scroll mark is a drawn stair or `/`. Umlauts are also the setup toggle. **7+** saves parts into `data/USER`. **Name** writes `NAMES.GP`. BIN-RX / BIN-TX still only flip a flag. ScrLock does not freeze a TNC poll, and it is not per channel |
 
 ### 12–18 and the appendices
 
@@ -238,7 +238,7 @@ A mailbox marked `B` is stored and still does not block remotes. `MultiPort` in 
 |-------------|--------|
 | DOS shell, `EXIT`, `TNCDOS = M N` | **DOS-only** |
 | Mouse on icons, menus, channel buttons | **Have** |
-| Right-click = Space in CHECK/LIST, drag-select text, scrollbar page clicks, hide scrollbar with ALT-B | **Partial**. Scrollbar show/hide is the **B** session button. List marking and drag-select are missing |
+| Right-click = Space in CHECK/LIST, drag-select text, scrollbar page clicks, hide scrollbar with ALT-B | **Partial**. A right-click on a BBS or Box-List row marks it. Scrollbar show/hide is the **B** session button. Drag-select is missing |
 | `/e` `/v` graphics, `/h` skip hostmode init, `/NOXMS` `/NOEMS`, `/XTKBD` `/ATKBD`, `/3MOUSE`, `/NOFIFO`, `/CHECK` virus scan | **DOS-only** |
 | `/KISSOFF` leave KISS at startup | **Partial**. KISS serial applies the close section from `KISS.INI` on exit, not a DOS `/KISSOFF` switch at start |
 | Softscroll implementation notes (chapter 15) | **DOS-only** |
@@ -281,6 +281,9 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 - Pad logs under `log/` for monitor, channels, spy, BBS, and box.
 - Remote command catalogue and macro expander, ready for the commands that are still stubs.
 - 7Plus autosave on a live channel into `data/USER` (`//Read` sends a file back). AutoBin is still library-only. See `docs/TRANSFER.md`.
+- Setup menu (ALT-U / **SETUP**). Rows follow the current window. Colours, the KISS beacon, and the Esc TNC box are live. Settings go to `Config.toml`.
+- DieBox BBS menu and Box list: mark, `READ`, find, sort, and the replace / append / interrupt question. Other mailbox formats are not parsed.
+- Session soft-scroll button: `/` or a stair. The text still steps a whole line.
 
 ---
 
@@ -288,8 +291,8 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 
 1. Wire 7Plus AutoSave and AutoBin to the channel that has **7+** / **BIN-RX** / **BIN-TX** on, including `//RPrg`, `//WPrg`, `//Read`, `//Write`, `//CUT`.
 2. `NAMES.GP` plus autorouter on Connect, then ALT-N. **Done.** Connect uses `data/NAMES.GP`. **Name** is ALT-N. A type `B` mailbox still does not block remotes, and `PORTx` does not change the radio.
-3. BBS-Menu and Box-List parsers (DieBox first), mark, and `READ`.
+3. BBS-Menu and Box-List parsers (DieBox first), mark, and `READ`. **Done** for DieBox `CHECK` and `LIST` on the setup reference channel. F6FBB, DK5SG, and DB0IE are still ahead.
 4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language. **Done.** Help follows `data/G.GPH` (English) and the other language packs. Catalog, read, write, and delete stay in `data/USER`. `//CD` cannot leave that folder. AutoBin `//RPrg` / `//WPrg` / `//CUT` remain with item 1.
-5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper. **Done** for the journal and for TheNet, BayCom, and FlexNet. Shell and debug lines go to `data/log/gpng.log`. The DieBox 60×27 grid is not calculated. The beacon stays with item 6.
-6. Setup menu. **Done** for the DOS rows that have a live effect: colours, prompt, remote, backup, echo, RX click, umlauts, softscroll, packet length, Code-AutoSave, language, editor `*.BAK`, insert-from-editor, the KISS beacon, and the Esc TNC command box. Word wrapping, input columns, InsertMonLine, the reference channel, and the file drawer are stored. Hostmode does not send the beacon. Settings go to `Config.toml`, not `CSTAT.GPB`.
-7. Pixel-UI hotkeys that match DOS GP chapter 4. **Done** for the keys that already have an action: F1–F12, ALT-M/E/X/U/O/R/G/Q/C/D/Y/N/T/B, ALT-F1/F2/F4/F6/F7/F8/F9/F10, Shift-F1–F12, Ctrl-D/T/Y/C/P/O/B, Ctrl-Enter, Esc (TNC command, or back to Monitor from BBS/List), and editor ALT-L/S. Still ahead: ALT-S continuous save, ALT-F file send, BBS mark/`READ`, Insert/overwrite, and Ctrl-K. ALT-Z stays DOS VGA zoom.
+5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper. **Done** for the journal and for TheNet, BayCom, and FlexNet. Shell and debug lines go to `data/log/gpng.log`. The DieBox 60×27 grid is not calculated.
+6. Setup menu. **Done** for the DOS rows that have a live effect: colours, prompt, remote, backup, echo, RX click, umlauts, the stair / `/` line step, packet length, Code-AutoSave, language, editor `*.BAK`, insert-from-editor, the reference channel, the file drawer, the KISS beacon (manual 11.11, also the monitor unproto path), and the Esc TNC command box. Word wrapping, input columns, and InsertMonLine are stored. Hostmode does not send the beacon. A `//` line in the Esc box is not the operator remote from manual 5.5. Settings go to `Config.toml`, not `CSTAT.GPB`.
+7. Pixel-UI hotkeys that match DOS GP chapter 4. **Done** for the keys that already have an action: F1–F12, ALT-M/E/X/U/O/R/G/Q/C/D/Y/N/T/B, ALT-F1/F2/F4/F6/F7/F8/F9/F10, Shift-F1–F12, Ctrl-D/T/Y/C/P/O/B, Ctrl-Enter, Esc (TNC command, or back to Monitor from BBS/List), and editor ALT-L/S. Still ahead: ALT-S continuous save, ALT-F file send, Insert/overwrite, and Ctrl-K. ALT-Z stays DOS VGA zoom. On the BBS menu ALT-S sorts and ALT-F finds; on the Box list ALT-F finds.
