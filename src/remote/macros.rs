@@ -85,7 +85,14 @@ pub fn expand(input: &str, ctx: &MacroContext) -> String {
         let mut value = match code {
             'V' | 'v' => ctx.version.clone(),
             'C' | 'c' => ctx.peer_call.clone(),
-            'N' | 'n' => ctx.peer_name.clone(),
+            'N' | 'n' => {
+                let name = ctx.peer_name.trim();
+                if name.is_empty() {
+                    ctx.peer_call.clone()
+                } else {
+                    ctx.peer_name.clone()
+                }
+            }
             'Y' | 'y' => ctx.my_call.clone(),
             'K' | 'k' => ctx.channel.to_string(),
             'T' | 't' => ctx.time.clone(),
@@ -145,7 +152,7 @@ pub fn catalogue() -> HashMap<&'static str, &'static str> {
     HashMap::from([
         ("%V", "Software version"),
         ("%C", "Peer callsign"),
-        ("%N", "Peer name"),
+        ("%N", "Peer name, or callsign if none is stored"),
         ("%Y", "Own callsign"),
         ("%K", "Channel number"),
         ("%T", "Time HH:MM:SS"),
@@ -180,5 +187,20 @@ mod tests {
         );
         assert_eq!(expand("%N#6", &ctx), "Ulf   ");
         assert_eq!(expand("100%%", &ctx), "100%");
+    }
+
+    #[test]
+    fn name_macro_falls_back_to_callsign() {
+        let ctx = MacroContext {
+            peer_call: "NL0MSK".into(),
+            peer_name: String::new(),
+            ..MacroContext::demo()
+        };
+        assert_eq!(expand("Hallo %N,", &ctx), "Hallo NL0MSK,");
+        let named = MacroContext {
+            peer_name: "Jara".into(),
+            ..ctx
+        };
+        assert_eq!(expand("Hallo %N,", &named), "Hallo Jara,");
     }
 }

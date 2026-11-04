@@ -32,7 +32,7 @@ So: **targeted string / help-file archaeology**, not a full decompile of `GP2862
 |-------|-----------|
 | `%V` | Software version (EXE banner: **1.63** on `GP2862K`) |
 | `%C` | Opposite station call |
-| `%N` | Opposite station name (`NAMES.GP`) |
+| `%N` | Opposite station name (MHeard disk list); callsign if none |
 | `%Y` | Own call (channel MYCALL) |
 | `%K` | Channel number |
 | `%T` | GP clock `HH:MM:SS` |
@@ -70,7 +70,7 @@ Minimum significant letters come from `@TAG,N` in `*.GPH` (e.g. `@VERSION,3` →
 | `//Info` | `I` | `<mycall>.GPI` / `INFO.GPI` |
 | `//Language <lang>` | `L` | Switch remote `*.GPT` / help language |
 | `//MHeard [n\|call]` | `MH` | MH list or last-heard for call |
-| `//Name <name>` | `N` | Store in `NAMES.GP` |
+| `//Name <name>` | `N` | Store opposite station name on the MHeard disk list (not shown in the pane) |
 | `//NEws` | `NE` | `NEWS.GPI` |
 | `//PARameters` | `PAR` | TNC/system parameters (**DL/F** help) |
 | `//PRompt <ON/OFF>` | `PR` | Remote prompt (`PROMPT=` template) |

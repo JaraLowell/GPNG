@@ -913,12 +913,29 @@ impl GpGuiApp {
         .into_iter()
         .find_map(|p| gpi::read_file(&p))?;
         let mut ctx = self.macro_ctx();
-        ctx.channel = channel;
-        if let Some(peer) = self.channel_peer.get(channel as usize).and_then(|p| p.as_ref()) {
-            ctx.peer_call = peer.clone();
-        }
-        ctx.my_call = self.effective_mycall(channel);
+        self.apply_channel_peer(&mut ctx, channel);
         Some(gpi::expand_gpi_text(&raw, &ctx))
+    }
+
+    /// Fill `%C` / `%N` / `%Y` / `%K` for one channel.
+    /// `%N` stays empty here when no name is stored; the expander uses the call.
+    fn apply_channel_peer(&self, ctx: &mut MacroContext, channel: u8) {
+        ctx.channel = channel;
+        ctx.my_call = self.effective_mycall(channel);
+        let peer = self
+            .channel_peer
+            .get(channel as usize)
+            .and_then(|p| p.as_ref())
+            .filter(|c| !c.is_empty() && *c != "****");
+        if let Some(call) = peer {
+            ctx.peer_call = call.clone();
+            ctx.peer_name = self.mheard.name_for(call).unwrap_or_default();
+            ctx.name_unknown = ctx.peer_name.is_empty();
+        } else {
+            ctx.peer_call.clear();
+            ctx.peer_name.clear();
+            ctx.name_unknown = false;
+        }
     }
 
     /// KISS self-connect: no RF loopback — TX UA as answer, link both ends, CTEXT.
@@ -2216,15 +2233,16 @@ impl GpGuiApp {
 
     fn macro_ctx(&self) -> MacroContext {
         let now = Local::now();
-        MacroContext {
+        let channel = match self.active {
+            ActivePane::Channel(n) => n,
+            _ => 0,
+        };
+        let mut ctx = MacroContext {
             version: version::APP_VERSION.into(),
             peer_call: String::new(),
             peer_name: String::new(),
             my_call: self.mycall_for_active().to_string(),
-            channel: match self.active {
-                ActivePane::Channel(n) => n,
-                _ => 0,
-            },
+            channel,
             time: now.format("%H:%M:%S").to_string(),
             date: now.format("%d-%m-%Y").to_string(),
             zone: "UTC".into(),
@@ -2237,7 +2255,9 @@ impl GpGuiApp {
             digi: String::new(),
             qrg: format!("{:.3}", self.session.qrg_mhz),
             name_unknown: false,
-        }
+        };
+        self.apply_channel_peer(&mut ctx, channel);
+        ctx
     }
 
     /// Serve a GPI by remote action or verb; returns true if handled.
@@ -2333,18 +2353,49 @@ impl GpGuiApp {
                 play_bell_wav(&self.bell_wav);
             }
             RemoteAction::MHeard => {
-                let body = if self.mheard.entries.is_empty() {
+                let lines = self.mheard.lines();
+                let body = if lines.is_empty() {
                     "MHeard: (empty)".into()
                 } else {
-                    self.mheard.lines().join("\r")
+                    lines.join("\r")
                 };
                 self.send_gpi_text(&body);
+            }
+            RemoteAction::Name => {
+                self.store_remote_name(channel, args);
             }
             _ => {
                 self.status = format!("remote {action:?} (not implemented)");
             }
         }
         self.active = prev;
+    }
+
+    /// `//Name Jara` from the station linked on `channel` (call NL0MSK → name Jara).
+    fn store_remote_name(&mut self, channel: u8, args: &str) {
+        let call = self
+            .channel_peer
+            .get(channel as usize)
+            .and_then(|p| p.clone())
+            .filter(|c| !c.is_empty() && c != "****");
+        let Some(call) = call else {
+            self.status = "//Name — connect a station first".into();
+            return;
+        };
+        let name = args.trim();
+        if name.is_empty() {
+            let shown = self.mheard.name_for(&call).unwrap_or_else(|| call.clone());
+            self.status = format!("Name {call}: {shown}");
+            self.send_gpi_text(&format!("Name: {shown}"));
+            return;
+        }
+        if !self.mheard.set_name(&call, name) {
+            self.status = "//Name — give a name".into();
+            return;
+        }
+        let stored = self.mheard.name_for(&call).unwrap_or_else(|| name.to_string());
+        self.status = format!("Name {call} = {stored}");
+        self.send_gpi_text(&format!("Name stored: {stored}"));
     }
 
     fn active_layout(&self) -> LayoutJob {
@@ -2863,7 +2914,7 @@ impl GpGuiApp {
                 };
                 (
                     vec![
-                        format!("Stations: {}", self.mheard.entries.len()),
+                        format!("Stations: {}", self.mheard.listed_len()),
                         format!("Selected: {sel}"),
                     ],
                     vec![hint],
@@ -3019,6 +3070,7 @@ impl GpGuiApp {
             .entries
             .iter()
             .enumerate()
+            .filter(|(_, e)| e.listed())
             .map(|(i, e)| (i, e.display_line()))
             .collect();
         let mut clicked: Option<usize> = None;

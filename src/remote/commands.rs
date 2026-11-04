@@ -86,7 +86,13 @@ pub fn catalogue() -> Vec<RemoteCommand> {
         cmd("//Info", &["INFO", "I"], 1, RemoteAction::Info, "Station info GPI"),
         cmd("//Language", &["LANGUAGE", "L"], 1, RemoteAction::Language, "Switch remote language"),
         cmd("//MHeard", &["MHEARD", "MH"], 2, RemoteAction::MHeard, "MH list / last-heard"),
-        cmd("//Name", &["NAME", "N"], 1, RemoteAction::Name, "Store name in NAMES.GP"),
+        cmd(
+            "//Name",
+            &["NAME", "N"],
+            1,
+            RemoteAction::Name,
+            "Store opposite station name on the MHeard disk list",
+        ),
         cmd("//NEws", &["NEWS", "NE"], 2, RemoteAction::News, "Send NEWS.GPI"),
         cmd(
             "//PARameters",
@@ -211,5 +217,10 @@ mod tests {
         assert_eq!(parse_line("//7+ ON").unwrap(), (RemoteAction::SevenPlusAutoSave, "ON".into()));
         assert_eq!(parse_line("//Q").unwrap().0, RemoteAction::Quit);
         assert_eq!(parse_line("//DISC").unwrap().0, RemoteAction::Disconnect);
+        assert_eq!(
+            parse_line("//Name Jara").unwrap(),
+            (RemoteAction::Name, "Jara".into())
+        );
+        assert_eq!(parse_line("//N Jara").unwrap().0, RemoteAction::Name);
     }
 }

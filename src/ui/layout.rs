@@ -5,7 +5,7 @@
 //! │ 1: …  2: …  3: …  4: …  5: …  6: …                          │ analog  │
 //! │ 7: …  8: …  9: … 10: …  BBS-Menu  Box-List                  │ date/ver│
 //! ├─────────────────────────────────────────────────────────────┴─────────┤
-//! │ MAGENTA title: Monitor │ Mode IUSC │ Buffers │ … │ Global Mycall     │
+//! │ MAGENTA title: Monitor │ Mode IUSC │ Buffers │ … │ Global Mycall      │
 //! ├───────────────────────────────────────────────────────────────────────┤
 //! │                                                                       │
 //! │  PRIMARY RX  (Monitor / Connect)                         scrollbar    │
