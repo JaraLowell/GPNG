@@ -120,7 +120,7 @@ These are the DOS features an operator would notice first.
 | ALT-F4 clear window, ALT-F6 last link status, ALT-F7 last error | **Partial** | Session clear-pad button empties the visible log. No “last status” / “last error” popup |
 | ALT-G hourly gong | **Have** | Clock double-note toggles it |
 | ALT-B scroll lock, ALT-S continuous save, ALT-F send file, ALT-Q QRG, ALT-N save name, ALT-T connect text | **Partial** | Scroll lock, QRG, connect-text, and **Name** (ALT-N → `NAMES.GP`) are on the session bar. Continuous save and file send are not. The pixel UI has no ALT key |
-| ALT-F8/F9/F10 splitscreen | **Partial** | DOS shows it only on a channel (`docs/screenshots/SplitScreen.png`): QSO on top, monitor under a bar. ▲▼ next to ScrLock change how much monitor is visible, and the bar drags with the mouse. Those arrows are not clickable on Spy, BBS-Menu, Box-List, or the other panes. Pixel UI has no split; its ▲▼ only nudge the pad |
+| ALT-F8/F9/F10 splitscreen | **Have** | Pixel UI, channel only (`docs/screenshots/SplitScreen.png`). ALT-F8 or a right-click on the QSO, the session bar, or the lower pane toggles it. ALT-F9 / ▲ move the bar up (more monitor); ALT-F10 / ▼ move it down. Drag the ▲▼ pair as well. The lower pane is the same monitor pad, not a second buffer. On Monitor the arrows still nudge that pad. They do nothing on Spy |
 | Shift-F1…F12 macro send | **Missing** | |
 | Ctrl-D date, Ctrl-T time, Ctrl-O origin line, Ctrl-Y / Ctrl-C / Ctrl-P line clipboard, Ctrl-K copy to editor, Ctrl-Enter send without CR, Ins insert/overwrite | **Missing** | Compose is a normal text field with history |
 | BBS cursor / Space mark / Enter = `READ` / Esc leave | **Missing** | |
@@ -140,7 +140,7 @@ These are the DOS features an operator would notice first.
 | Mouse-mark QSO lines and Ctrl-Ins / Ctrl-K into the editor | **Missing** | |
 | Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. ESC command entry is a TUI placeholder only |
 | External programs and GPRI (`ExternalDir`, `//RUN`) | **Missing** | `RUN.GPI` is sent as text |
-| Splitscreen while in QSO | **Partial** | Channel only. Top pane is the QSO, bottom pane is the monitor, divider drags, ▲▼ beside ScrLock show more or less monitor. Not on Spy, BBS-Menu, or Box-List. Shot: `docs/screenshots/SplitScreen.png`. Pixel UI does not do this |
+| Splitscreen while in QSO | **Have** | Channel only. Top pane is the QSO, the session bar is the divider, and the monitor pad is drawn under it. Not on Spy, BBS-Menu, or Box-List. Shot: `docs/screenshots/SplitScreen.png`. ALT-F8, right-click, ▲▼, and dragging the arrows |
 | Scroll-lock per channel | **Partial** | One session-bar switch for the visible pad, not a TNC poll hold, and not per channel in the DOS 1.50+ sense |
 | ESC TNC command window | **Missing** | |
 | Station journal `LOG=ON` plus `QRG` | **Missing** | QRG on the session bar is a label and a log line, not a `<mycall>.GPL` entry |

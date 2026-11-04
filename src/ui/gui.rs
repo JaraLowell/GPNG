@@ -6,10 +6,16 @@
 //! ├── channel grid (2×6) ───────────────────────────┤   (tall: spans   │
 //! ├── magenta status grid (2 rows, non-clickable) ──┤    all three)    │
 //! ├─────────────────────────────────────────────────┴──────────────────┤
-//! │ full-width content                                                  │
+//! │ full-width content (QSO / monitor / editor / …)                     │
 //! │ session strip: QRG CT äöü / Echo ♪ Clear [spy|7+/Remote/BIN] ScrLock ▲▼ B │
+//! │ channel splitscreen only: the same monitor pad, under that strip    │
 //! │ icons evenly spaced (set depends on pane)                           │
 //! ```
+//!
+//! Splitscreen (ALT-F8, or right-click the channel) is channel-only. The
+//! upper pane stays the QSO. The lower pane is the monitor pad (`pads[0]`),
+//! not a second buffer. ALT-F9 / ▲ move the bar up (more monitor); ALT-F10 / ▼
+//! move it down. The bar and the ▲▼ pair also drag.
 //!
 //! Magenta is **not** one text line: left title cell is 2 rows high; right
 //! side has Mode/Buffers on row 1 and Packets/Mycall on row 2 (Monitor).
@@ -135,6 +141,14 @@ pub struct GpGuiApp {
     events: mpsc::Receiver<TncEvent>,
     cmd_tx: mpsc::Sender<TncCommand>,
     active: ActivePane,
+    /// Channel splitscreen. Off on Monitor, Spy, BBS-Menu, and Box-List.
+    split_on: bool,
+    /// Fraction of the QSO+monitor body given to the monitor (0.15..=0.75).
+    split_lower: f32,
+    /// Last QSO+monitor height, so a drag can turn pixels into `split_lower`.
+    split_body_h: f32,
+    /// Pointer travel on the ▲▼ pair this gesture. A click steps; a drag resizes.
+    split_drag_dy: f32,
     status: String,
     /// Current compose buffer (shown in a 3-line editor).
     input: String,
@@ -372,6 +386,10 @@ impl GpGuiApp {
             events,
             cmd_tx,
             active: ActivePane::Monitor,
+            split_on: false,
+            split_lower: 0.40,
+            split_body_h: 0.0,
+            split_drag_dy: 0.0,
             status,
             input: String::new(),
             typed_history: VecDeque::new(),
@@ -2767,11 +2785,116 @@ impl GpGuiApp {
                 .get(n as usize)
                 .map(TextPad::layout_job)
                 .unwrap_or_default(),
-            _ => self
-                .pads
-                .first()
-                .map(TextPad::layout_job)
-                .unwrap_or_default(),
+            _ => self.monitor_layout(),
+        }
+    }
+
+    /// Monitor pad (`pads[0]`). The full Monitor pane and the channel split
+    /// both paint this job — there is no second monitor buffer.
+    fn monitor_layout(&self) -> LayoutJob {
+        self.pads
+            .first()
+            .map(TextPad::layout_job)
+            .unwrap_or_default()
+    }
+
+    fn split_visible(&self) -> bool {
+        self.split_on && matches!(self.active, ActivePane::Channel(_))
+    }
+
+    fn poll_split_keys(&mut self, ctx: &Context) {
+        if !matches!(self.active, ActivePane::Channel(_)) {
+            return;
+        }
+        let (toggle, up, down) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::ALT, egui::Key::F8),
+                i.consume_key(egui::Modifiers::ALT, egui::Key::F9),
+                i.consume_key(egui::Modifiers::ALT, egui::Key::F10),
+            )
+        });
+        if toggle {
+            self.toggle_split();
+        }
+        if up {
+            self.step_split(1.0);
+        }
+        if down {
+            self.step_split(-1.0);
+        }
+    }
+
+    fn toggle_split(&mut self) {
+        if !matches!(self.active, ActivePane::Channel(_)) {
+            return;
+        }
+        self.split_on = !self.split_on;
+        self.status = if self.split_on {
+            "Splitscreen on — QSO above, monitor below".into()
+        } else {
+            "Splitscreen off".into()
+        };
+    }
+
+    /// `dir` > 0 shows more monitor (bar moves up). `dir` < 0 shows more QSO.
+    fn step_split(&mut self, dir: f32) {
+        if !matches!(self.active, ActivePane::Channel(_)) {
+            return;
+        }
+        if !self.split_on {
+            if dir > 0.0 {
+                self.split_on = true;
+                self.split_lower = self.split_lower.max(0.32);
+                self.status = "Splitscreen on".into();
+            }
+            return;
+        }
+        self.split_lower = clamp_split_lower(self.split_lower + dir * 0.06);
+        self.status = format!("Splitscreen {:.0}% monitor", self.split_lower * 100.0);
+    }
+
+    /// `delta_y` is screen pixels, positive downward (more QSO, less monitor).
+    fn drag_split(&mut self, delta_y: f32) {
+        if !matches!(self.active, ActivePane::Channel(_)) {
+            return;
+        }
+        if !self.split_on {
+            if delta_y < 0.0 {
+                self.split_on = true;
+                self.split_lower = self.split_lower.max(0.32);
+            } else {
+                return;
+            }
+        }
+        let body = self.split_body_h.max(120.0);
+        self.split_lower = clamp_split_lower(self.split_lower - delta_y / body);
+    }
+
+    fn note_split_right_click(&mut self, ui: &Ui, rect: Rect) {
+        if !matches!(self.active, ActivePane::Channel(_)) {
+            return;
+        }
+        let hit = ui.input(|i| {
+            i.pointer.secondary_clicked()
+                && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))
+        });
+        if hit {
+            self.toggle_split();
+        }
+    }
+
+    /// Channel: ▲▼ size the split. Monitor: they still nudge the pad.
+    /// Spy, BBS-Menu, and Box-List do not use them.
+    fn on_scroll_arrow(&mut self, dir: f32) {
+        if matches!(self.active, ActivePane::Channel(_)) {
+            if self.split_drag_dy.abs() >= 3.0 {
+                return;
+            }
+            self.step_split(dir);
+            return;
+        }
+        if matches!(self.active, ActivePane::Monitor) && !self.session.scr_lock {
+            self.session.nudge_lines(if dir > 0.0 { -1 } else { 1 });
         }
     }
 
@@ -2876,6 +2999,7 @@ impl eframe::App for GpGuiApp {
         self.kiss_link_timers();
         self.maybe_hour_gong();
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        self.poll_split_keys(ctx);
 
         // Panels own reserved bands so CentralPanel (RX) cannot paint over them.
         // Strip height stays fixed; icons scale to fill it (1 px top/bottom).
@@ -2912,6 +3036,33 @@ impl eframe::App for GpGuiApp {
                 let w = ui.available_width();
                 self.icon_strip(ui, w, h);
             });
+
+        // Body is everything between the top stack and the session strip.
+        // The monitor, when split, is taken out of that body and drawn under
+        // the session bar — the same order as the DOS channel screenshot.
+        let body_h = (ctx.screen_rect().height() - top_h - icons_h - session_h).max(0.0);
+        self.split_body_h = body_h;
+        let monitor_h = if self.split_visible() {
+            split_monitor_height(body_h, self.split_lower)
+        } else {
+            0.0
+        };
+        if monitor_h > 0.0 {
+            let mon_bg = self.monitor_bg;
+            let job = self.monitor_layout();
+            let stick = !self.session.scr_lock;
+            let show_bar = self.session.scrollbar;
+            egui::TopBottomPanel::bottom("gp_split_monitor")
+                .exact_height(monitor_h)
+                .show_separator_line(false)
+                .frame(Frame::none().fill(mon_bg))
+                .show(ctx, |ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(ui.available_size(), Sense::hover());
+                    paint_text_pane(ui, rect, mon_bg, "rx_split_monitor", stick, show_bar, 0.0, job);
+                    self.note_split_right_click(ui, rect);
+                });
+        }
 
         if self.show_session_bar() {
             egui::TopBottomPanel::bottom("gp_session")
@@ -3373,41 +3524,14 @@ impl GpGuiApp {
             ActivePane::Check | ActivePane::List => Color32::from_rgb(170, 170, 170),
             _ => self.monitor_bg,
         };
+        let job = self.active_layout();
         let nudge = self.session.take_scroll_nudge();
-        // ScrLock off → follow last line; on → freeze (all RX panes share this).
+        // ScrLock off → follow last line; on → freeze (QSO and split monitor).
         let stick = !self.session.scr_lock;
         let show_bar = self.session.scrollbar;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
-            Frame::none()
-                .fill(bg)
-                .stroke(Stroke::new(1.0, Color32::from_rgb(170, 170, 170)))
-                .inner_margin(6.0)
-                .show(ui, |ui| {
-                    ui.set_min_size(rect.size() - Vec2::splat(2.0));
-                    let bar_vis = if show_bar {
-                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
-                    } else {
-                        egui::scroll_area::ScrollBarVisibility::AlwaysHidden
-                    };
-                    // Both axes: tall buffers + wide DOS ASCII-art lines.
-                    egui::ScrollArea::both()
-                        .id_salt("rx_full")
-                        .stick_to_bottom(stick)
-                        .auto_shrink([false, false])
-                        .scroll_bar_visibility(bar_vis)
-                        .show(ui, |ui| {
-                            if nudge != 0.0 {
-                                ui.scroll_with_delta(Vec2::new(0.0, nudge));
-                            }
-                            ui.add(
-                                egui::Label::new(self.active_layout())
-                                    // No soft-wrap — column art (BBS menus, spy, etc.) must stay fixed.
-                                    .wrap_mode(TextWrapMode::Extend),
-                            );
-                        });
-                });
-        });
+        paint_text_pane(ui, rect, bg, "rx_full", stick, show_bar, nudge, job);
+        self.note_split_right_click(ui, rect);
     }
 
     /// Clickable MHeard list (row select → SPY confirm).
@@ -3579,10 +3703,42 @@ impl GpGuiApp {
             let cell = Rect::from_min_size(Pos2::new(origin_x, y), Vec2::new(w, h));
             let id = ui.id().with(("sess", action, label));
             let resp = ui.interact(cell, id, Sense::click());
+            // ▲▼ are not toggles, so they never use the green “on” face.
+            // Channel with the split open, and Monitor while scroll works:
+            // ordinary grey buttons. Split closed, Spy, or ScrLock held:
+            // light grey, which reads as off.
+            let arrow = matches!(glyph, CellGlyph::TriUp | CellGlyph::TriDown);
+            let arrow_clickable = match self.active {
+                ActivePane::Channel(_) => true,
+                ActivePane::Monitor => !self.session.scr_lock,
+                _ => false,
+            };
+            let arrow_off = arrow
+                && match self.active {
+                    ActivePane::Channel(_) => !self.split_on,
+                    _ => !arrow_clickable,
+                };
+            let fill = if arrow_off {
+                Color32::from_rgb(210, 210, 210)
+            } else if lit {
+                on
+            } else {
+                off
+            };
+            let mark = if arrow_off {
+                Color32::from_rgb(130, 130, 130)
+            } else {
+                text_c
+            };
             let painter = ui.painter();
-            painter.rect_filled(cell, 0.0, if lit { on } else { off });
-            // Lit / enabled → sunken bevel (classic GP toggle look).
-            paint_bevel(painter, cell, lit || resp.is_pointer_button_down_on());
+            painter.rect_filled(cell, 0.0, fill);
+            // A lit toggle stays sunken. ▲▼ sink only while the mouse is held.
+            let pressed = if arrow {
+                arrow_clickable && resp.is_pointer_button_down_on()
+            } else {
+                lit || resp.is_pointer_button_down_on()
+            };
+            paint_bevel(painter, cell, pressed);
             match glyph {
                 CellGlyph::Text => {
                     painter.text(
@@ -3590,7 +3746,7 @@ impl GpGuiApp {
                         egui::Align2::CENTER_CENTER,
                         label,
                         FontId::proportional(11.0),
-                        text_c,
+                        mark,
                     );
                 }
                 CellGlyph::TriUp | CellGlyph::TriDown => {
@@ -3610,16 +3766,17 @@ impl GpGuiApp {
                             Pos2::new(c.x + s, c.y - s * 0.7),
                         ]
                     };
-                    painter.add(egui::Shape::convex_polygon(pts, text_c, Stroke::NONE));
+                    painter.add(egui::Shape::convex_polygon(pts, mark, Stroke::NONE));
                 }
             }
-            if resp.clicked() {
+            if resp.clicked() && (!arrow || arrow_clickable) {
                 clicks.push(action);
             }
             w + gap
         };
 
         // Trailing controls always visible on the right.
+        // ▲▼ stay ordinary buttons (never the green “on” face).
         let trail = [
             (
                 "ScrLock",
@@ -3740,8 +3897,53 @@ impl GpGuiApp {
             _ => {}
         }
 
+        if matches!(self.active, ActivePane::Channel(_)) {
+            let trail_left = rect.right() - trail_w - 2.0;
+            let arrow_x = trail_left + 54.0 + gap;
+            let arrow_rect =
+                Rect::from_min_size(Pos2::new(arrow_x, y), Vec2::new(22.0 + gap + 22.0, h));
+            let (hover, press, delta, down) = ui.input(|i| {
+                (
+                    i.pointer.hover_pos(),
+                    i.pointer.press_origin(),
+                    i.pointer.delta().y,
+                    i.pointer.button_down(egui::PointerButton::Primary),
+                )
+            });
+            if hover.is_some_and(|p| arrow_rect.contains(p)) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+            let dragging = down && press.is_some_and(|p| arrow_rect.contains(p));
+            if dragging && delta != 0.0 {
+                let before = self.split_drag_dy;
+                self.split_drag_dy += delta;
+                if self.split_drag_dy.abs() >= 3.0 {
+                    let apply = if before.abs() < 3.0 {
+                        self.split_drag_dy
+                    } else {
+                        delta
+                    };
+                    self.drag_split(apply);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                    ui.ctx().request_repaint();
+                }
+            }
+            if self.split_on {
+                ui.painter().hline(
+                    rect.x_range(),
+                    rect.top(),
+                    Stroke::new(2.0, Color32::WHITE),
+                );
+            }
+            self.note_split_right_click(ui, rect);
+        }
+
         for action in clicks {
             self.handle_session_click(action);
+        }
+        let released = ui.input(|i| !i.pointer.button_down(egui::PointerButton::Primary));
+        if released {
+            self.split_drag_dy = 0.0;
         }
     }
 
@@ -3817,16 +4019,8 @@ impl GpGuiApp {
                 self.status = format!("ScrLock {}", on_off(self.session.scr_lock));
                 self.persist_session_chrome();
             }
-            SessionClick::ScrollUp => {
-                if !self.session.scr_lock {
-                    self.session.nudge_lines(-1);
-                }
-            }
-            SessionClick::ScrollDown => {
-                if !self.session.scr_lock {
-                    self.session.nudge_lines(1);
-                }
-            }
+            SessionClick::ScrollUp => self.on_scroll_arrow(1.0),
+            SessionClick::ScrollDown => self.on_scroll_arrow(-1.0),
             SessionClick::Scrollbar => {
                 self.session.scrollbar = !self.session.scrollbar;
                 self.status = format!("scrollbar {}", on_off(self.session.scrollbar));
@@ -5066,6 +5260,58 @@ fn load_window_icon() -> egui::IconData {
     }
 }
 
+/// Scrollable text. `id` keeps the Monitor pane and the channel split from
+/// sharing one scrollbar position. The bytes are still the same pad.
+fn paint_text_pane(
+    ui: &mut Ui,
+    rect: Rect,
+    bg: Color32,
+    id: &'static str,
+    stick: bool,
+    show_bar: bool,
+    nudge: f32,
+    job: LayoutJob,
+) {
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+        Frame::none()
+            .fill(bg)
+            .stroke(Stroke::new(1.0, Color32::from_rgb(170, 170, 170)))
+            .inner_margin(6.0)
+            .show(ui, |ui| {
+                ui.set_min_size(rect.size() - Vec2::splat(2.0));
+                let bar_vis = if show_bar {
+                    egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+                } else {
+                    egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+                };
+                egui::ScrollArea::both()
+                    .id_salt(id)
+                    .stick_to_bottom(stick)
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(bar_vis)
+                    .show(ui, |ui| {
+                        if nudge != 0.0 {
+                            ui.scroll_with_delta(Vec2::new(0.0, nudge));
+                        }
+                        ui.add(egui::Label::new(job).wrap_mode(TextWrapMode::Extend));
+                    });
+            });
+    });
+}
+
+fn clamp_split_lower(v: f32) -> f32 {
+    v.clamp(0.15, 0.75)
+}
+
+/// Height of the monitor under the session bar. `body` is QSO + monitor.
+fn split_monitor_height(body: f32, lower: f32) -> f32 {
+    let min = 48.0;
+    if body <= min * 2.0 {
+        return (body * 0.5).max(0.0);
+    }
+    (body * clamp_split_lower(lower)).clamp(min, body - min)
+}
+
 pub fn run(
     cfg: Config,
     config_path: PathBuf,
@@ -5102,4 +5348,25 @@ pub fn run(
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::{clamp_split_lower, split_monitor_height};
+
+    #[test]
+    fn monitor_keeps_a_qso_strip() {
+        let mon = split_monitor_height(400.0, 0.40);
+        assert!((mon - 160.0).abs() < 0.1);
+        assert!(mon >= 48.0);
+        assert!(400.0 - mon >= 48.0);
+    }
+
+    #[test]
+    fn ratio_stays_in_range() {
+        assert!((clamp_split_lower(-1.0) - 0.15).abs() < f32::EPSILON);
+        assert!((clamp_split_lower(2.0) - 0.75).abs() < f32::EPSILON);
+        let mon = split_monitor_height(400.0, 0.99);
+        assert!((mon - 300.0).abs() < 0.1);
+    }
 }
