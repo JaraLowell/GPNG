@@ -161,9 +161,8 @@ impl Config {
                 continue;
             }
 
-            let (key, value) = split_legacy_kv(line).ok_or_else(|| {
-                format!("line {}: expected KEY = VALUE, got `{raw}`", lineno + 1)
-            })?;
+            let (key, value) = split_legacy_kv(line)
+                .ok_or_else(|| format!("line {}: expected KEY = VALUE, got `{raw}`", lineno + 1))?;
             let key_upper = key.to_ascii_uppercase();
             let value = value.trim();
 
@@ -224,8 +223,7 @@ impl Config {
                 "AUTOSPY" => self.session.auto_spy = split_csv_words(value),
                 "NOAUTOSPY" => self.session.no_auto_spy = split_csv(value),
                 "AUTOSPYMINIMUMSAVE" => {
-                    self.session.auto_spy_minimum_save =
-                        parse_u32(value, "AUTOSPYMINIMUMSAVE")?;
+                    self.session.auto_spy_minimum_save = parse_u32(value, "AUTOSPYMINIMUMSAVE")?;
                 }
 
                 // --- buffers ------------------------------------------------
@@ -502,7 +500,12 @@ impl Config {
     pub fn persist_setup(&self, path: impl AsRef<Path>) -> Result<(), String> {
         let path = path.as_ref();
         let s = &self.session;
-        put_key(path, "session", "backup", if s.backup { "true" } else { "false" })?;
+        put_key(
+            path,
+            "session",
+            "backup",
+            if s.backup { "true" } else { "false" },
+        )?;
         put_key(path, "session", "rx_click", &s.rx_click.to_string())?;
         put_key(
             path,
@@ -511,14 +514,34 @@ impl Config {
             if s.insert_mon_line { "true" } else { "false" },
         )?;
         put_key(path, "session", "prompt", &toml_string(&s.prompt))?;
-        put_key(path, "session", "remote_language", &toml_string(&s.remote_language))?;
-        put_key(path, "session", "input_columns", &s.input_columns.to_string())?;
+        put_key(
+            path,
+            "session",
+            "remote_language",
+            &toml_string(&s.remote_language),
+        )?;
+        put_key(
+            path,
+            "session",
+            "input_columns",
+            &s.input_columns.to_string(),
+        )?;
         put_key(path, "session", "editor_wrap", &s.editor_wrap.to_string())?;
-        put_key(path, "session", "editor_bak", if s.editor_bak { "true" } else { "false" })?;
+        put_key(
+            path,
+            "session",
+            "editor_bak",
+            if s.editor_bak { "true" } else { "false" },
+        )?;
         put_key(path, "session", "bbs_channel", &s.bbs_channel.to_string())?;
         put_key(path, "session", "list_channel", &s.list_channel.to_string())?;
         put_key(path, "session", "file_drawer", &toml_string(&s.file_drawer))?;
-        put_key(path, "buffers", "packet_payload", &self.buffers.packet_payload.to_string())?;
+        put_key(
+            path,
+            "buffers",
+            "packet_payload",
+            &self.buffers.packet_payload.to_string(),
+        )?;
         let c = &self.colors;
         for (key, value) in [
             ("input_background", c.input_background.as_str()),
@@ -736,9 +759,7 @@ pub fn normalize_mycall(raw: &str) -> Result<String, String> {
         return Err(format!("invalid call '{t}'"));
     }
     if let Some(s) = ssid {
-        let n: u8 = s
-            .parse()
-            .map_err(|_| format!("invalid SSID in '{t}'"))?;
+        let n: u8 = s.parse().map_err(|_| format!("invalid SSID in '{t}'"))?;
         if n > 15 {
             return Err(format!("SSID out of range in '{t}'"));
         }
@@ -1054,12 +1075,7 @@ pub struct TncConfig {
 impl Default for TncConfig {
     fn default() -> Self {
         Self {
-            init: vec![
-                "DateTime".into(),
-                "@V0".into(),
-                "K 2".into(),
-                "M %M".into(),
-            ],
+            init: vec!["DateTime".into(), "@V0".into(), "K 2".into(), "M %M".into()],
             deinit: vec!["MN".into(), "U1Away!".into(), "K2".into(), "JHOST0".into()],
             dos_shell: vec!["MN".into()],
             protocol: "wa8ded".into(),
@@ -1310,8 +1326,7 @@ fn parse_hex_or_dec(value: &str) -> Result<u32, String> {
         .or_else(|| v.strip_prefix("0x"))
         .or_else(|| v.strip_prefix("0X"))
     {
-        u32::from_str_radix(hex, 16)
-            .map_err(|e| format!("SERPORT: invalid hex `{v}` ({e})"))
+        u32::from_str_radix(hex, 16).map_err(|e| format!("SERPORT: invalid hex `{v}` ({e})"))
     } else {
         parse_u32(v, "SERPORT")
     }

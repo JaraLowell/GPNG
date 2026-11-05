@@ -47,7 +47,6 @@ impl StationKind {
             _ => None,
         }
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,11 +100,7 @@ impl NamesFile {
         } else {
             decode_cp437(&raw)
         };
-        let newline = if text.contains("\r\n") {
-            "\r\n"
-        } else {
-            "\n"
-        };
+        let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
         let lines = split_lines(&text);
         Self {
             path,
@@ -179,9 +174,9 @@ impl NamesFile {
     }
 
     fn line_for_call(&self, call: &str) -> Option<usize> {
-        self.lines.iter().position(|line| {
-            parse_station(line).is_some_and(|s| s.call.eq_ignore_ascii_case(call))
-        })
+        self.lines
+            .iter()
+            .position(|line| parse_station(line).is_some_and(|s| s.call.eq_ignore_ascii_case(call)))
     }
 
     fn active(&self, qrg: &str) -> Vec<Station> {
@@ -215,7 +210,10 @@ impl NamesFile {
     }
 
     fn ports(&self) -> Vec<Port> {
-        self.lines.iter().filter_map(|l| parse_port(l.trim())).collect()
+        self.lines
+            .iter()
+            .filter_map(|l| parse_port(l.trim()))
+            .collect()
     }
 
     fn find_query(&self, query: &str, qrg: &str) -> Option<Station> {
@@ -229,14 +227,17 @@ impl NamesFile {
                 return Some(st.clone());
             }
         }
-        if let Some(st) = stations
-            .iter()
-            .find(|s| s.ident.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(query)))
-        {
+        if let Some(st) = stations.iter().find(|s| {
+            s.ident
+                .as_deref()
+                .is_some_and(|id| id.eq_ignore_ascii_case(query))
+        }) {
             return Some(st.clone());
         }
         let want = clip_name(query);
-        stations.into_iter().find(|s| clip_name(&s.name).eq_ignore_ascii_case(&want) && !s.name.is_empty())
+        stations
+            .into_iter()
+            .find(|s| clip_name(&s.name).eq_ignore_ascii_case(&want) && !s.name.is_empty())
     }
 
     fn by_call<'a>(&self, stations: &'a [Station], call: &str) -> Option<&'a Station> {
@@ -500,7 +501,12 @@ fn clean_name(raw: &str) -> Result<String, String> {
 
 fn clip_name(raw: &str) -> String {
     let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    collapsed.chars().take(NAME_CHARS).collect::<String>().trim_end().to_string()
+    collapsed
+        .chars()
+        .take(NAME_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 fn splice_name(line: &str, name: &str) -> String {
@@ -597,9 +603,7 @@ mod tests {
 
     #[test]
     fn bang_path_uses_c_bang_after_the_first_link() {
-        let n = book(
-            "T>DF3VI Patrick; D>DB0FN-9 !>DB0II !>ON5PL !>ON5ZS F>LX0PAC D>DB0HOM\n",
-        );
+        let n = book("T>DF3VI Patrick; D>DB0FN-9 !>DB0II !>ON5PL !>ON5ZS F>LX0PAC D>DB0HOM\n");
         let route = n.route_for("DF3VI", "").unwrap().unwrap();
         assert_eq!(route.link_call, "DB0II");
         assert_eq!(route.link_digis, vec!["DB0FN-9"]);

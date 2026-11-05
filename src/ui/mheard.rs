@@ -142,8 +142,8 @@ impl MheardList {
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let raw = serde_json::to_string_pretty(&self.entries)
-            .map_err(|e| format!("mheard json: {e}"))?;
+        let raw =
+            serde_json::to_string_pretty(&self.entries).map_err(|e| format!("mheard json: {e}"))?;
         fs::write(&self.path, raw).map_err(|e| format!("mheard save: {e}"))?;
         self.dirty = false;
         Ok(())
@@ -177,10 +177,8 @@ mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "gpng-mheard-{tag}-{}.json",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("gpng-mheard-{tag}-{}.json", std::process::id()));
         let _ = fs::remove_file(&path);
         path
     }

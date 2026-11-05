@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use super::hostmode::{self, HostCode, sync_datetime, write_host_frame};
+use super::hostmode::{self, sync_datetime, write_host_frame, HostCode};
 use super::serial::SerialLink;
 use super::{TncError, TncEvent};
 
@@ -38,9 +38,8 @@ pub fn apply_section(
     monitor_mode: &str,
     events: Option<&mpsc::Sender<TncEvent>>,
 ) -> Result<Vec<(String, String)>, TncError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        TncError::Protocol(format!("wa8ded ini {}: {e}", path.display()))
-    })?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| TncError::Protocol(format!("wa8ded ini {}: {e}", path.display())))?;
     let lines = extract_section(&text, section).ok_or_else(|| {
         TncError::Protocol(format!(
             "wa8ded ini {}: section [{section}] not found",
@@ -96,10 +95,8 @@ pub fn apply_section(
             replies.push((cmd.to_string(), text));
         } else {
             let _ = events.and_then(|e| {
-                e.blocking_send(TncEvent::Status(
-                    "wa8ded RX ‹ (no reply)".into(),
-                ))
-                .ok()
+                e.blocking_send(TncEvent::Status("wa8ded RX ‹ (no reply)".into()))
+                    .ok()
             });
         }
         debug!(cmd, "wa8ded ini line done");
@@ -124,13 +121,11 @@ pub fn format_timing_banner(
     let from_open = |prefix: &str| {
         open_lines
             .iter()
-            .find(|l| l.to_ascii_uppercase().starts_with(&prefix.to_ascii_uppercase()))
-            .map(|l| {
-                l.split_whitespace()
-                    .nth(1)
-                    .unwrap_or("")
-                    .to_string()
+            .find(|l| {
+                l.to_ascii_uppercase()
+                    .starts_with(&prefix.to_ascii_uppercase())
             })
+            .map(|l| l.split_whitespace().nth(1).unwrap_or("").to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "?".into())
     };
@@ -267,10 +262,7 @@ pub fn section_lines(path: &Path, section: &str) -> Vec<String> {
 }
 
 #[allow(dead_code)]
-pub fn apply_command_list_fallback(
-    link: &mut SerialLink,
-    cmds: &[String],
-) -> Result<(), TncError> {
+pub fn apply_command_list_fallback(link: &mut SerialLink, cmds: &[String]) -> Result<(), TncError> {
     hostmode::apply_command_list(link, cmds)
 }
 
@@ -291,6 +283,9 @@ MN
 JHOST0
 ";
         assert_eq!(extract_section(text, "open").unwrap(), vec!["A", "B"]);
-        assert_eq!(extract_section(text, "close").unwrap(), vec!["MN", "JHOST0"]);
+        assert_eq!(
+            extract_section(text, "close").unwrap(),
+            vec!["MN", "JHOST0"]
+        );
     }
 }

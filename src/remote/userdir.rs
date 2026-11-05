@@ -93,10 +93,7 @@ pub fn write_file(dir: &Path, name: &str, text: &str) -> Result<(), String> {
 pub fn delete_file(dir: &Path, name: &str) -> Result<(), String> {
     refuse_mail_name(name)?;
     let path = existing_file(dir, name)?;
-    let name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(name);
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or(name);
     if is_protected(name) {
         return Err("README.txt stays".into());
     }

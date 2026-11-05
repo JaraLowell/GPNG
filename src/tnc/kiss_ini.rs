@@ -62,9 +62,8 @@ pub fn apply_section(
     monitor_mode: &str,
     events: Option<&mpsc::Sender<TncEvent>>,
 ) -> Result<(), TncError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        TncError::Protocol(format!("kiss ini {}: {e}", path.display()))
-    })?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| TncError::Protocol(format!("kiss ini {}: {e}", path.display())))?;
     let lines = extract_section(&text, section).ok_or_else(|| {
         TncError::Protocol(format!(
             "kiss ini {}: section [{section}] not found",
@@ -82,7 +81,8 @@ pub fn apply_section(
     for raw in &lines {
         let raw = expand_placeholders(raw, monitor_mode);
         let _ = events.and_then(|e| {
-            e.blocking_send(TncEvent::Status(format!("kiss TX › {raw}"))).ok()
+            e.blocking_send(TncEvent::Status(format!("kiss TX › {raw}")))
+                .ok()
         });
         let (actions, send_cr) = expand_line(&raw);
         for act in actions {

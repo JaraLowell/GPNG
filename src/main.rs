@@ -8,12 +8,12 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use tracing::{error, info};
 use graphic_packet::config::Config;
 use graphic_packet::shelllog;
 use graphic_packet::tnc::{spawn_tnc_task, TncCommand};
 use graphic_packet::ui;
 use graphic_packet::version::{self, APP_NAME};
+use tracing::{error, info};
 
 fn main() -> Result<()> {
     let tui = std::env::args().any(|a| a == "--tui");
@@ -71,9 +71,7 @@ fn main() -> Result<()> {
     let _ = rt.block_on(shutdown_tx.send(TncCommand::Shutdown));
     // KISS exit + DTR drop can take ~1s; allow headroom so the COM port is free.
     if rt
-        .block_on(async {
-            tokio::time::timeout(std::time::Duration::from_secs(8), tnc_join).await
-        })
+        .block_on(async { tokio::time::timeout(std::time::Duration::from_secs(8), tnc_join).await })
         .is_err()
     {
         error!("TNC driver did not stop within 8 s — COM may still be held");

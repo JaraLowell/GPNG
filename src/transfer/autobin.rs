@@ -51,11 +51,20 @@ pub enum BinControl {
 pub enum AutoBinState {
     Idle,
     /// We sent an offer; waiting for `#OK#` / `#NO#`.
-    WaitPeerAck { offer: BinOffer, sent: Vec<u8> },
+    WaitPeerAck {
+        offer: BinOffer,
+        sent: Vec<u8>,
+    },
     /// We are transmitting file bytes.
-    Sending { offer: BinOffer, offset: u64, data: Vec<u8> },
+    Sending {
+        offer: BinOffer,
+        offset: u64,
+        data: Vec<u8>,
+    },
     /// Peer offered; we may auto-ACK if `auto_accept`.
-    WaitLocalDecision { offer: BinOffer },
+    WaitLocalDecision {
+        offer: BinOffer,
+    },
     /// Receiving raw bytes into `sink`.
     Receiving {
         offer: BinOffer,
@@ -84,15 +93,9 @@ pub fn format_extended_offer(
     file_crc: u16,
     resumable: bool,
 ) -> String {
-    let name = filename
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(filename);
+    let name = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
     let q = if resumable { "?" } else { "" };
-    format!(
-        "#BIN#{length}#|{name}#${ftime_hex:08X}{q}#{}\r",
-        file_crc
-    )
+    format!("#BIN#{length}#|{name}#${ftime_hex:08X}{q}#{}\r", file_crc)
 }
 
 pub fn format_ok() -> String {
@@ -260,7 +263,11 @@ impl AutoBinState {
                 }
                 let data = std::mem::take(sent);
                 let offer = offer.clone();
-                *self = AutoBinState::Sending { offer, offset, data };
+                *self = AutoBinState::Sending {
+                    offer,
+                    offset,
+                    data,
+                };
                 Vec::new()
             }
             (AutoBinState::WaitPeerAck { .. }, BinControl::No(reason)) => {
@@ -319,13 +326,7 @@ impl AutoBinState {
             resumable,
             magic: BinMagic::Bin,
         };
-        let header = format_extended_offer(
-            offer.length,
-            filename,
-            0,
-            crc,
-            resumable,
-        );
+        let header = format_extended_offer(offer.length, filename, 0, crc, resumable);
         *self = AutoBinState::WaitPeerAck { offer, sent: data };
         header
     }

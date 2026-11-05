@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{Color32, FontId};
+
+/// Monitor and channel text. Column wrap uses this size.
+pub const PAD_FONT_SIZE: f32 = 16.0;
 use tracing::warn;
 
 const PAD_INCOMING: Color32 = Color32::from_rgb(85, 255, 85); // light green
@@ -25,6 +28,8 @@ const PAD_SYSTEM: Color32 = Color32::from_rgb(255, 168, 0); // orange
 const MONITOR_FM: Color32 = PAD_INCOMING;
 /// Monitor payload under that header. Same grey for sent and received frames.
 const MONITOR_PAYLOAD: Color32 = Color32::from_rgb(170, 170, 170);
+/// `<0x1c>` tokens. Darker than the payload so binary stands out of the text.
+const MONITOR_HEX: Color32 = Color32::from_rgb(112, 112, 120);
 
 /// Classic GP line roles — colour carries meaning (no `***` needed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +65,8 @@ pub struct PadLine {
     runs: Vec<PadRun>,
     /// Identity of this row, so a later packet can append to it.
     seq: u64,
+    /// Author's line breaks only. The monitor column wrap leaves this row alone.
+    nowrap: bool,
 }
 
 pub struct TextPad {
@@ -82,16 +89,37 @@ impl TextPad {
         self.push_seq(kind, line);
     }
 
+    /// A banner the monitor must not fold to the pane width.
+    /// A `\n` in the text is still a row break.
+    pub fn push_unwrapped(&mut self, kind: PadKind, line: impl Into<String>) {
+        self.push_line(kind, line.into(), true);
+    }
+
     /// Monitor row. `fm …` is green; the payload under it is light grey.
-    /// System stays orange and is not written to the log.
+    /// Non-printables are already `<0xNN>` or get rewritten to that here, in
+    /// a darker grey, so they cannot open a new line. System stays orange
+    /// and is not written to the log.
     pub fn push_monitor(&mut self, kind: PadKind, line: impl Into<String>) {
         let line = line.into();
         if kind == PadKind::System {
             self.push(kind, line);
             return;
         }
-        let color = monitor_color(&line);
-        self.push_styled(kind, line, color);
+        let line = crate::tnc::ax25::escape_monitor_text(&line);
+        let base = monitor_color(&line);
+        let runs = monitor_paint_runs(&line, base);
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.lines.push_back(PadLine {
+            kind,
+            text: line,
+            runs,
+            seq,
+            nowrap: false,
+        });
+        while self.lines.len() > self.max_lines {
+            self.lines.pop_front();
+        }
     }
 
     /// Drop every row. The caller rewrites the pad's log so a restart stays empty.
@@ -101,13 +129,18 @@ impl TextPad {
 
     /// Push a row and return its id.
     pub fn push_seq(&mut self, kind: PadKind, line: impl Into<String>) -> u64 {
+        self.push_line(kind, line.into(), false)
+    }
+
+    fn push_line(&mut self, kind: PadKind, text: String, nowrap: bool) -> u64 {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
         self.lines.push_back(PadLine {
             kind,
-            text: line.into(),
+            text,
             runs: Vec::new(),
             seq,
+            nowrap,
         });
         while self.lines.len() > self.max_lines {
             self.lines.pop_front();
@@ -166,6 +199,7 @@ impl TextPad {
             text,
             runs,
             seq,
+            nowrap: false,
         });
         while self.lines.len() > self.max_lines {
             self.lines.pop_front();
@@ -181,32 +215,47 @@ impl TextPad {
     }
 
     pub fn layout_job(&self) -> LayoutJob {
+        self.layout_job_wrapped(usize::MAX)
+    }
+
+    /// Same pad, broken so each visual row fits in `columns` monospace cells.
+    ///
+    /// Payload rows (anything that is not an `fm` header or a system line)
+    /// repeat the three-space indent on every continuation. A wrap prefers a
+    /// space. A `<0xNN>` / `<U+NNNN>` token moves as a whole.
+    pub fn layout_job_wrapped(&self, columns: usize) -> LayoutJob {
         let mut job = LayoutJob::default();
-        let font = FontId::monospace(16.0);
-        for (i, line) in self.lines.iter().enumerate() {
-            if i > 0 {
-                job.append(
-                    "\n",
-                    0.0,
-                    TextFormat {
-                        font_id: font.clone(),
-                        color: line.kind.color(),
-                        ..Default::default()
-                    },
-                );
-            }
-            if line.runs.is_empty() {
-                job.append(
-                    &line.text,
-                    0.0,
-                    TextFormat {
-                        font_id: font.clone(),
-                        color: line.kind.color(),
-                        ..Default::default()
-                    },
-                );
+        let font = FontId::monospace(PAD_FONT_SIZE);
+        let mut first = true;
+        for line in &self.lines {
+            let indent = monitor_wrap_indent(line);
+            let base = if line.runs.is_empty() {
+                line.kind.color()
             } else {
-                for run in &line.runs {
+                monitor_color(&line.text)
+            };
+            let rows = if line.nowrap {
+                fixed_rows(&line.text, base)
+            } else {
+                wrap_monitor_rows(&line.text, &line.runs, columns, indent, base)
+            };
+            for row in rows {
+                if !first {
+                    job.append(
+                        "\n",
+                        0.0,
+                        TextFormat {
+                            font_id: font.clone(),
+                            color: line.kind.color(),
+                            ..Default::default()
+                        },
+                    );
+                }
+                first = false;
+                if row.is_empty() {
+                    continue;
+                }
+                for run in row {
                     job.append(
                         &run.text,
                         0.0,
@@ -312,6 +361,274 @@ fn monitor_color(line: &str) -> Color32 {
     }
 }
 
+/// `<0x1c>` (two hex digits) or `<U+2028>` (four hex digits).
+fn hex_token_len(text: &str) -> Option<usize> {
+    let b = text.as_bytes();
+    if b.len() >= 6
+        && b[0] == b'<'
+        && (b[1] == b'0')
+        && (b[2] == b'x' || b[2] == b'X')
+        && b[5] == b'>'
+        && b[3].is_ascii_hexdigit()
+        && b[4].is_ascii_hexdigit()
+    {
+        return Some(6);
+    }
+    if b.len() >= 8
+        && b.starts_with(b"<U+")
+        && b[7] == b'>'
+        && b[3..7].iter().all(|c| c.is_ascii_hexdigit())
+    {
+        return Some(8);
+    }
+    None
+}
+
+fn monitor_paint_runs(text: &str, base: Color32) -> Vec<PadRun> {
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        if let Some(len) = hex_token_len(&text[i..]) {
+            push_run(&mut runs, text[i..i + len].to_string(), MONITOR_HEX);
+            i += len;
+            continue;
+        }
+        let start = i;
+        i += text[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+        while i < text.len() && hex_token_len(&text[i..]).is_none() {
+            let ch = text[i..].chars().next().unwrap();
+            i += ch.len_utf8();
+        }
+        push_run(&mut runs, text[start..i].to_string(), base);
+    }
+    runs
+}
+
+/// `fm` headers and system rows wrap at column 0. Payload keeps three spaces.
+fn monitor_wrap_indent(line: &PadLine) -> usize {
+    if line.kind == PadKind::System {
+        return 0;
+    }
+    if line.text.starts_with("fm ") || line.text.starts_with("FM ") {
+        0
+    } else {
+        3
+    }
+}
+
+struct Piece {
+    text: String,
+    color: Color32,
+    /// `<0xNN>` / `<U+NNNN>` — never split, and never left behind a space.
+    token: bool,
+}
+
+struct WrapRow {
+    runs: Vec<PadRun>,
+    used: usize,
+    /// Cells already taken by the continuation indent. Real text starts after this.
+    floor: usize,
+    /// Continuation indent is written on the first piece, not before we know one exists.
+    fresh: bool,
+}
+
+/// Keep `\n` as the only row break. Do not fold the text to `columns`.
+fn fixed_rows(text: &str, color: Color32) -> Vec<Vec<PadRun>> {
+    if text.is_empty() {
+        return vec![Vec::new()];
+    }
+    text.split('\n')
+        .map(|part| {
+            let part = part.trim_end_matches('\r');
+            if part.is_empty() {
+                Vec::new()
+            } else {
+                vec![PadRun {
+                    text: part.to_string(),
+                    color,
+                }]
+            }
+        })
+        .collect()
+}
+
+fn wrap_monitor_rows(
+    text: &str,
+    runs: &[PadRun],
+    columns: usize,
+    indent: usize,
+    indent_color: Color32,
+) -> Vec<Vec<PadRun>> {
+    let columns = columns.max(indent.saturating_add(1));
+    if text.is_empty() {
+        return vec![Vec::new()];
+    }
+    let pieces = pieces_of(text, runs, indent_color);
+    let mut rows: Vec<Vec<PadRun>> = Vec::new();
+    let mut row = WrapRow {
+        runs: Vec::new(),
+        used: 0,
+        floor: 0,
+        fresh: false,
+    };
+    let mut i = 0;
+    while i < pieces.len() {
+        row.ensure_indent(indent, indent_color);
+        let piece = &pieces[i];
+        let width = piece.text.chars().count();
+        if piece.text == " " {
+            let next = pieces
+                .get(i + 1)
+                .map(|p| p.text.chars().count())
+                .unwrap_or(0);
+            if row.used > row.floor && row.used + 1 + next > columns {
+                rows.push(std::mem::take(&mut row.runs));
+                row = WrapRow::continuation();
+                i += 1;
+                continue;
+            }
+        }
+        if row.used + width <= columns {
+            row.push(&piece.text, piece.color);
+            i += 1;
+            continue;
+        }
+        if row.used > row.floor {
+            rows.push(std::mem::take(&mut row.runs));
+            row = WrapRow::continuation();
+            continue;
+        }
+        if piece.token {
+            row.push(&piece.text, piece.color);
+            i += 1;
+            continue;
+        }
+        for ch in piece.text.chars() {
+            row.ensure_indent(indent, indent_color);
+            if row.used + 1 > columns && row.used > row.floor {
+                rows.push(std::mem::take(&mut row.runs));
+                row = WrapRow::continuation();
+                row.ensure_indent(indent, indent_color);
+            }
+            row.push(&ch.to_string(), piece.color);
+        }
+        i += 1;
+    }
+    if !row.runs.is_empty() || rows.is_empty() {
+        rows.push(row.runs);
+    }
+    rows
+}
+
+impl WrapRow {
+    fn continuation() -> Self {
+        Self {
+            runs: Vec::new(),
+            used: 0,
+            floor: 0,
+            fresh: true,
+        }
+    }
+
+    fn ensure_indent(&mut self, indent: usize, color: Color32) {
+        if !self.fresh {
+            return;
+        }
+        self.fresh = false;
+        self.floor = indent;
+        if indent > 0 {
+            self.push(&" ".repeat(indent), color);
+        }
+    }
+
+    fn push(&mut self, text: &str, color: Color32) {
+        if text.is_empty() {
+            return;
+        }
+        self.used += text.chars().count();
+        if let Some(last) = self.runs.last_mut() {
+            if last.color == color {
+                last.text.push_str(text);
+                return;
+            }
+        }
+        self.runs.push(PadRun {
+            text: text.to_string(),
+            color,
+        });
+    }
+}
+
+fn pieces_of(text: &str, runs: &[PadRun], fallback: Color32) -> Vec<Piece> {
+    let owned;
+    let runs = if runs.is_empty() {
+        owned = vec![PadRun {
+            text: text.to_string(),
+            color: fallback,
+        }];
+        owned.as_slice()
+    } else {
+        runs
+    };
+    let mut out = Vec::new();
+    for run in runs {
+        push_pieces(&mut out, &run.text, run.color);
+    }
+    out
+}
+
+fn push_pieces(out: &mut Vec<Piece>, text: &str, color: Color32) {
+    let mut i = 0;
+    while i < text.len() {
+        if let Some(len) = hex_token_len(&text[i..]) {
+            out.push(Piece {
+                text: text[i..i + len].to_string(),
+                color,
+                token: true,
+            });
+            i += len;
+            continue;
+        }
+        let ch = text[i..].chars().next().unwrap();
+        if ch == ' ' {
+            out.push(Piece {
+                text: " ".to_string(),
+                color,
+                token: false,
+            });
+            i += ch.len_utf8();
+            continue;
+        }
+        let start = i;
+        i += ch.len_utf8();
+        while i < text.len() && hex_token_len(&text[i..]).is_none() {
+            let next = text[i..].chars().next().unwrap();
+            if next == ' ' {
+                break;
+            }
+            i += next.len_utf8();
+        }
+        out.push(Piece {
+            text: text[start..i].to_string(),
+            color,
+            token: false,
+        });
+    }
+}
+
+fn push_run(runs: &mut Vec<PadRun>, text: String, color: Color32) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(last) = runs.last_mut() {
+        if last.color == color {
+            last.text.push_str(&text);
+            return;
+        }
+    }
+    runs.push(PadRun { text, color });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +644,80 @@ mod tests {
         assert_eq!(lines[1].runs[0].color, MONITOR_PAYLOAD);
         assert!(lines[2].runs.is_empty());
         assert_eq!(lines[2].kind, PadKind::System);
+    }
+
+    #[test]
+    fn nonprintable_is_a_darker_hex_token_on_the_same_row() {
+        let mut pad = TextPad::new(4);
+        pad.push_monitor(PadKind::Incoming, "   ab\u{1c}cd\nb");
+        assert_eq!(pad.lines.len(), 1);
+        assert_eq!(pad.lines[0].text, "   ab<0x1c>cd<0x0a>b");
+        let runs = &pad.lines[0].runs;
+        assert_eq!(runs[0].text, "   ab");
+        assert_eq!(runs[0].color, MONITOR_PAYLOAD);
+        assert_eq!(runs[1].text, "<0x1c>");
+        assert_eq!(runs[1].color, MONITOR_HEX);
+        assert_eq!(runs[2].text, "cd");
+        assert_eq!(runs[3].text, "<0x0a>");
+        assert_eq!(runs[3].color, MONITOR_HEX);
+        assert_eq!(runs[4].text, "b");
+    }
+
+    fn shown(rows: &[Vec<PadRun>]) -> Vec<String> {
+        rows.iter()
+            .map(|row| row.iter().map(|run| run.text.as_str()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn payload_wraps_at_a_space_and_keeps_the_indent() {
+        let text = "   one two three";
+        let runs = monitor_paint_runs(text, MONITOR_PAYLOAD);
+        let rows = wrap_monitor_rows(text, &runs, 10, 3, MONITOR_PAYLOAD);
+        assert_eq!(
+            shown(&rows),
+            vec!["   one two".to_string(), "   three".to_string()]
+        );
+        assert!(rows.iter().all(|row| {
+            row.iter()
+                .map(|run| run.text.chars().count())
+                .sum::<usize>()
+                <= 10
+        }));
+    }
+
+    #[test]
+    fn hex_token_moves_whole_onto_the_next_indented_line() {
+        let text = "   abcdef<0x0a>Z";
+        let runs = monitor_paint_runs(text, MONITOR_PAYLOAD);
+        let rows = wrap_monitor_rows(text, &runs, 12, 3, MONITOR_PAYLOAD);
+        assert_eq!(
+            shown(&rows),
+            vec!["   abcdef".to_string(), "   <0x0a>Z".to_string()]
+        );
+        assert_eq!(rows[1][1].text, "<0x0a>");
+        assert_eq!(rows[1][1].color, MONITOR_HEX);
+    }
+
+    #[test]
+    fn header_wraps_without_the_payload_indent() {
+        let text = "fm ABCDEFGHIJKLMNO";
+        let runs = monitor_paint_runs(text, MONITOR_FM);
+        let rows = wrap_monitor_rows(text, &runs, 10, 0, MONITOR_FM);
+        let shown = shown(&rows);
+        assert_eq!(shown[0], "fm");
+        assert_eq!(shown[1], "ABCDEFGHIJ");
+        assert_eq!(shown[2], "KLMNO");
+        assert!(shown.iter().all(|row| row.chars().count() <= 10));
+        assert!(shown.iter().all(|row| !row.starts_with("   ")));
+    }
+
+    #[test]
+    fn startup_credits_keep_their_own_line_break() {
+        let text = "Graphic Packet NG v2.01 by MichTronics (PD4MV) and Jara Lowel, based on 1994 Graphic Packet (GP),\n the classic MS-Dos AX.25 terminal by Ulf Saran (DH1DAE)";
+        let mut pad = TextPad::new(4);
+        pad.push_unwrapped(PadKind::System, text);
+        let job = pad.layout_job_wrapped(40);
+        assert_eq!(job.text, text);
     }
 }

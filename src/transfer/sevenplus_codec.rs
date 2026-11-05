@@ -177,7 +177,15 @@ pub fn encode_parts(
         };
         out.push(EncodedPart {
             name,
-            body: render_part(part, parts, &header_name, size, this_block, blocklines, &lines),
+            body: render_part(
+                part,
+                parts,
+                &header_name,
+                size,
+                this_block,
+                blocklines,
+                &lines,
+            ),
         });
     }
     Ok(out)
@@ -195,7 +203,10 @@ pub fn decode_parts(files: &[Vec<u8>]) -> Result<DecodedFile, String> {
     let name = parsed[0].name.clone();
     let size = parsed[0].size;
     let parts = parsed[0].parts;
-    if parsed.iter().any(|p| p.name != name || p.size != size || p.parts != parts) {
+    if parsed
+        .iter()
+        .any(|p| p.name != name || p.size != size || p.parts != parts)
+    {
         return Err("7plus: parts are not one file".into());
     }
     let mut have = vec![false; parts];
@@ -593,7 +604,10 @@ mod tests {
         assert_eq!(t.code.iter().filter(|b| **b != 0).count(), 216);
         assert_eq!(t.code[0], 0x21);
         assert!(t.decode[b'*' as usize] == 255);
-        assert_eq!(t.decode[0xb0], t.code.iter().position(|c| *c == 0xb0).unwrap() as u8);
+        assert_eq!(
+            t.decode[0xb0],
+            t.code.iter().position(|c| *c == 0xb0).unwrap() as u8
+        );
     }
 
     #[test]

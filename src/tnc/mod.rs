@@ -159,10 +159,7 @@ pub enum TncCommand {
     /// writes it, and treats it as the acknowledgement, only after the
     /// I-frame has had time to leave the radio. The TNC does not loop our
     /// own frames back, but it still has to transmit them.
-    LocalAck {
-        port: u8,
-        frame: Vec<u8>,
-    },
+    LocalAck { port: u8, frame: Vec<u8> },
     /// Issue a terminal-mode ASCII line (CR-terminated), e.g. before JHOST1.
     TerminalLine(String),
     /// Re-run the configured `TNCINI` sequence.
@@ -222,12 +219,8 @@ pub fn spawn_tnc_task(
     let join = tokio::task::spawn_blocking(move || {
         info!(?kind, "loading modem driver");
         let result = match kind {
-            HostProtocol::Wa8ded => {
-                drivers::wa8ded::run(serial, tnc_cfg, event_tx.clone(), cmd_rx)
-            }
-            HostProtocol::Tfpcx => {
-                drivers::tfpcx::run(serial, tnc_cfg, event_tx.clone(), cmd_rx)
-            }
+            HostProtocol::Wa8ded => drivers::wa8ded::run(serial, tnc_cfg, event_tx.clone(), cmd_rx),
+            HostProtocol::Tfpcx => drivers::tfpcx::run(serial, tnc_cfg, event_tx.clone(), cmd_rx),
             HostProtocol::Kiss => drivers::kiss::run(serial, tnc_cfg, event_tx.clone(), cmd_rx),
         };
         if let Err(err) = result {

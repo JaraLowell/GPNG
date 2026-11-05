@@ -40,7 +40,9 @@ struct Inflight {
 pub enum Tick {
     Resend(Outgoing),
     /// N2 exhausted. Later I-frames for this link were dropped with it.
-    GaveUp { port: u8 },
+    GaveUp {
+        port: u8,
+    },
 }
 
 /// RR the UI invented for a self-connect. Not applied until
@@ -121,9 +123,10 @@ impl KissDelivery {
     /// Decide what to put on the wire for this AX.25 frame.
     pub fn push(&mut self, port: u8, frame: Vec<u8>, now: Instant) -> Option<Outgoing> {
         let parsed = ax25::parse_frame(&frame);
-        if parsed.as_ref().is_some_and(|f| {
-            matches!(f.kind, Ax25FrameType::Sabm | Ax25FrameType::Disc)
-        }) {
+        if parsed
+            .as_ref()
+            .is_some_and(|f| matches!(f.kind, Ax25FrameType::Sabm | Ax25FrameType::Disc))
+        {
             self.queued.clear();
             self.inflight = None;
             self.held_acks.clear();
@@ -233,7 +236,9 @@ impl KissDelivery {
 
     fn send_next(&mut self, now: Instant) -> Option<Outgoing> {
         let next = self.queued.pop_front()?;
-        let ns = ax25::parse_frame(&next.frame).map(|f| f.ns & 7).unwrap_or(0);
+        let ns = ax25::parse_frame(&next.frame)
+            .map(|f| f.ns & 7)
+            .unwrap_or(0);
         self.inflight = Some(Inflight {
             port: next.port,
             frame: next.frame.clone(),
@@ -246,9 +251,7 @@ impl KissDelivery {
 }
 
 fn peer_of(frame: &[u8]) -> String {
-    ax25::parse_frame(frame)
-        .map(|f| f.dest)
-        .unwrap_or_default()
+    ax25::parse_frame(frame).map(|f| f.dest).unwrap_or_default()
 }
 
 fn packet_len(frame: &[u8]) -> u32 {
@@ -293,12 +296,8 @@ mod tests {
     fn ui_is_not_held() {
         let mut q = KissDelivery::new();
         let t = now();
-        assert!(q
-            .push(0, build_ui("CQ", "ME", &[], b"beacon"), t)
-            .is_some());
-        assert!(q
-            .push(0, build_ui("CQ", "ME", &[], b"again"), t)
-            .is_some());
+        assert!(q.push(0, build_ui("CQ", "ME", &[], b"beacon"), t).is_some());
+        assert!(q.push(0, build_ui("CQ", "ME", &[], b"again"), t).is_some());
         assert!(q.tx_snapshots().is_empty());
     }
 
@@ -319,9 +318,7 @@ mod tests {
             .is_none());
         let released = q.poll_local_ack(t + wait, 1200).unwrap();
         assert_eq!(
-            ax25::parse_frame(&released.next.unwrap().frame)
-                .unwrap()
-                .ns,
+            ax25::parse_frame(&released.next.unwrap().frame).unwrap().ns,
             1
         );
         // The next invented RR stays queued until this new frame's air time.

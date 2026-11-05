@@ -122,7 +122,11 @@ mod tests {
         );
         assert_eq!(
             pack_text_payloads(text, 6),
-            vec!["hello\n".to_string(), "world\n".to_string(), "!".to_string()]
+            vec![
+                "hello\n".to_string(),
+                "world\n".to_string(),
+                "!".to_string()
+            ]
         );
     }
 

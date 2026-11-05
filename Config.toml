@@ -48,7 +48,7 @@ remote_language = "EN"
 input_columns = 81
 editor_wrap = 255
 editor_bak = false
-bbs_channel = 1
+bbs_channel = 2
 list_channel = 1
 file_drawer = ""
 # Legacy LOG. When true, a disconnect appends one line to data/log/<base call>.GPL.
@@ -74,7 +74,7 @@ allow_color_ansi = true
 [session.chrome]
 qrg_mhz = 144.800
 ctext = "data/GTEXT.GPI"
-extended_ascii = true
+extended_ascii = false
 smooth_scroll = true
 echo = true
 bell = true

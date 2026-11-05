@@ -165,9 +165,7 @@ impl SessionChrome {
 
     pub fn set_qrg_from_edit(&mut self) -> Result<(), String> {
         let t = self.qrg_edit.trim().replace(',', ".");
-        let v: f64 = t
-            .parse()
-            .map_err(|_| format!("invalid QRG '{t}'"))?;
+        let v: f64 = t.parse().map_err(|_| format!("invalid QRG '{t}'"))?;
         if !(0.0..=1000.0).contains(&v) {
             return Err("QRG out of range".into());
         }
@@ -253,10 +251,7 @@ fn asset_wav(name: &str) -> PathBuf {
             .join("assets")
             .join(name),
     ];
-    legacy
-        .into_iter()
-        .find(|p| p.is_file())
-        .unwrap_or(in_data)
+    legacy.into_iter().find(|p| p.is_file()).unwrap_or(in_data)
 }
 
 /// Best-effort WAV play on a background thread.
@@ -293,7 +288,9 @@ pub fn decode_rx_text(raw: &[u8], extended: bool) -> String {
             .collect();
     }
     // DOS CP437-ish: keep high bytes as Latin-1 so äöü/box-draw show up.
-    raw.iter().map(|&b| char::from_u32(b as u32).unwrap_or('?')).collect()
+    raw.iter()
+        .map(|&b| char::from_u32(b as u32).unwrap_or('?'))
+        .collect()
 }
 
 /// Compact hex for debug RX lines (max `max` bytes).

@@ -133,8 +133,14 @@ pub enum View {
         draft: [String; 3],
         saved: [String; 3],
     },
-    Beacon { cursor: usize },
-    Edit { kind: EditKind, text: String, parent_beacon: bool },
+    Beacon {
+        cursor: usize,
+    },
+    Edit {
+        kind: EditKind,
+        text: String,
+        parent_beacon: bool,
+    },
 }
 
 pub fn next_name(names: &[&str], current: &str, step: i32) -> String {

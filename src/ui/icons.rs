@@ -99,10 +99,7 @@ impl IconLibrary {
             let off = DATA_BASE + i * ICON_RECORD;
             icons.push(decode_record(&raw[off..off + ICON_RECORD])?);
         }
-        Ok(Self {
-            fingerprint,
-            icons,
-        })
+        Ok(Self { fingerprint, icons })
     }
 }
 
@@ -227,6 +224,10 @@ mod tests {
         let uniq: std::collections::HashSet<_> = lib.icons[0].pixels.iter().copied().collect();
         assert!(uniq.len() > 1);
         // MSB-first planes: paper is LightGray (7), not Yellow (14).
-        assert_eq!(lib.icons[6].pixels[0] & 15, 7, "MONITOR chrome should be LightGray");
+        assert_eq!(
+            lib.icons[6].pixels[0] & 15,
+            7,
+            "MONITOR chrome should be LightGray"
+        );
     }
 }

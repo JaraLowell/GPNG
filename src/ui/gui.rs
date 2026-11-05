@@ -28,11 +28,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{Local, Timelike};
+use eframe::egui::text::LayoutJob;
 use eframe::egui::{
     self, Color32, ColorImage, Context, FontData, FontDefinitions, FontFamily, FontId, Frame, Pos2,
     Rect, RichText, Sense, Stroke, TextWrapMode, TextureHandle, TextureOptions, Ui, Vec2,
 };
-use eframe::egui::text::LayoutJob;
 use tokio::sync::mpsc;
 
 use crate::bbs::{self, Entry as MailEntry};
@@ -62,11 +62,11 @@ use super::icons::{
 use super::layout::ActivePane;
 use super::mheard::MheardList;
 use super::padlog::{self, PadKind, TextPad};
-use super::setup::{self, ColorSlot, EditKind, RowId, RowKind, View as SetupView};
 use super::session::{
     decode_rx_text, default_bell_wav, default_connect_wav, default_disconnect_wav,
     format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav, Ax25UiFrame, SessionChrome,
 };
+use super::setup::{self, ColorSlot, EditKind, RowId, RowKind, View as SetupView};
 use super::theme::vga;
 
 const TYPED_HISTORY: usize = 10;
@@ -138,7 +138,6 @@ fn egui_color(name: &str) -> Color32 {
     }
 }
 
-
 /// Text captured by `//Write` until `//END` or Ctrl-Z.
 #[derive(Clone)]
 struct UserWrite {
@@ -172,6 +171,12 @@ pub struct GpGuiApp {
     input: String,
     /// Last typed lines (pre-write history), newest at the end.
     typed_history: VecDeque<String>,
+    /// Which history row Up/Down last loaded. `None` is a fresh compose line.
+    hist_cursor: Option<usize>,
+    /// Compose text saved when Up first leaves the fresh line. Down restores it.
+    hist_stash: String,
+    /// Next compose paint puts the caret at the end (after a history recall).
+    compose_caret_end: bool,
     pads: Vec<TextPad>,
     /// Spy windows `1..=10` (index 0 = spy 1).
     spy_pads: Vec<TextPad>,
@@ -243,6 +248,8 @@ pub struct GpGuiApp {
     /// Focus the connect dialog call field once when opened.
     connect_dialog_focus: bool,
     icon_tex: Vec<TextureHandle>,
+    /// `assets/start.png` on top of the window. The first click drops it.
+    start_screen: Option<TextureHandle>,
     /// WA8DED monitor flags, e.g. `IUSC` (from TNC / local set).
     monitor_mode: String,
     /// Free modem RAM, from the driver (`@B`, or 600 minus bytes still queued).
@@ -339,12 +346,7 @@ impl GpGuiApp {
     ) -> Self {
         let channels = cfg.session.channels.clamp(1, 10) as u8;
         let mon_max = cfg.buffers.text_buffer.first().copied().unwrap_or(600) as usize;
-        let ch_max = cfg
-            .buffers
-            .text_buffer
-            .get(1)
-            .copied()
-            .unwrap_or(300) as usize;
+        let ch_max = cfg.buffers.text_buffer.get(1).copied().unwrap_or(300) as usize;
         let spy_max = cfg.buffers.spy_buffer.max(1) as usize;
         let bbs_max = cfg.buffers.check_buffer.max(1) as usize;
         let box_max = cfg.buffers.list_buffer.max(1) as usize;
@@ -394,7 +396,7 @@ impl GpGuiApp {
             channel_down_wait.push(None);
         }
         // Session banner (orange) — not persisted.
-        pads[0].push(PadKind::System, version::startup_credits());
+        pads[0].push_unwrapped(PadKind::System, version::startup_credits());
         pads[0].push(
             PadKind::System,
             version::startup_local_call(cfg.primary_mycall()),
@@ -416,6 +418,7 @@ impl GpGuiApp {
         let slots = channels as usize + 1;
         install_console_font(&cc.egui_ctx);
         let icon_tex = load_icon_textures(&cc.egui_ctx);
+        let start_screen = load_start_screen(&cc.egui_ctx);
         let status = if icon_tex.is_empty() {
             "data/ICONS.GP not found".into()
         } else {
@@ -472,6 +475,9 @@ impl GpGuiApp {
             line_clip: String::new(),
             input: String::new(),
             typed_history: VecDeque::new(),
+            hist_cursor: None,
+            hist_stash: String::new(),
+            compose_caret_end: false,
             pads,
             spy_pads,
             bbs_pad,
@@ -516,6 +522,7 @@ impl GpGuiApp {
             name_dialog_focus: false,
             connect_dialog_focus: false,
             icon_tex,
+            start_screen,
             monitor_mode,
             tnc_free: TNC_RAM,
             mon_not_disp: 0,
@@ -592,11 +599,7 @@ impl GpGuiApp {
                 self.status = format!("saved {}", self.editor.display_name());
                 self.log_event(format!("editor saved {}", self.editor.display_name()));
                 // Keep session CT in sync when editing GTEXT.
-                if self
-                    .editor
-                    .display_name()
-                    .eq_ignore_ascii_case("GTEXT.GPI")
-                {
+                if self.editor.display_name().eq_ignore_ascii_case("GTEXT.GPI") {
                     self.session.set_ctext_path(self.editor.path.clone());
                 }
             }
@@ -750,10 +753,14 @@ impl GpGuiApp {
                         }
                     }
                     let mut spy_src: Option<String> = None;
+                    // TNC monitor text (and ch0 text that is not an AX.25 summary).
+                    // Those bytes are shown with `<0xNN>` for non-printables.
+                    let mut monitor_bytes = false;
                     let (kind, line) = match code {
                         HostCode::Ok => continue,
                         HostCode::Monitor => {
                             spy_src = extract_heard_call(&text);
+                            monitor_bytes = true;
                             (PadKind::Incoming, text)
                         }
                         HostCode::LinkStatus => (PadKind::System, text),
@@ -771,6 +778,7 @@ impl GpGuiApp {
                                 (PadKind::Incoming, frame.display_line())
                             } else if text.chars().any(|c| c.is_ascii_graphic()) {
                                 spy_src = extract_heard_call(&text);
+                                monitor_bytes = true;
                                 (PadKind::Incoming, text)
                             } else {
                                 (
@@ -783,13 +791,8 @@ impl GpGuiApp {
                                 )
                             }
                         }
-                        HostCode::Other(c) => {
-                            (PadKind::System, format!("{c:#04x}  {text}"))
-                        }
+                        HostCode::Other(c) => (PadKind::System, format!("{c:#04x}  {text}")),
                     };
-                    if let Some(src) = spy_src.as_deref() {
-                        self.feed_spy_pads(src, kind, &line);
-                    }
                     // KISS port 0 and hostmode ch0 → Monitor; else channel pad.
                     let idx = if channel == 0 {
                         0
@@ -798,6 +801,25 @@ impl GpGuiApp {
                     } else {
                         0
                     };
+                    // Monitor shows the payload bytes. CR/LF after an `fm` header
+                    // stay a row break; every other non-printable is `<0xNN>`.
+                    let monitor_rows = if idx == 0 && monitor_bytes {
+                        ax25::monitor_display_lines_from_bytes(
+                            &payload,
+                            self.session.extended_ascii,
+                        )
+                    } else {
+                        Vec::new()
+                    };
+                    if let Some(src) = spy_src.as_deref() {
+                        if monitor_rows.is_empty() {
+                            self.feed_spy_pads(src, kind, &line);
+                        } else {
+                            for part in &monitor_rows {
+                                self.feed_spy_pads(src, kind, part);
+                            }
+                        }
+                    }
                     // First I-frame / data while still "connecting" → treat as linked
                     // (some firmwares are light on LinkStatus text).
                     if channel >= 1 && matches!(code, HostCode::Data) {
@@ -813,17 +835,18 @@ impl GpGuiApp {
                         }
                         self.accept_rx_text(channel, &line, kind);
                     } else if !(skip_monitor_dup && idx == 0) {
-                        if let Some(pad) = self.pads.get_mut(idx) {
+                        if idx == 0 && monitor_bytes {
+                            if let Some(pad) = self.pads.get_mut(0) {
+                                for part in &monitor_rows {
+                                    pad.push_monitor(kind, stamp_monitor_fm(part));
+                                }
+                            }
+                        } else if let Some(pad) = self.pads.get_mut(idx) {
                             for part in payload_lines(&line) {
-                                let shown = if idx == 0 {
-                                    stamp_monitor_fm(&strip_ansi(&part))
-                                } else {
-                                    part
-                                };
                                 if idx == 0 {
-                                    pad.push_monitor(kind, shown);
+                                    pad.push_monitor(kind, stamp_monitor_fm(&part));
                                 } else {
-                                    pad.push(kind, shown);
+                                    pad.push(kind, part);
                                 }
                             }
                         }
@@ -855,7 +878,11 @@ impl GpGuiApp {
         let idx = channel as usize;
         self.last_link_status = text.to_string();
         let upper = text.to_ascii_uppercase();
-        let was_linked = self.channel_peer.get(idx).and_then(|p| p.as_ref()).is_some();
+        let was_linked = self
+            .channel_peer
+            .get(idx)
+            .and_then(|p| p.as_ref())
+            .is_some();
         // Set while this channel is the one that placed the call (`C CALL`).
         let was_outgoing = self
             .channel_connecting
@@ -889,7 +916,12 @@ impl GpGuiApp {
                     let other = if channel == c { a } else { c };
                     self.clear_temp_identity(a);
                     // Drop the other end of a self-connect too.
-                    if self.channel_peer.get(other as usize).and_then(|p| p.as_ref()).is_some() {
+                    if self
+                        .channel_peer
+                        .get(other as usize)
+                        .and_then(|p| p.as_ref())
+                        .is_some()
+                    {
                         self.tx_modem_line(other, "D");
                         self.close_journal(other);
                         if let Some(p) = self.channel_peer.get_mut(other as usize) {
@@ -1081,7 +1113,8 @@ impl GpGuiApp {
 
     /// Dedicated name in use → park redirect on a free channel with a temp SSID.
     fn redirect_busy_dedicated(&mut self, from_channel: u8) -> Option<(u8, String)> {
-        let free = (1..=self.channels).find(|&n| n != from_channel && !self.channel_connected(n))?;
+        let free =
+            (1..=self.channels).find(|&n| n != from_channel && !self.channel_connected(n))?;
         let call = self.assign_channel_ssid(free).ok()?;
         Some((free, call))
     }
@@ -1161,16 +1194,10 @@ impl GpGuiApp {
             None,
         );
         if let Some(pad) = self.pads.get_mut(answer as usize) {
-            pad.push(
-                PadKind::System,
-                format!("*** CONNECTED to {caller_call}"),
-            );
+            pad.push(PadKind::System, format!("*** CONNECTED to {caller_call}"));
         }
         if let Some(pad) = self.pads.get_mut(caller as usize) {
-            pad.push(
-                PadKind::System,
-                format!("*** CONNECTED to {answer_call}"),
-            );
+            pad.push(PadKind::System, format!("*** CONNECTED to {answer_call}"));
         }
         for ch in [caller, answer] {
             if let Some(vs) = self.ax25_vs.get_mut(ch as usize) {
@@ -1422,7 +1449,12 @@ impl GpGuiApp {
     /// Connecting → linked once we see traffic (or explicit CONNECTED elsewhere).
     fn promote_connecting_on_data(&mut self, channel: u8) {
         let idx = channel as usize;
-        if self.channel_peer.get(idx).and_then(|p| p.as_ref()).is_some() {
+        if self
+            .channel_peer
+            .get(idx)
+            .and_then(|p| p.as_ref())
+            .is_some()
+        {
             return;
         }
         // Pending self-connect: either side's first data finishes the pair.
@@ -1619,7 +1651,10 @@ impl GpGuiApp {
         let Some(wait) = wait.filter(|w| !w.is_empty()) else {
             return;
         };
-        if !text.to_ascii_uppercase().contains(&wait.to_ascii_uppercase()) {
+        if !text
+            .to_ascii_uppercase()
+            .contains(&wait.to_ascii_uppercase())
+        {
             return;
         }
         if let Some(slot) = self.channel_down_wait.get_mut(channel as usize) {
@@ -1767,8 +1802,8 @@ impl GpGuiApp {
         ));
         self.pads[0].push_monitor(kind, hdr);
         if let Some(text) = info_text {
-            for line in ax25::monitor_payload_lines(text) {
-                self.pads[0].push_monitor(kind, strip_ansi(&line));
+            if let Some(line) = ax25::monitor_info_line(text) {
+                self.pads[0].push_monitor(kind, line);
             }
         }
     }
@@ -1809,7 +1844,9 @@ impl GpGuiApp {
             self.kiss_link_activity(ch, true);
         }
         let frame = ax25::build_rr(i_src, i_dest, nr, false, false);
-        let _ = self.cmd_tx.try_send(TncCommand::LocalAck { port: 0, frame });
+        let _ = self
+            .cmd_tx
+            .try_send(TncCommand::LocalAck { port: 0, frame });
         self.push_kiss_mon(
             PadKind::Incoming,
             i_dest,
@@ -1984,7 +2021,12 @@ impl GpGuiApp {
     }
 
     fn maybe_remote_line(&mut self, channel: u8, line: &str, incoming: bool) {
-        if channel >= 1 && self.user_write.get(channel as usize).and_then(|w| w.as_ref()).is_some()
+        if channel >= 1
+            && self
+                .user_write
+                .get(channel as usize)
+                .and_then(|w| w.as_ref())
+                .is_some()
         {
             self.capture_write_line(channel, line);
             return;
@@ -2105,10 +2147,7 @@ impl GpGuiApp {
         let fallback = format!("ch{channel}");
         match SevenPlusAutosave::write_part(&dir, &part, &fallback) {
             Ok(path) => {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("part");
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("part");
                 self.status = format!("7+ saved {name}");
                 self.log_event(format!("7+ saved {}", path.display()));
             }
@@ -2148,7 +2187,10 @@ impl GpGuiApp {
             Some(shown),
         );
         self.deliver_self_connect_rx(n, shown, info);
-        if self.self_connect_live.is_some_and(|(c, a)| n == c || n == a) {
+        if self
+            .self_connect_live
+            .is_some_and(|(c, a)| n == c || n == a)
+        {
             self.tx_local_rr(my, &peer, ns);
         }
         true
@@ -2204,6 +2246,12 @@ impl GpGuiApp {
     /// KISS RX: UI → Monitor; SABM/UA/I/DISC → channel link state.
     fn handle_kiss_ax25(&mut self, frame: Ax25Frame) {
         let info_text = decode_rx_text(&frame.info, self.session.extended_ascii);
+        let info_mon = ax25::bytes_to_monitor_body(&frame.info, self.session.extended_ascii);
+        let info_for_mon = if info_mon.is_empty() {
+            None
+        } else {
+            Some(info_mon.as_str())
+        };
         match frame.kind {
             Ax25FrameType::Ui => {
                 let ui = Ax25UiFrame {
@@ -2213,10 +2261,10 @@ impl GpGuiApp {
                     info: info_text.clone(),
                 };
                 self.mheard.hear(&ui);
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, Some(&info_text));
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon);
                 let mon = frame.monitor_line();
                 self.feed_spy_pads(&frame.src, PadKind::Incoming, &mon);
-                for line in ax25::monitor_payload_lines(&info_text) {
+                if let Some(line) = ax25::monitor_info_line(&info_mon) {
                     self.feed_spy_pads(&frame.src, PadKind::Incoming, &line);
                 }
             }
@@ -2298,10 +2346,7 @@ impl GpGuiApp {
                 self.kiss_link_activity(ch, true);
                 play_wav(&self.connect_wav);
                 if let Some(pad) = self.pads.get_mut(ch as usize) {
-                    pad.push(
-                        PadKind::System,
-                        format!("*** CONNECTED to {}", frame.src),
-                    );
+                    pad.push(PadKind::System, format!("*** CONNECTED to {}", frame.src));
                 }
                 self.push_kiss_mon(
                     PadKind::Own,
@@ -2349,10 +2394,7 @@ impl GpGuiApp {
                 self.kiss_link_activity(ch, true);
                 play_wav(&self.connect_wav);
                 if let Some(pad) = self.pads.get_mut(ch as usize) {
-                    pad.push(
-                        PadKind::System,
-                        format!("*** CONNECTED to {}", frame.src),
-                    );
+                    pad.push(PadKind::System, format!("*** CONNECTED to {}", frame.src));
                 }
                 // UA: we placed the call, so this side does not send CTEXT.
                 self.finish_link_up(ch, false);
@@ -2371,13 +2413,11 @@ impl GpGuiApp {
                     .or_else(|| {
                         (1..=self.channels).find(|&n| {
                             self.channel_linked(n)
-                                && self
-                                    .effective_mycall(n)
-                                    .eq_ignore_ascii_case(&frame.dest)
+                                && self.effective_mycall(n).eq_ignore_ascii_case(&frame.dest)
                         })
                     })
                     .unwrap_or(0);
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, Some(&info_text));
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon);
                 if ch >= 1 {
                     if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
                         *vr = (frame.ns.wrapping_add(1)) & 7;
@@ -2778,7 +2818,9 @@ impl GpGuiApp {
         if !data.ends_with(&[b'\r']) {
             data.push(b'\r');
         }
-        let _ = self.cmd_tx.try_send(TncCommand::HostFrame { channel, data });
+        let _ = self
+            .cmd_tx
+            .try_send(TncCommand::HostFrame { channel, data });
     }
 
     fn submit(&mut self) {
@@ -2794,6 +2836,8 @@ impl GpGuiApp {
             line.trim_end_matches(['\r', '\n']).to_string()
         };
         if line.is_empty() {
+            self.hist_cursor = None;
+            self.hist_stash.clear();
             return;
         }
 
@@ -2801,6 +2845,8 @@ impl GpGuiApp {
         while self.typed_history.len() > TYPED_HISTORY {
             self.typed_history.pop_front();
         }
+        self.hist_cursor = None;
+        self.hist_stash.clear();
 
         // Always show what we typed when Echo is on (before any early return).
         self.echo_own_line(&line);
@@ -2838,7 +2884,10 @@ impl GpGuiApp {
             }
         }
         // Unregistered `//verb` → serve matching data/*.GPI (not ORIGIN).
-        if let Some(verb) = line.strip_prefix("//").or_else(|| line.strip_prefix("\\\\")) {
+        if let Some(verb) = line
+            .strip_prefix("//")
+            .or_else(|| line.strip_prefix("\\\\"))
+        {
             let verb = verb.split_whitespace().next().unwrap_or("");
             if !verb.is_empty() {
                 if self.serve_gpi_verb(verb) {
@@ -3420,7 +3469,8 @@ impl GpGuiApp {
 
     fn capture_write_line(&mut self, channel: u8, line: &str) {
         let line = line.trim_end_matches(['\r', '\n']);
-        let end = parse_line(line.trim()).is_some_and(|(action, _)| action == RemoteAction::EndWrite);
+        let end =
+            parse_line(line.trim()).is_some_and(|(action, _)| action == RemoteAction::EndWrite);
         if end {
             self.finish_user_write(channel);
             self.maybe_send_prompt();
@@ -3439,7 +3489,11 @@ impl GpGuiApp {
     }
 
     fn append_user_write(&mut self, channel: u8, line: &str) {
-        let Some(slot) = self.user_write.get_mut(channel as usize).and_then(|w| w.as_mut()) else {
+        let Some(slot) = self
+            .user_write
+            .get_mut(channel as usize)
+            .and_then(|w| w.as_mut())
+        else {
             return;
         };
         if !slot.body.is_empty() {
@@ -3542,8 +3596,7 @@ impl GpGuiApp {
         let dir = self.cfg.paths.user_dir.clone();
         match userdir::delete_file(&dir, &name) {
             Ok(()) => {
-                self.user_written
-                    .retain(|n| !n.eq_ignore_ascii_case(&name));
+                self.user_written.retain(|n| !n.eq_ignore_ascii_case(&name));
                 let msg = format!("Deleted {name}");
                 self.status = msg.clone();
                 self.send_gpi_text(&msg);
@@ -3611,9 +3664,14 @@ impl GpGuiApp {
     /// Monitor pad (`pads[0]`). The full Monitor pane and the channel split
     /// both paint this job — there is no second monitor buffer.
     fn monitor_layout(&self) -> LayoutJob {
+        self.monitor_layout_for(usize::MAX)
+    }
+
+    /// `columns` is how many monospace cells fit in the pane right now.
+    fn monitor_layout_for(&self, columns: usize) -> LayoutJob {
         self.pads
             .first()
-            .map(TextPad::layout_job)
+            .map(|pad| pad.layout_job_wrapped(columns))
             .unwrap_or_default()
     }
 
@@ -3803,7 +3861,11 @@ impl GpGuiApp {
             RowId::Umlaut => on_off(self.session.extended_ascii).into(),
             RowId::InputColumns => s.input_columns.to_string(),
             RowId::InsertMon => on_off(s.insert_mon_line).into(),
-            RowId::Softscroll => on_off(matches!(self.session.line_step, super::session::LineStep::Smooth)).into(),
+            RowId::Softscroll => on_off(matches!(
+                self.session.line_step,
+                super::session::LineStep::Smooth
+            ))
+            .into(),
             RowId::Language => s.remote_language.clone(),
             RowId::PacketLen => self.cfg.buffers.packet_payload.to_string(),
             RowId::AutoSave => on_off(self.session.seven_plus).into(),
@@ -3835,7 +3897,9 @@ impl GpGuiApp {
                 let n = self.cfg.session.input_columns as i32 + step;
                 self.cfg.session.input_columns = n.clamp(20, 255) as u32;
             }
-            RowId::InsertMon => self.cfg.session.insert_mon_line = !self.cfg.session.insert_mon_line,
+            RowId::InsertMon => {
+                self.cfg.session.insert_mon_line = !self.cfg.session.insert_mon_line
+            }
             RowId::Softscroll => {
                 self.session.line_step = self.session.line_step.cycle();
             }
@@ -3942,11 +4006,7 @@ impl GpGuiApp {
         if pending.is_empty() {
             return;
         }
-        let existing = if list {
-            &self.box_rows
-        } else {
-            &self.bbs_rows
-        };
+        let existing = if list { &self.box_rows } else { &self.bbs_rows };
         if existing.is_empty() {
             self.commit_mail(list, pending, channel);
         } else {
@@ -4106,9 +4166,9 @@ impl GpGuiApp {
         } else {
             self.mail_cursor(list).saturating_add(1)
         };
-        let hit = (0..n).map(|i| (start + i) % n).find(|&i| {
-            self.mail_rows(list)[i].matches(&term)
-        });
+        let hit = (0..n)
+            .map(|i| (start + i) % n)
+            .find(|&i| self.mail_rows(list)[i].matches(&term));
         match hit {
             Some(i) => {
                 self.set_mail_cursor(list, i);
@@ -4227,12 +4287,20 @@ impl GpGuiApp {
         if matches!(self.setup_view, SetupView::Edit { .. }) {
             if eat_key(ctx, none, egui::Key::Escape) {
                 self.setup_view = match &self.setup_view {
-                    SetupView::Edit { parent_beacon: true, .. } => SetupView::Beacon { cursor: 0 },
+                    SetupView::Edit {
+                        parent_beacon: true,
+                        ..
+                    } => SetupView::Beacon { cursor: 0 },
                     _ => SetupView::Main,
                 };
             }
             if eat_key(ctx, none, egui::Key::Enter) {
-                if let SetupView::Edit { kind, text, parent_beacon } = self.setup_view.clone() {
+                if let SetupView::Edit {
+                    kind,
+                    text,
+                    parent_beacon,
+                } = self.setup_view.clone()
+                {
                     self.commit_setup_edit(kind, text, parent_beacon);
                 }
             }
@@ -4274,7 +4342,8 @@ impl GpGuiApp {
                 *cursor = (*cursor as i32 + step).rem_euclid(4) as usize;
             }
             SetupView::Main => {
-                self.setup_cursor = (self.setup_cursor as i32 + step).rem_euclid(len as i32) as usize;
+                self.setup_cursor =
+                    (self.setup_cursor as i32 + step).rem_euclid(len as i32) as usize;
             }
             SetupView::Edit { .. } => {}
         }
@@ -4303,7 +4372,12 @@ impl GpGuiApp {
     fn activate_open_row(&mut self) {
         match self.setup_view.clone() {
             SetupView::Main => self.activate_setup_row(),
-            SetupView::Colors { slot, cursor, draft, .. } => {
+            SetupView::Colors {
+                slot,
+                cursor,
+                draft,
+                ..
+            } => {
                 if cursor >= 3 {
                     self.set_color_triple(slot, draft);
                     self.setup_view = SetupView::Main;
@@ -4337,7 +4411,11 @@ impl GpGuiApp {
         }
         let view = self.setup_view.clone();
         match view {
-            SetupView::Edit { kind, mut text, parent_beacon } => {
+            SetupView::Edit {
+                kind,
+                mut text,
+                parent_beacon,
+            } => {
                 let title = match kind {
                     EditKind::Prompt => "Remote control prompt",
                     EditKind::BeaconAddress => "Beacon address",
@@ -4362,14 +4440,24 @@ impl GpGuiApp {
                 }
                 let _ = parent_beacon;
             }
-            SetupView::Colors { slot, cursor, draft, .. } => {
+            SetupView::Colors {
+                slot,
+                cursor,
+                draft,
+                ..
+            } => {
                 let title = match slot {
                     ColorSlot::Input => "Colours of input window",
                     ColorSlot::Output => "Colours of output window",
                     ColorSlot::State => "Colours of state window",
                     ColorSlot::Menu => "Colours of menu window",
                 };
-                let labels = ["Background", "Foreground", "Inverse", "Use these colours and exit"];
+                let labels = [
+                    "Background",
+                    "Foreground",
+                    "Inverse",
+                    "Use these colours and exit",
+                ];
                 egui::Area::new(egui::Id::new("gp_setup_colors"))
                     .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                     .order(egui::Order::Foreground)
@@ -4395,12 +4483,16 @@ impl GpGuiApp {
                                         };
                                         let resp = setup_row(ui, &line, color, i == cursor);
                                         if resp.clicked() {
-                                            if let SetupView::Colors { cursor, .. } = &mut self.setup_view {
+                                            if let SetupView::Colors { cursor, .. } =
+                                                &mut self.setup_view
+                                            {
                                                 *cursor = i;
                                             }
                                         }
                                         if resp.double_clicked() {
-                                            if let SetupView::Colors { cursor, .. } = &mut self.setup_view {
+                                            if let SetupView::Colors { cursor, .. } =
+                                                &mut self.setup_view
+                                            {
                                                 *cursor = i;
                                             }
                                             self.activate_open_row();
@@ -4476,7 +4568,9 @@ impl GpGuiApp {
                                     dotted(row.id.label(), &value, 42)
                                 };
                                 let color = match row.kind {
-                                    RowKind::Toggle | RowKind::Number => Color32::from_rgb(85, 255, 85),
+                                    RowKind::Toggle | RowKind::Number => {
+                                        Color32::from_rgb(85, 255, 85)
+                                    }
                                     _ => Color32::from_rgb(255, 255, 85),
                                 };
                                 let resp = setup_row(ui, &line, color, i == cursor);
@@ -4767,10 +4861,7 @@ impl GpGuiApp {
         }
         if eat_key(ctx, alt, egui::Key::G) {
             self.hour_gong = !self.hour_gong;
-            self.status = format!(
-                "Hourly gong {}",
-                if self.hour_gong { "ON" } else { "OFF" }
-            );
+            self.status = format!("Hourly gong {}", if self.hour_gong { "ON" } else { "OFF" });
             return;
         }
         if eat_key(ctx, alt, egui::Key::Q) {
@@ -4885,6 +4976,23 @@ impl GpGuiApp {
             }
             if eat_key(ctx, none, egui::Key::Enter) {
                 self.read_mail(list);
+                return;
+            }
+        }
+        // DOS pre-write: Up/Down walk the typed lines, Enter sends the one shown.
+        if self.start_screen.is_none() && !matches!(self.active, ActivePane::Editor) {
+            if eat_key(ctx, none, egui::Key::ArrowUp) {
+                self.recall_history(true);
+                ctx.memory_mut(|m| m.request_focus(compose_id()));
+                return;
+            }
+            if eat_key(ctx, none, egui::Key::ArrowDown) {
+                self.recall_history(false);
+                ctx.memory_mut(|m| m.request_focus(compose_id()));
+                return;
+            }
+            if eat_key(ctx, none, egui::Key::Enter) {
+                self.submit();
                 return;
             }
         }
@@ -5411,7 +5519,6 @@ impl eframe::App for GpGuiApp {
         };
         if monitor_h > 0.0 {
             let mon_bg = self.monitor_bg;
-            let job = self.monitor_layout();
             let stick = !self.session.scr_lock;
             let show_bar = self.session.scrollbar;
             egui::TopBottomPanel::bottom("gp_split_monitor")
@@ -5419,9 +5526,21 @@ impl eframe::App for GpGuiApp {
                 .show_separator_line(false)
                 .frame(Frame::none().fill(mon_bg))
                 .show(ctx, |ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(ui.available_size(), Sense::hover());
-                    paint_text_pane(ui, rect, mon_bg, "rx_split_monitor", stick, show_bar, 0.0, job);
+                    let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+                    paint_text_pane(
+                        ui,
+                        rect,
+                        mon_bg,
+                        "rx_split_monitor",
+                        stick,
+                        show_bar,
+                        0.0,
+                        true,
+                        |ui| {
+                            let cols = text_columns(ui);
+                            self.monitor_layout_for(cols)
+                        },
+                    );
                     self.note_split_right_click(ui, rect);
                 });
         }
@@ -5453,6 +5572,45 @@ impl eframe::App for GpGuiApp {
         self.paint_tnc_command(ctx);
         self.paint_list_offer(ctx);
         self.paint_find(ctx);
+        self.paint_start_screen(ctx);
+    }
+}
+
+impl GpGuiApp {
+    /// `start.png` at its own pixel size, centered. Any click removes it
+    /// and frees the texture.
+    fn paint_start_screen(&mut self, ctx: &Context) {
+        if self.start_screen.is_none() {
+            return;
+        }
+        let screen = ctx.screen_rect();
+        let mut dismiss = false;
+        egui::Area::new(egui::Id::new("gp_start_screen"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .interactable(true)
+            .show(ctx, |ui| {
+                let hit = ui.interact(screen, ui.id().with("start_hit"), Sense::click());
+                if let Some(tex) = self.start_screen.as_ref() {
+                    let ppp = ctx.pixels_per_point().max(1.0);
+                    let tex_size = tex.size_vec2() / ppp;
+                    if tex_size.x > 0.0 && tex_size.y > 0.0 {
+                        let img = Rect::from_center_size(screen.center(), tex_size);
+                        ui.painter().image(
+                            tex.id(),
+                            img,
+                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                    }
+                }
+                if hit.clicked() || hit.secondary_clicked() || hit.middle_clicked() {
+                    dismiss = true;
+                }
+            });
+        if dismiss {
+            self.start_screen = None;
+        }
     }
 }
 
@@ -5476,8 +5634,7 @@ impl GpGuiApp {
         let clock_w = clock_w.min(rect.width() * 0.35).max(120.0);
         let left_r = rect.right() - clock_w;
         let left = Rect::from_min_max(rect.left_top(), Pos2::new(left_r, rect.bottom()));
-        let pre_r =
-            Rect::from_min_max(rect.left_top(), Pos2::new(left_r, rect.top() + prewrite_h));
+        let pre_r = Rect::from_min_max(rect.left_top(), Pos2::new(left_r, rect.top() + prewrite_h));
         let ch_r = Rect::from_min_max(
             Pos2::new(rect.left(), rect.top() + prewrite_h),
             Pos2::new(left_r, rect.top() + prewrite_h + channels_h),
@@ -5498,10 +5655,7 @@ impl GpGuiApp {
         self.draw_status_grid(ui, st_r);
         if draw_analog_clock(ui, clock_rect, self.hour_gong) {
             self.hour_gong = !self.hour_gong;
-            self.status = format!(
-                "Hourly gong {}",
-                if self.hour_gong { "ON" } else { "OFF" }
-            );
+            self.status = format!("Hourly gong {}", if self.hour_gong { "ON" } else { "OFF" });
             if self.hour_gong {
                 play_bell_wav(&self.bell_wav);
             }
@@ -5529,24 +5683,56 @@ impl GpGuiApp {
                     ui.set_max_size(inner);
                     let compose_h = 52.0_f32.min(inner.y * 0.55).max(24.0);
                     let hist_h = (ui.available_height() - compose_h - 2.0).max(8.0);
+                    let mut pick: Option<usize> = None;
                     egui::ScrollArea::vertical()
                         .max_height(hist_h)
-                        .stick_to_bottom(true)
+                        .stick_to_bottom(self.hist_cursor.is_none())
                         .id_salt("typed_history")
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
-                            for line in &self.typed_history {
-                                ui.label(
-                                    RichText::new(line)
-                                        .color(Color32::WHITE)
-                                        .font(FontId::monospace(12.0)),
+                            for (i, line) in self.typed_history.iter().enumerate() {
+                                let selected = self.hist_cursor == Some(i);
+                                let color = if selected {
+                                    Color32::from_rgb(255, 255, 85)
+                                } else {
+                                    Color32::WHITE
+                                };
+                                let resp = ui.add(
+                                    egui::Label::new(
+                                        RichText::new(line)
+                                            .color(color)
+                                            .font(FontId::monospace(12.0)),
+                                    )
+                                    .sense(Sense::click()),
                                 );
+                                if resp.clicked() {
+                                    pick = Some(i);
+                                }
+                                if selected {
+                                    resp.scroll_to_me(Some(egui::Align::Center));
+                                }
                             }
                         });
+                    if let Some(i) = pick {
+                        self.load_history_line(i);
+                    }
+                    // Any click on the purple field focuses the compose line.
+                    let in_purple = ui.input(|i| {
+                        i.pointer.any_click()
+                            && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))
+                    });
+                    if in_purple {
+                        ui.memory_mut(|m| m.request_focus(compose_id()));
+                    }
+                    if self.compose_caret_end {
+                        self.compose_caret_end = false;
+                        place_compose_caret(ui.ctx(), self.input.chars().count());
+                    }
                     // Frameless compose — sits on the purple field, bottom of the pane.
                     let edit = ui.add_sized(
                         Vec2::new(ui.available_width(), compose_h),
                         egui::TextEdit::multiline(&mut self.input)
+                            .id(compose_id())
                             .desired_rows(COMPOSE_ROWS)
                             .desired_width(f32::INFINITY)
                             .frame(false)
@@ -5573,6 +5759,34 @@ impl GpGuiApp {
         });
     }
 
+    /// `older` is Arrow Up (toward earlier lines). Arrow Down walks back.
+    fn recall_history(&mut self, older: bool) {
+        match history_step(self.typed_history.len(), self.hist_cursor, older) {
+            HistMove::Stay => {}
+            HistMove::Load(i) => self.load_history_line(i),
+            HistMove::Restore => {
+                self.hist_cursor = None;
+                let shown = self.typed_history.back().map(String::as_str);
+                if shown == Some(self.input.as_str()) {
+                    self.input = std::mem::take(&mut self.hist_stash);
+                    self.compose_caret_end = true;
+                }
+            }
+        }
+    }
+
+    fn load_history_line(&mut self, index: usize) {
+        let Some(line) = self.typed_history.get(index) else {
+            return;
+        };
+        if self.hist_cursor.is_none() {
+            self.hist_stash = self.input.clone();
+        }
+        self.hist_cursor = Some(index);
+        self.input = line.clone();
+        self.compose_caret_end = true;
+    }
+
     /// Magenta status: same visual weight as the channel grid, but not clickable.
     /// Left title cell spans 2 rows; right side is a 2×N field grid.
     ///
@@ -5596,13 +5810,8 @@ impl GpGuiApp {
         // Title (full height) — galley-centered in the title cell.
         {
             let title = self.pane_title();
-            let galley = painter.layout_no_wrap(
-                title,
-                FontId::proportional(24.0),
-                self.state_fg,
-            );
-            let title_cell =
-                Rect::from_min_max(rect.left_top(), Pos2::new(title_x, rect.bottom()));
+            let galley = painter.layout_no_wrap(title, FontId::proportional(24.0), self.state_fg);
+            let title_cell = Rect::from_min_max(rect.left_top(), Pos2::new(title_x, rect.bottom()));
             let pos = Pos2::new(
                 title_cell.center().x - galley.size().x * 0.5,
                 title_cell.center().y - galley.size().y * 0.5,
@@ -5623,11 +5832,8 @@ impl GpGuiApp {
                     Pos2::new(title_x + ci as f32 * cell_w, y0),
                     Vec2::new(cell_w, row_h),
                 );
-                let galley = painter.layout_no_wrap(
-                    (*text).clone(),
-                    FontId::monospace(14.0),
-                    self.state_fg,
-                );
+                let galley =
+                    painter.layout_no_wrap((*text).clone(), FontId::monospace(14.0), self.state_fg);
                 // +2 px optical nudge — Consolas metrics sit high in the cell.
                 let pos = Pos2::new(
                     cell.left() + 8.0,
@@ -5645,7 +5851,10 @@ impl GpGuiApp {
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], hair);
         // Title | fields
         painter.line_segment(
-            [Pos2::new(title_x, rect.top()), Pos2::new(title_x, rect.bottom())],
+            [
+                Pos2::new(title_x, rect.top()),
+                Pos2::new(title_x, rect.bottom()),
+            ],
             hair,
         );
         // Horizontal split between field rows
@@ -5724,12 +5933,9 @@ impl GpGuiApp {
             ),
             ActivePane::Channel(n) => {
                 let idx = n as usize;
-                let link = if let Some(call) =
-                    self.channel_peer.get(idx).and_then(|p| p.as_ref())
-                {
+                let link = if let Some(call) = self.channel_peer.get(idx).and_then(|p| p.as_ref()) {
                     format!("Connected to {call}")
-                } else if let Some(call) =
-                    self.channel_connecting.get(idx).and_then(|p| p.as_ref())
+                } else if let Some(call) = self.channel_connecting.get(idx).and_then(|p| p.as_ref())
                 {
                     format!("Connecting to {call}")
                 } else {
@@ -5826,7 +6032,13 @@ impl GpGuiApp {
                 };
                 (
                     vec![format!("Spy window {n}"), spy_line],
-                    vec![format!("Lines: {}", self.spy_pads.get(n.saturating_sub(1) as usize).map(|p| p.lines.len()).unwrap_or(0))],
+                    vec![format!(
+                        "Lines: {}",
+                        self.spy_pads
+                            .get(n.saturating_sub(1) as usize)
+                            .map(|p| p.lines.len())
+                            .unwrap_or(0)
+                    )],
                 )
             }
         }
@@ -5868,7 +6080,8 @@ impl GpGuiApp {
                     _ => false,
                 };
                 // Idle dark grey · connected light grey · active (any) dark red.
-                let connected = matches!(action, Some(ActivePane::Channel(ch)) if self.channel_connected(ch));
+                let connected =
+                    matches!(action, Some(ActivePane::Channel(ch)) if self.channel_connected(ch));
                 let (fill, text_color) = if selected {
                     (VGA_DARK_RED, Color32::WHITE)
                 } else if connected {
@@ -5880,11 +6093,7 @@ impl GpGuiApp {
                 let resp = ui.interact(cell, id, Sense::click());
                 painter.rect_filled(cell, 0.0, fill);
                 // Selected / enabled → sunken; also while the pointer is held.
-                paint_bevel(
-                    &painter,
-                    cell,
-                    selected || resp.is_pointer_button_down_on(),
-                );
+                paint_bevel(&painter, cell, selected || resp.is_pointer_button_down_on());
                 painter.text(
                     cell.center(),
                     egui::Align2::CENTER_CENTER,
@@ -5905,7 +6114,11 @@ impl GpGuiApp {
         let bg = if list { self.list_bg } else { self.check_bg };
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         let cursor = self.mail_cursor(list);
-        let lines: Vec<String> = self.mail_rows(list).iter().map(MailEntry::display).collect();
+        let lines: Vec<String> = self
+            .mail_rows(list)
+            .iter()
+            .map(MailEntry::display)
+            .collect();
         let mut pick: Option<(usize, bool, bool)> = None;
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
             Frame::none().fill(bg).show(ui, |ui| {
@@ -5917,8 +6130,16 @@ impl GpGuiApp {
                     .show(ui, |ui| {
                         for (i, line) in lines.iter().enumerate() {
                             let selected = i == cursor;
-                            let fill = if selected { Color32::WHITE } else { Color32::TRANSPARENT };
-                            let fg = if selected { Color32::BLACK } else { Color32::WHITE };
+                            let fill = if selected {
+                                Color32::WHITE
+                            } else {
+                                Color32::TRANSPARENT
+                            };
+                            let fg = if selected {
+                                Color32::BLACK
+                            } else {
+                                Color32::WHITE
+                            };
                             let (row, resp) = ui.allocate_exact_size(
                                 Vec2::new(ui.available_width().max(20.0), 16.0),
                                 Sense::click(),
@@ -5977,13 +6198,34 @@ impl GpGuiApp {
             ActivePane::List => self.list_bg,
             _ => self.monitor_bg,
         };
-        let job = self.active_layout();
+        let monitor = matches!(self.active, ActivePane::Monitor);
+        let job = if monitor {
+            None
+        } else {
+            Some(self.active_layout())
+        };
         let nudge = self.session.take_scroll_nudge();
         // ScrLock off → follow last line; on → freeze (QSO and split monitor).
         let stick = !self.session.scr_lock;
         let show_bar = self.session.scrollbar;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-        paint_text_pane(ui, rect, bg, "rx_full", stick, show_bar, nudge, job);
+        paint_text_pane(
+            ui,
+            rect,
+            bg,
+            "rx_full",
+            stick,
+            show_bar,
+            nudge,
+            true,
+            |ui| {
+                if monitor {
+                    self.monitor_layout_for(text_columns(ui))
+                } else {
+                    job.unwrap_or_default()
+                }
+            },
+        );
         self.note_split_right_click(ui, rect);
     }
 
@@ -6157,9 +6399,9 @@ impl GpGuiApp {
             let id = ui.id().with(("sess", action, label));
             let resp = ui.interact(cell, id, Sense::click());
             // ▲▼ are not toggles, so they never use the green “on” face.
-            // Channel with the split open, and Monitor while scroll works:
-            // ordinary grey buttons. Split closed, Spy, or ScrLock held:
-            // light grey, which reads as off.
+            // Only a channel with the split open draws them as live buttons.
+            // The Monitor has no split, so the pair stays grey there, same as
+            // a closed split, Spy, BBS-Menu, and Box-List.
             let arrow = matches!(glyph, CellGlyph::TriUp | CellGlyph::TriDown);
             let arrow_clickable = match self.active {
                 ActivePane::Channel(_) => true,
@@ -6169,7 +6411,7 @@ impl GpGuiApp {
             let arrow_off = arrow
                 && match self.active {
                     ActivePane::Channel(_) => !self.split_on,
-                    _ => !arrow_clickable,
+                    _ => true,
                 };
             let fill = if arrow_off {
                 Color32::from_rgb(210, 210, 210)
@@ -6258,7 +6500,13 @@ impl GpGuiApp {
                 CellGlyph::Text,
             ),
             ("", false, SessionClick::ScrollUp, 22.0, CellGlyph::TriUp),
-            ("", false, SessionClick::ScrollDown, 22.0, CellGlyph::TriDown),
+            (
+                "",
+                false,
+                SessionClick::ScrollDown,
+                22.0,
+                CellGlyph::TriDown,
+            ),
             (
                 "B",
                 self.session.scrollbar,
@@ -6294,15 +6542,32 @@ impl GpGuiApp {
 
         // Leading controls stay on the left.
         let mut x = rect.left() + 2.0;
-        let left_limit =
-            (rect.right() - trail_w - right_mid_w - 8.0).max(x + 40.0);
+        let left_limit = (rect.right() - trail_w - right_mid_w - 8.0).max(x + 40.0);
 
         let qrg = self.session.qrg_label();
         let ct = self.session.ctext_label();
         let lead_owned = [
-            (qrg.as_str(), false, SessionClick::Qrg, 86.0_f32, CellGlyph::Text),
-            (ct.as_str(), false, SessionClick::Ctext, 70.0, CellGlyph::Text),
-            ("äöü", self.session.extended_ascii, SessionClick::Ascii, 34.0, CellGlyph::Text),
+            (
+                qrg.as_str(),
+                false,
+                SessionClick::Qrg,
+                86.0_f32,
+                CellGlyph::Text,
+            ),
+            (
+                ct.as_str(),
+                false,
+                SessionClick::Ctext,
+                70.0,
+                CellGlyph::Text,
+            ),
+            (
+                "äöü",
+                self.session.extended_ascii,
+                SessionClick::Ascii,
+                34.0,
+                CellGlyph::Text,
+            ),
             (
                 self.session.line_step.label(),
                 matches!(self.session.line_step, super::session::LineStep::Smooth),
@@ -6314,8 +6579,20 @@ impl GpGuiApp {
                     CellGlyph::Text
                 },
             ),
-            ("Echo", self.session.echo, SessionClick::Echo, 38.0, CellGlyph::Text),
-            ("♪", self.session.bell, SessionClick::Bell, 26.0, CellGlyph::Text),
+            (
+                "Echo",
+                self.session.echo,
+                SessionClick::Echo,
+                38.0,
+                CellGlyph::Text,
+            ),
+            (
+                "♪",
+                self.session.bell,
+                SessionClick::Bell,
+                26.0,
+                CellGlyph::Text,
+            ),
             ("Clear", false, SessionClick::Clear, 46.0, CellGlyph::Text),
         ];
         for (label, lit, action, w, glyph) in lead_owned {
@@ -6346,20 +6623,16 @@ impl GpGuiApp {
                         CellGlyph::Text,
                     );
                 }
-                let _ = paint_static_cell(
-                    ui,
-                    rx,
-                    y,
-                    h,
-                    gap,
-                    &com_badge,
-                    badge_w,
-                    self.serial_open,
-                );
+                let _ = paint_static_cell(ui, rx, y, h, gap, &com_badge, badge_w, self.serial_open);
             }
             ActivePane::Channel(_) => {
                 for (label, lit, action, w) in [
-                    ("7+", self.session.seven_plus, SessionClick::SevenPlus, 28.0_f32),
+                    (
+                        "7+",
+                        self.session.seven_plus,
+                        SessionClick::SevenPlus,
+                        28.0_f32,
+                    ),
                     ("Remote", self.session.remote, SessionClick::Remote, 50.0),
                     ("BIN-RX", self.session.bin_rx, SessionClick::BinRx, 50.0),
                     ("BIN-TX", self.session.bin_tx, SessionClick::BinTx, 50.0),
@@ -6406,11 +6679,8 @@ impl GpGuiApp {
                 }
             }
             if self.split_on {
-                ui.painter().hline(
-                    rect.x_range(),
-                    rect.top(),
-                    Stroke::new(2.0, Color32::WHITE),
-                );
+                ui.painter()
+                    .hline(rect.x_range(), rect.top(), Stroke::new(2.0, Color32::WHITE));
             }
             self.note_split_right_click(ui, rect);
         }
@@ -6522,7 +6792,10 @@ impl GpGuiApp {
         if let Some(path) = dialog.pick_file() {
             self.session.set_ctext_path(path);
             self.status = format!("CT: {}", self.session.ctext_display_name());
-            self.log_event(format!("Connect text → {}", self.session.ctext_display_name()));
+            self.log_event(format!(
+                "Connect text → {}",
+                self.session.ctext_display_name()
+            ));
             self.persist_session_chrome();
         }
     }
@@ -6696,13 +6969,7 @@ impl GpGuiApp {
     /// - Foreign call / directed own SSID (`NL0MSK-10`) → connect that name as typed.
     /// - Own global MYCALL (loopback) → caller stays on `channel`; first free channel
     ///   answers as `{mycall}-{n}` because the caller channel is busy.
-    fn begin_connect(
-        &mut self,
-        channel: u8,
-        dest: &str,
-        vias: &[String],
-        downlinks: Vec<String>,
-    ) {
+    fn begin_connect(&mut self, channel: u8, dest: &str, vias: &[String], downlinks: Vec<String>) {
         if !(1..=self.channels).contains(&channel) {
             self.status = format!("connect: bad channel {channel}");
             return;
@@ -6720,8 +6987,8 @@ impl GpGuiApp {
         let mut self_connect = false;
         if bare_own_global {
             // Loopback to global: caller busy on `channel`; answer as {base}-{free}.
-            let Some(answer_ch) = (1..=self.channels)
-                .find(|&n| n != channel && !self.channel_connected(n))
+            let Some(answer_ch) =
+                (1..=self.channels).find(|&n| n != channel && !self.channel_connected(n))
             else {
                 self.status = "no free channel for self-connect".into();
                 return;
@@ -6762,9 +7029,7 @@ impl GpGuiApp {
                             if let Some(pad) = self.pads.get_mut(free as usize) {
                                 pad.push(
                                     PadKind::System,
-                                    format!(
-                                        "*** redirect {owner} busy → {temp_call} on ch{free}"
-                                    ),
+                                    format!("*** redirect {owner} busy → {temp_call} on ch{free}"),
                                 );
                             }
                         }
@@ -6822,10 +7087,7 @@ impl GpGuiApp {
             } else {
                 "connecting"
             };
-            pad.push(
-                PadKind::System,
-                format!("*** {kind} to {dest}{via_note}"),
-            );
+            pad.push(PadKind::System, format!("*** {kind} to {dest}{via_note}"));
             if !self_connect && !downlinks.is_empty() {
                 pad.push(
                     PadKind::System,
@@ -7026,8 +7288,7 @@ impl GpGuiApp {
                     te.request_focus();
                     self.connect_dialog_focus = false;
                 }
-                let enter = te.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("Connect").clicked() || enter {
@@ -7410,11 +7671,7 @@ enum SessionClick {
 }
 
 fn route_parts(route: Route) -> (String, Vec<String>, Vec<String>) {
-    (
-        route.link_call,
-        route.link_digis,
-        route.downlinks,
-    )
+    (route.link_call, route.link_digis, route.downlinks)
 }
 
 /// `C DB0DOZ` / `C! ON5PL` / `C DH1DAE DB0FN` → the station we are waiting to see.
@@ -7436,7 +7693,11 @@ fn downlink_target(cmd: &str) -> String {
 }
 
 fn on_off(v: bool) -> &'static str {
-    if v { "ON" } else { "OFF" }
+    if v {
+        "ON"
+    } else {
+        "OFF"
+    }
 }
 
 /// Each byte becomes the Unicode scalar of the same value (DOS Latin-1).
@@ -7463,7 +7724,6 @@ fn is_hhmm_token(token: &str) -> bool {
         && m.bytes().all(|b| b.is_ascii_digit())
 }
 
-
 /// Best-effort source call from monitor / APRS-ish text (`fm CALL`, `CALL>`).
 fn extract_heard_call(text: &str) -> Option<String> {
     let lower = text.to_ascii_lowercase();
@@ -7474,8 +7734,7 @@ fn extract_heard_call(text: &str) -> Option<String> {
         if is_hhmm_token(token) {
             token = tokens.next()?;
         }
-        let token = token
-            .trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+        let token = token.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
         if !token.is_empty() {
             return Some(token.to_ascii_uppercase());
         }
@@ -7524,8 +7783,12 @@ fn looks_like_monitor_mode(s: &str) -> bool {
     let t = s.trim();
     !t.is_empty()
         && t.len() <= 8
-        && t.chars()
-            .all(|c| matches!(c, 'I' | 'U' | 'S' | 'C' | 'N' | '+' | '-' | 'i' | 'u' | 's' | 'c' | 'n'))
+        && t.chars().all(|c| {
+            matches!(
+                c,
+                'I' | 'U' | 'S' | 'C' | 'N' | '+' | '-' | 'i' | 'u' | 's' | 'c' | 'n'
+            )
+        })
 }
 
 /// Modem / hostmode link chatter (may arrive as Monitor/Data, not only LinkStatus).
@@ -7572,6 +7835,25 @@ fn parse_monitor_set(line: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Startup picture. `None` if the PNG cannot be decoded.
+fn load_start_screen(ctx: &Context) -> Option<TextureHandle> {
+    const BYTES: &[u8] = include_bytes!("../../assets/start.png");
+    let img = match image::load_from_memory_with_format(BYTES, image::ImageFormat::Png) {
+        Ok(img) => img,
+        Err(err) => {
+            tracing::warn!("start screen: {err}");
+            return None;
+        }
+    };
+    let rgba = img.into_rgba8();
+    let color = ColorImage::from_rgba_unmultiplied(
+        [rgba.width() as usize, rgba.height() as usize],
+        rgba.as_raw(),
+    );
+    // Nearest keeps the pixel lettering sharp when the window scales it.
+    Some(ctx.load_texture("gp_start", color, TextureOptions::NEAREST))
 }
 
 fn load_icon_textures(ctx: &Context) -> Vec<TextureHandle> {
@@ -7680,10 +7962,7 @@ fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool) -> bool {
     painter.circle_filled(dial_center, 3.0, Color32::from_rgb(220, 40, 40));
 
     let date = now.format("%d/%m/%y").to_string();
-    let date_pos = Pos2::new(
-        cx,
-        dial_center.y + radius + 8.0 + badge_h * 0.5,
-    );
+    let date_pos = Pos2::new(cx, dial_center.y + radius + 8.0 + badge_h * 0.5);
     let date_rect = Rect::from_center_size(date_pos, Vec2::new(86.0, badge_h));
     // Date / version badges: dark grey raised buttons (unpressed bevel).
     painter.rect_filled(date_rect, 0.0, VGA_DARK_GRAY);
@@ -7767,8 +8046,21 @@ fn load_window_icon() -> egui::IconData {
     }
 }
 
+/// How many monospace cells fit in the scroll viewport.
+fn text_columns(ui: &Ui) -> usize {
+    let char_w = ui
+        .fonts(|fonts| fonts.glyph_width(&FontId::monospace(padlog::PAD_FONT_SIZE), '0'))
+        .max(1.0);
+    // One cell of slack so pixel rounding cannot open a horizontal scrollbar.
+    let width = (ui.available_width() - char_w).max(char_w);
+    ((width / char_w).floor() as usize).max(8)
+}
+
 /// Scrollable text. `id` keeps the Monitor pane and the channel split from
 /// sharing one scrollbar position. The bytes are still the same pad.
+///
+/// `scroll_x` is off for the monitor: rows are wrapped to `ui`'s width.
+/// The job is built inside the scroll area so that width is the live viewport.
 fn paint_text_pane(
     ui: &mut Ui,
     rect: Rect,
@@ -7777,7 +8069,8 @@ fn paint_text_pane(
     stick: bool,
     show_bar: bool,
     nudge: f32,
-    job: LayoutJob,
+    scroll_x: bool,
+    make_job: impl FnOnce(&Ui) -> LayoutJob,
 ) {
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
         Frame::none()
@@ -7791,8 +8084,12 @@ fn paint_text_pane(
                 } else {
                     egui::scroll_area::ScrollBarVisibility::AlwaysHidden
                 };
-                egui::ScrollArea::both()
-                    .id_salt(id)
+                let area = if scroll_x {
+                    egui::ScrollArea::both()
+                } else {
+                    egui::ScrollArea::vertical()
+                };
+                area.id_salt(id)
                     .stick_to_bottom(stick)
                     .auto_shrink([false, false])
                     .scroll_bar_visibility(bar_vis)
@@ -7800,10 +8097,52 @@ fn paint_text_pane(
                         if nudge != 0.0 {
                             ui.scroll_with_delta(Vec2::new(0.0, nudge));
                         }
+                        let job = make_job(ui);
                         ui.add(egui::Label::new(job).wrap_mode(TextWrapMode::Extend));
                     });
             });
     });
+}
+
+fn compose_id() -> egui::Id {
+    egui::Id::new("gp_compose")
+}
+
+fn place_compose_caret(ctx: &Context, char_index: usize) {
+    let id = compose_id();
+    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    let end = egui::text::CCursor::new(char_index);
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::one(end)));
+    state.store(ctx, id);
+}
+
+enum HistMove {
+    Stay,
+    Load(usize),
+    /// Arrow Down walked past the newest line, back to the text being typed.
+    Restore,
+}
+
+/// `older` is Arrow Up. Newest history sits at `len - 1`.
+fn history_step(len: usize, cursor: Option<usize>, older: bool) -> HistMove {
+    if len == 0 {
+        return HistMove::Stay;
+    }
+    if older {
+        match cursor {
+            None => HistMove::Load(len - 1),
+            Some(0) => HistMove::Stay,
+            Some(i) => HistMove::Load(i.saturating_sub(1)),
+        }
+    } else {
+        match cursor {
+            None => HistMove::Stay,
+            Some(i) if i + 1 >= len => HistMove::Restore,
+            Some(i) => HistMove::Load(i + 1),
+        }
+    }
 }
 
 fn clamp_split_lower(v: f32) -> f32 {
@@ -7843,13 +8182,7 @@ pub fn run(
         &title,
         native,
         Box::new(move |cc| {
-            let app = GpGuiApp::new(
-                cc,
-                (*cfg).clone(),
-                (*config_path).clone(),
-                events,
-                cmd_tx,
-            );
+            let app = GpGuiApp::new(cc, (*cfg).clone(), (*config_path).clone(), events, cmd_tx);
             Ok(Box::new(app))
         }),
     )
@@ -7875,5 +8208,21 @@ mod split_tests {
         assert!((clamp_split_lower(2.0) - 0.75).abs() < f32::EPSILON);
         let mon = split_monitor_height(400.0, 0.99);
         assert!((mon - 300.0).abs() < 0.1);
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::{history_step, HistMove};
+
+    #[test]
+    fn up_walks_newest_first_and_down_returns() {
+        assert!(matches!(history_step(0, None, true), HistMove::Stay));
+        assert!(matches!(history_step(3, None, true), HistMove::Load(2)));
+        assert!(matches!(history_step(3, Some(2), true), HistMove::Load(1)));
+        assert!(matches!(history_step(3, Some(0), true), HistMove::Stay));
+        assert!(matches!(history_step(3, Some(1), false), HistMove::Load(2)));
+        assert!(matches!(history_step(3, Some(2), false), HistMove::Restore));
+        assert!(matches!(history_step(3, None, false), HistMove::Stay));
     }
 }

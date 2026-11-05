@@ -210,11 +210,7 @@ pub fn run(
     }
 }
 
-fn leave_kiss_and_close(
-    link: &mut KissLink,
-    tnc_cfg: &TncConfig,
-    events: &mpsc::Sender<TncEvent>,
-) {
+fn leave_kiss_and_close(link: &mut KissLink, tnc_cfg: &TncConfig, events: &mpsc::Sender<TncEvent>) {
     if link.is_tcp() {
         link.flush_input();
         let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));

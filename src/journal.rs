@@ -40,10 +40,7 @@ pub fn clip_qrg(text: &str) -> String {
 }
 
 pub fn format_line(open: &OpenQso, end: DateTime<Local>, qrg: &str) -> String {
-    let secs = end
-        .signed_duration_since(open.start)
-        .num_seconds()
-        .max(0);
+    let secs = end.signed_duration_since(open.start).num_seconds().max(0);
     let hours = secs / 3600;
     let mins = (secs % 3600) / 60;
     let peer: String = open.peer.chars().take(9).collect();

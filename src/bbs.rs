@@ -58,9 +58,15 @@ impl Entry {
         }
         let blob = format!(
             "{} {} {} {} {} {}",
-            self.number, self.rubric, self.from, self.dist, self.title, self.display()
+            self.number,
+            self.rubric,
+            self.from,
+            self.dist,
+            self.title,
+            self.display()
         );
-        blob.to_ascii_lowercase().contains(&term.to_ascii_lowercase())
+        blob.to_ascii_lowercase()
+            .contains(&term.to_ascii_lowercase())
     }
 }
 
@@ -149,7 +155,8 @@ fn is_date(s: &str) -> bool {
         && p[0].len() == 2
         && p[1].len() == 2
         && (p[2].len() == 2 || p[2].len() == 4)
-        && p.iter().all(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit()))
+        && p.iter()
+            .all(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn is_time(s: &str) -> bool {
@@ -162,7 +169,12 @@ fn is_time(s: &str) -> bool {
 
 fn looks_like_call(s: &str) -> bool {
     let (base, ssid) = s.split_once('-').unwrap_or((s, ""));
-    if !ssid.is_empty() && ssid.parse::<u8>().ok().is_none_or(|n| !(0..=15).contains(&n)) {
+    if !ssid.is_empty()
+        && ssid
+            .parse::<u8>()
+            .ok()
+            .is_none_or(|n| !(0..=15).contains(&n))
+    {
         return false;
     }
     let n = base.chars().count();
@@ -211,6 +223,8 @@ mod tests {
     fn prompt_closes_the_list() {
         assert!(is_diebox_prompt("(All) DL1BHO de DK0MAV>"));
         assert!(is_diebox_prompt("() DF8AY de DB0BQ>"));
-        assert!(!is_diebox_prompt("1 DF8AY 03.04.90 17.33 845 Terminalprogramm"));
+        assert!(!is_diebox_prompt(
+            "1 DF8AY 03.04.90 17.33 845 Terminalprogramm"
+        ));
     }
 }

@@ -201,7 +201,9 @@ mod tests {
         assert!(!list.iter().any(|g| g.stem == "origin"));
         assert!(match_verb_to_gpi("NE").is_some());
         assert!(match_verb_to_gpi("news").is_some());
-        assert!(match_verb_to_gpi("i").map(|g| g.stem) == Some("info".into())
-            || match_verb_to_gpi("info").is_some());
+        assert!(
+            match_verb_to_gpi("i").map(|g| g.stem) == Some("info".into())
+                || match_verb_to_gpi("info").is_some()
+        );
     }
 }

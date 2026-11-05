@@ -140,11 +140,7 @@ impl HostDelivery {
         }
         let tries = self.inflight.as_ref().map(|f| f.tries).unwrap_or(0);
         if tries >= N2 {
-            let channel = self
-                .inflight
-                .as_ref()
-                .map(|f| f.frame.channel)
-                .unwrap_or(0);
+            let channel = self.inflight.as_ref().map(|f| f.frame.channel).unwrap_or(0);
             self.inflight = None;
             self.queued.clear();
             return Some(Tick::GaveUp { channel });
@@ -189,7 +185,8 @@ mod tests {
     fn poll_is_not_an_unacked_packet() {
         let mut q = HostDelivery::new();
         let t = Instant::now();
-        q.enqueue_kind(0, b"G0".to_vec(), HostKind::Poll, t).unwrap();
+        q.enqueue_kind(0, b"G0".to_vec(), HostKind::Poll, t)
+            .unwrap();
         assert!(q.enqueue(1, b"hello".to_vec(), t).is_none());
         let snaps = q.tx_snapshots();
         assert_eq!(snaps.len(), 1);

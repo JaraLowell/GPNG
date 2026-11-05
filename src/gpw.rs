@@ -154,8 +154,14 @@ fn pick(secret: &str, indexes: &[u32]) -> Option<String> {
 
 /// Old FlexNet: multiply matching digits, then add the products.
 fn flex_sum(secret5: &str, seed5: &str) -> Option<String> {
-    let secret: Vec<u32> = secret5.chars().map(|c| c.to_digit(10)).collect::<Option<_>>()?;
-    let seed: Vec<u32> = seed5.chars().map(|c| c.to_digit(10)).collect::<Option<_>>()?;
+    let secret: Vec<u32> = secret5
+        .chars()
+        .map(|c| c.to_digit(10))
+        .collect::<Option<_>>()?;
+    let seed: Vec<u32> = seed5
+        .chars()
+        .map(|c| c.to_digit(10))
+        .collect::<Option<_>>()?;
     if secret.len() != 5 || seed.len() != 5 {
         return None;
     }
@@ -188,11 +194,7 @@ mod tests {
 
     #[test]
     fn thenet_picks_characters() {
-        let ans = reply(
-            Some(StationKind::NetRom),
-            "ABCDEFGHIJ",
-            "1 3 5 7 9",
-        );
+        let ans = reply(Some(StationKind::NetRom), "ABCDEFGHIJ", "1 3 5 7 9");
         assert_eq!(ans, Reply::Answer("ACEGI".into()));
     }
 
@@ -204,7 +206,11 @@ mod tests {
 
     #[test]
     fn ordinary_text_is_ignored() {
-        let ans = reply(Some(StationKind::NetRom), "ABCDEFGHIJ", "Welcome to the node");
+        let ans = reply(
+            Some(StationKind::NetRom),
+            "ABCDEFGHIJ",
+            "Welcome to the node",
+        );
         assert_eq!(ans, Reply::Ignore);
     }
 

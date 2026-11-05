@@ -144,7 +144,10 @@ impl SevenPlusAutosave {
     pub fn write_part(dir: &Path, part: &SavedPart, fallback_stem: &str) -> io::Result<PathBuf> {
         ensure_user_dir(dir)?;
         let fallback = format!("{fallback_stem}.p01");
-        let name = safe_part_name(part.suggested_name.as_deref().unwrap_or(&fallback), &fallback);
+        let name = safe_part_name(
+            part.suggested_name.as_deref().unwrap_or(&fallback),
+            &fallback,
+        );
         let path = dir.join(name);
         fs::write(&path, to_crlf_bytes(&part.body))?;
         Ok(path)
@@ -368,7 +371,10 @@ fn guess_name_from_line(line: &str) -> Option<String> {
                         && ext[1..].bytes().all(|b| b.is_ascii_hexdigit())
                 }))
         {
-            return Some(tok.trim_matches(|c: char| c == '"' || c == '\'').to_string());
+            return Some(
+                tok.trim_matches(|c: char| c == '"' || c == '\'')
+                    .to_string(),
+            );
         }
     }
     None
@@ -435,10 +441,7 @@ mod tests {
 
     #[test]
     fn writes_crlf_inside_user_dir_only() {
-        let dir = std::env::temp_dir().join(format!(
-            "gpng-7plus-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("gpng-7plus-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut auto = SevenPlusAutosave::new(true);
         auto.on_line(" go_7+. ");

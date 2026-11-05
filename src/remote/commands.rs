@@ -53,10 +53,34 @@ pub struct RemoteCommand {
 /// Authoritative list for the modern rewrite.
 pub fn catalogue() -> Vec<RemoteCommand> {
     vec![
-        cmd("//<n>", &[], 1, RemoteAction::CrossChannelText, "Send text to channel/port n"),
-        cmd("//7+", &["7+"], 2, RemoteAction::SevenPlusAutoSave, "7Plus AutoSave on/off"),
-        cmd("//Activity", &["ACTIVITY"], 2, RemoteAction::Activity, "Last sysop keyboard/mouse activity"),
-        cmd("//Bell", &["BELL", "B"], 1, RemoteAction::Bell, "Ring the sysop"),
+        cmd(
+            "//<n>",
+            &[],
+            1,
+            RemoteAction::CrossChannelText,
+            "Send text to channel/port n",
+        ),
+        cmd(
+            "//7+",
+            &["7+"],
+            2,
+            RemoteAction::SevenPlusAutoSave,
+            "7Plus AutoSave on/off",
+        ),
+        cmd(
+            "//Activity",
+            &["ACTIVITY"],
+            2,
+            RemoteAction::Activity,
+            "Last sysop keyboard/mouse activity",
+        ),
+        cmd(
+            "//Bell",
+            &["BELL", "B"],
+            1,
+            RemoteAction::Bell,
+            "Ring the sysop",
+        ),
         // "RI" so //R stays //Read. //Ring and //RI still page the sysop.
         cmd("//RIng", &["RING"], 2, RemoteAction::Bell, "Ring the sysop"),
         cmd(
@@ -66,8 +90,20 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             RemoteAction::Catalog,
             "List UserDir files",
         ),
-        cmd("//CD", &["CD"], 2, RemoteAction::ChangeDir, "Change/show UserDir (DL/SLO)"),
-        cmd("//CUT", &["CUT"], 3, RemoteAction::CutTransfer, "Abort //Read transfer"),
+        cmd(
+            "//CD",
+            &["CD"],
+            2,
+            RemoteAction::ChangeDir,
+            "Change/show UserDir (DL/SLO)",
+        ),
+        cmd(
+            "//CUT",
+            &["CUT"],
+            3,
+            RemoteAction::CutTransfer,
+            "Abort //Read transfer",
+        ),
         cmd(
             "//DELete",
             &["DELETE", "DEL", "KILL"],
@@ -82,12 +118,48 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             RemoteAction::Disconnect,
             "Disconnect without QRT",
         ),
-        cmd("//Echo", &["ECHO", "E"], 1, RemoteAction::Echo, "Echo text (RTT helper)"),
-        cmd("//END", &["END"], 3, RemoteAction::EndWrite, "Finish //Write capture"),
-        cmd("//Help", &["HELP", "H"], 1, RemoteAction::Help, "Send *.GPH help"),
-        cmd("//Info", &["INFO", "I"], 1, RemoteAction::Info, "Station info GPI"),
-        cmd("//Language", &["LANGUAGE", "L"], 1, RemoteAction::Language, "Switch remote language"),
-        cmd("//MHeard", &["MHEARD", "MH"], 2, RemoteAction::MHeard, "MH list / last-heard"),
+        cmd(
+            "//Echo",
+            &["ECHO", "E"],
+            1,
+            RemoteAction::Echo,
+            "Echo text (RTT helper)",
+        ),
+        cmd(
+            "//END",
+            &["END"],
+            3,
+            RemoteAction::EndWrite,
+            "Finish //Write capture",
+        ),
+        cmd(
+            "//Help",
+            &["HELP", "H"],
+            1,
+            RemoteAction::Help,
+            "Send *.GPH help",
+        ),
+        cmd(
+            "//Info",
+            &["INFO", "I"],
+            1,
+            RemoteAction::Info,
+            "Station info GPI",
+        ),
+        cmd(
+            "//Language",
+            &["LANGUAGE", "L"],
+            1,
+            RemoteAction::Language,
+            "Switch remote language",
+        ),
+        cmd(
+            "//MHeard",
+            &["MHEARD", "MH"],
+            2,
+            RemoteAction::MHeard,
+            "MH list / last-heard",
+        ),
         cmd(
             "//Name",
             &["NAME", "N"],
@@ -95,7 +167,13 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             RemoteAction::Name,
             "Store opposite station name on the MHeard disk list",
         ),
-        cmd("//NEws", &["NEWS", "NE"], 2, RemoteAction::News, "Send NEWS.GPI"),
+        cmd(
+            "//NEws",
+            &["NEWS", "NE"],
+            2,
+            RemoteAction::News,
+            "Send NEWS.GPI",
+        ),
         cmd(
             "//PARameters",
             &["PARAMETERS", "PARAMETER", "PAR"],
@@ -103,18 +181,90 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             RemoteAction::Parameters,
             "Show TNC/system parameters",
         ),
-        cmd("//PRompt", &["PROMPT", "PR"], 2, RemoteAction::Prompt, "Remote prompt on/off"),
-        cmd("//Quit", &["QUIT", "Q"], 1, RemoteAction::Quit, "QRT then disconnect"),
-        cmd("//Read", &["READ", "R"], 1, RemoteAction::Read, "Send UserDir text file"),
-        cmd("//RPrg", &["RPRG", "RP"], 2, RemoteAction::ReadAutoBin, "AutoBin send"),
-        cmd("//RTt", &["RTT", "RT"], 2, RemoteAction::RoundTrip, "Round-trip time"),
-        cmd("//RUN", &["RUN"], 3, RemoteAction::Run, "EXTERNAL / GPRI program"),
-        cmd("//Usage", &["USAGE", "U"], 1, RemoteAction::Usage, "Connected stations"),
-        cmd("//VERsion", &["VERSION", "VER"], 3, RemoteAction::Version, "Report version"),
-        cmd("//Write", &["WRITE", "WRIT", "W"], 1, RemoteAction::Write, "Capture text to file"),
-        cmd("//WPrg", &["WPRG", "WP"], 2, RemoteAction::WriteAutoBin, "AutoBin store"),
-        cmd("//C", &["C"], 1, RemoteAction::RemoteConnect, "Remote-initiated connect"),
-        cmd("#", &["#"], 1, RemoteAction::ChatMode, "Chat-mode allow token"),
+        cmd(
+            "//PRompt",
+            &["PROMPT", "PR"],
+            2,
+            RemoteAction::Prompt,
+            "Remote prompt on/off",
+        ),
+        cmd(
+            "//Quit",
+            &["QUIT", "Q"],
+            1,
+            RemoteAction::Quit,
+            "QRT then disconnect",
+        ),
+        cmd(
+            "//Read",
+            &["READ", "R"],
+            1,
+            RemoteAction::Read,
+            "Send UserDir text file",
+        ),
+        cmd(
+            "//RPrg",
+            &["RPRG", "RP"],
+            2,
+            RemoteAction::ReadAutoBin,
+            "AutoBin send",
+        ),
+        cmd(
+            "//RTt",
+            &["RTT", "RT"],
+            2,
+            RemoteAction::RoundTrip,
+            "Round-trip time",
+        ),
+        cmd(
+            "//RUN",
+            &["RUN"],
+            3,
+            RemoteAction::Run,
+            "EXTERNAL / GPRI program",
+        ),
+        cmd(
+            "//Usage",
+            &["USAGE", "U"],
+            1,
+            RemoteAction::Usage,
+            "Connected stations",
+        ),
+        cmd(
+            "//VERsion",
+            &["VERSION", "VER"],
+            3,
+            RemoteAction::Version,
+            "Report version",
+        ),
+        cmd(
+            "//Write",
+            &["WRITE", "WRIT", "W"],
+            1,
+            RemoteAction::Write,
+            "Capture text to file",
+        ),
+        cmd(
+            "//WPrg",
+            &["WPRG", "WP"],
+            2,
+            RemoteAction::WriteAutoBin,
+            "AutoBin store",
+        ),
+        cmd(
+            "//C",
+            &["C"],
+            1,
+            RemoteAction::RemoteConnect,
+            "Remote-initiated connect",
+        ),
+        cmd(
+            "#",
+            &["#"],
+            1,
+            RemoteAction::ChatMode,
+            "Chat-mode allow token",
+        ),
     ]
 }
 
@@ -210,13 +360,25 @@ mod tests {
     #[test]
     fn parses_common_abbreviations() {
         assert_eq!(parse_line("//VER").unwrap().0, RemoteAction::Version);
-        assert_eq!(parse_line("//echo hi").unwrap(), (RemoteAction::Echo, "hi".into()));
-        assert_eq!(parse_line("//3 cq").unwrap().0, RemoteAction::CrossChannelText);
+        assert_eq!(
+            parse_line("//echo hi").unwrap(),
+            (RemoteAction::Echo, "hi".into())
+        );
+        assert_eq!(
+            parse_line("//3 cq").unwrap().0,
+            RemoteAction::CrossChannelText
+        );
         assert_eq!(parse_line("//DIR *.txt").unwrap().0, RemoteAction::Catalog);
         assert_eq!(parse_line("//KILL").unwrap().0, RemoteAction::Delete);
-        assert_eq!(parse_line("//CD ..").unwrap(), (RemoteAction::ChangeDir, "..".into()));
+        assert_eq!(
+            parse_line("//CD ..").unwrap(),
+            (RemoteAction::ChangeDir, "..".into())
+        );
         assert_eq!(parse_line("//PAR").unwrap().0, RemoteAction::Parameters);
-        assert_eq!(parse_line("//7+ ON").unwrap(), (RemoteAction::SevenPlusAutoSave, "ON".into()));
+        assert_eq!(
+            parse_line("//7+ ON").unwrap(),
+            (RemoteAction::SevenPlusAutoSave, "ON".into())
+        );
         assert_eq!(parse_line("//Q").unwrap().0, RemoteAction::Quit);
         assert_eq!(parse_line("//DISC").unwrap().0, RemoteAction::Disconnect);
         assert_eq!(

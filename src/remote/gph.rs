@@ -20,22 +20,102 @@ struct Lang {
 }
 
 const LANGUAGES: &[Lang] = &[
-    Lang { query: "EN", store: "EN", file: "G.GPH", label: "English" },
-    Lang { query: "G", store: "EN", file: "G.GPH", label: "English" },
-    Lang { query: "GB", store: "EN", file: "G.GPH", label: "English" },
-    Lang { query: "NL", store: "NL", file: "NL.GPH", label: "Dutch" },
-    Lang { query: "DL", store: "DL", file: "DL.GPH", label: "German" },
-    Lang { query: "DE", store: "DL", file: "DL.GPH", label: "German" },
-    Lang { query: "D", store: "DL", file: "DL.GPH", label: "German" },
-    Lang { query: "F", store: "F", file: "F.GPH", label: "French" },
-    Lang { query: "FR", store: "F", file: "F.GPH", label: "French" },
-    Lang { query: "PL", store: "PL", file: "PL.GPH", label: "Polish" },
-    Lang { query: "SLO", store: "SLO", file: "SLO.GPH", label: "Slovenian" },
-    Lang { query: "SL", store: "SLO", file: "SLO.GPH", label: "Slovenian" },
-    Lang { query: "OK", store: "OK", file: "OK.GPH", label: "Czech" },
-    Lang { query: "CZ", store: "OK", file: "OK.GPH", label: "Czech" },
-    Lang { query: "HA", store: "HA", file: "HA.GPH", label: "Hungarian" },
-    Lang { query: "HU", store: "HA", file: "HA.GPH", label: "Hungarian" },
+    Lang {
+        query: "EN",
+        store: "EN",
+        file: "G.GPH",
+        label: "English",
+    },
+    Lang {
+        query: "G",
+        store: "EN",
+        file: "G.GPH",
+        label: "English",
+    },
+    Lang {
+        query: "GB",
+        store: "EN",
+        file: "G.GPH",
+        label: "English",
+    },
+    Lang {
+        query: "NL",
+        store: "NL",
+        file: "NL.GPH",
+        label: "Dutch",
+    },
+    Lang {
+        query: "DL",
+        store: "DL",
+        file: "DL.GPH",
+        label: "German",
+    },
+    Lang {
+        query: "DE",
+        store: "DL",
+        file: "DL.GPH",
+        label: "German",
+    },
+    Lang {
+        query: "D",
+        store: "DL",
+        file: "DL.GPH",
+        label: "German",
+    },
+    Lang {
+        query: "F",
+        store: "F",
+        file: "F.GPH",
+        label: "French",
+    },
+    Lang {
+        query: "FR",
+        store: "F",
+        file: "F.GPH",
+        label: "French",
+    },
+    Lang {
+        query: "PL",
+        store: "PL",
+        file: "PL.GPH",
+        label: "Polish",
+    },
+    Lang {
+        query: "SLO",
+        store: "SLO",
+        file: "SLO.GPH",
+        label: "Slovenian",
+    },
+    Lang {
+        query: "SL",
+        store: "SLO",
+        file: "SLO.GPH",
+        label: "Slovenian",
+    },
+    Lang {
+        query: "OK",
+        store: "OK",
+        file: "OK.GPH",
+        label: "Czech",
+    },
+    Lang {
+        query: "CZ",
+        store: "OK",
+        file: "OK.GPH",
+        label: "Czech",
+    },
+    Lang {
+        query: "HA",
+        store: "HA",
+        file: "HA.GPH",
+        label: "Hungarian",
+    },
+    Lang {
+        query: "HU",
+        store: "HA",
+        file: "HA.GPH",
+        label: "Hungarian",
+    },
 ];
 
 #[derive(Debug, Clone)]
@@ -124,7 +204,11 @@ fn help_topic(args: &str) -> &str {
         return "";
     };
     if first.eq_ignore_ascii_case("h") || first.eq_ignore_ascii_case("help") {
-        parts.last().unwrap_or(if first.eq_ignore_ascii_case("h") { "h" } else { "" })
+        parts.last().unwrap_or(if first.eq_ignore_ascii_case("h") {
+            "h"
+        } else {
+            ""
+        })
     } else {
         first
     }
@@ -177,7 +261,9 @@ fn parse(text: &str) -> HelpPack {
         };
         i += 1;
         let mut body = String::new();
-        while i < lines.len() && tag_header(lines[i]).is_none() && !lines[i].trim().starts_with("@@")
+        while i < lines.len()
+            && tag_header(lines[i]).is_none()
+            && !lines[i].trim().starts_with("@@")
         {
             body.push_str(lines[i]);
             body.push('\n');
@@ -200,11 +286,7 @@ fn tag_header(line: &str) -> Option<(String, usize)> {
     let rest = &t[1..];
     let (tag, n) = rest.split_once(',').unwrap_or((rest, "1"));
     let tag = tag.trim();
-    if tag.is_empty()
-        || !tag
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '+')
-    {
+    if tag.is_empty() || !tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '+') {
         return None;
     }
     let min_prefix = n.trim().parse().unwrap_or(1usize).max(1);

@@ -158,10 +158,7 @@ pub(crate) fn tx_chunk_len(baud: u32) -> usize {
 /// How long `nbytes` take to leave a UART (8N1, 10 bit times per byte).
 pub(crate) fn wire_time(baud: u32, nbytes: usize) -> Duration {
     let baud = u64::from(baud.max(300));
-    let us = (nbytes as u64)
-        .saturating_mul(10)
-        .saturating_mul(1_000_000)
-        / baud;
+    let us = (nbytes as u64).saturating_mul(10).saturating_mul(1_000_000) / baud;
     Duration::from_micros(us.max(1_000))
 }
 

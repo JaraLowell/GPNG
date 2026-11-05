@@ -192,7 +192,12 @@ impl UiApp {
         }
     }
 
-    fn on_key(&mut self, code: KeyCode, modifiers: KeyModifiers, cmd_tx: &mpsc::Sender<TncCommand>) {
+    fn on_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        cmd_tx: &mpsc::Sender<TncCommand>,
+    ) {
         if modifiers.contains(KeyModifiers::ALT) {
             match code {
                 KeyCode::Char('x') | KeyCode::Char('X') => self.should_quit = true,
@@ -543,7 +548,10 @@ impl UiApp {
 }
 
 fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
-    col >= r.x && col < r.x.saturating_add(r.width) && row >= r.y && row < r.y.saturating_add(r.height)
+    col >= r.x
+        && col < r.x.saturating_add(r.width)
+        && row >= r.y
+        && row < r.y.saturating_add(r.height)
 }
 
 fn channel_tab_span(n: u8, active: ActivePane, t: &Theme) -> Span<'static> {

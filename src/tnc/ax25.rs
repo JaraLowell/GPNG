@@ -100,11 +100,7 @@ pub fn insert_monitor_time(line: &str, hhmm: &str) -> String {
     } else {
         return line.to_string();
     };
-    if tail
-        .split_whitespace()
-        .next()
-        .is_some_and(is_hhmm)
-    {
+    if tail.split_whitespace().next().is_some_and(is_hhmm) {
         return line.to_string();
     }
     format!("{lead}{head}{hhmm} {tail}")
@@ -136,39 +132,180 @@ impl Ax25Frame {
     }
 }
 
-/// Split I/UI info on `\r`, `\n`, or `\r\n` (DOS TNCs often use CR only).
-/// Each payload line is indented with three spaces for the Monitor pad.
-pub fn monitor_payload_lines(text: &str) -> Vec<String> {
+/// One indented monitor info row.
+///
+/// CR, LF, and every other non-printable stay on that row as `<0x0d>` /
+/// `<0x1c>` instead of opening a new line. A trailing CR/LF run is the
+/// frame end and is not shown. Empty info yields nothing.
+pub fn monitor_info_line(text: &str) -> Option<String> {
     let text = text.trim_end_matches(['\r', '\n']);
     if text.is_empty() {
-        return Vec::new();
+        return None;
     }
-    let bytes = text.as_bytes();
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\r' => {
-                out.push(format!("   {}", &text[start..i]));
-                i += 1;
-                if i < bytes.len() && bytes[i] == b'\n' {
-                    i += 1;
-                }
-                start = i;
-            }
-            b'\n' => {
-                out.push(format!("   {}", &text[start..i]));
-                i += 1;
-                start = i;
-            }
-            _ => i += 1,
+    let escaped = escape_monitor_text(text);
+    if escaped.is_empty() {
+        None
+    } else {
+        Some(with_info_indent(&escaped))
+    }
+}
+
+/// Same rows `monitor_info_line` produces. Kept for callers that expect a list.
+pub fn monitor_payload_lines(text: &str) -> Vec<String> {
+    monitor_info_line(text).into_iter().collect()
+}
+
+/// Replace characters that must not hit the text layout.
+///
+/// Printable text is unchanged. A byte-sized control becomes `<0x1c>`
+/// (two lowercase hex digits). Anything above Latin-1 becomes `<U+2028>`.
+pub fn escape_monitor_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if monitor_char_ok(c) {
+            out.push(c);
+        } else {
+            out.push_str(&monitor_nonprint_token(c as u32));
         }
     }
-    if start <= text.len() {
-        out.push(format!("   {}", &text[start..]));
-    }
     out
+}
+
+/// Monitor rows for one hostmode payload.
+///
+/// An `fm …` header is its own row. The break after that header is the
+/// frame structure and is not drawn. Everything after it, including further
+/// CR/LF, is one indented info row with non-printables shown as hex.
+pub fn monitor_display_lines_from_bytes(raw: &[u8], extended: bool) -> Vec<String> {
+    let raw = trim_trailing_crlf(raw);
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    if !starts_with_fm(raw) {
+        return info_row(raw, extended).into_iter().collect();
+    }
+    let Some(header_end) = raw.iter().position(|&b| b == b'\r' || b == b'\n') else {
+        return info_header(raw, extended).into_iter().collect();
+    };
+    let mut lines = Vec::new();
+    if let Some(header) = info_header(&raw[..header_end], extended) {
+        lines.push(header);
+    }
+    let mut i = header_end + 1;
+    if raw[header_end] == b'\r' && raw.get(i) == Some(&b'\n') {
+        i += 1;
+    }
+    if let Some(info) = info_row(trim_trailing_crlf(&raw[i..]), extended) {
+        lines.push(info);
+    }
+    lines
+}
+
+/// Info field of a KISS frame, before the three-space indent.
+///
+/// High bytes follow the umlaut switch: Latin-1 when it is on, UTF-8 when
+/// it is off. Bytes that are not printable become `<0xNN>`.
+pub fn bytes_to_monitor_body(raw: &[u8], extended: bool) -> String {
+    let mut out = String::new();
+    append_monitor_bytes(&mut out, trim_trailing_crlf(raw), extended);
+    out
+}
+
+fn info_header(raw: &[u8], extended: bool) -> Option<String> {
+    let mut out = String::new();
+    append_monitor_bytes(&mut out, raw, extended);
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn info_row(raw: &[u8], extended: bool) -> Option<String> {
+    let mut out = String::new();
+    append_monitor_bytes(&mut out, raw, extended);
+    if out.is_empty() {
+        None
+    } else {
+        Some(with_info_indent(&out))
+    }
+}
+
+fn with_info_indent(text: &str) -> String {
+    if text.starts_with("   ") {
+        text.to_string()
+    } else {
+        format!("   {text}")
+    }
+}
+
+fn starts_with_fm(raw: &[u8]) -> bool {
+    raw.len() >= 3 && raw[..3].eq_ignore_ascii_case(b"fm ")
+}
+
+fn trim_trailing_crlf(raw: &[u8]) -> &[u8] {
+    let mut end = raw.len();
+    while end > 0 && matches!(raw[end - 1], b'\n' | b'\r') {
+        end -= 1;
+    }
+    &raw[..end]
+}
+
+fn monitor_char_ok(c: char) -> bool {
+    c == ' ' || (!c.is_control() && !c.is_whitespace() && c != '\u{feff}')
+}
+
+fn monitor_nonprint_token(code: u32) -> String {
+    if code <= 0xFF {
+        format!("<0x{code:02x}>")
+    } else {
+        format!("<U+{code:04X}>")
+    }
+}
+
+fn append_monitor_bytes(out: &mut String, raw: &[u8], extended: bool) {
+    if extended {
+        for &b in raw {
+            if (0x20..=0x7e).contains(&b) || b >= 0xA0 {
+                out.push(char::from_u32(u32::from(b)).unwrap());
+            } else {
+                out.push_str(&monitor_nonprint_token(u32::from(b)));
+            }
+        }
+        return;
+    }
+    let mut i = 0;
+    while i < raw.len() {
+        let b = raw[i];
+        if (0x20..=0x7e).contains(&b) {
+            out.push(b as char);
+            i += 1;
+            continue;
+        }
+        if b >= 0x80 {
+            if let Some((ch, len)) = next_utf8(&raw[i..]) {
+                if monitor_char_ok(ch) {
+                    out.push(ch);
+                    i += len;
+                    continue;
+                }
+            }
+        }
+        out.push_str(&monitor_nonprint_token(u32::from(b)));
+        i += 1;
+    }
+}
+
+fn next_utf8(raw: &[u8]) -> Option<(char, usize)> {
+    let max = raw.len().min(4);
+    for len in 1..=max {
+        if let Ok(s) = std::str::from_utf8(&raw[..len]) {
+            if s.len() == len && s.chars().nth(1).is_none() {
+                return s.chars().next().map(|ch| (ch, len));
+            }
+        }
+    }
+    None
 }
 
 /// Split `CALL` / `CALL-n` → `(BASE, ssid)`.
@@ -308,9 +445,7 @@ pub fn build_ua(dest: &str, src: &str, final_: bool) -> Vec<u8> {
         dest,
         src,
         &[],
-        FrameContent::UnnumberedAcknowledge(UnnumberedAcknowledge {
-            final_bit: final_,
-        }),
+        FrameContent::UnnumberedAcknowledge(UnnumberedAcknowledge { final_bit: final_ }),
     )
 }
 
@@ -320,9 +455,7 @@ pub fn build_dm(dest: &str, src: &str, final_: bool) -> Vec<u8> {
         dest,
         src,
         &[],
-        FrameContent::DisconnectedMode(DisconnectedMode {
-            final_bit: final_,
-        }),
+        FrameContent::DisconnectedMode(DisconnectedMode { final_bit: final_ }),
     )
 }
 
@@ -392,12 +525,14 @@ fn classify(content: &FrameContent) -> (Ax25FrameType, u8, u8, bool, Vec<u8>) {
             (Ax25FrameType::Ua, 0, 0, ua.final_bit, Vec::new())
         }
         FrameContent::Disconnect(d) => (Ax25FrameType::Disc, 0, 0, d.poll, Vec::new()),
-        FrameContent::DisconnectedMode(dm) => {
-            (Ax25FrameType::Dm, 0, 0, dm.final_bit, Vec::new())
-        }
-        FrameContent::ReceiveReady(rr) => {
-            (Ax25FrameType::Rr, 0, rr.receive_sequence, rr.poll_or_final, Vec::new())
-        }
+        FrameContent::DisconnectedMode(dm) => (Ax25FrameType::Dm, 0, 0, dm.final_bit, Vec::new()),
+        FrameContent::ReceiveReady(rr) => (
+            Ax25FrameType::Rr,
+            0,
+            rr.receive_sequence,
+            rr.poll_or_final,
+            Vec::new(),
+        ),
         FrameContent::Information(i) => (
             Ax25FrameType::Info,
             i.send_sequence,
@@ -508,17 +643,11 @@ mod tests {
     #[test]
     fn gp_monitor_lines() {
         let sabm = parse_frame(&build_sabm("NL0MSK", "NL0MSK")).unwrap();
-        assert_eq!(
-            sabm.monitor_line(),
-            "fm NL0MSK to NL0MSK ctl SABM+"
-        );
+        assert_eq!(sabm.monitor_line(), "fm NL0MSK to NL0MSK ctl SABM+");
         let ua = parse_frame(&build_ua("NL0MSK", "NL0MSK", true)).unwrap();
         assert_eq!(ua.monitor_line(), "fm NL0MSK to NL0MSK ctl UA-");
         let i = parse_frame(&build_i("NL0MSK", "NL0MSK", 0, 0, false, b"hi")).unwrap();
-        assert_eq!(
-            i.monitor_line(),
-            "fm NL0MSK to NL0MSK ctl I00^ pid F0"
-        );
+        assert_eq!(i.monitor_line(), "fm NL0MSK to NL0MSK ctl I00^ pid F0");
         let rr = parse_frame(&build_rr("NL0MSK", "NL0MSK", 1, false, false)).unwrap();
         assert_eq!(rr.monitor_line(), "fm NL0MSK to NL0MSK ctl RR1v");
         let via = build_ui("CQ", "NL0MSK", &["DB0ABC"], b"x");
@@ -543,17 +672,42 @@ mod tests {
     }
 
     #[test]
-    fn payload_indent_cr_lf() {
+    fn payload_keeps_nonprintables_on_the_indented_row() {
         assert_eq!(monitor_payload_lines("hello"), vec!["   hello".to_string()]);
         assert_eq!(
             monitor_payload_lines("a\rb\nc\r\nd\r"),
-            vec![
-                "   a".to_string(),
-                "   b".to_string(),
-                "   c".to_string(),
-                "   d".to_string(),
-            ]
+            vec!["   a<0x0d>b<0x0a>c<0x0d><0x0a>d".to_string()]
         );
         assert!(monitor_payload_lines("\r\n").is_empty());
+        assert_eq!(
+            monitor_payload_lines("`|R~l \"[/>\"3{}=\n?'\""),
+            vec!["   `|R~l \"[/>\"3{}=<0x0a>?'\"".to_string()]
+        );
+        assert_eq!(
+            monitor_payload_lines("ab\u{1c}cd"),
+            vec!["   ab<0x1c>cd".to_string()]
+        );
+    }
+
+    #[test]
+    fn host_monitor_splits_only_the_header() {
+        let raw = b"fm 15:45 PE1OID-9 to US2PP7 via DB0ET,WIDE1,WIDE2-2 ctl UIv pid F0\r   `|R~l \"[/>\"3{}=\n?'\"\r";
+        assert_eq!(
+            monitor_display_lines_from_bytes(raw, false),
+            vec![
+                "fm 15:45 PE1OID-9 to US2PP7 via DB0ET,WIDE1,WIDE2-2 ctl UIv pid F0".to_string(),
+                "   `|R~l \"[/>\"3{}=<0x0a>?'\"".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn monitor_bytes_keep_text_and_show_binary() {
+        assert_eq!(bytes_to_monitor_body(b"hi\r", false), "hi");
+        assert_eq!(bytes_to_monitor_body(b"a\x1cb", false), "a<0x1c>b");
+        assert_eq!(bytes_to_monitor_body(&[0xE4], true), "ä");
+        assert_eq!(bytes_to_monitor_body(&[0xE4], false), "<0xe4>");
+        assert_eq!(bytes_to_monitor_body("ä".as_bytes(), false), "ä");
+        assert_eq!(bytes_to_monitor_body(&[0xFF, 0x00], false), "<0xff><0x00>");
     }
 }

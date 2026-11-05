@@ -49,7 +49,11 @@ impl HostCode {
 }
 
 /// Encode and write one host→TNC hostmode frame (`code = 0x01` data/command).
-pub fn write_host_frame(link: &mut SerialLink, channel: u8, payload: &[u8]) -> Result<(), TncError> {
+pub fn write_host_frame(
+    link: &mut SerialLink,
+    channel: u8,
+    payload: &[u8],
+) -> Result<(), TncError> {
     if payload.len() > 255 {
         return Err(TncError::Protocol(
             "hostmode payload exceeds 255 bytes".into(),
@@ -160,7 +164,10 @@ pub fn parse_free_buffer(payload: &[u8]) -> Option<u32> {
 }
 
 fn payload_text(payload: &[u8]) -> &str {
-    let end = payload.iter().position(|&b| b == 0).unwrap_or(payload.len());
+    let end = payload
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(payload.len());
     std::str::from_utf8(&payload[..end]).unwrap_or("")
 }
 
