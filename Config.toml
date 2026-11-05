@@ -143,7 +143,7 @@ monitor_mode = "IUSC"
 
 # KISS wire: "serial" = Kenwood etc. via [serial] port/baud + KISS.INI;
 # "tcp" = Soundmodem / Direwolf raw KISS TCP (no KISS.INI).
-kiss_transport = "tcp"
+kiss_transport = "serial"
 kiss_tcp_host = "127.0.0.1"
 kiss_tcp_port = 8100          # UZ7HO Soundmodem KISS TCP; Direwolf often 8001
 
