@@ -414,8 +414,17 @@ impl Config {
     }
 
     /// Set MYCALL for a slot (extends the list as needed). Returns the
-    /// normalised callsign.
+    /// normalised callsign. An empty channel call joins the global pool.
     pub fn set_mycall_for_slot(&mut self, slot: u8, call: &str) -> Result<String, String> {
+        if slot != 0 && call.trim().is_empty() {
+            let idx = slot as usize;
+            let primary = self.primary_mycall().to_string();
+            while self.station.mycall.len() <= idx {
+                self.station.mycall.push(primary.clone());
+            }
+            self.station.mycall[idx].clear();
+            return Ok(primary);
+        }
         let call = normalize_mycall(call)?;
         let idx = slot as usize;
         let primary = self.primary_mycall().to_string();

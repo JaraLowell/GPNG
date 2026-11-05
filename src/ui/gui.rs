@@ -92,6 +92,12 @@ const VGA_DARK_GRAY: Color32 = Color32::from_rgb(85, 85, 85);
 
 /// Classic DOS / BGI 3D bevel: raised = light-grey top+left, black bottom+right;
 /// pressed (sunken) = reversed.
+fn mix_rgb(from: Color32, to: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
+    Color32::from_rgb(ch(from.r(), to.r()), ch(from.g(), to.g()), ch(from.b(), to.b()))
+}
+
 fn paint_bevel(painter: &egui::Painter, rect: Rect, pressed: bool) {
     let hi_face = Color32::from_rgb(200, 200, 200); // soft highlight (not hard white)
     let (hi, lo) = if pressed {
@@ -206,6 +212,8 @@ pub struct GpGuiApp {
     channel_peer: Vec<Option<String>>,
     /// Channel lock. Typed chat is sealed; a sealed incoming line turns it on.
     channel_lock: Vec<bool>,
+    /// Incoming text arrived while this channel was not the one on screen.
+    channel_unread: Vec<bool>,
     /// Open QSO for `<base call>.GPL`. Index matches `channel_peer`.
     qso_open: Vec<Option<OpenQso>>,
     /// Waiting for a sysop challenge (`SY` / `PW`, or a link that has a `.GPW`).
@@ -361,6 +369,7 @@ impl GpGuiApp {
         let mut pads = Vec::with_capacity(channels as usize + 1);
         let mut channel_peer = Vec::with_capacity(channels as usize + 1);
         let mut channel_lock = Vec::with_capacity(channels as usize + 1);
+        let mut channel_unread = Vec::with_capacity(channels as usize + 1);
         let mut qso_open = Vec::with_capacity(channels as usize + 1);
         let mut gpw_armed = Vec::with_capacity(channels as usize + 1);
         let mut channel_connecting = Vec::with_capacity(channels as usize + 1);
@@ -383,6 +392,7 @@ impl GpGuiApp {
             pads.push(pad);
             channel_peer.push(None);
             channel_lock.push(false);
+            channel_unread.push(false);
             qso_open.push(None);
             gpw_armed.push(false);
             channel_connecting.push(None);
@@ -507,6 +517,7 @@ impl GpGuiApp {
             channels,
             channel_peer,
             channel_lock,
+            channel_unread,
             qso_open,
             gpw_armed,
             last_gpw: String::new(),
@@ -886,6 +897,11 @@ impl GpGuiApp {
             self.mheard_spy_pick = false;
             self.show_mheard_spy_confirm = false;
         }
+        if let ActivePane::Channel(n) = pane {
+            if let Some(flag) = self.channel_unread.get_mut(n as usize) {
+                *flag = false;
+            }
+        }
         self.active = pane;
         self.status = format!("active: {}", pane.label());
     }
@@ -1020,52 +1036,38 @@ impl GpGuiApp {
     }
 
     /// Give `channel` a user/config MYCALL and put it on the air.
-    /// One callsign → one channel (duplicates fall back to global, not `-n` spam).
+    /// Several channels may share one name; they form one answer pool.
+    /// An empty call joins the global pool.
     fn claim_identity(&mut self, channel: u8, call: &str) -> Result<String, String> {
+        if channel != 0 && call.trim().is_empty() {
+            if let Some(t) = self.temp_slot_call.get_mut(channel as usize) {
+                *t = None;
+            }
+            return self.cfg.set_mycall_for_slot(channel, "");
+        }
         let call = crate::config::normalize_mycall(call)?;
         let primary = self.cfg.primary_mycall().to_string();
         if let Some(t) = self.temp_slot_call.get_mut(channel as usize) {
             *t = None;
         }
-        for ch in 1..=self.channels {
-            if ch == channel {
-                continue;
-            }
-            if self.effective_mycall(ch).eq_ignore_ascii_case(&call) {
-                if let Some(t) = self.temp_slot_call.get_mut(ch as usize) {
-                    *t = None;
-                }
-                let _ = self.cfg.set_mycall_for_slot(ch, &primary);
-                // Only re-push if that slot had a non-global call on the air.
-                if !call.eq_ignore_ascii_case(&primary) {
-                    self.push_channel_identity(ch);
-                }
-            }
-        }
         self.cfg.set_mycall_for_slot(channel, &call)?;
         // Radio: global lives on ch0; per-channel `I` only for a real override.
         if channel == 0 || !call.eq_ignore_ascii_case(&primary) {
             self.push_channel_identity(channel);
-        } else if channel == 1 {
-            // Keep ch1 acceptor in sync with global (single on-air call).
-            self.push_channel_identity(0);
         }
         Ok(call)
     }
 
-    /// Temporary `{base}-{channel}` on air for self-connect / busy redirect only.
-    /// Not written into Config.toml and not applied to every free slot.
-    fn assign_channel_ssid(&mut self, channel: u8) -> Result<String, String> {
-        if channel == 0 {
-            return Ok(self.cfg.primary_mycall().to_string());
+    /// On-air call for this connect. Not written to Config.toml.
+    /// Cleared when the channel disconnects.
+    fn adopt_air_call(&mut self, channel: u8, call: &str) {
+        if self.effective_mycall(channel).eq_ignore_ascii_case(call) {
+            return;
         }
-        let call = Config::channel_ssid_mycall(self.cfg.primary_mycall(), channel);
-        let call = crate::config::normalize_mycall(&call)?;
         if let Some(t) = self.temp_slot_call.get_mut(channel as usize) {
-            *t = Some(call.clone());
+            *t = Some(call.to_string());
         }
         self.push_channel_identity(channel);
-        Ok(call)
     }
 
     fn clear_temp_identity(&mut self, channel: u8) {
@@ -1091,9 +1093,100 @@ impl GpGuiApp {
         !call.is_empty() && !call.eq_ignore_ascii_case(primary)
     }
 
-    /// Which channel currently owns this callsign, if any (includes temp SSID).
-    fn channel_owning_call(&self, call: &str) -> Option<u8> {
-        (1..=self.channels).find(|&ch| self.effective_mycall(ch).eq_ignore_ascii_case(call))
+    /// Configured pool name. Empty, or the same as global, is the global pool.
+    fn pool_name(&self, channel: u8) -> String {
+        let primary = self.cfg.primary_mycall().to_string();
+        let call = self.cfg.mycall_for_slot(channel);
+        if call.is_empty() || call.eq_ignore_ascii_case(&primary) {
+            primary
+        } else {
+            call.to_string()
+        }
+    }
+
+    /// Channels that share `name`, lowest number first.
+    fn pool_channels(&self, name: &str) -> Vec<u8> {
+        (1..=self.channels)
+            .filter(|&n| self.pool_name(n).eq_ignore_ascii_case(name))
+            .collect()
+    }
+
+    /// Call this channel uses while it is in a connection.
+    /// The first channel of a pool keeps the bare name. The next is `NAME-1`
+    /// until disconnect. A pool of one channel never takes a number.
+    fn pool_air_call(&self, channel: u8) -> String {
+        let name = self.pool_name(channel);
+        let members = self.pool_channels(&name);
+        if members.len() <= 1 {
+            return name;
+        }
+        let index = members.iter().position(|&n| n == channel).unwrap_or(0);
+        if index == 0 {
+            name
+        } else {
+            format!("{name}-{index}")
+        }
+    }
+
+    fn canonical_pool(&self, name: &str) -> Option<String> {
+        (1..=self.channels).find_map(|n| {
+            let pool = self.pool_name(n);
+            if pool.eq_ignore_ascii_case(name) {
+                Some(pool)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// `(pool, specific slot)`. `None` slot means the bare name: first free
+    /// channel that is configured with that name. `Some(n)` is `NAME-n`, and
+    /// only when this client actually has that extra pool slot. Any other
+    /// call, including a suffix we do not host, is not ours.
+    fn match_pool(&self, dest: &str) -> Option<(String, Option<usize>)> {
+        if let Some(name) = self.canonical_pool(dest) {
+            return Some((name, None));
+        }
+        let (base, ssid) = dest.split_once('-')?;
+        let n: usize = ssid.parse().ok()?;
+        if n == 0 {
+            return self.canonical_pool(base).map(|name| (name, None));
+        }
+        let name = self.canonical_pool(base)?;
+        let members = self.pool_channels(&name);
+        // One channel is not a pool, so NAME-1 is not a call we host.
+        // A real pool hosts -1 on its 2nd channel, -2 on its 3rd, and so on.
+        if members.len() <= 1 || n >= members.len() {
+            return None;
+        }
+        Some((name, Some(n)))
+    }
+
+    /// Where an incoming call to `dest` is answered. `except` is the channel
+    /// that is placing the call, so it is not offered to itself.
+    /// `Foreign` is a call this client does not have: no answer and no busy.
+    fn incoming_slot(&self, dest: &str, except: Option<u8>) -> SlotAnswer {
+        let Some((name, specific)) = self.match_pool(dest) else {
+            return SlotAnswer::Foreign;
+        };
+        let members = self.pool_channels(&name);
+        let list: Vec<u8> = if let Some(index) = specific {
+            vec![members[index]]
+        } else {
+            members
+        };
+        for ch in list {
+            if except == Some(ch) || self.channel_connected(ch) {
+                continue;
+            }
+            return SlotAnswer::Accept {
+                channel: ch,
+                call: self.pool_air_call(ch),
+            };
+        }
+        SlotAnswer::Busy {
+            call: dest.to_string(),
+        }
     }
 
     fn sync_channel_identities(&mut self) {
@@ -1115,8 +1208,8 @@ impl GpGuiApp {
                 let _ = self.cfg.set_mycall_for_slot(ch, &primary);
             }
         }
-        let _ = self.cfg.set_mycall_for_slot(1, &primary);
-        // Single global identity on the modem.
+        // Single global identity on the modem. A user call on any channel,
+        // including channel 1, stays as they set it.
         self.push_channel_identity(0);
         // Manual per-channel MYCALL only.
         for ch in 1..=self.channels {
@@ -1131,14 +1224,6 @@ impl GpGuiApp {
     /// Global MYCALL stays on the radio; temps for self-connect stay as-is.
     fn prepare_busy_redirect_identities(&mut self) {
         // Intentionally empty — channel numbers are internal unless user-set.
-    }
-
-    /// Dedicated name in use → park redirect on a free channel with a temp SSID.
-    fn redirect_busy_dedicated(&mut self, from_channel: u8) -> Option<(u8, String)> {
-        let free =
-            (1..=self.channels).find(|&n| n != from_channel && !self.channel_connected(n))?;
-        let call = self.assign_channel_ssid(free).ok()?;
-        Some((free, call))
     }
 
     /// Expand and TX `GTEXT.GPI` (or picked CT file) on the given channel.
@@ -1234,15 +1319,15 @@ impl GpGuiApp {
         self.kiss_clear_sabm_timer(caller);
         self.kiss_clear_sabm_timer(answer);
         self.complete_self_connect_ctext(caller, answer);
-        self.status = format!("KISS self-connect ch{caller} ↔ ch{answer}");
+        self.status = format!("KISS linked {caller_call} ↔ {answer_call}");
     }
 
     /// Self-connect finished: answer side TX CTEXT — white on answer, green on caller.
     fn complete_self_connect_ctext(&mut self, caller: u8, answer: u8) {
         // Mark both ends linked (TNC may only report CONNECTED on the caller).
         let answer_call = self.effective_mycall(answer);
-        // Channel list shows the peer callsign — answer side sees global MYCALL.
-        let caller_call = self.cfg.primary_mycall().to_string();
+        // Answer side sees the call this channel actually used, not the global one.
+        let caller_call = self.effective_mycall(caller);
         if let Some(p) = self.channel_peer.get_mut(caller as usize) {
             *p = Some(answer_call);
         }
@@ -1264,7 +1349,7 @@ impl GpGuiApp {
             return;
         };
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
-        let peer = self.cfg.primary_mycall().to_string();
+        let peer = self.effective_mycall(caller);
         let my = self.effective_mycall(answer);
         let kiss = self.kiss_mode();
         // Sending window is the same terminal: a newline in the file is a
@@ -1450,6 +1535,8 @@ impl GpGuiApp {
         if let Some(dec) = self.rx_ansi.get_mut(idx) {
             *dec = AnsiDecoder::new();
         }
+        // Pool overflow (`NL1STK-1`) lasts only for this connection.
+        self.clear_temp_identity(channel);
     }
 
     fn kiss_arm_sabm_timer(&mut self, channel: u8) {
@@ -1849,6 +1936,23 @@ impl GpGuiApp {
         );
     }
 
+    /// DM (busy) from `from` back to the station that called.
+    fn kiss_send_dm(&mut self, to: &str, from: &str) {
+        self.tx_kiss_payload(0, &ax25::build_dm(to, from, true));
+        self.push_kiss_mon(
+            PadKind::Own,
+            from,
+            to,
+            &[],
+            Ax25FrameType::Dm,
+            0,
+            0,
+            true,
+            false,
+            None,
+        );
+    }
+
     /// Raw KISS port payload (already AX.25-framed). Port 0 = Soundmodem radio 1.
     fn tx_kiss_payload(&mut self, port: u8, payload: &[u8]) {
         let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
@@ -1972,6 +2076,23 @@ impl GpGuiApp {
         // A sealed line is already complete, so show the plaintext now.
         if kind == PadKind::Incoming {
             self.reveal_locked_row(channel);
+            self.note_channel_unread(channel, chunk);
+        }
+    }
+
+    /// Light the channel button when text arrives on a channel that is not open.
+    fn note_channel_unread(&mut self, channel: u8, chunk: &str) {
+        if !(1..=self.channels).contains(&channel) {
+            return;
+        }
+        if matches!(self.active, ActivePane::Channel(n) if n == channel) {
+            return;
+        }
+        if !chunk.chars().any(|c| !c.is_control() && !c.is_whitespace()) {
+            return;
+        }
+        if let Some(flag) = self.channel_unread.get_mut(channel as usize) {
+            *flag = true;
         }
     }
 
@@ -2311,11 +2432,6 @@ impl GpGuiApp {
                 }
             }
             Ax25FrameType::Sabm => {
-                if !self.cfg.is_own_call(&frame.dest)
-                    && self.channel_owning_call(&frame.dest).is_none()
-                {
-                    return;
-                }
                 // Pending KISS self-connect: this SABM is for our answer SSID —
                 // finish locally (also covers rare TX→RX loopback).
                 if let Some((caller, answer)) = self.self_connect_pair {
@@ -2335,41 +2451,21 @@ impl GpGuiApp {
                         return;
                     }
                 }
-                // Answer on the slot that owns this call, else first free.
-                let owned = self.channel_owning_call(&frame.dest);
-                let ch = match owned {
-                    Some(c) if !self.channel_linked(c) => Some(c),
-                    Some(_) => self.first_free_channel(),
-                    None => self.first_free_channel(),
+                let slot = self.incoming_slot(&frame.dest, None);
+                let (ch, my) = match slot {
+                    SlotAnswer::Foreign => return,
+                    SlotAnswer::Busy { call } => {
+                        self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                        self.kiss_send_dm(&frame.src, &call);
+                        return;
+                    }
+                    SlotAnswer::Accept { channel, call } => {
+                        self.adopt_air_call(channel, &call);
+                        (channel, call)
+                    }
                 };
                 // Heard SABM (even if we refuse).
                 self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
-                let Some(ch) = ch else {
-                    // All busy → DM (refuse).
-                    let my = self.cfg.primary_mycall().to_string();
-                    self.tx_kiss_payload(0, &ax25::build_dm(&frame.src, &my, true));
-                    self.push_kiss_mon(
-                        PadKind::Own,
-                        &my,
-                        &frame.src,
-                        &[],
-                        Ax25FrameType::Dm,
-                        0,
-                        0,
-                        true,
-                        false,
-                        None,
-                    );
-                    return;
-                };
-                let my = if owned == Some(ch) {
-                    frame.dest.clone()
-                } else {
-                    if let Some(t) = self.temp_slot_call.get_mut(ch as usize) {
-                        *t = Some(frame.dest.clone());
-                    }
-                    frame.dest.clone()
-                };
                 // SABM → UA (we answer connect requests).
                 self.tx_kiss_payload(0, &ax25::build_ua(&frame.src, &my, true));
                 if let Some(p) = self.channel_peer.get_mut(ch as usize) {
@@ -5603,13 +5699,22 @@ impl eframe::App for GpGuiApp {
 
         // Panels own reserved bands so CentralPanel (RX) cannot paint over them.
         // Strip height stays fixed; icons scale to fill it (1 px top/bottom).
-        let icons_h = 72.0;
+        let icons_h = 72.0_f32;
         let session_h = if self.show_session_bar() { 26.0 } else { 0.0 };
-        let prewrite_h = 110.0;
-        let channels_h = 72.0;
-        let status_h = 44.0;
+        let status_h = 44.0_f32;
+        // Channel / BBS / Box row is 20% shorter than the old 72px grid.
+        let channels_h = 72.0_f32 * 0.8;
         // Slim column — dial stays centered with little side air.
-        let clock_w = 156.0;
+        let clock_w = 156.0_f32;
+        // Header ends at the bottom of the "GP V…" badge, not in the green under it.
+        // Same badge math as `draw_analog_clock` (width-sized dial, then the two badges).
+        let badge_h = 18.0_f32;
+        let badge_gap = 4.0_f32;
+        let radius = ((clock_w - 12.0) * 0.5 - 1.0).clamp(36.0, 70.0);
+        // Same kind of air the dial has under the top border.
+        let under_badge = 8.0_f32;
+        let clock_bottom = 12.0 + radius * 2.0 + 8.0 + badge_h * 2.0 + badge_gap + under_badge;
+        let prewrite_h = (clock_bottom - channels_h - status_h).max(80.0);
         let top_h = prewrite_h + channels_h + status_h;
 
         egui::TopBottomPanel::top("gp_top")
@@ -6175,6 +6280,9 @@ impl GpGuiApp {
     }
 
     fn draw_channel_grid(&mut self, ui: &mut Ui, rect: Rect) {
+        if self.channel_unread.iter().any(|on| *on) {
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+        }
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, self.menu_bg);
 
@@ -6212,6 +6320,9 @@ impl GpGuiApp {
                 // Idle dark grey · connected light grey · active (any) dark red.
                 let connected =
                     matches!(action, Some(ActivePane::Channel(ch)) if self.channel_connected(ch));
+                let unread = matches!(action, Some(ActivePane::Channel(ch)) if {
+                    !selected && self.channel_unread.get(ch as usize).copied().unwrap_or(false)
+                });
                 let (fill, text_color) = if selected {
                     (VGA_DARK_RED, Color32::WHITE)
                 } else if connected {
@@ -6219,18 +6330,26 @@ impl GpGuiApp {
                 } else {
                     (VGA_DARK_GRAY, Color32::from_rgb(220, 220, 220))
                 };
+                // Slow breathe between the normal fill and red while unread.
+                let fill = if unread {
+                    let t = ui.input(|i| i.time);
+                    let wave = ((t * std::f64::consts::TAU / 1.8).sin() as f32) * 0.5 + 0.5;
+                    mix_rgb(fill, Color32::from_rgb(196, 36, 36), wave)
+                } else {
+                    fill
+                };
                 let id = ui.id().with(("ch", n));
                 let resp = ui.interact(cell, id, Sense::click());
                 painter.rect_filled(cell, 0.0, fill);
                 // Selected / enabled → sunken; also while the pointer is held.
                 paint_bevel(&painter, cell, selected || resp.is_pointer_button_down_on());
-                painter.text(
-                    cell.center(),
-                    egui::Align2::CENTER_CENTER,
-                    label,
-                    FontId::proportional(13.0),
-                    text_color,
-                );
+                let font = FontId::proportional(15.0);
+                let anchor = egui::Align2::CENTER_CENTER;
+                let at = cell.center();
+                if connected {
+                    painter.text(at + Vec2::new(0.7, 0.0), anchor, &label, font.clone(), text_color);
+                }
+                painter.text(at, anchor, &label, font, text_color);
                 if resp.clicked() {
                     if let Some(pane) = action {
                         self.select(pane);
@@ -7067,6 +7186,7 @@ impl GpGuiApp {
     fn apply_mycall_from_edit(&mut self) -> Result<(), String> {
         let slot = self.session.mycall_slot;
         let edited = self.session.mycall_edit.clone();
+        let joined_global = slot != 0 && edited.trim().is_empty();
         let call = if slot == 0 {
             self.cfg.set_mycall_for_slot(0, &edited)?
         } else {
@@ -7079,6 +7199,8 @@ impl GpGuiApp {
                 self.restore_global_identities();
             }
             "Monitor / global".into()
+        } else if joined_global {
+            format!("channel {slot}, global pool")
         } else {
             format!("channel {slot}")
         };
@@ -7174,9 +7296,12 @@ impl GpGuiApp {
     /// WA8DED / TF hostmode connect: `C CALL` or `C CALL digi1 digi2…`.
     /// Does not mark the channel connected until the TNC reports CONNECTED.
     ///
-    /// - Foreign call / directed own SSID (`NL0MSK-10`) → connect that name as typed.
-    /// - Own global MYCALL (loopback) → caller stays on `channel`; first free channel
-    ///   answers as `{mycall}-{n}` because the caller channel is busy.
+    /// Channels that share a configured name are one pool. The first free
+    /// channel answers as that name. The next answers as `NAME-1` until it
+    /// disconnects. One channel alone never takes a number: a second call
+    /// gets busy from that name. Empty, or the same as global, is the global
+    /// pool. A call to a name this station has is answered here, because
+    /// Soundmodem does not return our own SABM.
     fn begin_connect(&mut self, channel: u8, dest: &str, vias: &[String], downlinks: Vec<String>) {
         if !(1..=self.channels).contains(&channel) {
             self.status = format!("connect: bad channel {channel}");
@@ -7185,71 +7310,53 @@ impl GpGuiApp {
 
         let mut dest = dest.to_string();
         let mut vias = vias.to_vec();
-        let primary = self.cfg.primary_mycall().to_string();
-        let bare_own_global = dest.eq_ignore_ascii_case(&primary)
-            || (self.cfg.is_own_call(&dest) && !dest.contains('-'));
-        // Specific name we own (NL0MSK-10, or any dedicated slot call).
-        let directed_own = !dest.eq_ignore_ascii_case(&primary)
-            && (self.cfg.is_own_call(&dest) || self.channel_owning_call(&dest).is_some());
-
+        let mut outgoing = self.effective_mycall(channel);
         let mut self_connect = false;
-        if bare_own_global {
-            // Loopback to global: caller busy on `channel`; answer as {base}-{free}.
-            let Some(answer_ch) =
-                (1..=self.channels).find(|&n| n != channel && !self.channel_connected(n))
-            else {
-                self.status = "no free channel for self-connect".into();
-                return;
-            };
-            match self.assign_channel_ssid(answer_ch) {
-                Ok(answer_call) => {
-                    dest = answer_call.clone();
+        let mut local_link = false;
+
+        if vias.is_empty() {
+            match self.incoming_slot(&dest, Some(channel)) {
+                SlotAnswer::Busy { call } => {
+                    self.status = format!("{call} busy");
+                    if let Some(pad) = self.pads.get_mut(channel as usize) {
+                        pad.push(PadKind::System, format!("*** {call} busy"));
+                    }
+                    if self.kiss_mode() {
+                        self.kiss_send_dm(&outgoing, &call);
+                    }
+                    return;
+                }
+                SlotAnswer::Accept { channel: answer_ch, call } => {
+                    let air = self.pool_air_call(channel);
+                    self.adopt_air_call(channel, &air);
+                    outgoing = self.effective_mycall(channel);
+                    self.adopt_air_call(answer_ch, &call);
+                    dest = call;
                     vias.clear();
                     self_connect = true;
+                    local_link = true;
                     self.self_connect_pair = Some((channel, answer_ch));
-                    let caller_id = self.effective_mycall(channel);
                     if let Some(c) = self.channel_connecting.get_mut(answer_ch as usize) {
-                        *c = Some(caller_id);
+                        *c = Some(outgoing.clone());
                     }
+                    let answer_call = self.effective_mycall(answer_ch);
                     if let Some(pad) = self.pads.get_mut(answer_ch as usize) {
                         pad.push(
                             PadKind::System,
-                            format!(
-                                "*** answer side {answer_call} (self-connect from ch{channel})"
-                            ),
+                            format!("*** incoming {outgoing} → {answer_call} on ch{answer_ch}"),
                         );
                     }
                 }
-                Err(e) => {
-                    self.status = e;
-                    return;
+                SlotAnswer::Foreign => {
+                    let air = self.pool_air_call(channel);
+                    self.adopt_air_call(channel, &air);
+                    outgoing = self.effective_mycall(channel);
                 }
             }
-        } else if directed_own {
-            // Dialled a specific slot name. If that channel is busy, redirect to a
-            // free channel with a temporary {base}-{n} (still only one call each).
-            if let Some(owner) = self.channel_owning_call(&dest) {
-                if self.channel_connected(owner) {
-                    match self.redirect_busy_dedicated(owner) {
-                        Some((free, temp_call)) => {
-                            dest = temp_call.clone();
-                            vias.clear();
-                            if let Some(pad) = self.pads.get_mut(free as usize) {
-                                pad.push(
-                                    PadKind::System,
-                                    format!("*** redirect {owner} busy → {temp_call} on ch{free}"),
-                                );
-                            }
-                        }
-                        None => {
-                            self.status = format!("{dest} busy — no free channel");
-                            return;
-                        }
-                    }
-                } else {
-                    self.push_channel_identity(owner);
-                }
-            }
+        } else {
+            let air = self.pool_air_call(channel);
+            self.adopt_air_call(channel, &air);
+            outgoing = self.effective_mycall(channel);
         }
 
         self.session.spy_slot = None;
@@ -7291,12 +7398,15 @@ impl GpGuiApp {
             } else {
                 format!(" via {}", vias.join(","))
             };
-            let kind = if self_connect {
+            let kind = if self_connect && !local_link {
                 "self-connect"
             } else {
                 "connecting"
             };
-            pad.push(PadKind::System, format!("*** {kind} to {dest}{via_note}"));
+            pad.push(
+                PadKind::System,
+                format!("*** {kind} {outgoing} to {dest}{via_note}"),
+            );
             if !self_connect && !downlinks.is_empty() {
                 pad.push(
                     PadKind::System,
@@ -7305,7 +7415,7 @@ impl GpGuiApp {
             }
         }
         if self.kiss_mode() {
-            let src = self.effective_mycall(channel);
+            let src = outgoing.clone();
             let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
             let frame = ax25::build_sabm_via(&dest, &src, &via_ref);
             self.tx_kiss_payload(0, &frame);
@@ -7329,9 +7439,11 @@ impl GpGuiApp {
                 }
             } else {
                 self.kiss_arm_sabm_timer(channel);
-                self.status = format!("KISS SABM → {dest}");
+                self.status = format!("KISS SABM {src} → {dest}");
             }
         } else {
+            // Hostmode puts the source in the channel MYCALL, not in `C`.
+            self.tx_modem_line(channel, &format!("I {outgoing}"));
             let cmd = if vias.is_empty() {
                 format!("C {dest}")
             } else {
@@ -7339,9 +7451,9 @@ impl GpGuiApp {
             };
             self.tx_modem_line(channel, &cmd);
             self.status = if self_connect {
-                format!("Self-connect ch{channel} → {dest}")
+                format!("Self-connect {outgoing} → {dest}")
             } else {
-                format!("Connecting to {dest}")
+                format!("Connecting {outgoing} → {dest}")
             };
         }
     }
@@ -7679,6 +7791,9 @@ impl GpGuiApp {
                             .font(FontId::monospace(16.0)),
                     );
                 });
+                if self.session.mycall_slot != 0 {
+                    ui.label("Empty, or the global call, joins the global pool.");
+                }
                 ui.horizontal(|ui| {
                     if ui.button("OK").clicked() {
                         if let Err(e) = self.apply_mycall_from_edit() {
@@ -7842,6 +7957,16 @@ struct ListOffer {
     list: bool,
     rows: Vec<MailEntry>,
     channel: u8,
+}
+
+/// Where a call to one of our names is answered.
+enum SlotAnswer {
+    /// Free channel in that name's pool, and the call it uses until disconnect.
+    Accept { channel: u8, call: String },
+    /// Every channel that carries this call is already in use.
+    Busy { call: String },
+    /// Not a call configured on this station. No answer, no busy.
+    Foreign,
 }
 
 enum ListAnswer {
@@ -8134,9 +8259,12 @@ fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool) -> bool {
     let badge_h = 18.0;
     let badge_gap = 4.0;
     let side_pad = 6.0;
-    let radius = ((rect.width() - side_pad * 2.0) * 0.5 - 1.0)
-        .min((rect.height() - badge_h * 2.0 - badge_gap - 28.0) * 0.42)
-        .clamp(36.0, 70.0);
+    // Dial from the column width. Shrink only when the two badges would not fit,
+    // so the version badge stays on the bottom edge of the header.
+    let radius_w = ((rect.width() - side_pad * 2.0) * 0.5 - 1.0).clamp(36.0, 70.0);
+    let under_dial = 8.0 + badge_h * 2.0 + badge_gap;
+    let room = (rect.height() - 12.0 - under_dial).max(72.0);
+    let radius = radius_w.min(room * 0.5);
     let cx = rect.center().x;
     let dial_center = Pos2::new(cx, rect.top() + 12.0 + radius);
 
