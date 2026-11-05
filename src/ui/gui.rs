@@ -7,7 +7,7 @@
 //! ├── magenta status grid (2 rows, non-clickable) ──┤    all three)    │
 //! ├─────────────────────────────────────────────────┴──────────────────┤
 //! │ full-width content (QSO / monitor / editor / …)                     │
-//! │ session strip: QRG CT äöü / Echo ♪ Clear [spy|7+/Remote/BIN] ScrLock ▲▼ B │
+//! │ session strip: QRG CT äöü / Echo ♪ Clear [spy|7+/Remote/BIN] 🔑 ScrLock ▲▼ B │
 //! │ channel splitscreen only: the same monitor pad, under that strip    │
 //! │ icons evenly spaced (set depends on pane)                           │
 //! ```
@@ -36,6 +36,7 @@ use eframe::egui::{
 use tokio::sync::mpsc;
 
 use crate::bbs::{self, Entry as MailEntry};
+use crate::cipher;
 use crate::config::{Config, HostProtocol};
 use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
@@ -203,6 +204,8 @@ pub struct GpGuiApp {
     channels: u8,
     /// Peer callsign per channel index (`1..=channels`); `None` = disconnected.
     channel_peer: Vec<Option<String>>,
+    /// Channel lock. Typed chat is sealed; a sealed incoming line turns it on.
+    channel_lock: Vec<bool>,
     /// Open QSO for `<base call>.GPL`. Index matches `channel_peer`.
     qso_open: Vec<Option<OpenQso>>,
     /// Waiting for a sysop challenge (`SY` / `PW`, or a link that has a `.GPW`).
@@ -262,6 +265,9 @@ pub struct GpGuiApp {
     ch_unack: Vec<u32>,
     /// Open terminal row on a channel. `None` means the next byte starts a row.
     rx_row: Vec<Option<u64>>,
+    /// AX.25 from/to for the text arriving on this channel. The lock uses these,
+    /// not a key carried in the line.
+    rx_calls: Vec<Option<(String, String)>>,
     /// Previous packet ended on CR; the next LF is the same newline.
     rx_cr: Vec<bool>,
     /// `//` command already run from the incoming message, so the later
@@ -354,6 +360,7 @@ impl GpGuiApp {
 
         let mut pads = Vec::with_capacity(channels as usize + 1);
         let mut channel_peer = Vec::with_capacity(channels as usize + 1);
+        let mut channel_lock = Vec::with_capacity(channels as usize + 1);
         let mut qso_open = Vec::with_capacity(channels as usize + 1);
         let mut gpw_armed = Vec::with_capacity(channels as usize + 1);
         let mut channel_connecting = Vec::with_capacity(channels as usize + 1);
@@ -375,6 +382,7 @@ impl GpGuiApp {
             }
             pads.push(pad);
             channel_peer.push(None);
+            channel_lock.push(false);
             qso_open.push(None);
             gpw_armed.push(false);
             channel_connecting.push(None);
@@ -498,6 +506,7 @@ impl GpGuiApp {
             event_log: VecDeque::new(),
             channels,
             channel_peer,
+            channel_lock,
             qso_open,
             gpw_armed,
             last_gpw: String::new(),
@@ -531,6 +540,7 @@ impl GpGuiApp {
             ch_tries: vec![0; slots],
             ch_unack: vec![0; slots],
             rx_row: vec![None; slots],
+            rx_calls: vec![None; slots],
             rx_cr: vec![false; slots],
             cmd_ran: vec![None; slots],
             rx_ansi: vec![AnsiDecoder::new(); slots],
@@ -697,6 +707,12 @@ impl GpGuiApp {
                     for peer in &mut self.channel_peer {
                         *peer = None;
                     }
+                    for flag in &mut self.channel_lock {
+                        *flag = false;
+                    }
+                    for calls in &mut self.rx_calls {
+                        *calls = None;
+                    }
                     for c in &mut self.channel_connecting {
                         *c = None;
                     }
@@ -832,6 +848,10 @@ impl GpGuiApp {
                     if reassemble {
                         if kind == PadKind::Incoming {
                             self.note_seven_payload(channel, &payload);
+                            if let Some(peer) = self.linked_call(channel) {
+                                let mine = self.effective_mycall(channel);
+                                self.note_rx_calls(channel, &peer, &mine);
+                            }
                         }
                         self.accept_rx_text(channel, &line, kind);
                     } else if !(skip_monitor_dup && idx == 0) {
@@ -901,6 +921,7 @@ impl GpGuiApp {
             }
             self.close_journal(channel);
             self.channel_peer[idx] = None;
+            self.clear_lock(channel);
             if let Some(c) = self.channel_connecting.get_mut(idx) {
                 *c = None;
             }
@@ -927,6 +948,7 @@ impl GpGuiApp {
                         if let Some(p) = self.channel_peer.get_mut(other as usize) {
                             *p = None;
                         }
+                        self.clear_lock(other);
                     }
                 }
             }
@@ -1386,6 +1408,10 @@ impl GpGuiApp {
         let idx = channel as usize;
         if let Some(p) = self.channel_peer.get_mut(idx) {
             *p = None;
+        }
+        self.clear_lock(channel);
+        if let Some(calls) = self.rx_calls.get_mut(idx) {
+            *calls = None;
         }
         if let Some(c) = self.channel_connecting.get_mut(idx) {
             *c = None;
@@ -1873,6 +1899,9 @@ impl GpGuiApp {
         } else {
             return;
         };
+        let from = self.effective_mycall(from_ch);
+        let to = self.effective_mycall(other);
+        self.note_rx_calls(other, &from, &to);
         self.note_seven_payload(other, raw);
         self.accept_rx_text(other, line, PadKind::Incoming);
         self.kiss_link_activity(other, true);
@@ -1939,6 +1968,11 @@ impl GpGuiApp {
                 }
             }
         }
+        // A packet that ends on CR keeps the row open (the next byte may be LF).
+        // A sealed line is already complete, so show the plaintext now.
+        if kind == PadKind::Incoming {
+            self.reveal_locked_row(channel);
+        }
     }
 
     /// Next byte starts a new row. The current row stays as it is.
@@ -1984,13 +2018,21 @@ impl GpGuiApp {
         let idx = channel as usize;
         let open = self.rx_row.get(idx).copied().flatten();
         if let Some(seq) = open {
-            let text = self
+            let mut text = self
                 .pads
                 .get(idx)
                 .and_then(|pad| pad.text_if_seq(seq))
                 .unwrap_or_default();
             if let Some(slot) = self.rx_row.get_mut(idx) {
                 *slot = None;
+            }
+            if kind == PadKind::Incoming && channel >= 1 {
+                if let Some(plain) = self.unlock_incoming(channel, &text) {
+                    if let Some(pad) = self.pads.get_mut(idx) {
+                        pad.set_text_if_seq(seq, &plain);
+                    }
+                    text = plain;
+                }
             }
             if !self.seven_capturing(channel) {
                 self.maybe_remote_line(channel, &text, kind == PadKind::Incoming);
@@ -2445,6 +2487,7 @@ impl GpGuiApp {
                     );
                     self.kiss_link_activity(ch, true);
                     self.note_seven_payload(ch, &frame.info);
+                    self.note_rx_calls(ch, &frame.src, &frame.dest);
                     self.accept_rx_text(ch, &info_text, PadKind::Incoming);
                 }
             }
@@ -2896,6 +2939,16 @@ impl GpGuiApp {
             }
         }
 
+        if let ActivePane::Channel(n) = self.active {
+            if self.channel_lock.get(n as usize).copied().unwrap_or(false) {
+                if let Some(sealed) = self.seal_channel_line(n, &line) {
+                    self.write_operator_text(&sealed, carriage_return);
+                } else {
+                    self.status = "Lock needs a linked call".into();
+                }
+                return;
+            }
+        }
         self.write_operator_text(&line, carriage_return);
     }
 
@@ -2904,6 +2957,83 @@ impl GpGuiApp {
             .get(channel as usize)
             .and_then(|p| p.clone())
             .filter(|c| !c.is_empty() && c != "****")
+    }
+
+    fn clear_lock(&mut self, channel: u8) {
+        if let Some(flag) = self.channel_lock.get_mut(channel as usize) {
+            *flag = false;
+        }
+    }
+
+    /// Seal one typed line with this channel's call and the linked call.
+    fn seal_channel_line(&self, channel: u8, line: &str) -> Option<String> {
+        let peer = self.linked_call(channel)?;
+        let mine = self.effective_mycall(channel);
+        Some(cipher::seal(&mine, &peer, line))
+    }
+
+    fn note_rx_calls(&mut self, channel: u8, from: &str, to: &str) {
+        if let Some(slot) = self.rx_calls.get_mut(channel as usize) {
+            *slot = Some((from.to_string(), to.to_string()));
+        }
+    }
+
+    /// Open a sealed row that is already on screen. The CR that ends the packet
+    /// may still be waiting, so this does not wait for the row to close.
+    fn reveal_locked_row(&mut self, channel: u8) {
+        if channel < 1 {
+            return;
+        }
+        let idx = channel as usize;
+        let Some(seq) = self.rx_row.get(idx).copied().flatten() else {
+            return;
+        };
+        let text = self
+            .pads
+            .get(idx)
+            .and_then(|pad| pad.text_if_seq(seq))
+            .unwrap_or_default();
+        let Some(plain) = self.unlock_incoming(channel, &text) else {
+            return;
+        };
+        if let Some(pad) = self.pads.get_mut(idx) {
+            pad.set_text_if_seq(seq, &plain);
+        }
+    }
+
+    /// A line wrapped in `Æ`…`¿` becomes plaintext and turns this channel's lock on.
+    /// The pair is the frame's from and to. The channel's own calls are the fallback.
+    fn unlock_incoming(&mut self, channel: u8, text: &str) -> Option<String> {
+        let from_frame = self
+            .rx_calls
+            .get(channel as usize)
+            .and_then(|pair| pair.clone())
+            .and_then(|(from, to)| cipher::open(&from, &to, text));
+        let (plain, mine, peer) = if let Some(plain) = from_frame {
+            let (from, to) = self
+                .rx_calls
+                .get(channel as usize)
+                .and_then(|pair| pair.clone())
+                .unwrap_or_default();
+            (plain, to, from)
+        } else {
+            let peer = self.linked_call(channel)?;
+            let mine = self.effective_mycall(channel);
+            let plain = cipher::open(&mine, &peer, text)?;
+            (plain, mine, peer)
+        };
+        let was_off = self.channel_lock.get(channel as usize).copied() != Some(true);
+        if let Some(flag) = self.channel_lock.get_mut(channel as usize) {
+            *flag = true;
+        }
+        if was_off {
+            self.status = format!(
+                "Lock ON — {} / {}",
+                cipher::base_call(&mine),
+                cipher::base_call(&peer)
+            );
+        }
+        Some(plain)
     }
 
     /// `//Read` with no name sends this station's mail when `data/mail/{CALL}.GPM`
@@ -6413,14 +6543,21 @@ impl GpGuiApp {
                     ActivePane::Channel(_) => !self.split_on,
                     _ => true,
                 };
-            let fill = if arrow_off {
+            // The key is live only while this channel is linked to a station.
+            let key_off = matches!(glyph, CellGlyph::Key)
+                && match self.active {
+                    ActivePane::Channel(n) => !self.channel_linked(n),
+                    _ => true,
+                };
+            let inert = arrow_off || key_off;
+            let fill = if inert {
                 Color32::from_rgb(210, 210, 210)
             } else if lit {
                 on
             } else {
                 off
             };
-            let mark = if arrow_off {
+            let mark = if inert {
                 Color32::from_rgb(130, 130, 130)
             } else {
                 text_c
@@ -6430,6 +6567,8 @@ impl GpGuiApp {
             // A lit toggle stays sunken. ▲▼ sink only while the mouse is held.
             let pressed = if arrow {
                 arrow_clickable && resp.is_pointer_button_down_on()
+            } else if key_off {
+                false
             } else {
                 lit || resp.is_pointer_button_down_on()
             };
@@ -6482,8 +6621,32 @@ impl GpGuiApp {
                     };
                     painter.add(egui::Shape::convex_polygon(pts, mark, Stroke::NONE));
                 }
+                CellGlyph::Key => {
+                    // Drawn key. The session font has no reliable 🗝 glyph.
+                    let c = cell.center();
+                    let bow = Pos2::new(c.x - 4.5, c.y);
+                    painter.circle_stroke(bow, 3.2, Stroke::new(1.5, mark));
+                    painter.line_segment(
+                        [Pos2::new(bow.x + 3.0, c.y), Pos2::new(c.x + 6.5, c.y)],
+                        Stroke::new(1.5, mark),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(c.x + 3.5, c.y), Pos2::new(c.x + 3.5, c.y + 3.2)],
+                        Stroke::new(1.5, mark),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(c.x + 6.5, c.y), Pos2::new(c.x + 6.5, c.y + 3.2)],
+                        Stroke::new(1.5, mark),
+                    );
+                    let hint = if key_off {
+                        "Lock — needs a link"
+                    } else {
+                        "Lock — seal chat with both callsigns"
+                    };
+                    resp.clone().on_hover_text(hint);
+                }
             }
-            if resp.clicked() && (!arrow || arrow_clickable) {
+            if resp.clicked() && (!arrow || arrow_clickable) && !key_off {
                 clicks.push(action);
             }
             w + gap
@@ -6528,6 +6691,8 @@ impl GpGuiApp {
             format!("{} {}", self.serial_port, self.serial_baud)
         };
         let spy_cell_w = 20.0_f32;
+        let lock_w = 26.0_f32;
+        let on_channel = matches!(self.active, ActivePane::Channel(_));
         let spy_n = if matches!(self.active, ActivePane::Monitor | ActivePane::Spy(_)) {
             self.channels.min(10)
         } else {
@@ -6536,6 +6701,8 @@ impl GpGuiApp {
         let badge_w = (com_badge.len() as f32 * 7.2 + 12.0).clamp(72.0, 180.0);
         let right_mid_w = if spy_n > 0 {
             spy_n as f32 * (spy_cell_w + gap) + badge_w + gap
+        } else if on_channel {
+            lock_w + gap
         } else {
             0.0
         };
@@ -6625,7 +6792,7 @@ impl GpGuiApp {
                 }
                 let _ = paint_static_cell(ui, rx, y, h, gap, &com_badge, badge_w, self.serial_open);
             }
-            ActivePane::Channel(_) => {
+            ActivePane::Channel(n) => {
                 for (label, lit, action, w) in [
                     (
                         "7+",
@@ -6643,6 +6810,22 @@ impl GpGuiApp {
                     }
                     x += paint_cell(ui, x, label, lit, action, w, CellGlyph::Text);
                 }
+                let trail_left = rect.right() - trail_w - 2.0;
+                let lit = self.channel_linked(n)
+                    && self
+                        .channel_lock
+                        .get(n as usize)
+                        .copied()
+                        .unwrap_or(false);
+                let _ = paint_cell(
+                    ui,
+                    trail_left - (lock_w + gap),
+                    "",
+                    lit,
+                    SessionClick::Lock,
+                    lock_w,
+                    CellGlyph::Key,
+                );
             }
             _ => {}
         }
@@ -6761,6 +6944,31 @@ impl GpGuiApp {
                 self.status = format!("BIN-TX {}", on_off(self.session.bin_tx));
             }
             SessionClick::Name => self.open_name_dialog(),
+            SessionClick::Lock => {
+                let ActivePane::Channel(n) = self.active else {
+                    return;
+                };
+                if !self.channel_linked(n) {
+                    return;
+                }
+                let on = self.channel_lock.get(n as usize).copied().unwrap_or(false);
+                let next = !on;
+                if let Some(flag) = self.channel_lock.get_mut(n as usize) {
+                    *flag = next;
+                }
+                self.status = if next {
+                    match self.linked_call(n) {
+                        Some(peer) => format!(
+                            "Lock ON — {} / {}",
+                            cipher::base_call(&self.effective_mycall(n)),
+                            cipher::base_call(&peer)
+                        ),
+                        None => "Lock ON".into(),
+                    }
+                } else {
+                    "Lock OFF".into()
+                };
+            }
             SessionClick::ScrLock => {
                 self.session.scr_lock = !self.session.scr_lock;
                 self.status = format!("ScrLock {}", on_off(self.session.scr_lock));
@@ -7050,6 +7258,7 @@ impl GpGuiApp {
         if let Some(peer) = self.channel_peer.get_mut(idx) {
             *peer = None;
         }
+        self.clear_lock(channel);
         if let Some(c) = self.channel_connecting.get_mut(idx) {
             *c = Some(dest.clone());
         }
@@ -7647,6 +7856,8 @@ enum CellGlyph {
     TriDown,
     /// Soft-scroll mark: three steps rising to the right.
     Stairs,
+    /// Channel lock. Drawn; the session font has no key emoji.
+    Key,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -7664,6 +7875,7 @@ enum SessionClick {
     BinRx,
     BinTx,
     Name,
+    Lock,
     ScrLock,
     ScrollUp,
     ScrollDown,

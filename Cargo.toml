@@ -51,6 +51,9 @@ rodio = { version = "0.20", default-features = true, features = ["wav"] }
 # `%O` random line from ORIGIN.GPI
 rand = "0.8"
 
+# Channel lock: SHA-256 stream keyed by the two base callsigns.
+sha2 = "0.10"
+
 # Optional text-mode fallback (`--tui`).
 ratatui = "0.29"
 crossterm = "0.28"

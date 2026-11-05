@@ -4,6 +4,7 @@
 //! and UI code here so `pub` APIs are not flagged as dead code.
 
 pub mod bbs;
+pub mod cipher;
 pub mod config;
 pub mod gpw;
 pub mod journal;

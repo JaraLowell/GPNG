@@ -207,10 +207,20 @@ impl TextPad {
         seq
     }
 
+    /// Replace a row still on the pad. Clears colour runs so the new text paints in the row kind.
+    pub fn set_text_if_seq(&mut self, seq: u64, text: &str) -> bool {
+        let Some(line) = self.lines.iter_mut().find(|line| line.seq == seq) else {
+            return false;
+        };
+        line.text = text.to_string();
+        line.runs.clear();
+        true
+    }
+
     pub fn text_if_seq(&self, seq: u64) -> Option<String> {
         self.lines
-            .back()
-            .filter(|line| line.seq == seq)
+            .iter()
+            .find(|line| line.seq == seq)
             .map(|line| line.text.clone())
     }
 
