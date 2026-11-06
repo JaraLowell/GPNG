@@ -42,7 +42,7 @@ pub use monitor_filter::{
 pub use payload::{
     flush_rx_line, normalize_newlines, pack_text_payloads, payload_lines, take_rx_lines,
 };
-pub use serial::available_port_names;
+pub use serial::{detect_serial_ports, DetectedPort};
 
 // ---------------------------------------------------------------------------
 // Public types (stable UI surface)

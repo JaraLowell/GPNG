@@ -28,6 +28,7 @@ com_number = 6 # SERNR (informational when `port` is set)
 fast_poll = "auto"     # FASTPOLL: "auto" | "on" | "off"
 multiport = "auto"     # MULTIPORT: "auto" | "on" | "off"
 
+port_detail = "USB-K5G Radio Cable"
 [session]
 # Legacy: CHANNELS, MAXSPY, buffers, bells, remote, spy, …
 channels = 10
@@ -201,8 +202,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 3414
-y = 143
+x = 1268
+y = 44
 width = 1024
 height = 820
 maximized = false

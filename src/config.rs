@@ -624,6 +624,12 @@ impl Config {
             &self.tnc.kiss_tcp_port.to_string(),
         )?;
         put_key(path, "serial", "port", &toml_string(&self.serial.port))?;
+        put_key(
+            path,
+            "serial",
+            "port_detail",
+            &toml_string(&self.serial.port_detail),
+        )?;
         put_key(path, "serial", "baud", &self.serial.baud.to_string())?;
         put_key(
             path,
@@ -886,6 +892,9 @@ impl Default for StationConfig {
 pub struct SerialConfig {
     /// Modern device path (`COM3`, `/dev/ttyUSB0`, …).
     pub port: String,
+    /// USB product seen on `port` last time. Empty if the OS gave none.
+    /// A later start reuses `port` only while this still matches.
+    pub port_detail: String,
     /// Legacy `SERBAUD`.
     pub baud: u32,
     /// Legacy `SERNR` (COM index); informational when `port` is explicit.
@@ -902,6 +911,7 @@ impl Default for SerialConfig {
     fn default() -> Self {
         Self {
             port: "COM3".into(),
+            port_detail: String::new(),
             baud: 9600,
             com_number: 3,
             io_port: None,

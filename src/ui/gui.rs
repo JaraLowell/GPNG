@@ -49,7 +49,8 @@ use crate::remote::mail::{self, MailAsk};
 use crate::remote::userdir;
 use crate::tnc::ax25::{self, Ax25Frame, Ax25FrameType};
 use crate::tnc::{
-    available_port_names, normalize_call, pack_text_payloads, parse_heard, payload_lines,
+    detect_serial_ports, normalize_call, pack_text_payloads, parse_heard, payload_lines,
+    DetectedPort,
     BufferReport, ChannelBuffers, FrameClass, HostCode, MonitorFilter, MonitorInput, RadioLink,
     TncCommand, TncEvent, TNC_RAM,
 };
@@ -273,10 +274,13 @@ pub struct GpGuiApp {
     /// KISS serial/TCP choice. WA8DED and TFPCX stay on serial.
     radio_tcp: bool,
     radio_port: String,
+    /// Last port written to Config.toml, and the device name seen on it.
+    radio_saved_port: String,
+    radio_saved_detail: String,
     radio_baud: u32,
     radio_host: String,
     radio_tcp_port: String,
-    radio_ports: Vec<String>,
+    radio_ports: Vec<DetectedPort>,
     radio_ports_at: Option<Instant>,
     /// Ports the OS reported, not counting a saved name that is unplugged.
     radio_live_ports: usize,
@@ -475,6 +479,8 @@ impl GpGuiApp {
         let radio_protocol = cfg.tnc.protocol_kind();
         let radio_tcp = cfg.tnc.kiss_transport.eq_ignore_ascii_case("tcp");
         let radio_port = cfg.serial.port.clone();
+        let radio_saved_port = radio_port.clone();
+        let radio_saved_detail = cfg.serial.port_detail.clone();
         let radio_baud = cfg.serial.baud;
         let radio_host = cfg.tnc.kiss_tcp_host.clone();
         let radio_tcp_port = cfg.tnc.kiss_tcp_port.to_string();
@@ -583,6 +589,8 @@ impl GpGuiApp {
             radio_protocol,
             radio_tcp,
             radio_port,
+            radio_saved_port,
+            radio_saved_detail,
             radio_baud,
             radio_host,
             radio_tcp_port,
@@ -6036,9 +6044,9 @@ impl GpGuiApp {
         let screen = ctx.screen_rect();
         let logo_bottom = self.paint_start_logo(ctx, screen);
         let mut use_this = false;
-        let x = (screen.center().x - 170.0).clamp(
+        let x = (screen.center().x - 230.0).clamp(
             screen.left() + 8.0,
-            (screen.right() - 348.0).max(screen.left() + 8.0),
+            (screen.right() - 468.0).max(screen.left() + 8.0),
         );
         let y = (logo_bottom + 12.0).min((screen.bottom() - 28.0).max(screen.top() + 8.0));
         egui::Window::new("Radio setup")
@@ -6046,7 +6054,7 @@ impl GpGuiApp {
             .resizable(false)
             .order(egui::Order::Foreground)
             .fixed_pos(Pos2::new(x, y))
-            .default_width(340.0)
+            .default_width(460.0)
             .show(ctx, |ui| {
                 use_this = self.radio_setup_form(ui);
             });
@@ -6111,24 +6119,24 @@ impl GpGuiApp {
     }
 
     fn radio_setup_form(&mut self, ui: &mut Ui) -> bool {
-        ui.set_min_width(300.0);
+        ui.set_min_width(420.0);
         let ports = self.radio_ports.clone();
         egui::Grid::new("radio_setup")
             .num_columns(2)
             .spacing([12.0, 8.0])
             .show(ui, |ui| {
-                ui.label("Mycall");
+                ui.label("Call Sign");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.radio_call)
-                        .desired_width(200.0)
+                        .desired_width(SETUP_FIELD_W)
                         .font(FontId::monospace(14.0)),
                 );
                 ui.end_row();
 
                 ui.label("Protocol");
                 egui::ComboBox::from_id_salt("radio_protocol")
-                    .selected_text(protocol_label(self.radio_protocol))
-                    .width(200.0)
+                    .selected_text(clip_chars(protocol_label(self.radio_protocol), SETUP_FIELD_CHARS))
+                    .width(SETUP_FIELD_W)
                     .show_ui(ui, |ui| {
                         for kind in [HostProtocol::Wa8ded, HostProtocol::Tfpcx, HostProtocol::Kiss]
                         {
@@ -6145,7 +6153,7 @@ impl GpGuiApp {
                 if self.radio_protocol == HostProtocol::Kiss {
                     egui::ComboBox::from_id_salt("radio_connection")
                         .selected_text(if self.radio_tcp { "TCP" } else { "Serial" })
-                        .width(200.0)
+                        .width(SETUP_FIELD_W)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.radio_tcp, false, "Serial");
                             ui.selectable_value(&mut self.radio_tcp, true, "TCP");
@@ -6158,28 +6166,30 @@ impl GpGuiApp {
                 let serial = self.radio_protocol != HostProtocol::Kiss || !self.radio_tcp;
                 if serial {
                     ui.label("Port");
-                    let selected = if self.radio_port.is_empty() {
-                        "choose a port".to_string()
-                    } else {
-                        self.radio_port.clone()
-                    };
                     egui::ComboBox::from_id_salt("radio_port")
-                        .selected_text(selected)
-                        .width(200.0)
+                        .selected_text(clip_chars(
+                            &port_menu_label(&ports, &self.radio_port),
+                            SETUP_FIELD_CHARS,
+                        ))
+                        .width(SETUP_FIELD_W)
                         .show_ui(ui, |ui| {
                             if ports.is_empty() {
                                 ui.label("No ports found");
                             }
                             for port in &ports {
-                                ui.selectable_value(&mut self.radio_port, port.clone(), port);
+                                ui.selectable_value(
+                                    &mut self.radio_port,
+                                    port.name.clone(),
+                                    clip_chars(&port.menu_label(), SETUP_FIELD_CHARS),
+                                );
                             }
                         });
                     ui.end_row();
 
-                    ui.label("Baud");
+                    ui.label("Baud to TNC");
                     egui::ComboBox::from_id_salt("radio_baud")
                         .selected_text(self.radio_baud.to_string())
-                        .width(200.0)
+                        .width(SETUP_FIELD_W)
                         .show_ui(ui, |ui| {
                             for baud in baud_choices(self.radio_baud) {
                                 ui.selectable_value(
@@ -6194,14 +6204,14 @@ impl GpGuiApp {
                     ui.label("IP");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.radio_host)
-                            .desired_width(200.0)
+                            .desired_width(SETUP_FIELD_W)
                             .font(FontId::monospace(14.0)),
                     );
                     ui.end_row();
                     ui.label("Port");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.radio_tcp_port)
-                            .desired_width(200.0)
+                            .desired_width(SETUP_FIELD_W)
                             .font(FontId::monospace(14.0)),
                     );
                     ui.end_row();
@@ -6214,6 +6224,23 @@ impl GpGuiApp {
                 RichText::new("No serial port found yet. Plug in the radio and it will show up here.")
                     .color(Color32::from_rgb(140, 40, 40)),
             );
+        } else if serial && self.radio_port.is_empty() && !self.radio_saved_port.is_empty() {
+            let still_there = self
+                .radio_ports
+                .iter()
+                .any(|p| p.name.eq_ignore_ascii_case(&self.radio_saved_port));
+            let msg = if still_there {
+                format!(
+                    "{} changed. Choose the port again.",
+                    self.radio_saved_port
+                )
+            } else {
+                format!(
+                    "{} is not connected. Choose a port that is.",
+                    self.radio_saved_port
+                )
+            };
+            ui.label(RichText::new(msg).color(Color32::from_rgb(140, 40, 40)));
         }
         if !self.radio_error.is_empty() {
             ui.label(RichText::new(&self.radio_error).color(Color32::from_rgb(180, 0, 0)));
@@ -6242,17 +6269,37 @@ impl GpGuiApp {
             return;
         }
         self.radio_ports_at = Some(Instant::now());
-        let live = available_port_names();
+        let live = detect_serial_ports();
         self.radio_live_ports = live.len();
-        let mut names = live;
-        if !self.radio_port.is_empty()
-            && !names
-                .iter()
-                .any(|n| n.eq_ignore_ascii_case(&self.radio_port))
+        self.radio_ports = live;
+        self.reconcile_saved_port();
+    }
+
+    /// Keep the last saved port when that same device is still present.
+    /// A missing port, or a different device on the same name, is not selected.
+    fn reconcile_saved_port(&mut self) {
+        if let Some(current) = self
+            .radio_ports
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(&self.radio_port))
         {
-            names.insert(0, self.radio_port.clone());
+            let saved_here = current.name.eq_ignore_ascii_case(&self.radio_saved_port);
+            if saved_here && !port_identity_matches(&self.radio_saved_detail, &current.detail) {
+                self.radio_port.clear();
+            }
+            return;
         }
-        self.radio_ports = names;
+        if let Some(saved) = self
+            .radio_ports
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(&self.radio_saved_port))
+        {
+            if port_identity_matches(&self.radio_saved_detail, &saved.detail) {
+                self.radio_port = saved.name.clone();
+                return;
+            }
+        }
+        self.radio_port.clear();
     }
 
     fn radio_form_key(&self) -> (String, HostProtocol, bool, String, u32, String, String) {
@@ -6313,16 +6360,28 @@ impl GpGuiApp {
             self.cfg.tnc.kiss_tcp_port = port;
             self.cfg.tnc.kiss_transport = "tcp".into();
         } else {
-            let port_name = self.radio_port.trim();
+            let port_name = self.radio_port.trim().to_string();
             if port_name.is_empty() {
                 return Err("Choose a serial port".into());
             }
             if self.radio_baud == 0 {
                 return Err("Choose a baud rate".into());
             }
-            self.cfg.serial.port = port_name.to_string();
+            if let Some(found) = self
+                .radio_ports
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case(&port_name))
+            {
+                self.cfg.serial.port = found.name.clone();
+                self.cfg.serial.port_detail = found.detail.clone();
+                self.radio_saved_port = found.name.clone();
+                self.radio_saved_detail = found.detail.clone();
+                self.radio_port = found.name.clone();
+            } else {
+                self.cfg.serial.port = port_name.to_string();
+            }
             self.cfg.serial.baud = self.radio_baud;
-            if let Some(n) = com_number_from_port(port_name) {
+            if let Some(n) = com_number_from_port(&port_name) {
                 self.cfg.serial.com_number = n;
             }
             if self.radio_protocol == HostProtocol::Kiss {
@@ -8759,6 +8818,34 @@ fn paint_start_credits(painter: &egui::Painter, screen: Rect) {
         painter.galley(Pos2::new(x, y), galley, color);
         y += h + gap;
     }
+}
+
+/// Wide enough for 30 characters in the startup card's font.
+const SETUP_FIELD_W: f32 = 300.0;
+const SETUP_FIELD_CHARS: usize = 30;
+
+fn clip_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        text.chars().take(max).collect()
+    }
+}
+
+/// Empty saved detail means we have not recorded a device yet, so the port name is enough.
+fn port_identity_matches(saved: &str, live: &str) -> bool {
+    saved.is_empty() || live.is_empty() || saved.eq_ignore_ascii_case(live)
+}
+
+fn port_menu_label(ports: &[DetectedPort], selected: &str) -> String {
+    if selected.is_empty() {
+        return "choose a port".into();
+    }
+    ports
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case(selected))
+        .map(DetectedPort::menu_label)
+        .unwrap_or_else(|| format!("{selected} — not connected"))
 }
 
 fn protocol_label(kind: HostProtocol) -> &'static str {

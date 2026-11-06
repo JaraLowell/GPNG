@@ -149,18 +149,110 @@ impl SerialLink {
     }
 }
 
-/// OS serial device names (`COM6`, `/dev/ttyUSB0`, …), sorted.
-pub fn available_port_names() -> Vec<String> {
-    let mut names = match serialport::available_ports() {
-        Ok(ports) => ports.into_iter().map(|p| p.port_name).collect::<Vec<_>>(),
+/// A serial device the OS currently has. `name` is what we open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedPort {
+    pub name: String,
+    /// USB product, or "Bluetooth". Empty when the OS gave no description.
+    pub detail: String,
+}
+
+impl DetectedPort {
+    pub fn menu_label(&self) -> String {
+        if self.detail.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} — {}", self.name, self.detail)
+        }
+    }
+}
+
+/// Ports that are present now.
+///
+/// Windows: devices SetupAPI reports as present, plus COM names mapped in
+/// `SERIALCOMM`. macOS: the callout device (`/dev/cu.…`), not the dial-in
+/// twin (`/dev/tty.…`). Linux: tty devices udev or sysfs attach to a driver
+/// (USB serial, ACM, a real UART). Phantom 8250 nodes are left out by the
+/// serialport crate.
+pub fn detect_serial_ports() -> Vec<DetectedPort> {
+    let listed = match serialport::available_ports() {
+        Ok(ports) => ports,
         Err(err) => {
             warn!("serial port list: {err}");
-            Vec::new()
+            return Vec::new();
         }
     };
-    names.sort();
-    names.dedup();
-    names
+    let mut ports: Vec<DetectedPort> = listed
+        .into_iter()
+        .map(|info| DetectedPort {
+            detail: port_detail(&info),
+            name: info.port_name,
+        })
+        .collect();
+    let names: Vec<String> = ports.iter().map(|p| p.name.clone()).collect();
+    ports.retain(|p| keep_port(&p.name, &names));
+    ports.sort_by(|a, b| port_ord(&a.name, &b.name));
+    ports.dedup_by(|a, b| a.name.eq_ignore_ascii_case(&b.name));
+    ports
+}
+
+fn port_detail(info: &serialport::SerialPortInfo) -> String {
+    match &info.port_type {
+        serialport::SerialPortType::UsbPort(usb) => {
+            let product = usb.product.as_deref().unwrap_or("").trim();
+            let maker = usb.manufacturer.as_deref().unwrap_or("").trim();
+            let raw = if !product.is_empty() {
+                product.to_string()
+            } else if !maker.is_empty() {
+                maker.to_string()
+            } else {
+                format!("USB {:04X}:{:04X}", usb.vid, usb.pid)
+            };
+            clean_detail(&raw, &info.port_name)
+        }
+        serialport::SerialPortType::BluetoothPort => "Bluetooth".into(),
+        serialport::SerialPortType::PciPort | serialport::SerialPortType::Unknown => String::new(),
+    }
+}
+
+/// Windows often appends the COM name, e.g. `USB-KSG Radio Cable (COM6)`.
+fn clean_detail(detail: &str, port_name: &str) -> String {
+    let detail = detail.trim();
+    if detail.is_empty() || port_name.is_empty() {
+        return detail.to_string();
+    }
+    let lower = detail.to_ascii_lowercase();
+    let suffix = format!("({})", port_name.to_ascii_lowercase());
+    if !lower.ends_with(&suffix) {
+        return detail.to_string();
+    }
+    detail[..detail.len() - suffix.len()]
+        .trim()
+        .trim_end_matches(['-', '—', '–', ':'])
+        .trim()
+        .to_string()
+}
+
+/// macOS lists each adapter twice. Open the callout node (`cu`), not `tty`.
+fn keep_port(name: &str, all: &[String]) -> bool {
+    let Some(rest) = name.strip_prefix("/dev/tty.") else {
+        return true;
+    };
+    let callout = format!("/dev/cu.{rest}");
+    !all.iter().any(|n| n == &callout)
+}
+
+/// `COM2` before `COM10`. Other paths sort after COM names, case-insensitive.
+fn port_ord(a: &str, b: &str) -> std::cmp::Ordering {
+    fn key(name: &str) -> (u8, u32, String) {
+        let upper = name.to_ascii_uppercase();
+        if let Some(n) = upper.strip_prefix("COM").and_then(|s| s.parse().ok()) {
+            (0, n, String::new())
+        } else {
+            (1, 0, upper)
+        }
+    }
+    key(a).cmp(&key(b))
 }
 
 /// Bytes that fit in ~20 ms at 8N1, inside the 50 ms write timeout.
@@ -198,5 +290,55 @@ mod tests {
     fn wire_time_matches_8n1() {
         // 96 bytes at 9600 baud is 100 ms (10 bit times each).
         assert_eq!(wire_time(9600, 96), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn macos_keeps_the_callout_device() {
+        let all = vec![
+            "/dev/tty.usbserial-1".to_string(),
+            "/dev/cu.usbserial-1".to_string(),
+            "/dev/tty.Bluetooth-Incoming-Port".to_string(),
+        ];
+        let kept: Vec<_> = all
+            .iter()
+            .filter(|n| keep_port(n, &all))
+            .cloned()
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                "/dev/cu.usbserial-1".to_string(),
+                "/dev/tty.Bluetooth-Incoming-Port".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn detail_drops_the_repeated_com_name() {
+        assert_eq!(
+            clean_detail("USB-KSG Radio Cable (COM6)", "COM6"),
+            "USB-KSG Radio Cable"
+        );
+        assert_eq!(
+            clean_detail("USB-KSG Radio Cable (com6)", "COM6"),
+            "USB-KSG Radio Cable"
+        );
+        assert_eq!(clean_detail("CP2102", "COM6"), "CP2102");
+    }
+
+    #[test]
+    fn com_numbers_sort_before_device_paths() {
+        let mut names = vec![
+            "/dev/ttyUSB1".to_string(),
+            "COM10".to_string(),
+            "COM2".to_string(),
+            "/dev/ttyUSB0".to_string(),
+            "com1".to_string(),
+        ];
+        names.sort_by(|a, b| port_ord(a, b));
+        assert_eq!(
+            names,
+            vec!["com1", "COM2", "COM10", "/dev/ttyUSB0", "/dev/ttyUSB1"]
+        );
     }
 }
