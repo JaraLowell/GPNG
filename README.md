@@ -1,6 +1,6 @@
 # Graphic Packet (modern)
 
-Asynchronous Rust foundation for a cross-platform rewrite of **Graphic Packet (GP)**, the classic 1990s MS-DOS AX.25 terminal by Ulf Saran (DH1DAE).
+Asynchronous Rust foundation for a cross-platform rewrite of **Graphic Packet (GP)**, the classic 1990s MS-DOS AX.25 HAM Packet Radio terminal by Ulf Saran (DH1DAE).
 
 This crate targets modern Windows / macOS / Linux hosts talking to USB-to-serial TNCs (WA8DED hostmode, TFPCX, Kenwood KISS) and soft TNCs over **TCP KISS** (Soundmodem, Direwolf, …).
 
