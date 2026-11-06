@@ -465,7 +465,8 @@ impl Config {
              bell = {}\n\
              seven_plus = {}\n\
              remote = {}\n\
-             scr_lock = {}\n",
+             scr_lock = {}\n\
+             hour_gong = {}\n",
             c.qrg_mhz,
             c.extended_ascii,
             c.smooth_scroll,
@@ -474,6 +475,7 @@ impl Config {
             c.seven_plus,
             c.remote,
             c.scr_lock,
+            c.hour_gong,
         );
         upsert_toml_section(path, "session.chrome", &body)
     }
@@ -963,6 +965,13 @@ pub struct SessionChromeConfig {
     /// Channel Remote toggle (not the callsign allow-list).
     pub remote: bool,
     pub scr_lock: bool,
+    /// Clock ♫ hourly chime (ALT-G). Missing in an older file stays on.
+    #[serde(default = "default_hour_gong")]
+    pub hour_gong: bool,
+}
+
+fn default_hour_gong() -> bool {
+    true
 }
 
 impl Default for SessionChromeConfig {
@@ -977,6 +986,7 @@ impl Default for SessionChromeConfig {
             seven_plus: false,
             remote: false,
             scr_lock: true,
+            hour_gong: true,
         }
     }
 }
@@ -1389,5 +1399,13 @@ mod tests {
         assert_eq!(cfg.serial.io_port, Some(0x3F8));
         assert_eq!(cfg.session.channels, 8);
         assert_eq!(cfg.tnc.init, vec!["DateTime", "M UISC"]);
+    }
+
+    #[test]
+    fn hour_gong_stays_on_unless_saved_off() {
+        let missing: SessionChromeConfig = toml::from_str("scr_lock = false\n").unwrap();
+        assert!(missing.hour_gong);
+        let off: SessionChromeConfig = toml::from_str("hour_gong = false\n").unwrap();
+        assert!(!off.hour_gong);
     }
 }

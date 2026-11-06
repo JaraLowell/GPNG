@@ -15,9 +15,9 @@ use crate::config::SessionChromeConfig;
 /// How new lines arrive in the RX pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineStep {
-    /// Hard jump — one whole text row per line.
+    /// `/` — the window jumps straight to the newest line.
     Hard,
-    /// Smooth / soft scroll feel (stairs glyph in classic GP).
+    /// Stair — the window crawls to the newest line, one pixel at a time.
     Smooth,
 }
 
@@ -56,6 +56,8 @@ pub struct SessionChrome {
     pub bin_tx: bool,
     /// On: freeze viewport (classic Scroll Lock). Off: always follow new lines.
     pub scr_lock: bool,
+    /// Clock ♫ hourly chime (ALT-G).
+    pub hour_gong: bool,
     /// Show the RX vertical scrollbar.
     pub scrollbar: bool,
     /// Active spy slot on Monitor (`1..=10`), if any.
@@ -94,6 +96,7 @@ impl Default for SessionChrome {
             bin_rx: false,
             bin_tx: false,
             scr_lock: true,
+            hour_gong: true,
             scrollbar: true,
             spy_slot: None,
             show_qrg_dialog: false,
@@ -132,6 +135,7 @@ impl SessionChrome {
         s.seven_plus = chrome.seven_plus;
         s.remote = chrome.remote;
         s.scr_lock = chrome.scr_lock;
+        s.hour_gong = chrome.hour_gong;
         s
     }
 
@@ -147,6 +151,7 @@ impl SessionChrome {
             seven_plus: self.seven_plus,
             remote: self.remote,
             scr_lock: self.scr_lock,
+            hour_gong: self.hour_gong,
         }
     }
 

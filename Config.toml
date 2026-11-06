@@ -81,6 +81,7 @@ bell = true
 seven_plus = true
 remote = true
 scr_lock = false
+hour_gong = true
 [buffers]
 # Legacy line counts (≈80 columns each in classic GP).
 text_buffer = [600, 300]   # TEXTBUFFER: monitor scrollback, then channel scrollback

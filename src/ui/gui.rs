@@ -341,8 +341,6 @@ pub struct GpGuiApp {
     bell_wav: PathBuf,
     connect_wav: PathBuf,
     disconnect_wav: PathBuf,
-    /// Hourly gong (classic ALT-G / click ♫ on the clock).
-    hour_gong: bool,
     /// Prevents double-fire within the same hour.
     last_gong: Option<(chrono::NaiveDate, u32)>,
     show_setup: bool,
@@ -581,7 +579,6 @@ impl GpGuiApp {
             bell_wav: default_bell_wav(),
             connect_wav: default_connect_wav(),
             disconnect_wav: default_disconnect_wav(),
-            hour_gong: true,
             last_gong: None,
             show_setup: false,
             setup_pane: ActivePane::Monitor,
@@ -651,7 +648,7 @@ impl GpGuiApp {
     }
 
     fn maybe_hour_gong(&mut self) {
-        if !self.hour_gong {
+        if !self.session.hour_gong {
             return;
         }
         let now = Local::now();
@@ -5222,7 +5219,10 @@ impl GpGuiApp {
         }
         if eat_key(ctx, alt, egui::Key::R) {
             self.session.line_step = self.session.line_step.cycle();
-            self.status = format!("line step: {:?}", self.session.line_step);
+            self.status = softscroll_status(matches!(
+                self.session.line_step,
+                super::session::LineStep::Smooth
+            ));
             self.persist_session_chrome();
             return;
         }
@@ -5235,8 +5235,9 @@ impl GpGuiApp {
             return;
         }
         if eat_key(ctx, alt, egui::Key::G) {
-            self.hour_gong = !self.hour_gong;
-            self.status = format!("Hourly gong {}", if self.hour_gong { "ON" } else { "OFF" });
+            self.session.hour_gong = !self.session.hour_gong;
+            self.status = format!("Hourly gong {}", if self.session.hour_gong { "ON" } else { "OFF" });
+            self.persist_session_chrome();
             return;
         }
         if eat_key(ctx, alt, egui::Key::Q) {
@@ -5904,6 +5905,7 @@ impl eframe::App for GpGuiApp {
         if monitor_h > 0.0 {
             let mon_bg = self.monitor_bg;
             let stick = !self.session.scr_lock;
+            let smooth = matches!(self.session.line_step, super::session::LineStep::Smooth);
             let show_bar = self.session.scrollbar;
             egui::TopBottomPanel::bottom("gp_split_monitor")
                 .exact_height(monitor_h)
@@ -5917,6 +5919,8 @@ impl eframe::App for GpGuiApp {
                         mon_bg,
                         "rx_split_monitor",
                         stick,
+                        smooth,
+                        pane_scroll_owner(ActivePane::Monitor),
                         show_bar,
                         0.0,
                         true,
@@ -6037,10 +6041,11 @@ impl GpGuiApp {
         self.draw_prewrite(ui, pre_r);
         self.draw_channel_grid(ui, ch_r);
         self.draw_status_grid(ui, st_r);
-        if draw_analog_clock(ui, clock_rect, self.hour_gong) {
-            self.hour_gong = !self.hour_gong;
-            self.status = format!("Hourly gong {}", if self.hour_gong { "ON" } else { "OFF" });
-            if self.hour_gong {
+        if draw_analog_clock(ui, clock_rect, self.session.hour_gong) {
+            self.session.hour_gong = !self.session.hour_gong;
+            self.status = format!("Hourly gong {}", if self.session.hour_gong { "ON" } else { "OFF" });
+            self.persist_session_chrome();
+            if self.session.hour_gong {
                 play_bell_wav(&self.bell_wav);
             }
         }
@@ -6605,6 +6610,7 @@ impl GpGuiApp {
         let nudge = self.session.take_scroll_nudge();
         // ScrLock off → follow last line; on → freeze (QSO and split monitor).
         let stick = !self.session.scr_lock;
+        let smooth = matches!(self.session.line_step, super::session::LineStep::Smooth);
         let show_bar = self.session.scrollbar;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         paint_text_pane(
@@ -6613,6 +6619,8 @@ impl GpGuiApp {
             bg,
             "rx_full",
             stick,
+            smooth,
+            pane_scroll_owner(self.active),
             show_bar,
             nudge,
             true,
@@ -7168,7 +7176,10 @@ impl GpGuiApp {
             }
             SessionClick::LineStep => {
                 self.session.line_step = self.session.line_step.cycle();
-                self.status = format!("line step: {:?}", self.session.line_step);
+                self.status = softscroll_status(matches!(
+                    self.session.line_step,
+                    super::session::LineStep::Smooth
+                ));
                 self.persist_session_chrome();
             }
             SessionClick::Echo => {
@@ -8540,17 +8551,99 @@ fn text_columns(ui: &Ui) -> usize {
     ((width / char_w).floor() as usize).max(8)
 }
 
+/// One pixel of the text window, four times a second.
+const SOFT_SCROLL_PX_PER_SEC: f32 = 4.0;
+
+/// Per-pane memory for the stair / `/` follow. Keyed by the scroll area.
+#[derive(Clone, Copy, Debug, Default)]
+struct SoftCrawl {
+    owner: u64,
+    seen: bool,
+    /// Still walking toward the newest line. A scroll upward clears it.
+    follow: bool,
+    last_offset: f32,
+    last_max: f32,
+    /// Fraction of a pixel still owed to the 0.25s clock.
+    carry: f32,
+    last_t: f64,
+}
+
+/// Stable id so Monitor, a channel, and a spy do not share one crawl.
+fn pane_scroll_owner(pane: ActivePane) -> u64 {
+    match pane {
+        ActivePane::Monitor => 1,
+        ActivePane::Editor => 2,
+        ActivePane::Check => 3,
+        ActivePane::List => 4,
+        ActivePane::Mh => 5,
+        ActivePane::Channel(n) => 100 + n as u64,
+        ActivePane::Spy(n) => 200 + n as u64,
+    }
+}
+
+fn softscroll_status(smooth: bool) -> String {
+    format!("Softscroll {}", on_off(smooth))
+}
+
+/// `true` while new lines should move this view.
+///
+/// Scrolling up lets go. Landing on the last line takes hold again.
+/// A shorter pad (Clear) is not a scroll-up.
+fn keep_following(
+    stick: bool,
+    offset: f32,
+    last_offset: f32,
+    max_off: f32,
+    last_max: f32,
+    was: bool,
+) -> bool {
+    if !stick {
+        return false;
+    }
+    let shrunk = max_off + 0.5 < last_max;
+    if !shrunk && offset < last_offset - 0.75 {
+        return false;
+    }
+    if max_off - offset <= 1.0 {
+        return true;
+    }
+    was
+}
+
+/// Hard (`/`) jumps to `max_off`. The stair adds one pixel about every 0.25s.
+/// `carry` is the unused fraction. A long pause moves at most half a second.
+fn soft_scroll_toward(offset: f32, max_off: f32, carry: f32, dt: f32, smooth: bool) -> (f32, f32) {
+    let max_off = max_off.max(0.0);
+    let offset = offset.clamp(0.0, max_off);
+    if !smooth || max_off - offset <= 0.5 {
+        return (max_off, 0.0);
+    }
+    let mut carry = carry + dt.clamp(0.0, 0.5) * SOFT_SCROLL_PX_PER_SEC;
+    let step = carry.floor();
+    carry -= step;
+    let offset = (offset + step).min(max_off);
+    if max_off - offset <= 0.5 {
+        (max_off, 0.0)
+    } else {
+        (offset, carry)
+    }
+}
+
 /// Scrollable text. `id` keeps the Monitor pane and the channel split from
 /// sharing one scrollbar position. The bytes are still the same pad.
 ///
 /// `scroll_x` is off for the monitor: rows are wrapped to `ui`'s width.
 /// The job is built inside the scroll area so that width is the live viewport.
+///
+/// With ScrLock off, `/` jumps to a new line and the stair crawls there.
 fn paint_text_pane(
     ui: &mut Ui,
     rect: Rect,
     bg: Color32,
     id: &'static str,
     stick: bool,
+    smooth: bool,
+    owner: u64,
     show_bar: bool,
     nudge: f32,
     scroll_x: bool,
@@ -8573,8 +8666,11 @@ fn paint_text_pane(
                 } else {
                     egui::ScrollArea::vertical()
                 };
-                area.id_salt(id)
-                    .stick_to_bottom(stick)
+                // Follow is applied after layout. egui's own stick jumps a whole line.
+                let out = area
+                    .id_salt(id)
+                    .animated(false)
+                    .stick_to_bottom(false)
                     .auto_shrink([false, false])
                     .scroll_bar_visibility(bar_vis)
                     .show(ui, |ui| {
@@ -8584,6 +8680,70 @@ fn paint_text_pane(
                         let job = make_job(ui);
                         ui.add(egui::Label::new(job).wrap_mode(TextWrapMode::Extend));
                     });
+
+                let max_off = (out.content_size.y - out.inner_rect.height()).max(0.0);
+                let now = ui.input(|i| i.time);
+                let ctx = ui.ctx().clone();
+                let mut crawl = ctx
+                    .data(|d| d.get_temp::<SoftCrawl>(out.id))
+                    .unwrap_or_default();
+                let mut state = out.state;
+                let before = state.offset.y;
+
+                if !crawl.seen {
+                    crawl.seen = true;
+                    crawl.owner = owner;
+                    crawl.last_t = now;
+                    if stick {
+                        state.offset.y = max_off;
+                        crawl.follow = true;
+                    }
+                } else if owner != crawl.owner {
+                    // Another pad in this same viewport. Show its end at once;
+                    // only lines that arrive afterwards crawl.
+                    crawl.owner = owner;
+                    crawl.carry = 0.0;
+                    crawl.last_t = now;
+                    if crawl.follow && stick {
+                        state.offset.y = max_off;
+                    } else if !stick {
+                        crawl.follow = false;
+                    }
+                } else {
+                    let dt = (now - crawl.last_t).clamp(0.0, 0.5) as f32;
+                    crawl.last_t = now;
+                    crawl.follow = keep_following(
+                        stick,
+                        state.offset.y,
+                        crawl.last_offset,
+                        max_off,
+                        crawl.last_max,
+                        crawl.follow,
+                    );
+                    if crawl.follow {
+                        let (y, carry) = soft_scroll_toward(
+                            state.offset.y,
+                            max_off,
+                            crawl.carry,
+                            dt,
+                            smooth,
+                        );
+                        state.offset.y = y;
+                        crawl.carry = carry;
+                        if max_off - y > 0.5 {
+                            ctx.request_repaint_after(Duration::from_millis(50));
+                        }
+                    } else {
+                        crawl.carry = 0.0;
+                    }
+                }
+
+                crawl.last_offset = state.offset.y;
+                crawl.last_max = max_off;
+                ctx.data_mut(|d| d.insert_temp(out.id, crawl));
+                if (state.offset.y - before).abs() > 0.01 {
+                    state.store(&ctx, out.id);
+                }
             });
     });
 }
@@ -8692,6 +8852,37 @@ mod split_tests {
         assert!((clamp_split_lower(2.0) - 0.75).abs() < f32::EPSILON);
         let mon = split_monitor_height(400.0, 0.99);
         assert!((mon - 300.0).abs() < 0.1);
+    }
+}
+
+#[cfg(test)]
+mod soft_scroll_tests {
+    use super::{keep_following, soft_scroll_toward};
+
+    #[test]
+    fn slash_jumps_and_stair_steps_one_pixel() {
+        let (y, carry) = soft_scroll_toward(0.0, 16.0, 0.0, 0.25, false);
+        assert!((y - 16.0).abs() < f32::EPSILON);
+        assert_eq!(carry, 0.0);
+
+        let (y, carry) = soft_scroll_toward(0.0, 16.0, 0.0, 0.25, true);
+        assert!((y - 1.0).abs() < f32::EPSILON);
+        assert!(carry.abs() < 0.01);
+
+        let (y, carry) = soft_scroll_toward(0.0, 16.0, 0.0, 0.20, true);
+        assert!((y - 0.0).abs() < f32::EPSILON);
+        let (y, _) = soft_scroll_toward(y, 16.0, carry, 0.20, true);
+        assert!((y - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn scroll_up_lets_go_until_the_end() {
+        assert!(!keep_following(true, 40.0, 80.0, 200.0, 200.0, true));
+        assert!(keep_following(true, 80.0, 80.0, 216.0, 200.0, true));
+        assert!(keep_following(true, 200.0, 184.0, 200.0, 184.0, false));
+        assert!(!keep_following(false, 200.0, 200.0, 216.0, 200.0, true));
+        // Clear shortens the pad; that is not the operator scrolling up.
+        assert!(keep_following(true, 0.0, 400.0, 0.0, 400.0, true));
     }
 }
 
