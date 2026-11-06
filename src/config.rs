@@ -601,6 +601,39 @@ impl Config {
         upsert_toml_section(path, "beacon", &body)
     }
 
+    /// Startup radio card: protocol, KISS serial/TCP, COM port, and baud.
+    pub fn persist_radio(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        put_key(path, "tnc", "protocol", &toml_string(&self.tnc.protocol))?;
+        put_key(
+            path,
+            "tnc",
+            "kiss_transport",
+            &toml_string(&self.tnc.kiss_transport),
+        )?;
+        put_key(
+            path,
+            "tnc",
+            "kiss_tcp_host",
+            &toml_string(&self.tnc.kiss_tcp_host),
+        )?;
+        put_key(
+            path,
+            "tnc",
+            "kiss_tcp_port",
+            &self.tnc.kiss_tcp_port.to_string(),
+        )?;
+        put_key(path, "serial", "port", &toml_string(&self.serial.port))?;
+        put_key(path, "serial", "baud", &self.serial.baud.to_string())?;
+        put_key(
+            path,
+            "serial",
+            "com_number",
+            &self.serial.com_number.to_string(),
+        )?;
+        Ok(())
+    }
+
     /// Outer position and inner size of the native window.
     pub fn persist_window(&self, path: impl AsRef<Path>) -> Result<(), String> {
         let w = &self.window;
@@ -666,6 +699,25 @@ fn append_section_key(path: &Path, section: &str, key: &str, value: &str) -> Res
     fs::write(path, out).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
+/// `#` comment after the value. A hash inside quotes stays part of the value.
+fn trailing_hash_comment(line: &str) -> &str {
+    let mut quote = false;
+    let mut escape = false;
+    for (i, c) in line.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        match c {
+            '\\' if quote => escape = true,
+            '"' => quote = !quote,
+            '#' if !quote => return line[i..].trim_end(),
+            _ => {}
+        }
+    }
+    ""
+}
+
 fn toml_string(s: &str) -> String {
     // Basic TOML basic-string escaping.
     let escaped = s
@@ -700,6 +752,11 @@ fn upsert_toml_key(
             let indent_len = line.len() - trimmed.len();
             out.push_str(&line[..indent_len]);
             out.push_str(&replacement);
+            let comment = trailing_hash_comment(line);
+            if !comment.is_empty() {
+                out.push(' ');
+                out.push_str(comment);
+            }
             out.push('\n');
             replaced = true;
         } else {
@@ -1557,6 +1614,43 @@ mod tests {
         assert!(maxed.maximized);
         assert!((maxed.width - 1100.0).abs() < f32::EPSILON);
         assert_eq!(maxed.x, Some(0.0));
+    }
+
+    #[test]
+    fn radio_settings_keep_trailing_comments() {
+        let path = std::env::temp_dir().join(format!("gpng-radio-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "[serial]\n\
+             port = \"COM1\" # device\n\
+             baud = 9600 # SERBAUD\n\
+             com_number = 1\n\
+             \n\
+             [tnc]\n\
+             protocol = \"wa8ded\"\n\
+             kiss_transport = \"serial\"\n\
+             kiss_tcp_host = \"127.0.0.1\"\n\
+             kiss_tcp_port = 8100 # soundmodem\n",
+        )
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.serial.port = "COM6".into();
+        cfg.serial.baud = 19200;
+        cfg.serial.com_number = 6;
+        cfg.tnc.protocol = "kiss".into();
+        cfg.tnc.kiss_transport = "tcp".into();
+        cfg.tnc.kiss_tcp_host = "192.168.1.9".into();
+        cfg.tnc.kiss_tcp_port = 8001;
+        cfg.persist_radio(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(text.contains("port = \"COM6\" # device"));
+        assert!(text.contains("baud = 19200 # SERBAUD"));
+        assert!(text.contains("com_number = 6"));
+        assert!(text.contains("protocol = \"kiss\""));
+        assert!(text.contains("kiss_transport = \"tcp\""));
+        assert!(text.contains("kiss_tcp_host = \"192.168.1.9\""));
+        assert!(text.contains("kiss_tcp_port = 8001 # soundmodem"));
     }
 
     #[test]

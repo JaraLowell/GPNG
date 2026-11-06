@@ -149,6 +149,20 @@ impl SerialLink {
     }
 }
 
+/// OS serial device names (`COM6`, `/dev/ttyUSB0`, …), sorted.
+pub fn available_port_names() -> Vec<String> {
+    let mut names = match serialport::available_ports() {
+        Ok(ports) => ports.into_iter().map(|p| p.port_name).collect::<Vec<_>>(),
+        Err(err) => {
+            warn!("serial port list: {err}");
+            Vec::new()
+        }
+    };
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Bytes that fit in ~20 ms at 8N1, inside the 50 ms write timeout.
 pub(crate) fn tx_chunk_len(baud: u32) -> usize {
     let baud = baud.max(300) as usize;

@@ -17,11 +17,11 @@ time_offset_minutes = 0
 # Legacy: SERNR / SERPORT / SERIRQ / SERBAUD
 # Prefer a modern device path (USB-serial). SERPORT/SERIRQ remain optional
 # for documentation / migration from DOS IO-port based setups.
-port = "COM6"          # Linux/macOS examples: "/dev/ttyUSB0", "/dev/tty.usbserial-*"
+port = "COM6" # Linux/macOS examples: "/dev/ttyUSB0", "/dev/tty.usbserial-*"
 # TM-D710 KISS: Kenwood docs use 9600 here — must match radio Menu PC PORT SPEED
 # (9600/19200/38400/57600). Only set 19200 if the radio menu is also 19200.
-baud = 9600            # SERBAUD
-com_number = 6         # SERNR (informational when `port` is set)
+baud = 9600 # SERBAUD
+com_number = 6 # SERNR (informational when `port` is set)
 # Optional DOS legacy fields (omit when unused — TOML has no null):
 # io_port = 0x3F8      # SERPORT — unused on modern USB-serial
 # irq = 4              # SERIRQ — unused on modern USB-serial
@@ -75,13 +75,13 @@ allow_color_ansi = true
 qrg_mhz = 144.800
 ctext = "data/GTEXT.GPI"
 extended_ascii = false
-smooth_scroll = true
+smooth_scroll = false
 echo = true
 bell = true
 seven_plus = true
 remote = true
 scr_lock = false
-hour_gong = true
+hour_gong = false
 [buffers]
 # Legacy line counts (≈80 columns each in classic GP).
 text_buffer = [600, 300]   # TEXTBUFFER: monitor scrollback, then channel scrollback
@@ -146,7 +146,7 @@ monitor_mode = "IUSC"
 # "tcp" = Soundmodem / Direwolf raw KISS TCP (no KISS.INI).
 kiss_transport = "serial"
 kiss_tcp_host = "127.0.0.1"
-kiss_tcp_port = 8100          # UZ7HO Soundmodem KISS TCP; Direwolf often 8001
+kiss_tcp_port = 8100 # UZ7HO Soundmodem KISS TCP; Direwolf often 8001
 
 # KISSINIT-style open/close (serial KISS only). See data/KISS.INI sections.
 kiss_ini = "data/KISS.INI"
@@ -199,3 +199,10 @@ period_minutes = 60
 # Legacy ESC/P printer attribute byte sequences.
 default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
+
+[window]
+x = 3414
+y = 143
+width = 1024
+height = 820
+maximized = false

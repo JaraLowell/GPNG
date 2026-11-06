@@ -1,6 +1,7 @@
 //! TNC / modem interface — config-selected drivers (WA8DED, TFPCX, KISS).
 //!
-//! Only **one** driver is constructed at startup from `[tnc] protocol`.
+//! Only **one** driver is loaded, from `[tnc] protocol`. The pixel UI starts
+//! that driver when the operator presses Use this; `--tui` starts it immediately.
 //! Shared wire helpers live in [`serial`] and [`hostmode`]; each driver owns
 //! its bring-up and poll loop.
 //!
@@ -23,10 +24,13 @@ mod tcp;
 mod wa8ded_ini;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tokio::task::JoinHandle;
+use tracing::{error, info, warn};
 
 use crate::config::{HostProtocol, SerialConfig, TncConfig};
 
@@ -38,6 +42,7 @@ pub use monitor_filter::{
 pub use payload::{
     flush_rx_line, normalize_newlines, pack_text_payloads, payload_lines, take_rx_lines,
 };
+pub use serial::available_port_names;
 
 // ---------------------------------------------------------------------------
 // Public types (stable UI surface)
@@ -234,6 +239,75 @@ pub fn spawn_tnc_task(
     });
 
     (channels, join)
+}
+
+struct LiveDriver {
+    shutdown: mpsc::Sender<TncCommand>,
+    join: JoinHandle<()>,
+}
+
+/// Modem driver slot. Empty until [`RadioLink::open`]; the pixel UI calls that
+/// from the startup card, after the operator has chosen the radio.
+#[derive(Clone)]
+pub struct RadioLink {
+    rt: Handle,
+    live: Arc<Mutex<Option<LiveDriver>>>,
+}
+
+impl RadioLink {
+    pub fn new(rt: Handle) -> Self {
+        Self {
+            rt,
+            live: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.live.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
+    /// Start the one configured driver. Call once; a second call is ignored
+    /// and returns a disconnected command sender.
+    pub fn open(
+        &self,
+        serial: SerialConfig,
+        tnc_cfg: TncConfig,
+    ) -> (mpsc::Receiver<TncEvent>, mpsc::Sender<TncCommand>) {
+        if self.is_open() {
+            warn!("radio link already open");
+            let (cmd_tx, _rx) = mpsc::channel(1);
+            let (_tx, events) = mpsc::channel(1);
+            return (events, cmd_tx);
+        }
+        let _guard = self.rt.enter();
+        let (channels, join) = spawn_tnc_task(serial, tnc_cfg);
+        let shutdown = channels.commands.clone();
+        if let Ok(mut slot) = self.live.lock() {
+            *slot = Some(LiveDriver { shutdown, join });
+        }
+        (channels.events, channels.commands)
+    }
+
+    /// Deinit and drop the COM port or TCP socket, if one was opened.
+    /// Returns whether a driver was actually running.
+    pub fn shutdown(&self) -> bool {
+        let live = self.live.lock().ok().and_then(|mut g| g.take());
+        let Some(live) = live else {
+            return false;
+        };
+        request_shutdown();
+        let _ = self.rt.block_on(live.shutdown.send(TncCommand::Shutdown));
+        if self
+            .rt
+            .block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(8), live.join).await
+            })
+            .is_err()
+        {
+            error!("TNC driver did not stop within 8 s — COM may still be held");
+        }
+        true
+    }
 }
 
 #[cfg(test)]

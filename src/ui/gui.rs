@@ -37,7 +37,7 @@ use tokio::sync::mpsc;
 
 use crate::bbs::{self, Entry as MailEntry};
 use crate::cipher;
-use crate::config::{Config, HostProtocol};
+use crate::config::{normalize_mycall, Config, HostProtocol};
 use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
 use crate::names::{NamesFile, Route};
@@ -49,8 +49,9 @@ use crate::remote::mail::{self, MailAsk};
 use crate::remote::userdir;
 use crate::tnc::ax25::{self, Ax25Frame, Ax25FrameType};
 use crate::tnc::{
-    normalize_call, pack_text_payloads, parse_heard, payload_lines, BufferReport, ChannelBuffers,
-    FrameClass, HostCode, MonitorFilter, MonitorInput, TncCommand, TncEvent, TNC_RAM,
+    available_port_names, normalize_call, pack_text_payloads, parse_heard, payload_lines,
+    BufferReport, ChannelBuffers, FrameClass, HostCode, MonitorFilter, MonitorInput, RadioLink,
+    TncCommand, TncEvent, TNC_RAM,
 };
 use crate::transfer::sevenplus::{self, SevenPlusAutosave};
 use crate::version;
@@ -259,8 +260,27 @@ pub struct GpGuiApp {
     /// Focus the connect dialog call field once when opened.
     connect_dialog_focus: bool,
     icon_tex: Vec<TextureHandle>,
-    /// `assets/start.png` on top of the window. The first click drops it.
+    /// `assets/start.png`, drawn above the radio card until Use this.
     start_screen: Option<TextureHandle>,
+    /// Startup gate. The serial or TCP link stays closed until Use this.
+    show_radio_gate: bool,
+    radio: RadioLink,
+    /// Global call (`mycall[0]`) shown first on the startup card.
+    radio_call: String,
+    /// Call loaded from Config, so a change can be announced once.
+    radio_call_loaded: String,
+    radio_protocol: HostProtocol,
+    /// KISS serial/TCP choice. WA8DED and TFPCX stay on serial.
+    radio_tcp: bool,
+    radio_port: String,
+    radio_baud: u32,
+    radio_host: String,
+    radio_tcp_port: String,
+    radio_ports: Vec<String>,
+    radio_ports_at: Option<Instant>,
+    /// Ports the OS reported, not counting a saved name that is unplugged.
+    radio_live_ports: usize,
+    radio_error: String,
     /// WA8DED monitor flags, e.g. `IUSC` (from TNC / local set).
     monitor_mode: String,
     /// KISS / TFPCX monitor listing. WA8DED applies the same rule in the modem.
@@ -362,8 +382,7 @@ impl GpGuiApp {
         cc: &eframe::CreationContext<'_>,
         cfg: Config,
         config_path: PathBuf,
-        events: mpsc::Receiver<TncEvent>,
-        cmd_tx: mpsc::Sender<TncCommand>,
+        radio: RadioLink,
     ) -> Self {
         let channels = cfg.session.channels.clamp(1, 10) as u8;
         let mon_max = cfg.buffers.text_buffer.first().copied().unwrap_or(600) as usize;
@@ -420,8 +439,7 @@ impl GpGuiApp {
             channel_down.push(Vec::new());
             channel_down_wait.push(None);
         }
-        // Session banner (orange) — not persisted.
-        pads[0].push_unwrapped(PadKind::System, version::startup_credits());
+        // Local call stays on the monitor. The credits line is on the start screen.
         pads[0].push(
             PadKind::System,
             version::startup_local_call(cfg.primary_mycall()),
@@ -449,6 +467,17 @@ impl GpGuiApp {
         } else {
             format!("{} icons", icon_tex.len())
         };
+
+        let (cmd_tx, _idle_rx) = mpsc::channel(1);
+        let (_idle_tx, events) = mpsc::channel(1);
+        let radio_call = cfg.primary_mycall().to_string();
+        let radio_call_loaded = radio_call.clone();
+        let radio_protocol = cfg.tnc.protocol_kind();
+        let radio_tcp = cfg.tnc.kiss_transport.eq_ignore_ascii_case("tcp");
+        let radio_port = cfg.serial.port.clone();
+        let radio_baud = cfg.serial.baud;
+        let radio_host = cfg.tnc.kiss_tcp_host.clone();
+        let radio_tcp_port = cfg.tnc.kiss_tcp_port.to_string();
 
         let colors = &cfg.colors;
         let (serial_port, serial_baud) = if cfg.tnc.kiss_use_tcp() {
@@ -547,6 +576,20 @@ impl GpGuiApp {
             connect_dialog_focus: false,
             icon_tex,
             start_screen,
+            show_radio_gate: true,
+            radio,
+            radio_call,
+            radio_call_loaded,
+            radio_protocol,
+            radio_tcp,
+            radio_port,
+            radio_baud,
+            radio_host,
+            radio_tcp_port,
+            radio_ports: Vec::new(),
+            radio_ports_at: None,
+            radio_live_ports: 0,
+            radio_error: String::new(),
             monitor_mode,
             monitor_filter,
             monitor_follow: None,
@@ -5118,6 +5161,16 @@ impl GpGuiApp {
     fn poll_hotkeys(&mut self, ctx: &Context) {
         let alt = egui::Modifiers::ALT;
         let none = egui::Modifiers::NONE;
+        if self.show_radio_gate {
+            if eat_key(ctx, alt, egui::Key::X) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            let compose = compose_id();
+            if ctx.memory(|m| m.focused()) == Some(compose) {
+                ctx.memory_mut(|m| m.surrender_focus(compose));
+            }
+            return;
+        }
         if eat_key(ctx, alt, egui::Key::X) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -5973,40 +6026,344 @@ impl eframe::App for GpGuiApp {
 }
 
 impl GpGuiApp {
-    /// `start.png` at its own pixel size, centered. Any click removes it
-    /// and frees the texture.
+    /// Logo up top, radio card under it. Use this opens the link and drops both.
     fn paint_start_screen(&mut self, ctx: &Context) {
-        if self.start_screen.is_none() {
+        if !self.show_radio_gate {
             return;
         }
+        self.refresh_radio_ports();
+        let before = self.radio_form_key();
         let screen = ctx.screen_rect();
-        let mut dismiss = false;
-        egui::Area::new(egui::Id::new("gp_start_screen"))
+        let logo_bottom = self.paint_start_logo(ctx, screen);
+        let mut use_this = false;
+        let x = (screen.center().x - 170.0).clamp(
+            screen.left() + 8.0,
+            (screen.right() - 348.0).max(screen.left() + 8.0),
+        );
+        let y = (logo_bottom + 12.0).min((screen.bottom() - 28.0).max(screen.top() + 8.0));
+        egui::Window::new("Radio setup")
+            .collapsible(false)
+            .resizable(false)
             .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::new(x, y))
+            .default_width(340.0)
+            .show(ctx, |ui| {
+                use_this = self.radio_setup_form(ui);
+            });
+        if self.radio_form_key() != before {
+            let saved = self.store_radio_form();
+            self.note_radio_save(saved);
+        }
+        if use_this {
+            let saved = self.store_radio_form();
+            self.note_radio_save(saved);
+            if self.radio_error.is_empty() {
+                self.open_chosen_radio();
+            }
+        }
+        if self.show_radio_gate {
+            egui::Area::new(egui::Id::new("gp_start_credits"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(screen.min)
+                .interactable(false)
+                .show(ctx, |ui| {
+                    paint_start_credits(ui.painter(), screen);
+                });
+        }
+    }
+
+    /// Monitor-blue splash with the welcome picture moved up, leaving room for the card.
+    fn paint_start_logo(&self, ctx: &Context, screen: Rect) -> f32 {
+        let margin = 16.0;
+        let reserve = 312.0;
+        let mut logo_bottom = screen.top() + margin;
+        egui::Area::new(egui::Id::new("gp_start_screen"))
+            .order(egui::Order::Middle)
             .fixed_pos(screen.min)
             .interactable(true)
             .show(ctx, |ui| {
-                let hit = ui.interact(screen, ui.id().with("start_hit"), Sense::click());
+                let _ = ui.interact(screen, ui.id().with("start_hit"), Sense::click_and_drag());
+                ui.painter().rect_filled(screen, 0.0, self.monitor_bg);
                 if let Some(tex) = self.start_screen.as_ref() {
                     let ppp = ctx.pixels_per_point().max(1.0);
                     let tex_size = tex.size_vec2() / ppp;
                     if tex_size.x > 0.0 && tex_size.y > 0.0 {
-                        let img = Rect::from_center_size(screen.center(), tex_size);
+                        let max_h = (screen.height() - margin * 2.0 - 12.0 - reserve - START_CREDITS_H)
+                            .max(72.0);
+                        let max_w = (screen.width() - margin * 2.0).max(72.0);
+                        let scale = (max_w / tex_size.x).min(max_h / tex_size.y).min(1.0);
+                        let draw = tex_size * scale;
+                        let img = Rect::from_min_size(
+                            Pos2::new(screen.center().x - draw.x * 0.5, screen.top() + margin),
+                            draw,
+                        );
                         ui.painter().image(
                             tex.id(),
                             img,
                             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                             Color32::WHITE,
                         );
+                        logo_bottom = img.bottom();
                     }
                 }
-                if hit.clicked() || hit.secondary_clicked() || hit.middle_clicked() {
-                    dismiss = true;
+            });
+        logo_bottom
+    }
+
+    fn radio_setup_form(&mut self, ui: &mut Ui) -> bool {
+        ui.set_min_width(300.0);
+        let ports = self.radio_ports.clone();
+        egui::Grid::new("radio_setup")
+            .num_columns(2)
+            .spacing([12.0, 8.0])
+            .show(ui, |ui| {
+                ui.label("Mycall");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.radio_call)
+                        .desired_width(200.0)
+                        .font(FontId::monospace(14.0)),
+                );
+                ui.end_row();
+
+                ui.label("Protocol");
+                egui::ComboBox::from_id_salt("radio_protocol")
+                    .selected_text(protocol_label(self.radio_protocol))
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        for kind in [HostProtocol::Wa8ded, HostProtocol::Tfpcx, HostProtocol::Kiss]
+                        {
+                            ui.selectable_value(
+                                &mut self.radio_protocol,
+                                kind,
+                                protocol_label(kind),
+                            );
+                        }
+                    });
+                ui.end_row();
+
+                ui.label("Connection");
+                if self.radio_protocol == HostProtocol::Kiss {
+                    egui::ComboBox::from_id_salt("radio_connection")
+                        .selected_text(if self.radio_tcp { "TCP" } else { "Serial" })
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.radio_tcp, false, "Serial");
+                            ui.selectable_value(&mut self.radio_tcp, true, "TCP");
+                        });
+                } else {
+                    ui.label("Serial");
+                }
+                ui.end_row();
+
+                let serial = self.radio_protocol != HostProtocol::Kiss || !self.radio_tcp;
+                if serial {
+                    ui.label("Port");
+                    let selected = if self.radio_port.is_empty() {
+                        "choose a port".to_string()
+                    } else {
+                        self.radio_port.clone()
+                    };
+                    egui::ComboBox::from_id_salt("radio_port")
+                        .selected_text(selected)
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            if ports.is_empty() {
+                                ui.label("No ports found");
+                            }
+                            for port in &ports {
+                                ui.selectable_value(&mut self.radio_port, port.clone(), port);
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("Baud");
+                    egui::ComboBox::from_id_salt("radio_baud")
+                        .selected_text(self.radio_baud.to_string())
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            for baud in baud_choices(self.radio_baud) {
+                                ui.selectable_value(
+                                    &mut self.radio_baud,
+                                    baud,
+                                    baud.to_string(),
+                                );
+                            }
+                        });
+                    ui.end_row();
+                } else {
+                    ui.label("IP");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.radio_host)
+                            .desired_width(200.0)
+                            .font(FontId::monospace(14.0)),
+                    );
+                    ui.end_row();
+                    ui.label("Port");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.radio_tcp_port)
+                            .desired_width(200.0)
+                            .font(FontId::monospace(14.0)),
+                    );
+                    ui.end_row();
                 }
             });
-        if dismiss {
-            self.start_screen = None;
+
+        let serial = self.radio_protocol != HostProtocol::Kiss || !self.radio_tcp;
+        if serial && self.radio_live_ports == 0 {
+            ui.label(
+                RichText::new("No serial port found yet. Plug in the radio and it will show up here.")
+                    .color(Color32::from_rgb(140, 40, 40)),
+            );
         }
+        if !self.radio_error.is_empty() {
+            ui.label(RichText::new(&self.radio_error).color(Color32::from_rgb(180, 0, 0)));
+        }
+        ui.add_space(8.0);
+        let mut use_this = false;
+        ui.vertical_centered(|ui| {
+            if ui
+                .add_sized(
+                    [200.0, 28.0],
+                    egui::Button::new(RichText::new("Use this").strong()),
+                )
+                .clicked()
+            {
+                use_this = true;
+            }
+        });
+        use_this
+    }
+
+    fn refresh_radio_ports(&mut self) {
+        if self
+            .radio_ports_at
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.radio_ports_at = Some(Instant::now());
+        let live = available_port_names();
+        self.radio_live_ports = live.len();
+        let mut names = live;
+        if !self.radio_port.is_empty()
+            && !names
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(&self.radio_port))
+        {
+            names.insert(0, self.radio_port.clone());
+        }
+        self.radio_ports = names;
+    }
+
+    fn radio_form_key(&self) -> (String, HostProtocol, bool, String, u32, String, String) {
+        (
+            self.radio_call.clone(),
+            self.radio_protocol,
+            self.radio_tcp,
+            self.radio_port.clone(),
+            self.radio_baud,
+            self.radio_host.clone(),
+            self.radio_tcp_port.clone(),
+        )
+    }
+
+    fn note_radio_save(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => self.radio_error.clear(),
+            Err(e) => self.radio_error = e,
+        }
+    }
+
+    /// Copy the card into `cfg` and rewrite Config.toml. Invalid fields are left unsaved.
+    fn store_radio_form(&mut self) -> Result<(), String> {
+        let call = normalize_mycall(self.radio_call.trim())?;
+        self.apply_radio_form_to_cfg()?;
+        let call_changed = !call.eq_ignore_ascii_case(self.cfg.primary_mycall());
+        if call_changed {
+            self.cfg.set_mycall_for_slot(0, &call)?;
+            for slot in self.cfg.station.mycall.iter_mut().skip(1) {
+                slot.clear();
+            }
+            self.cfg.persist_mycall(&self.config_path)?;
+        }
+        self.cfg.persist_radio(&self.config_path)
+    }
+
+    fn apply_radio_form_to_cfg(&mut self) -> Result<(), String> {
+        let protocol = match self.radio_protocol {
+            HostProtocol::Wa8ded => "wa8ded",
+            HostProtocol::Tfpcx => "tfpcx",
+            HostProtocol::Kiss => "kiss",
+        };
+        let tcp = self.radio_protocol == HostProtocol::Kiss && self.radio_tcp;
+        if tcp {
+            let host = self.radio_host.trim();
+            if host.is_empty() {
+                return Err("Enter the IP address".into());
+            }
+            let port: u16 = self
+                .radio_tcp_port
+                .trim()
+                .parse()
+                .map_err(|_| "TCP port needs a number (1–65535)".to_string())?;
+            if port == 0 {
+                return Err("TCP port needs a number (1–65535)".into());
+            }
+            self.cfg.tnc.kiss_tcp_host = host.to_string();
+            self.cfg.tnc.kiss_tcp_port = port;
+            self.cfg.tnc.kiss_transport = "tcp".into();
+        } else {
+            let port_name = self.radio_port.trim();
+            if port_name.is_empty() {
+                return Err("Choose a serial port".into());
+            }
+            if self.radio_baud == 0 {
+                return Err("Choose a baud rate".into());
+            }
+            self.cfg.serial.port = port_name.to_string();
+            self.cfg.serial.baud = self.radio_baud;
+            if let Some(n) = com_number_from_port(port_name) {
+                self.cfg.serial.com_number = n;
+            }
+            if self.radio_protocol == HostProtocol::Kiss {
+                self.cfg.tnc.kiss_transport = "serial".into();
+            }
+        }
+        self.cfg.tnc.protocol = protocol.into();
+        Ok(())
+    }
+
+    fn open_chosen_radio(&mut self) {
+        if !self.radio.is_open() {
+            let (events, cmd_tx) = self
+                .radio
+                .open(self.cfg.serial.clone(), self.cfg.tnc.clone());
+            self.events = events;
+            self.cmd_tx = cmd_tx;
+        }
+        if self.cfg.tnc.kiss_use_tcp() {
+            self.serial_port = self.cfg.tnc.kiss_tcp_addr();
+            self.serial_baud = 0;
+        } else {
+            self.serial_port = self.cfg.serial.port.clone();
+            self.serial_baud = self.cfg.serial.baud;
+        }
+        self.serial_open = false;
+        let how = if self.serial_baud == 0 {
+            format!("TCP {}", self.serial_port)
+        } else {
+            format!("{} at {}", self.serial_port, self.serial_baud)
+        };
+        self.status = format!(
+            "Opening {} on {how}",
+            protocol_label(self.cfg.tnc.protocol_kind())
+        );
+        let call = self.cfg.primary_mycall().to_string();
+        if !call.eq_ignore_ascii_case(&self.radio_call_loaded) {
+            self.pads[0].push(PadKind::System, version::startup_local_call(&call));
+        }
+        self.show_radio_gate = false;
+        self.start_screen = None;
     }
 }
 
@@ -8373,6 +8730,62 @@ fn parse_hostmode_channel_tag(text: &str) -> Option<u8> {
     None
 }
 
+/// Room kept under the radio card for the two-line welcome credits.
+const START_CREDITS_H: f32 = 56.0;
+
+fn paint_start_credits(painter: &egui::Painter, screen: Rect) {
+    let color = Color32::from_rgb(255, 168, 0);
+    let font = FontId::proportional(15.0);
+    let text = version::startup_credits();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+    let galleys: Vec<_> = lines
+        .iter()
+        .map(|line| painter.layout_no_wrap((*line).to_string(), font.clone(), color))
+        .collect();
+    let gap = 2.0;
+    let total_h = galleys.iter().map(|g| g.size().y).sum::<f32>()
+        + gap * (galleys.len().saturating_sub(1) as f32);
+    let mut y = screen.bottom() - 12.0 - total_h;
+    for galley in galleys {
+        let x = screen.center().x - galley.size().x * 0.5;
+        let h = galley.size().y;
+        painter.galley(Pos2::new(x, y), galley, color);
+        y += h + gap;
+    }
+}
+
+fn protocol_label(kind: HostProtocol) -> &'static str {
+    match kind {
+        HostProtocol::Wa8ded => "WA8DED",
+        HostProtocol::Tfpcx => "TFPCX",
+        HostProtocol::Kiss => "KISS",
+    }
+}
+
+fn baud_choices(current: u32) -> Vec<u32> {
+    let mut rates = vec![1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+    if current > 0 && !rates.contains(&current) {
+        rates.push(current);
+        rates.sort_unstable();
+    }
+    rates
+}
+
+fn com_number_from_port(port: &str) -> Option<u32> {
+    let rest = port
+        .strip_prefix("COM")
+        .or_else(|| port.strip_prefix("com"))?;
+    let n: u32 = rest.parse().ok()?;
+    (n > 0).then_some(n)
+}
+
 /// Startup picture. `None` if the PNG cannot be decoded.
 fn load_start_screen(ctx: &Context) -> Option<TextureHandle> {
     const BYTES: &[u8] = include_bytes!("../../assets/start.png");
@@ -8846,12 +9259,7 @@ fn split_monitor_height(body: f32, lower: f32) -> f32 {
     (body * clamp_split_lower(lower)).clamp(min, body - min)
 }
 
-pub fn run(
-    cfg: Config,
-    config_path: PathBuf,
-    events: mpsc::Receiver<TncEvent>,
-    cmd_tx: mpsc::Sender<TncCommand>,
-) -> anyhow::Result<()> {
+pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Result<()> {
     let title = version::window_title();
     let width = cfg.window.width.max(860.0);
     let height = cfg.window.height.max(700.0);
@@ -8878,7 +9286,7 @@ pub fn run(
         &title,
         native,
         Box::new(move |cc| {
-            let app = GpGuiApp::new(cc, (*cfg).clone(), (*config_path).clone(), events, cmd_tx);
+            let app = GpGuiApp::new(cc, (*cfg).clone(), (*config_path).clone(), radio);
             Ok(Box::new(app))
         }),
     )

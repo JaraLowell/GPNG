@@ -21,17 +21,20 @@ use crate::config::Config;
 use crate::tnc::{TncCommand, TncEvent};
 use tokio::sync::mpsc;
 
-/// Start the operator UI. Pass `tui = true` for the text fallback.
-pub fn run(
+/// Text UI. The caller has already opened the radio.
+pub fn run_tui(
     cfg: Config,
-    config_path: PathBuf,
     events: mpsc::Receiver<TncEvent>,
     cmd_tx: mpsc::Sender<TncCommand>,
-    tui: bool,
 ) -> anyhow::Result<()> {
-    if tui {
-        app::run(cfg, events, cmd_tx)
-    } else {
-        gui::run(cfg, config_path, events, cmd_tx)
-    }
+    app::run(cfg, events, cmd_tx)
+}
+
+/// Pixel UI. The radio stays closed until the startup card's Use this.
+pub fn run_gui(
+    cfg: Config,
+    config_path: PathBuf,
+    radio: crate::tnc::RadioLink,
+) -> anyhow::Result<()> {
+    gui::run(cfg, config_path, radio)
 }

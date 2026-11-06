@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use graphic_packet::config::Config;
 use graphic_packet::shelllog;
-use graphic_packet::tnc::{spawn_tnc_task, TncCommand};
+use graphic_packet::tnc::RadioLink;
 use graphic_packet::ui;
 use graphic_packet::version::{self, APP_NAME};
 use tracing::{error, info};
@@ -50,34 +50,25 @@ fn main() -> Result<()> {
     }
 
     // eframe owns the main thread; drive Tokio in the background.
+    // The pixel UI opens the radio from the startup card. `--tui` opens it now.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("tokio runtime")?;
 
-    let (tnc_channels, tnc_join) = {
-        let serial = cfg.serial.clone();
-        let tnc = cfg.tnc.clone();
-        rt.block_on(async { spawn_tnc_task(serial, tnc) })
+    let radio = RadioLink::new(rt.handle().clone());
+    let ui_result = if tui {
+        let (events, cmd_tx) = radio.open(cfg.serial.clone(), cfg.tnc.clone());
+        ui::run_tui(cfg, events, cmd_tx)
+    } else {
+        ui::run_gui(cfg, config_path, radio.clone())
     };
 
-    let cmd_tx = tnc_channels.commands.clone();
-    let events = tnc_channels.events;
-    let shutdown_tx = cmd_tx.clone();
-
-    let ui_result = ui::run(cfg, config_path, events, cmd_tx, tui);
-
-    graphic_packet::tnc::request_shutdown();
-    let _ = rt.block_on(shutdown_tx.send(TncCommand::Shutdown));
-    // KISS exit + DTR drop can take ~1s; allow headroom so the COM port is free.
-    if rt
-        .block_on(async { tokio::time::timeout(std::time::Duration::from_secs(8), tnc_join).await })
-        .is_err()
-    {
-        error!("TNC driver did not stop within 8 s — COM may still be held");
+    let stopped_driver = radio.shutdown();
+    if stopped_driver {
+        // Brief pause so Windows releases the COM handle before a quick relaunch.
+        std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    // Brief pause so Windows releases the COM handle before a quick relaunch.
-    std::thread::sleep(std::time::Duration::from_millis(250));
     rt.shutdown_timeout(std::time::Duration::from_millis(500));
     if let Err(err) = ui_result {
         error!("UI error: {err}");

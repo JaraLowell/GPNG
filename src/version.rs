@@ -18,7 +18,7 @@ pub fn version_badge() -> String {
     format!("GP V{APP_VERSION}")
 }
 
-/// First Monitor startup line (credits).
+/// Credits on the startup screen (two lines; the break is in `CLASSIC_CREDIT`).
 pub fn startup_credits() -> String {
     format!("{APP_NAME} v{APP_VERSION} by {APP_AUTHORS}, based on {CLASSIC_CREDIT}")
 }
