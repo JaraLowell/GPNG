@@ -49,8 +49,8 @@ use crate::remote::mail::{self, MailAsk};
 use crate::remote::userdir;
 use crate::tnc::ax25::{self, Ax25Frame, Ax25FrameType};
 use crate::tnc::{
-    pack_text_payloads, payload_lines, BufferReport, ChannelBuffers, HostCode, TncCommand,
-    TncEvent, TNC_RAM,
+    normalize_call, pack_text_payloads, parse_heard, payload_lines, BufferReport, ChannelBuffers,
+    FrameClass, HostCode, MonitorFilter, MonitorInput, TncCommand, TncEvent, TNC_RAM,
 };
 use crate::transfer::sevenplus::{self, SevenPlusAutosave};
 use crate::version;
@@ -263,6 +263,11 @@ pub struct GpGuiApp {
     start_screen: Option<TextureHandle>,
     /// WA8DED monitor flags, e.g. `IUSC` (from TNC / local set).
     monitor_mode: String,
+    /// KISS / TFPCX monitor listing. WA8DED applies the same rule in the modem.
+    monitor_filter: MonitorFilter,
+    /// Next info-only monitor row follows a header already judged.
+    /// `Some(false)` hides it; `Some(true)` keeps it with that header.
+    monitor_follow: Option<bool>,
     /// Free modem RAM, from the driver (`@B`, or 600 minus bytes still queued).
     tnc_free: u32,
     /// Receive frames the modem has not handed up yet (monitor row).
@@ -449,11 +454,8 @@ impl GpGuiApp {
         } else {
             (cfg.serial.port.clone(), cfg.serial.baud)
         };
-        let monitor_mode = if cfg.tnc.monitor_mode.is_empty() {
-            "IUSC".into()
-        } else {
-            cfg.tnc.monitor_mode.clone()
-        };
+        let monitor_filter = MonitorFilter::from_config(&cfg.tnc.monitor_mode);
+        let monitor_mode = monitor_filter.label();
         let mut session = SessionChrome::from_config(&cfg.session.chrome);
         if !cfg.session.qrg_text.trim().is_empty() {
             session.qrg_log = journal::clip_qrg(&cfg.session.qrg_text);
@@ -544,6 +546,8 @@ impl GpGuiApp {
             icon_tex,
             start_screen,
             monitor_mode,
+            monitor_filter,
+            monitor_follow: None,
             tnc_free: TNC_RAM,
             mon_not_disp: 0,
             ch_not_disp: vec![0; slots],
@@ -596,14 +600,12 @@ impl GpGuiApp {
         match self.editor.load_path(&path) {
             Ok(()) => {
                 self.status = format!("EDIT {}", self.editor.display_name());
-                self.log_event(format!("editor ← {}", self.editor.display_name()));
             }
             Err(e) => {
                 self.editor.path = path;
                 self.editor.text.clear();
                 self.editor.dirty = false;
                 self.status = e.clone();
-                self.log_event(format!("editor: {e}"));
             }
         }
     }
@@ -618,7 +620,6 @@ impl GpGuiApp {
         match self.editor.save() {
             Ok(()) => {
                 self.status = format!("saved {}", self.editor.display_name());
-                self.log_event(format!("editor saved {}", self.editor.display_name()));
                 // Keep session CT in sync when editing GTEXT.
                 if self.editor.display_name().eq_ignore_ascii_case("GTEXT.GPI") {
                     self.session.set_ctext_path(self.editor.path.clone());
@@ -626,7 +627,6 @@ impl GpGuiApp {
             }
             Err(e) => {
                 self.status = e.clone();
-                self.log_event(format!("editor save: {e}"));
             }
         }
     }
@@ -641,12 +641,10 @@ impl GpGuiApp {
             match self.editor.load_path(&path) {
                 Ok(()) => {
                     self.status = format!("loaded {}", self.editor.display_name());
-                    self.log_event(format!("editor ← {}", self.editor.display_name()));
                     self.select(ActivePane::Editor);
                 }
                 Err(e) => {
                     self.status = e.clone();
-                    self.log_event(format!("editor load: {e}"));
                 }
             }
         }
@@ -749,13 +747,26 @@ impl GpGuiApp {
                 } => {
                     self.serial_rx_frames += 1;
                     let text = decode_rx_text(&payload, self.session.extended_ascii);
-                    // Heuristic: TNC reply to `M` query often looks like `IUSC` / `UISC`.
-                    if channel == 0
-                        && matches!(code, HostCode::Data | HostCode::Other(_))
-                        && looks_like_monitor_mode(&text)
+                    // WA8DED answers a bare `M` with the live flags (code 1). That
+                    // reply is the monitor line, not a frame to list.
+                    if !self.uses_software_monitor()
+                        && channel == 0
+                        && matches!(code, HostCode::Data)
                     {
-                        self.monitor_mode = text.trim().to_ascii_uppercase();
-                        self.log_event(format!("monitor mode ← TNC: {}", self.monitor_mode));
+                        let reply = text.trim().trim_matches('\0').trim();
+                        if !reply.is_empty() && reply.split_whitespace().count() <= 9 {
+                            if let Ok(filter) =
+                                MonitorFilter::apply(&MonitorFilter::default(), reply)
+                            {
+                                self.monitor_filter = filter;
+                                self.monitor_mode = self.monitor_filter.label();
+                                self.log_event(format!(
+                                    "monitor mode ← TNC: {}",
+                                    self.monitor_mode
+                                ));
+                                continue;
+                            }
+                        }
                     }
                     // Link status may arrive as LinkStatus *or* plain Monitor/Data text.
                     let linkish = matches!(code, HostCode::LinkStatus)
@@ -838,12 +849,19 @@ impl GpGuiApp {
                     } else {
                         Vec::new()
                     };
-                    if let Some(src) = spy_src.as_deref() {
-                        if monitor_rows.is_empty() {
-                            self.feed_spy_pads(src, kind, &line);
-                        } else {
-                            for part in &monitor_rows {
-                                self.feed_spy_pads(src, kind, part);
+                    // KISS / TFPCX: `M` hides rows on the monitor. The frame
+                    // itself was already delivered above when it is channel data.
+                    let hide_monitor = idx == 0
+                        && monitor_bytes
+                        && !self.host_monitor_allowed(&monitor_rows, &line);
+                    if !hide_monitor {
+                        if let Some(src) = spy_src.as_deref() {
+                            if monitor_rows.is_empty() {
+                                self.feed_spy_pads(src, kind, &line);
+                            } else {
+                                for part in &monitor_rows {
+                                    self.feed_spy_pads(src, kind, part);
+                                }
                             }
                         }
                     }
@@ -865,7 +883,7 @@ impl GpGuiApp {
                             }
                         }
                         self.accept_rx_text(channel, &line, kind);
-                    } else if !(skip_monitor_dup && idx == 0) {
+                    } else if !hide_monitor && !(skip_monitor_dup && idx == 0) {
                         if idx == 0 && monitor_bytes {
                             if let Some(pad) = self.pads.get_mut(0) {
                                 for part in &monitor_rows {
@@ -1896,6 +1914,112 @@ impl GpGuiApp {
         self.cfg.tnc.protocol_kind() == HostProtocol::Kiss
     }
 
+    /// KISS and TFPCX have no `M` in the modem. The monitor view filters.
+    fn uses_software_monitor(&self) -> bool {
+        self.cfg.tnc.protocol_kind() != HostProtocol::Wa8ded
+    }
+
+    /// A channel has a link, so `M` without `C` keeps the monitor quiet.
+    fn any_link_up(&self) -> bool {
+        (1..=self.channels).any(|n| self.channel_linked(n))
+    }
+
+    /// KISS / Baycom: apply `M` here. Returns true when the line was `M`.
+    fn take_monitor_command(&mut self, line: &str) -> bool {
+        let Some(input) = MonitorFilter::parse_command(line) else {
+            return false;
+        };
+        if !self.uses_software_monitor() {
+            return false;
+        }
+        match input {
+            MonitorInput::Query => {
+                let label = self.monitor_filter.label();
+                self.monitor_mode = label.clone();
+                self.status = format!("Monitor {label}");
+                self.log_event(format!("monitor mode {label}"));
+            }
+            MonitorInput::Set(args) => match MonitorFilter::apply(&self.monitor_filter, &args) {
+                Ok(filter) => {
+                    let label = filter.label();
+                    self.monitor_filter = filter;
+                    self.monitor_mode = label.clone();
+                    self.monitor_follow = None;
+                    self.status = format!("Monitor {label}");
+                    self.log_event(format!("monitor mode → {label}"));
+                }
+                Err(err) => {
+                    self.status = format!("M: {err}");
+                }
+            },
+        }
+        true
+    }
+
+    fn monitor_lists_frame(
+        &self,
+        kind: Ax25FrameType,
+        src: &str,
+        dest: &str,
+        via: &[String],
+    ) -> bool {
+        if !self.uses_software_monitor() {
+            return true;
+        }
+        let class = match kind {
+            Ax25FrameType::Ui => FrameClass::Ui,
+            Ax25FrameType::Info => FrameClass::Info,
+            _ => FrameClass::Supervisory,
+        };
+        self.monitor_filter.allows(
+            Some(class),
+            &frame_calls(src, dest, via),
+            self.any_link_up(),
+        )
+    }
+
+    fn monitor_lists_text(&self, line: &str) -> bool {
+        if !self.uses_software_monitor() {
+            return true;
+        }
+        let connected = self.any_link_up();
+        if let Some(heard) = parse_heard(line) {
+            self.monitor_filter
+                .allows(heard.class, &heard.calls, connected)
+        } else {
+            self.monitor_filter.allows(None, &[], connected)
+        }
+    }
+
+    /// Hostmode monitor text (TFPCX) and plain KISS text lines.
+    /// An `fm` header decides its info. When that info arrives as the next
+    /// frame, it keeps the header's answer.
+    fn host_monitor_allowed(&mut self, rows: &[String], fallback: &str) -> bool {
+        if !self.uses_software_monitor() {
+            return true;
+        }
+        let header = rows
+            .iter()
+            .map(String::as_str)
+            .find(|row| is_fm_header(row))
+            .or_else(|| is_fm_header(fallback).then_some(fallback));
+        if let Some(header) = header {
+            let show = self.monitor_lists_text(header);
+            let info_here = rows.iter().any(|row| !is_fm_header(row) && !row.trim().is_empty());
+            self.monitor_follow = if info_here { None } else { Some(show) };
+            return show;
+        }
+        let text = rows.first().map(String::as_str).unwrap_or(fallback);
+        if parse_heard(text).is_some() {
+            self.monitor_follow = None;
+            return self.monitor_lists_text(text);
+        }
+        if let Some(show) = self.monitor_follow.take() {
+            return show;
+        }
+        self.monitor_lists_text(text)
+    }
+
     /// GP DOS / axlisten monitor header on pad 0 (`fm … ctl …`).
     fn push_kiss_mon(
         &mut self,
@@ -1910,6 +2034,9 @@ impl GpGuiApp {
         command: bool,
         info_text: Option<&str>,
     ) {
+        if !self.monitor_lists_frame(frame_kind, src, dest, via) {
+            return;
+        }
         let hdr = stamp_monitor_fm(&ax25::monitor_ctl_line(
             src, dest, via, frame_kind, ns, nr, poll, command,
         ));
@@ -2424,11 +2551,18 @@ impl GpGuiApp {
                     info: info_text.clone(),
                 };
                 self.mheard.hear(&ui);
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon);
-                let mon = frame.monitor_line();
-                self.feed_spy_pads(&frame.src, PadKind::Incoming, &mon);
-                if let Some(line) = ax25::monitor_info_line(&info_mon) {
-                    self.feed_spy_pads(&frame.src, PadKind::Incoming, &line);
+                if self.monitor_lists_frame(
+                    Ax25FrameType::Ui,
+                    &frame.src,
+                    &frame.dest,
+                    &frame.via,
+                ) {
+                    self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon);
+                    let mon = frame.monitor_line();
+                    self.feed_spy_pads(&frame.src, PadKind::Incoming, &mon);
+                    if let Some(line) = ax25::monitor_info_line(&info_mon) {
+                        self.feed_spy_pads(&frame.src, PadKind::Incoming, &line);
+                    }
                 }
             }
             Ax25FrameType::Sabm => {
@@ -3004,13 +3138,22 @@ impl GpGuiApp {
             return;
         }
 
-        // Local / TNC monitor-mode helpers: `M IUSC`, `M`, `MONITOR IUSC`
-        if let Some(mode) = parse_monitor_set(&line) {
-            self.monitor_mode = mode.clone();
-            self.log_event(format!("monitor mode → {mode}"));
+        // `M` lists frames on the monitor. KISS and TFPCX keep the packet
+        // and only change this filter. WA8DED still sends `M` to the modem.
+        if self.take_monitor_command(&line) {
+            return;
+        }
+        if let Some(input) = MonitorFilter::parse_command(&line) {
+            if let MonitorInput::Set(args) = &input {
+                if let Ok(filter) = MonitorFilter::apply(&self.monitor_filter, args) {
+                    self.monitor_filter = filter;
+                    self.monitor_mode = self.monitor_filter.label();
+                    self.log_event(format!("monitor mode → {}", self.monitor_mode));
+                }
+            }
             let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
                 channel: 0,
-                data: format!("M {mode}").into_bytes(),
+                data: line.trim().as_bytes().to_vec(),
             });
             return;
         }
@@ -4910,9 +5053,15 @@ impl GpGuiApp {
         if cmd.is_empty() {
             return;
         }
-        if let Some(mode) = parse_monitor_set(cmd) {
-            self.monitor_mode = mode.clone();
-            self.log_event(format!("monitor mode → {mode}"));
+        if self.take_monitor_command(cmd) {
+            return;
+        }
+        if let Some(MonitorInput::Set(args)) = MonitorFilter::parse_command(cmd) {
+            if let Ok(filter) = MonitorFilter::apply(&self.monitor_filter, &args) {
+                self.monitor_filter = filter;
+                self.monitor_mode = self.monitor_filter.label();
+                self.log_event(format!("monitor mode → {}", self.monitor_mode));
+            }
         }
         if self.kiss_mode() {
             self.status = format!("KISS has no TNC command channel ({cmd})");
@@ -8046,6 +8195,27 @@ fn latin1_string(bytes: &[u8]) -> String {
 }
 
 /// Local 24-hour `hh:mm` with leading zeros, inserted after `fm`.
+fn is_fm_header(line: &str) -> bool {
+    let line = line.trim_start();
+    line.len() >= 3 && line[..3].eq_ignore_ascii_case("fm ")
+}
+
+fn frame_calls(src: &str, dest: &str, via: &[String]) -> Vec<String> {
+    let mut calls = Vec::new();
+    if let Some(call) = normalize_call(src) {
+        calls.push(call);
+    }
+    if let Some(call) = normalize_call(dest) {
+        calls.push(call);
+    }
+    for hop in via {
+        if let Some(call) = normalize_call(hop) {
+            calls.push(call);
+        }
+    }
+    calls
+}
+
 fn stamp_monitor_fm(line: &str) -> String {
     let hhmm = Local::now().format("%H:%M").to_string();
     ax25::insert_monitor_time(line, &hhmm)
@@ -8116,18 +8286,6 @@ fn paint_static_cell(
     w + gap
 }
 
-fn looks_like_monitor_mode(s: &str) -> bool {
-    let t = s.trim();
-    !t.is_empty()
-        && t.len() <= 8
-        && t.chars().all(|c| {
-            matches!(
-                c,
-                'I' | 'U' | 'S' | 'C' | 'N' | '+' | '-' | 'i' | 'u' | 's' | 'c' | 'n'
-            )
-        })
-}
-
 /// Modem / hostmode link chatter (may arrive as Monitor/Data, not only LinkStatus).
 fn looks_like_link_status(s: &str) -> bool {
     let u = s.to_ascii_uppercase();
@@ -8155,20 +8313,6 @@ fn parse_hostmode_channel_tag(text: &str) -> Option<u8> {
         let rest = &t[digits.len()..];
         if rest.starts_with(':') || rest.starts_with(' ') {
             return digits.parse().ok();
-        }
-    }
-    None
-}
-
-fn parse_monitor_set(line: &str) -> Option<String> {
-    let parts: Vec<_> = line.split_whitespace().collect();
-    if parts.is_empty() {
-        return None;
-    }
-    let cmd = parts[0].to_ascii_uppercase();
-    if cmd == "M" || cmd == "MONITOR" {
-        if parts.len() >= 2 {
-            return Some(parts[1].to_ascii_uppercase());
         }
     }
     None

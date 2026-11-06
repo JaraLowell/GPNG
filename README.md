@@ -126,11 +126,13 @@ KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` str
 
 **Graphic Packet** was written by Ulf Saran (DH1DAE). This crate is a new implementation of that terminal for current operating systems. It does not include the DOS binary.
 
-7Plus Code-AutoSave follows the file format of **7PLUS 2.2** by Axel Bauda, DG1BBQ. The part names (`picture.p01`, a single part as `picture.7pl`, part 10 as `picture.p0a`) and the `go_7+.` / `stop_7+.` markers are taken from the C sources maintained by HB9XAR:
+7Plus Code-AutoSave follows the file format of **7PLUS 2.2** by Axel Bauda (DG1BBQ). The part names (`picture.p01`, a single part as `picture.7pl`, part 10 as `picture.p0a`) and the `go_7+.` / `stop_7+.` markers are taken from the C sources maintained by HB9XAR:
 
 [https://github.com/hb9xar/7plus](https://github.com/hb9xar/7plus)
 
 The C sources are not compiled into this crate. `transfer::sevenplus_codec` is a Rust port of the 7PLUS 2.2 codec so the same parts can be built and joined on Windows, Linux, and macOS. 7PLUS itself is free to circulate and is not for sale or commercial use. That port stays under those terms, not under the MIT / Apache-2.0 licence below. With **7+** on, a live capture is written to `data/USER`. Joined parts are intended for `data/SAVE`, and a file chosen for send is split in `data/TEMP` (`-sb` is the part size, separate from the AX.25 packet length). Those two folders are not wired to the channel yet.
+
+**AX.25** Encode and decode librarie for rust by Thomas Karpiniec (VK7XT)
 
 ## License
 

@@ -63,6 +63,9 @@ pub fn run(
     let mut stream = Vec::<u8>::new();
     let mut delivery = HostDelivery::new();
     let mut status_poll = StatusPoll::new();
+    // Ask the TNC what `M` is. The modem already filters its monitor queue;
+    // the reply is only so the monitor line shows the live setting.
+    let mut asked_monitor = false;
     let mut last_poll = Instant::now()
         .checked_sub(Duration::from_millis(poll_ms))
         .unwrap_or_else(Instant::now);
@@ -117,7 +120,14 @@ pub fn run(
             let now = Instant::now();
             // A poll occupies the one outstanding host frame, so its reply is
             // not taken as the acknowledgement of operator data.
-            let queued = if let Some((channel, data, kind)) = status_poll.next(now) {
+            let queued = if !asked_monitor {
+                let queued =
+                    delivery.enqueue_kind(0, b"M".to_vec(), HostKind::Poll, now);
+                if queued.is_some() {
+                    asked_monitor = true;
+                }
+                queued
+            } else if let Some((channel, data, kind)) = status_poll.next(now) {
                 delivery.enqueue_kind(channel, data, kind, now)
             } else {
                 delivery.enqueue_kind(0, poll_command().to_vec(), HostKind::Poll, now)
