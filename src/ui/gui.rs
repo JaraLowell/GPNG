@@ -351,6 +351,10 @@ pub struct GpGuiApp {
     tnc_cmd: String,
     /// Last beacon UI. The next one waits `period_minutes`.
     last_beacon: Instant,
+    /// Window place changed and still needs a write to Config.toml.
+    window_dirty: bool,
+    /// When the place last changed. The file is written after it settles.
+    window_dirty_at: Instant,
 }
 
 impl GpGuiApp {
@@ -587,6 +591,8 @@ impl GpGuiApp {
             show_tnc: false,
             tnc_cmd: String::new(),
             last_beacon: Instant::now(),
+            window_dirty: false,
+            window_dirty_at: Instant::now(),
         }
     }
 
@@ -5834,12 +5840,14 @@ fn eat_key(ctx: &Context, mods: egui::Modifiers, key: egui::Key) -> bool {
 
 impl eframe::App for GpGuiApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.flush_window();
         if self.cfg.session.backup {
             self.save_pad_logs();
         }
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        self.track_window(ctx);
         self.drain_tnc();
         self.kiss_link_timers();
         self.maybe_hour_gong();
@@ -7151,6 +7159,42 @@ impl GpGuiApp {
         if released {
             self.split_drag_dy = 0.0;
         }
+    }
+
+    /// Remember the native window. A minimized frame is skipped.
+    fn track_window(&mut self, ctx: &Context) {
+        let (outer, inner, maximized, minimized) = ctx.input(|i| {
+            let v = i.viewport();
+            (
+                v.outer_rect.map(|r| (r.min.x, r.min.y)),
+                v.inner_rect.map(|r| (r.width(), r.height())),
+                v.maximized.unwrap_or(false),
+                v.minimized.unwrap_or(false),
+            )
+        });
+        let next = self
+            .cfg
+            .window
+            .remember(outer, inner, maximized, minimized);
+        if next != self.cfg.window {
+            self.cfg.window = next;
+            self.window_dirty = true;
+            self.window_dirty_at = Instant::now();
+        }
+        if self.window_dirty && self.window_dirty_at.elapsed() >= Duration::from_millis(800) {
+            self.flush_window();
+        }
+    }
+
+    fn flush_window(&mut self) {
+        if !self.window_dirty {
+            return;
+        }
+        if let Err(e) = self.cfg.persist_window(&self.config_path) {
+            self.log_event(format!("window: {e}"));
+            return;
+        }
+        self.window_dirty = false;
     }
 
     fn persist_session_chrome(&mut self) {
@@ -8551,8 +8595,8 @@ fn text_columns(ui: &Ui) -> usize {
     ((width / char_w).floor() as usize).max(8)
 }
 
-/// One pixel of the text window, four times a second.
-const SOFT_SCROLL_PX_PER_SEC: f32 = 4.0;
+/// Six pixels a second: one pixel about every sixth of a second.
+const SOFT_SCROLL_PX_PER_SEC: f32 = 6.0;
 
 /// Per-pane memory for the stair / `/` follow. Keyed by the scroll area.
 #[derive(Clone, Copy, Debug, Default)]
@@ -8563,7 +8607,7 @@ struct SoftCrawl {
     follow: bool,
     last_offset: f32,
     last_max: f32,
-    /// Fraction of a pixel still owed to the 0.25s clock.
+    /// Fraction of a pixel still owed to the crawl clock.
     carry: f32,
     last_t: f64,
 }
@@ -8610,7 +8654,7 @@ fn keep_following(
     was
 }
 
-/// Hard (`/`) jumps to `max_off`. The stair adds one pixel about every 0.25s.
+/// Hard (`/`) jumps to `max_off`. The stair adds one pixel about every 1/6s.
 /// `carry` is the unused fraction. A long pause moves at most half a second.
 fn soft_scroll_toward(offset: f32, max_off: f32, carry: f32, dt: f32, smooth: bool) -> (f32, f32) {
     let max_off = max_off.max(0.0);
@@ -8809,11 +8853,19 @@ pub fn run(
     cmd_tx: mpsc::Sender<TncCommand>,
 ) -> anyhow::Result<()> {
     let title = version::window_title();
-    let viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1024.0, 820.0])
+    let width = cfg.window.width.max(860.0);
+    let height = cfg.window.height.max(700.0);
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([width, height])
         .with_min_inner_size([860.0, 700.0])
         .with_title(title.clone())
         .with_icon(load_window_icon());
+    if let (Some(x), Some(y)) = (cfg.window.x, cfg.window.y) {
+        viewport = viewport.with_position([x, y]);
+    }
+    if cfg.window.maximized {
+        viewport = viewport.with_maximized(true);
+    }
 
     let native = eframe::NativeOptions {
         viewport,
@@ -8865,13 +8917,14 @@ mod soft_scroll_tests {
         assert!((y - 16.0).abs() < f32::EPSILON);
         assert_eq!(carry, 0.0);
 
+        // 0.25s at 6 px/s is one pixel, with half a pixel left over.
         let (y, carry) = soft_scroll_toward(0.0, 16.0, 0.0, 0.25, true);
         assert!((y - 1.0).abs() < f32::EPSILON);
-        assert!(carry.abs() < 0.01);
+        assert!((carry - 0.5).abs() < 0.01);
 
-        let (y, carry) = soft_scroll_toward(0.0, 16.0, 0.0, 0.20, true);
+        let (y, carry) = soft_scroll_toward(0.0, 16.0, 0.0, 0.10, true);
         assert!((y - 0.0).abs() < f32::EPSILON);
-        let (y, _) = soft_scroll_toward(y, 16.0, carry, 0.20, true);
+        let (y, _) = soft_scroll_toward(y, 16.0, carry, 0.10, true);
         assert!((y - 1.0).abs() < 0.01);
     }
 

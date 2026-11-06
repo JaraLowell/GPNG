@@ -53,6 +53,8 @@ pub struct Config {
     pub colors: ColorConfig,
     pub beacon: BeaconConfig,
     pub print: PrintConfig,
+    /// Last native window place and size.
+    pub window: WindowConfig,
 }
 
 impl Default for Config {
@@ -67,6 +69,7 @@ impl Default for Config {
             colors: ColorConfig::default(),
             beacon: BeaconConfig::default(),
             print: PrintConfig::default(),
+            window: WindowConfig::default(),
         }
     }
 }
@@ -596,6 +599,22 @@ impl Config {
             b.period_minutes,
         );
         upsert_toml_section(path, "beacon", &body)
+    }
+
+    /// Outer position and inner size of the native window.
+    pub fn persist_window(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let w = &self.window;
+        let pos = match (w.x, w.y) {
+            (Some(x), Some(y)) => format!("x = {x:.0}\ny = {y:.0}\n"),
+            _ => String::new(),
+        };
+        let body = format!(
+            "{pos}width = {width:.0}\nheight = {height:.0}\nmaximized = {}\n",
+            w.maximized,
+            width = w.width,
+            height = w.height,
+        );
+        upsert_toml_section(path.as_ref(), "window", &body)
     }
 }
 
@@ -1250,6 +1269,111 @@ impl Default for ColorConfig {
     }
 }
 
+/// Native window, restored on the next start. Missing keys keep the built-in size.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowConfig {
+    /// Outer left edge, in points. Empty until the window has been shown.
+    pub x: Option<f32>,
+    /// Outer top edge, in points.
+    pub y: Option<f32>,
+    /// Inner width, in points.
+    #[serde(default = "default_window_width")]
+    pub width: f32,
+    /// Inner height, in points.
+    #[serde(default = "default_window_height")]
+    pub height: f32,
+    pub maximized: bool,
+}
+
+fn default_window_width() -> f32 {
+    1024.0
+}
+
+fn default_window_height() -> f32 {
+    820.0
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            x: None,
+            y: None,
+            width: default_window_width(),
+            height: default_window_height(),
+            maximized: false,
+        }
+    }
+}
+
+impl WindowConfig {
+    /// Fold one frame of the native window into the saved place.
+    ///
+    /// A minimized or not-yet-shown window is ignored. While maximized, the
+    /// restored size stays as it was and only the screen corner is updated.
+    pub fn remember(
+        &self,
+        outer_xy: Option<(f32, f32)>,
+        inner_wh: Option<(f32, f32)>,
+        maximized: bool,
+        minimized: bool,
+    ) -> Self {
+        if minimized {
+            return self.clone();
+        }
+        let Some((w, h)) = inner_wh else {
+            return self.clone();
+        };
+        let w = w.round();
+        let h = h.round();
+        if !(200.0..=16000.0).contains(&w) || !(200.0..=16000.0).contains(&h) {
+            return self.clone();
+        }
+        let pos = outer_xy.and_then(|(x, y)| {
+            let (x, y) = (x.round(), y.round());
+            (x.is_finite() && y.is_finite() && (-16000.0..=16000.0).contains(&x)
+                && (-16000.0..=16000.0).contains(&y))
+            .then_some((x, y))
+        });
+        let close = |a: f32, b: f32| (a - b).abs() < 3.0;
+        if maximized {
+            let mut next = self.clone();
+            next.maximized = true;
+            if let Some((x, y)) = pos {
+                let same = self
+                    .x
+                    .zip(self.y)
+                    .is_some_and(|(ox, oy)| close(ox, x) && close(oy, y));
+                if !same {
+                    next.x = Some(x);
+                    next.y = Some(y);
+                }
+            }
+            return next;
+        }
+        let Some((x, y)) = pos else {
+            return self.clone();
+        };
+        let unchanged = !self.maximized
+            && self
+                .x
+                .zip(self.y)
+                .is_some_and(|(ox, oy)| close(ox, x) && close(oy, y))
+            && close(self.width, w)
+            && close(self.height, h);
+        if unchanged {
+            return self.clone();
+        }
+        Self {
+            x: Some(x),
+            y: Some(y),
+            width: w,
+            height: h,
+            maximized: false,
+        }
+    }
+}
+
 /// ESC/P printer attribute streams — legacy `DEFAULTPRINT` / `INVERSPRINT`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1399,6 +1523,40 @@ mod tests {
         assert_eq!(cfg.serial.io_port, Some(0x3F8));
         assert_eq!(cfg.session.channels, 8);
         assert_eq!(cfg.tnc.init, vec!["DateTime", "M UISC"]);
+    }
+
+    #[test]
+    fn window_place_round_trip_and_remember() {
+        let missing: Config = toml::from_str("channels = 10\n").unwrap();
+        assert_eq!(missing.window, WindowConfig::default());
+
+        let saved: WindowConfig = toml::from_str(
+            "x = 40\ny = 12\nwidth = 1100\nheight = 760\nmaximized = true\n",
+        )
+        .unwrap();
+        assert_eq!(saved.x, Some(40.0));
+        assert_eq!(saved.y, Some(12.0));
+        assert!((saved.width - 1100.0).abs() < f32::EPSILON);
+        assert!(saved.maximized);
+
+        let partial: WindowConfig = toml::from_str("maximized = false\n").unwrap();
+        assert!((partial.width - 1024.0).abs() < f32::EPSILON);
+        assert!((partial.height - 820.0).abs() < f32::EPSILON);
+
+        let base = WindowConfig::default();
+        let parked = base.remember(Some((10.0, 20.0)), Some((900.0, 700.0)), false, true);
+        assert_eq!(parked, base);
+
+        let placed = base.remember(Some((10.4, 20.6)), Some((1100.2, 760.4)), false, false);
+        assert_eq!(placed.x, Some(10.0));
+        assert_eq!(placed.y, Some(21.0));
+        assert!((placed.width - 1100.0).abs() < f32::EPSILON);
+        assert!(!placed.maximized);
+
+        let maxed = placed.remember(Some((0.0, 0.0)), Some((1920.0, 1080.0)), true, false);
+        assert!(maxed.maximized);
+        assert!((maxed.width - 1100.0).abs() < f32::EPSILON);
+        assert_eq!(maxed.x, Some(0.0));
     }
 
     #[test]
