@@ -1,9 +1,9 @@
 //! Shell log for builds that have no console.
 //!
 //! Debug `cargo run` still prints to stderr. A Windows release is a GUI
-//! program, so the same lines are also appended to `data/log/gpng.log`.
+//! program, so the same lines are also appended to `data/LOG/gpng.log`.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -49,11 +49,11 @@ fn filter() -> EnvFilter {
         .unwrap_or_else(|_| EnvFilter::new("info,graphic_packet=debug"))
 }
 
-/// Open `data/log/gpng.log` and install the global tracing subscriber.
+/// Open `data/LOG/gpng.log` and install the global tracing subscriber.
 pub fn init() {
-    let dir = paths::data_dir().join("log");
+    let dir = paths::data_dir().join("LOG");
     let path = dir.join("gpng.log");
-    let file = fs::create_dir_all(&dir).ok().and_then(|_| {
+    let file = paths::ensure_dir(&dir).ok().and_then(|_| {
         OpenOptions::new()
             .create(true)
             .append(true)

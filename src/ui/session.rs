@@ -233,16 +233,21 @@ pub fn default_ctext_path() -> PathBuf {
 }
 
 pub fn default_bell_wav() -> PathBuf {
-    asset_wav("bell.wav")
+    asset_wav("BELL.WAV")
 }
 
 pub fn default_connect_wav() -> PathBuf {
-    asset_wav("connect.wav")
+    asset_wav("CONNECT.WAV")
 }
 
-/// Filename on disk is `disconect.wav` (classic spelling).
+/// Filename on disk is `DISCONECT.WAV` (classic spelling).
 pub fn default_disconnect_wav() -> PathBuf {
-    asset_wav("disconect.wav")
+    asset_wav("DISCONECT.WAV")
+}
+
+/// Channel chat tick (RX or local echo). Not used on the Monitor.
+pub fn default_newline_wav() -> PathBuf {
+    asset_wav("NEWLINE.WAV")
 }
 
 fn asset_wav(name: &str) -> PathBuf {
@@ -250,13 +255,15 @@ fn asset_wav(name: &str) -> PathBuf {
     if in_data.is_file() {
         return in_data;
     }
-    let legacy = [
-        PathBuf::from("assets").join(name),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("assets")
-            .join(name),
-    ];
-    legacy.into_iter().find(|p| p.is_file()).unwrap_or(in_data)
+    for dir in [
+        PathBuf::from("assets"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
+    ] {
+        if let Some(path) = crate::paths::find_named_file(&dir, name) {
+            return path;
+        }
+    }
+    in_data
 }
 
 /// Best-effort WAV play on a background thread.
@@ -265,20 +272,27 @@ pub fn play_bell_wav(path: &Path) {
 }
 
 pub fn play_wav(path: &Path) {
+    play_wav_at(path, 1.0);
+}
+
+/// `volume` is 0.0..=1.0 (rodio sink gain).
+pub fn play_wav_at(path: &Path, volume: f32) {
     let path = path.to_path_buf();
+    let volume = volume.clamp(0.0, 1.0);
     std::thread::spawn(move || {
-        if let Err(e) = play_wav_inner(&path) {
+        if let Err(e) = play_wav_inner(&path, volume) {
             tracing::debug!("wav {}: {e}", path.display());
         }
     });
 }
 
-fn play_wav_inner(path: &Path) -> Result<(), String> {
+fn play_wav_inner(path: &Path, volume: f32) -> Result<(), String> {
     use rodio::{Decoder, OutputStream, Sink};
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let source = Decoder::new(std::io::BufReader::new(file)).map_err(|e| e.to_string())?;
     let (_stream, handle) = OutputStream::try_default().map_err(|e| e.to_string())?;
     let sink = Sink::try_new(&handle).map_err(|e| e.to_string())?;
+    sink.set_volume(volume);
     sink.append(source);
     sink.sleep_until_end();
     Ok(())

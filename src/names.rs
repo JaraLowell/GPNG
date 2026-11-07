@@ -81,6 +81,15 @@ pub struct Route {
     pub downlinks: Vec<String>,
 }
 
+/// One named station on the connect-dialog list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedName {
+    pub call: String,
+    pub name: String,
+    /// Digipeaters stored after `;`. Empty when the station is direct.
+    pub via: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NamesFile {
     path: PathBuf,
@@ -115,13 +124,28 @@ impl NamesFile {
 
     /// Name stored for `call` at this QRG (`430.625`). Empty QRG still sees
     /// lines that sit outside `<IF>`.
+    ///
+    /// A redirected connect arrives as `NL1AS-1`. That uses the name stored
+    /// for `NL1AS`, and the other way round: a line written as `NL1AS-10`
+    /// (a BBS on that SSID) still names a connect to `NL1AS`. An exact
+    /// SSID in the file wins over the bare call.
     pub fn name_for(&self, call: &str, qrg: &str) -> Option<String> {
         let call = normalize_mycall(call).ok()?;
-        self.active(qrg)
-            .into_iter()
-            .find(|s| s.call.eq_ignore_ascii_case(&call))
-            .map(|s| s.name)
-            .filter(|n| !n.is_empty())
+        let stations = self.active(qrg);
+        let take = |matches: &dyn Fn(&Station) -> bool| {
+            stations
+                .iter()
+                .find(|s| matches(s) && !s.name.is_empty())
+                .map(|s| s.name.clone())
+        };
+        if let Some(name) = take(&|s| s.call.eq_ignore_ascii_case(&call)) {
+            return Some(name);
+        }
+        let base = call_base(&call);
+        if let Some(name) = take(&|s| s.call.eq_ignore_ascii_case(base)) {
+            return Some(name);
+        }
+        take(&|s| call_base(&s.call).eq_ignore_ascii_case(base))
     }
 
     /// `NAMES.GP` type for this call on the current QRG, if the station is listed.
@@ -131,6 +155,23 @@ impl NamesFile {
             .into_iter()
             .find(|s| s.call.eq_ignore_ascii_case(&call))
             .map(|s| s.kind)
+    }
+
+    /// Named stations on this QRG, in file order. A click on the connect
+    /// dialog's Name field lists these. `via` is the digipeater path after `;`.
+    pub fn name_list(&self, qrg: &str) -> Vec<ListedName> {
+        self.active(qrg)
+            .into_iter()
+            .filter(|s| !s.name.is_empty())
+            .map(|st| {
+                let via = self.digi_via(&st.call, qrg);
+                ListedName {
+                    call: st.call,
+                    name: st.name,
+                    via,
+                }
+            })
+            .collect()
     }
 
     /// Call, ident, or name → route. `Ok(None)` means the token is not in the file.
@@ -318,6 +359,13 @@ impl NamesFile {
         }
         Ok(token.to_ascii_uppercase())
     }
+
+    fn digi_via(&self, call: &str, qrg: &str) -> Vec<String> {
+        match self.route_for(call, qrg) {
+            Ok(Some(route)) => route.link_digis,
+            _ => Vec::new(),
+        }
+    }
 }
 
 fn plan(station: &Station, hops: &[Hop]) -> Route {
@@ -374,6 +422,18 @@ fn plan(station: &Station, hops: &[Hop]) -> Route {
         link_call,
         link_digis,
         downlinks,
+    }
+}
+
+/// `NL1AS-1` → `NL1AS`. A suffix that is not a numeric SSID stays put.
+fn call_base(call: &str) -> &str {
+    match call.split_once('-') {
+        Some((base, ssid))
+            if !base.is_empty() && !ssid.is_empty() && ssid.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => call,
     }
 }
 
@@ -584,11 +644,58 @@ mod tests {
              T>NL0PEL Tale;\n",
         );
         assert_eq!(n.name_for("nl0msk", "").as_deref(), Some("Jara"));
+        // Redirected SSID still uses the name stored without one.
+        assert_eq!(n.name_for("NL1AS-1", "").as_deref(), Some("Bas"));
         let route = n.route_for("Jara", "").unwrap().unwrap();
         assert_eq!(route.link_call, "NL0MSK");
         assert!(route.link_digis.is_empty());
         assert!(route.downlinks.is_empty());
         assert_eq!(n.route_for("Tale", "").unwrap().unwrap().call, "NL0PEL");
+    }
+
+    #[test]
+    fn name_list_is_file_order_and_keeps_the_via() {
+        let n = book(
+            "T>NL0MSK Jara;\n\
+             T>NL1AS  Bas; NL0PEL,NL1WIM\n\
+             <IF 430.625>\n\
+             T>NL1WNB Wim;\n\
+             <END>\n\
+             F>DB0FN;\n",
+        );
+        let list = n.name_list("");
+        assert_eq!(
+            list.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["Jara", "Bas"]
+        );
+        assert!(list[0].via.is_empty());
+        assert_eq!(list[1].call, "NL1AS");
+        assert_eq!(list[1].via, vec!["NL0PEL", "NL1WIM"]);
+        let on_qrg = n.name_list("430.625");
+        assert_eq!(
+            on_qrg.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["Jara", "Bas", "Wim"]
+        );
+    }
+
+    #[test]
+    fn ssid_name_matches_both_ways() {
+        let n = book(
+            "T>NL1AS Bas;\n\
+             B>DB0BOX-10 Box;\n\
+             T>NL0PEL Tale;\n\
+             T>NL0PEL-2 Other;\n",
+        );
+        // Stored without a number, connected on the next channel.
+        assert_eq!(n.name_for("NL1AS-1", "").as_deref(), Some("Bas"));
+        assert_eq!(n.name_for("NL1AS", "").as_deref(), Some("Bas"));
+        // Stored as a purposeful SSID. A connect with no number still finds it.
+        assert_eq!(n.name_for("DB0BOX", "").as_deref(), Some("Box"));
+        assert_eq!(n.name_for("DB0BOX-2", "").as_deref(), Some("Box"));
+        // Exact SSID wins when both lines exist.
+        assert_eq!(n.name_for("NL0PEL", "").as_deref(), Some("Tale"));
+        assert_eq!(n.name_for("NL0PEL-2", "").as_deref(), Some("Other"));
+        assert_eq!(n.name_for("NL0PEL-1", "").as_deref(), Some("Tale"));
     }
 
     #[test]

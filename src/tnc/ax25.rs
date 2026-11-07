@@ -5,12 +5,12 @@
 //!
 //! Monitor / unproto → **UI** frames. The path is the beacon address (`CQ`, or
 //! `APMI03 WIDE1-1 WIDE2-2`). Source is the active mycall.
-//! Connected channels → **SABM** / **I** / **RR** / **DISC**.
+//! Connected channels → **SABM** / **UA** / **I** / **RR** / **REJ** / **DISC** / **DM**.
 
 use ax25::frame::{
     Address, Ax25Frame as LibFrame, CommandResponse, Disconnect, DisconnectedMode, FrameContent,
-    Information, ProtocolIdentifier, ReceiveReady, RouteEntry, SetAsynchronousBalancedMode,
-    UnnumberedAcknowledge, UnnumberedInformation,
+    Information, ProtocolIdentifier, ReceiveReady, Reject, RouteEntry,
+    SetAsynchronousBalancedMode, UnnumberedAcknowledge, UnnumberedInformation,
 };
 
 /// AX.25 PID: no layer 3 (`0xF0`).
@@ -25,6 +25,9 @@ pub enum Ax25FrameType {
     Disc,
     Dm,
     Rr,
+    Rnr,
+    Rej,
+    Frmr,
     Info,
     Other,
 }
@@ -83,6 +86,9 @@ pub fn monitor_ctl_line(
         Ax25FrameType::Disc => format!("DISC{m}"),
         Ax25FrameType::Dm => format!("DM{m}"),
         Ax25FrameType::Rr => format!("RR{nr}{m}"),
+        Ax25FrameType::Rnr => format!("RNR{nr}{m}"),
+        Ax25FrameType::Rej => format!("REJ{nr}{m}"),
+        Ax25FrameType::Frmr => format!("FRMR{m}"),
         Ax25FrameType::Info => format!("I{nr}{ns}{m} pid F0"),
         Ax25FrameType::Other => format!("???{m}"),
     };
@@ -439,23 +445,56 @@ pub fn build_disc_via(dest: &str, src: &str, via: &[&str]) -> Vec<u8> {
     )
 }
 
+/// Digipeater path for a reply: reverse of the path the command arrived on.
+pub fn reply_via(incoming: &[String]) -> Vec<String> {
+    incoming.iter().rev().cloned().collect()
+}
+
 /// UA response (connect / disconnect ack).
 pub fn build_ua(dest: &str, src: &str, final_: bool) -> Vec<u8> {
+    build_ua_via(dest, src, final_, &[])
+}
+
+/// UA through the reverse digipeater path of the command.
+pub fn build_ua_via(dest: &str, src: &str, final_: bool, via: &[&str]) -> Vec<u8> {
     response_frame(
         dest,
         src,
-        &[],
+        via,
         FrameContent::UnnumberedAcknowledge(UnnumberedAcknowledge { final_bit: final_ }),
     )
 }
 
-/// DM response (busy / refuse connect).
+/// DM response (busy / refuse connect / unexpected command while disconnected).
 pub fn build_dm(dest: &str, src: &str, final_: bool) -> Vec<u8> {
+    build_dm_via(dest, src, final_, &[])
+}
+
+/// DM through the reverse digipeater path of the command.
+pub fn build_dm_via(dest: &str, src: &str, final_: bool, via: &[&str]) -> Vec<u8> {
     response_frame(
         dest,
         src,
-        &[],
+        via,
         FrameContent::DisconnectedMode(DisconnectedMode { final_bit: final_ }),
+    )
+}
+
+/// REJ response — ask the peer to resend from `nr`.
+pub fn build_rej(dest: &str, src: &str, nr: u8, final_: bool) -> Vec<u8> {
+    build_rej_via(dest, src, nr, final_, &[])
+}
+
+/// REJ through the digipeater path of the link.
+pub fn build_rej_via(dest: &str, src: &str, nr: u8, final_: bool, via: &[&str]) -> Vec<u8> {
+    response_frame(
+        dest,
+        src,
+        via,
+        FrameContent::Reject(Reject {
+            receive_sequence: nr & 7,
+            poll_or_final: final_,
+        }),
     )
 }
 
@@ -533,6 +572,21 @@ fn classify(content: &FrameContent) -> (Ax25FrameType, u8, u8, bool, Vec<u8>) {
             rr.poll_or_final,
             Vec::new(),
         ),
+        FrameContent::ReceiveNotReady(rnr) => (
+            Ax25FrameType::Rnr,
+            0,
+            rnr.receive_sequence,
+            rnr.poll_or_final,
+            Vec::new(),
+        ),
+        FrameContent::Reject(rej) => (
+            Ax25FrameType::Rej,
+            0,
+            rej.receive_sequence,
+            rej.poll_or_final,
+            Vec::new(),
+        ),
+        FrameContent::FrameReject(fr) => (Ax25FrameType::Frmr, 0, 0, fr.final_bit, Vec::new()),
         FrameContent::Information(i) => (
             Ax25FrameType::Info,
             i.send_sequence,
@@ -638,6 +692,26 @@ mod tests {
         let dm = parse_frame(&build_dm("A", "B", false)).unwrap();
         assert_eq!(dm.kind, Ax25FrameType::Dm);
         assert!(!dm.poll);
+    }
+
+    #[test]
+    fn ua_dm_carry_the_digi_path() {
+        let ua = parse_frame(&build_ua_via("A", "B", true, &["DB0FN"])).unwrap();
+        assert_eq!(ua.via, ["DB0FN"]);
+        let dm = parse_frame(&build_dm_via("A", "B", true, &["DB0FN", "DB0ABC"])).unwrap();
+        assert_eq!(dm.via, ["DB0FN", "DB0ABC"]);
+        assert_eq!(reply_via(&["DB0FN".into(), "DB0ABC".into()]), ["DB0ABC", "DB0FN"]);
+    }
+
+    #[test]
+    fn rej_roundtrip() {
+        let raw = build_rej("DB0ABC", "NL0MSK", 2, true);
+        let f = parse_frame(&raw).unwrap();
+        assert_eq!(f.kind, Ax25FrameType::Rej);
+        assert_eq!(f.nr, 2);
+        assert!(f.poll);
+        assert!(!f.command);
+        assert_eq!(f.monitor_line(), "fm NL0MSK to DB0ABC ctl REJ2-");
     }
 
     #[test]

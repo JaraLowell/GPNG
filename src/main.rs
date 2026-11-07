@@ -33,7 +33,7 @@ fn main() -> Result<()> {
     info!(
         "shell log {}",
         graphic_packet::paths::data_dir()
-            .join("log")
+            .join("LOG")
             .join("gpng.log")
             .display()
     );
@@ -43,6 +43,17 @@ fn main() -> Result<()> {
         .with_context(|| format!("loading config from {}", config_path.display()))?;
     if let Err(err) = graphic_packet::transfer::sevenplus::ensure_user_dir(&cfg.paths.user_dir) {
         tracing::warn!("USER dir {}: {err}", cfg.paths.user_dir.display());
+    }
+    if let Err(err) = graphic_packet::paths::ensure_dir(&cfg.paths.log_dir) {
+        tracing::warn!("LOG dir {}: {err}", cfg.paths.log_dir.display());
+    }
+    if let Err(err) =
+        graphic_packet::paths::ensure_dir(&graphic_packet::ui::padlog::pads_dir(&cfg.paths.log_dir))
+    {
+        tracing::warn!("PADS dir: {err}");
+    }
+    if let Err(err) = graphic_packet::paths::ensure_dir(&cfg.paths.save_dir) {
+        tracing::warn!("SAVE dir {}: {err}", cfg.paths.save_dir.display());
     }
     let mail_dir = graphic_packet::remote::mail::mail_dir();
     if let Err(err) = graphic_packet::remote::mail::ensure_mail_dir(&mail_dir) {

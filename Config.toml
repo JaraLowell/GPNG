@@ -52,7 +52,7 @@ editor_bak = false
 bbs_channel = 2
 list_channel = 1
 file_drawer = ""
-# Legacy LOG. When true, a disconnect appends one line to data/log/<base call>.GPL.
+# Legacy LOG. When true, a disconnect appends one line to data/LOG/<base call>.GPL.
 log = false
 # Legacy UTC. Minutes added to the PC clock for that journal line.
 utc_offset_min = 0
@@ -102,7 +102,7 @@ packet_payload = 128
 user_dir = "data/USER"
 external_dir = "data/EXTERNAL"
 save_dir = "data/SAVE"
-log_dir = "data/log"
+log_dir = "data/LOG"
 spy_dir = "data/SPY"
 
 [tnc]
@@ -202,8 +202,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1344
-y = 122
-width = 1014
-height = 993
+x = 1151
+y = 166
+width = 1257
+height = 850
 maximized = false

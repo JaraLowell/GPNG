@@ -15,7 +15,7 @@
 //! Splitscreen (ALT-F8, or right-click the channel) is channel-only. The
 //! upper pane stays the QSO. The lower pane is the monitor pad (`pads[0]`),
 //! not a second buffer. ALT-F9 / ▲ move the bar up (more monitor); ALT-F10 / ▼
-//! move it down. The bar and the ▲▼ pair also drag.
+//! move it down. Drag anywhere on the grey session bar; a click on ▲▼ still steps.
 //!
 //! Magenta is **not** one text line: left title cell is 2 rows high; right
 //! side has Mode/Buffers on row 1 and Packets/Mycall on row 2 (Monitor).
@@ -40,7 +40,7 @@ use crate::cipher;
 use crate::config::{normalize_mycall, Config, HostProtocol};
 use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
-use crate::names::{NamesFile, Route};
+use crate::names::{ListedName, NamesFile, Route};
 use crate::remote::commands::{parse_line, typed_runs_locally, RemoteAction};
 use crate::remote::gph;
 use crate::remote::gpi;
@@ -67,20 +67,23 @@ use super::mheard::MheardList;
 use super::padlog::{self, PadKind, TextPad};
 use super::session::{
     decode_rx_text, default_bell_wav, default_connect_wav, default_disconnect_wav,
-    format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav, Ax25UiFrame, SessionChrome,
+    default_newline_wav, format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav,
+    play_wav_at, Ax25UiFrame, SessionChrome,
 };
 use super::setup::{self, ColorSlot, EditKind, RowId, RowKind, View as SetupView};
 use super::theme::vga;
 
 const TYPED_HISTORY: usize = 10;
-/// Idle link check. Also the wait for an answer before the next try.
+/// AX.25 T3 — idle before a keepalive RR poll (command, P=1).
 const AX25_T3_IDLE: Duration = Duration::from_secs(5 * 60);
-/// Unanswered polls before the link is dead and we send DISC.
+/// AX.25 T1 — wait for UA after SABM/DISC, or for the RR Final after a poll.
+const AX25_T1: Duration = Duration::from_secs(5);
+/// Unanswered T3 polls (each waited T1) before the link is dead and we DISC.
 const AX25_POLL_RETRIES: u8 = 3;
-/// KISS SABM: wait for UA before resend.
-const AX25_SABM_RETRY: Duration = Duration::from_secs(5);
 /// Extra SABM sends after the first (then give up — no DISC on air).
 const AX25_SABM_RETRIES: u8 = 3;
+/// Extra DISC sends after the first while waiting for UA, then clear locally.
+const AX25_DISC_RETRIES: u8 = 3;
 const COMPOSE_ROWS: usize = 3;
 
 /// Classic VGA chrome (from GP V1.63 / DOSBox reference).
@@ -167,7 +170,10 @@ pub struct GpGuiApp {
     split_lower: f32,
     /// Last QSO+monitor height, so a drag can turn pixels into `split_lower`.
     split_body_h: f32,
-    /// Pointer travel on the ▲▼ pair this gesture. A click steps; a drag resizes.
+    /// Session-bar press is still held. The bar moves with the pointer, so the
+    /// gesture stays latched until release instead of re-testing the hit rect.
+    split_dragging: bool,
+    /// Pointer travel on the session bar this gesture. Under the slop, ▲▼ click.
     split_drag_dy: f32,
     status: String,
     /// Last TNC link report (ALT-F6).
@@ -212,6 +218,8 @@ pub struct GpGuiApp {
     channels: u8,
     /// Peer callsign per channel index (`1..=channels`); `None` = disconnected.
     channel_peer: Vec<Option<String>>,
+    /// Last real call on that channel. Kept after disconnect so Save still names the file.
+    channel_last_call: Vec<Option<String>>,
     /// Channel lock. Typed chat is sealed; a sealed incoming line turns it on.
     channel_lock: Vec<bool>,
     /// Incoming text arrived while this channel was not the one on screen.
@@ -228,8 +236,8 @@ pub struct GpGuiApp {
     self_connect_pair: Option<(u8, u8)>,
     /// Self-connect still linked (until either side disconnects).
     self_connect_live: Option<(u8, u8)>,
-    /// Ephemeral on-air SSID for self-connect / busy redirect (not Config.toml).
-    /// Channel numbers / `-n` are internal unless the user sets a slot MYCALL.
+    /// Ephemeral on-air SSID when the same from↔to pair is already up.
+    /// Not the channel number, and not written to Config.toml.
     temp_slot_call: Vec<Option<String>>,
     /// KISS AX.25 send sequence N(S) per channel (`0` unused).
     ax25_vs: Vec<u8>,
@@ -245,6 +253,13 @@ pub struct GpGuiApp {
     ax25_sabm_at: Vec<Option<Instant>>,
     /// SABMs sent for this connect attempt (1 = first).
     ax25_sabm_tries: Vec<u8>,
+    /// Peer has sent I or RR on this circuit. Until then a repeat SABM is a
+    /// retry of the same link, not a second connect.
+    ax25_peer_heard: Vec<bool>,
+    /// Last DISC send time while waiting for UA (`None` = not disconnecting).
+    ax25_disc_at: Vec<Option<Instant>>,
+    /// DISCs sent for this teardown (1 = first).
+    ax25_disc_tries: Vec<u8>,
     /// Digipeaters for the live KISS link on this channel.
     channel_via: Vec<Vec<String>>,
     /// Node `C` / `C!` lines still to send after the AX.25 link is up.
@@ -260,6 +275,8 @@ pub struct GpGuiApp {
     name_dialog_focus: bool,
     /// Focus the connect dialog call field once when opened.
     connect_dialog_focus: bool,
+    /// Name list popped up from the connect dialog's Name field.
+    show_connect_names: bool,
     icon_tex: Vec<TextureHandle>,
     /// `assets/start.png`, drawn above the radio card until Use this.
     start_screen: Option<TextureHandle>,
@@ -362,6 +379,10 @@ pub struct GpGuiApp {
     bell_wav: PathBuf,
     connect_wav: PathBuf,
     disconnect_wav: PathBuf,
+    newline_wav: PathBuf,
+    /// GPI / CTEXT echo: keep one tick for the whole send, not one per row.
+    newline_sound_quiet: bool,
+    newline_sound_pending: bool,
     /// Prevents double-fire within the same hour.
     last_gong: Option<(chrono::NaiveDate, u32)>,
     show_setup: bool,
@@ -408,6 +429,9 @@ impl GpGuiApp {
         let mut ax25_poll_tries = Vec::with_capacity(channels as usize + 1);
         let mut ax25_sabm_at = Vec::with_capacity(channels as usize + 1);
         let mut ax25_sabm_tries = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_peer_heard = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_disc_at = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_disc_tries = Vec::with_capacity(channels as usize + 1);
         for n in 0..=channels {
             let max = if n == 0 { mon_max } else { ch_max };
             let mut pad = TextPad::new(max);
@@ -431,6 +455,9 @@ impl GpGuiApp {
             ax25_poll_tries.push(0);
             ax25_sabm_at.push(None);
             ax25_sabm_tries.push(0);
+            ax25_peer_heard.push(false);
+            ax25_disc_at.push(None);
+            ax25_disc_tries.push(0);
         }
         let mut channel_via = Vec::with_capacity(channels as usize + 1);
         let mut channel_down = Vec::with_capacity(channels as usize + 1);
@@ -522,6 +549,7 @@ impl GpGuiApp {
             split_on: false,
             split_lower: 0.40,
             split_body_h: 0.0,
+            split_dragging: false,
             split_drag_dy: 0.0,
             status,
             last_link_status: String::new(),
@@ -552,6 +580,10 @@ impl GpGuiApp {
             event_log: VecDeque::new(),
             channels,
             channel_peer,
+            channel_last_call: load_last_calls(
+                &padlog::pads_dir(&log_dir).join("lastcall.txt"),
+                channels as usize + 1,
+            ),
             channel_lock,
             channel_unread,
             qso_open,
@@ -568,6 +600,9 @@ impl GpGuiApp {
             ax25_poll_tries,
             ax25_sabm_at,
             ax25_sabm_tries,
+            ax25_peer_heard,
+            ax25_disc_at,
+            ax25_disc_tries,
             channel_via,
             channel_down,
             channel_down_wait,
@@ -577,6 +612,7 @@ impl GpGuiApp {
             name_channel: 1,
             name_dialog_focus: false,
             connect_dialog_focus: false,
+            show_connect_names: false,
             icon_tex,
             start_screen,
             show_radio_gate: true,
@@ -630,6 +666,9 @@ impl GpGuiApp {
             bell_wav: default_bell_wav(),
             connect_wav: default_connect_wav(),
             disconnect_wav: default_disconnect_wav(),
+            newline_wav: default_newline_wav(),
+            newline_sound_quiet: false,
+            newline_sound_pending: false,
             last_gong: None,
             show_setup: false,
             setup_pane: ActivePane::Monitor,
@@ -682,18 +721,153 @@ impl GpGuiApp {
         gpi::default_ctext_path()
     }
 
+    /// Remember the station on this channel. Disconnect does not clear it.
+    fn note_last_call(&mut self, channel: u8, call: &str) {
+        let call = transcript_call(call);
+        if call.is_empty() {
+            return;
+        }
+        let Some(slot) = self.channel_last_call.get_mut(channel as usize) else {
+            return;
+        };
+        if slot.as_deref() == Some(call.as_str()) {
+            return;
+        }
+        *slot = Some(call);
+        self.store_last_calls();
+    }
+
+    fn store_last_calls(&self) {
+        let path = padlog::pads_dir(&self.cfg.paths.log_dir).join("lastcall.txt");
+        if let Some(parent) = path.parent() {
+            let _ = crate::paths::ensure_dir(parent);
+        }
+        let mut body = String::new();
+        for (i, call) in self.channel_last_call.iter().enumerate() {
+            if let Some(call) = call {
+                body.push_str(&format!("{i} {call}\n"));
+            }
+        }
+        let _ = std::fs::write(path, body);
+    }
+
+    fn channel_call_for_save(&self, channel: u8) -> Option<String> {
+        let live = self
+            .channel_peer
+            .get(channel as usize)
+            .and_then(|p| p.as_deref())
+            .filter(|c| !c.is_empty() && *c != "****");
+        let last = self
+            .channel_last_call
+            .get(channel as usize)
+            .and_then(|p| p.as_deref());
+        let raw = live.or(last)?;
+        let call = transcript_call(raw);
+        (!call.is_empty()).then_some(call)
+    }
+
+    /// One snapshot of the channel pad. `CALL.GPL`, then `CALL.000.GPL`, `CALL.001.GPL`, …
+    fn save_channel_transcript(&mut self, channel: u8) {
+        let Some(call) = self.channel_call_for_save(channel) else {
+            self.status = "Save — no call on this channel".into();
+            return;
+        };
+        let body = self
+            .pads
+            .get(channel as usize)
+            .map(super::padlog::TextPad::transcript_text)
+            .unwrap_or_default();
+        if body.is_empty() {
+            self.status = format!("Save — {call} has no text");
+            return;
+        }
+        let dir = self.cfg.paths.save_dir.clone();
+        if let Err(e) = crate::paths::ensure_dir(&dir) {
+            self.status = format!("Save: {e}");
+            return;
+        }
+        let path = match next_gpl_path(&dir, &call) {
+            Ok(path) => path,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        match std::fs::write(&path, body) {
+            Ok(()) => {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&call);
+                self.status = format!("saved {name}");
+            }
+            Err(e) => self.status = format!("Save: {e}"),
+        }
+    }
+
+    /// Append one spy row to `data/SAVE/<call>.spy`. The file stays across restarts.
+    fn append_spy_line(&self, call: &str, line: &str) {
+        let call = transcript_call(call);
+        if call.is_empty() {
+            return;
+        }
+        let text = line.replace(['\r', '\n'], " ").trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let dir = &self.cfg.paths.save_dir;
+        if let Err(e) = crate::paths::ensure_dir(dir) {
+            tracing::warn!("spy save mkdir: {e}");
+            return;
+        }
+        let path = dir.join(format!("{call}.spy"));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path);
+        let mut file = match file {
+            Ok(file) => file,
+            Err(e) => {
+                tracing::warn!("spy save {}: {e}", path.display());
+                return;
+            }
+        };
+        use std::io::Write;
+        if let Err(e) = write!(file, "{text}\r\n") {
+            tracing::warn!("spy save {}: {e}", path.display());
+        }
+    }
+
+    /// Save dialog with the current name filled in. Confirming writes that
+    /// name; the folder and the name can both be changed first. Cancel writes nothing.
     fn editor_save(&mut self) {
-        if self.cfg.session.editor_bak && self.editor.path.exists() {
-            let bak = self.editor.path.with_extension("BAK");
-            if let Err(e) = std::fs::copy(&self.editor.path, &bak) {
+        let current = self.editor.path.clone();
+        let start = current
+            .parent()
+            .filter(|p| p.is_dir())
+            .map(std::path::PathBuf::from)
+            .or_else(|| Some(crate::paths::data_dir()));
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("GPI / text", &["gpi", "GPI", "txt", "TXT"])
+            .set_title("Save GPI / text")
+            .set_file_name(self.editor.display_name());
+        if let Some(dir) = start {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.save_file() else {
+            return;
+        };
+        if self.cfg.session.editor_bak && path.exists() {
+            let bak = path.with_extension("BAK");
+            if let Err(e) = std::fs::copy(&path, &bak) {
                 self.log_event(format!("BAK: {e}"));
             }
         }
-        let before = self.editor.path.clone();
-        match self.editor.save() {
+        let before = current;
+        match self.editor.save_as(&path) {
             Ok(()) => {
                 self.status = format!("saved {}", self.editor.display_name());
-                // Keep CT on the file we just edited (including Save As rename).
+                // Keep CT on the file we just edited (including a renamed save).
                 if self.session.ctext_path == before
                     || self.session.ctext_path == self.editor.path
                     || paths_same_connect_text(&self.session.ctext_path, &before)
@@ -1083,6 +1257,9 @@ impl GpGuiApp {
             if let Some(c) = self.channel_connecting.get_mut(idx) {
                 *c = None;
             }
+            if !call.is_empty() {
+                self.note_last_call(channel, &call);
+            }
             self.channel_peer[idx] = if call.is_empty() {
                 Some("****".into())
             } else {
@@ -1157,9 +1334,14 @@ impl GpGuiApp {
     }
 
     /// On-air call for this connect. Not written to Config.toml.
-    /// Cleared when the channel disconnects.
+    /// Cleared when the channel disconnects. The configured name clears
+    /// any leftover `-n` rather than storing the bare call as a temp.
     fn adopt_air_call(&mut self, channel: u8, call: &str) {
         if self.effective_mycall(channel).eq_ignore_ascii_case(call) {
+            return;
+        }
+        if call.eq_ignore_ascii_case(&self.pool_name(channel)) {
+            self.clear_temp_identity(channel);
             return;
         }
         if let Some(t) = self.temp_slot_call.get_mut(channel as usize) {
@@ -1209,21 +1391,40 @@ impl GpGuiApp {
             .collect()
     }
 
-    /// Call this channel uses while it is in a connection.
-    /// The first channel of a pool keeps the bare name. The next is `NAME-1`
-    /// until disconnect. A pool of one channel never takes a number.
-    fn pool_air_call(&self, channel: u8) -> String {
-        let name = self.pool_name(channel);
-        let members = self.pool_channels(&name);
-        if members.len() <= 1 {
-            return name;
+    /// Peer of a linked or still-connecting channel.
+    fn channel_other_call(&self, n: u8) -> Option<String> {
+        self.channel_peer
+            .get(n as usize)
+            .and_then(|p| p.clone())
+            .or_else(|| {
+                self.channel_connecting
+                    .get(n as usize)
+                    .and_then(|p| p.clone())
+            })
+    }
+
+    /// Call this station uses for a new link with `peer`.
+    ///
+    /// The bare pool name while this from↔to pair (either direction) is free,
+    /// even when the free channel is 2 or 3. The first extra link of that
+    /// same pair is `NAME-1`, the next free number after that. The number
+    /// stays on that channel until it disconnects.
+    fn air_call_for_peer(&self, pool: &str, peer: &str, except: Option<u8>) -> String {
+        let mut circuits: Vec<(String, String)> = Vec::new();
+        for n in 1..=self.channels {
+            if except == Some(n) || !self.pool_name(n).eq_ignore_ascii_case(pool) {
+                continue;
+            }
+            let Some(other) = self.channel_other_call(n) else {
+                continue;
+            };
+            circuits.push((self.effective_mycall(n), other));
         }
-        let index = members.iter().position(|&n| n == channel).unwrap_or(0);
-        if index == 0 {
-            name
-        } else {
-            format!("{name}-{index}")
-        }
+        let refs: Vec<(&str, &str)> = circuits
+            .iter()
+            .map(|(our, other)| (our.as_str(), other.as_str()))
+            .collect();
+        air_call_for_pair(pool, peer, &refs)
     }
 
     fn canonical_pool(&self, name: &str) -> Option<String> {
@@ -1237,50 +1438,49 @@ impl GpGuiApp {
         })
     }
 
-    /// `(pool, specific slot)`. `None` slot means the bare name: first free
-    /// channel that is configured with that name. `Some(n)` is `NAME-n`, and
-    /// only when this client actually has that extra pool slot. Any other
-    /// call, including a suffix we do not host, is not ours.
-    fn match_pool(&self, dest: &str) -> Option<(String, Option<usize>)> {
+    /// `(pool, asked SSID)`. `None` SSID is the bare name (or `-0`): the
+    /// air call comes from whether this from↔to pair is already up.
+    /// `Some(n)` is a SABM addressed to `NAME-n`. A suffix on a call this
+    /// station does not have is not ours.
+    fn match_pool(&self, dest: &str) -> Option<(String, Option<u8>)> {
         if let Some(name) = self.canonical_pool(dest) {
             return Some((name, None));
         }
         let (base, ssid) = dest.split_once('-')?;
-        let n: usize = ssid.parse().ok()?;
+        let n: u8 = ssid.parse().ok()?;
         if n == 0 {
             return self.canonical_pool(base).map(|name| (name, None));
         }
-        let name = self.canonical_pool(base)?;
-        let members = self.pool_channels(&name);
-        // One channel is not a pool, so NAME-1 is not a call we host.
-        // A real pool hosts -1 on its 2nd channel, -2 on its 3rd, and so on.
-        if members.len() <= 1 || n >= members.len() {
+        if n > 15 {
             return None;
         }
+        let name = self.canonical_pool(base)?;
         Some((name, Some(n)))
     }
 
-    /// Where an incoming call to `dest` is answered. `except` is the channel
-    /// that is placing the call, so it is not offered to itself.
-    /// `Foreign` is a call this client does not have: no answer and no busy.
-    fn incoming_slot(&self, dest: &str, except: Option<u8>) -> SlotAnswer {
+    /// Where an incoming call from `peer` to `dest` is answered.
+    /// `except` is the channel placing the call, so it is not offered to itself.
+    ///
+    /// A different station takes the bare name on whatever free channel is
+    /// left. The same station, already linked either way, is answered as
+    /// `NAME-1` (then the next free number) on the next free channel.
+    /// `NAME-n` is answered only when that number is the one this pair
+    /// would use. `Foreign` is a call this client does not have.
+    fn incoming_slot(&self, dest: &str, peer: &str, except: Option<u8>) -> SlotAnswer {
         let Some((name, specific)) = self.match_pool(dest) else {
             return SlotAnswer::Foreign;
         };
-        let members = self.pool_channels(&name);
-        let list: Vec<u8> = if let Some(index) = specific {
-            vec![members[index]]
-        } else {
-            members
-        };
-        for ch in list {
+        let call = self.air_call_for_peer(&name, peer, except);
+        if let Some(n) = specific {
+            if occupied_ssid(&call, &name) != Some(n) {
+                return SlotAnswer::Foreign;
+            }
+        }
+        for ch in self.pool_channels(&name) {
             if except == Some(ch) || self.channel_connected(ch) {
                 continue;
             }
-            return SlotAnswer::Accept {
-                channel: ch,
-                call: self.pool_air_call(ch),
-            };
+            return SlotAnswer::Accept { channel: ch, call };
         }
         SlotAnswer::Busy {
             call: dest.to_string(),
@@ -1415,6 +1615,8 @@ impl GpGuiApp {
         let answer_call = self.effective_mycall(answer);
         // Answer side sees the call this channel actually used, not the global one.
         let caller_call = self.effective_mycall(caller);
+        self.note_last_call(caller, &answer_call);
+        self.note_last_call(answer, &caller_call);
         if let Some(p) = self.channel_peer.get_mut(caller as usize) {
             *p = Some(answer_call);
         }
@@ -1429,6 +1631,8 @@ impl GpGuiApp {
         }
         self.self_connect_live = Some((caller, answer));
         self.self_connect_pair = None;
+        self.note_ax25_peer(caller);
+        self.note_ax25_peer(answer);
         self.note_link_up(caller);
         self.note_link_up(answer);
 
@@ -1441,6 +1645,8 @@ impl GpGuiApp {
         let kiss = self.kiss_mode();
         // Sending window is the same terminal: a newline in the file is a
         // row, and a colour sequence changes the pen. The 128-byte cut does not.
+        // One newline.wav for the whole CTEXT, not one per row or packet cut.
+        self.begin_newline_coalesce();
         self.seal_term(answer);
         self.accept_rx_text(answer, &text, PadKind::Own);
         self.seal_term(answer);
@@ -1463,7 +1669,7 @@ impl GpGuiApp {
                 self.tx_kiss_payload(0, &frame);
                 // Caller answers this I-frame. No RF loopback, so the RR is
                 // generated here and applied to the send queue.
-                self.tx_local_rr(&my, &peer, ns);
+                self.tx_local_rr(caller, &my, &peer, ns);
             } else {
                 let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
                     channel: answer,
@@ -1471,31 +1677,36 @@ impl GpGuiApp {
                 });
             }
         }
+        self.end_newline_coalesce();
         self.status = format!("CTEXT ch{answer} → ch{caller}");
     }
 
     /// Hostmode `D` or KISS DISC; tears down self-connect pair too.
-    /// Clears local link state immediately so the DISCONNECT icon / `n: ......`
-    /// update even if the modem is slow to report DISCONNECTED.
+    ///
+    /// On KISS the channel stays up until UA (or DM) answers the DISC, or
+    /// until T1 × N2 expires. Self-connect has no RF loopback, so both
+    /// sides clear at once after the DISC is written.
     fn disconnect_channel(&mut self, channel: u8) {
         if !(1..=self.channels).contains(&channel) {
             return;
         }
-        let was_linked = self
-            .channel_peer
-            .get(channel as usize)
-            .and_then(|p| p.as_ref())
-            .is_some();
-        if self.kiss_mode() {
-            self.kiss_send_disc(channel);
-        } else {
-            self.tx_modem_line(channel, "D");
+        if self.channel_disconnecting(channel) {
+            return;
+        }
+        let was_linked = self.channel_linked(channel) || self.channel_connected(channel);
+        if !was_linked {
+            self.clear_channel_link_state(channel);
+            self.drop_mail_for(channel);
+            self.status = format!("Disconnect ch{channel}");
+            return;
         }
 
         let mut also = Vec::new();
+        let mut self_pair = false;
         if let Some((c, a)) = self.self_connect_live.take() {
             if channel == c || channel == a {
                 also.push(if channel == c { a } else { c });
+                self_pair = true;
             } else {
                 self.self_connect_live = Some((c, a));
             }
@@ -1505,31 +1716,71 @@ impl GpGuiApp {
                 also.push(a);
                 also.push(c);
                 self.clear_temp_identity(a);
+                self_pair = true;
             } else {
                 self.self_connect_pair = Some((c, a));
             }
         }
-        for other in also {
-            if other != channel && (1..=self.channels).contains(&other) {
-                if self.kiss_mode() {
+
+        if self.kiss_mode() {
+            self.kiss_send_disc(channel);
+            for &other in &also {
+                if other != channel && (1..=self.channels).contains(&other) {
                     self.kiss_send_disc(other);
-                } else {
-                    self.tx_modem_line(other, "D");
                 }
-                self.clear_channel_link_state(other);
-                self.drop_mail_for(other);
             }
+            if self_pair {
+                for ch in std::iter::once(channel).chain(also.into_iter()) {
+                    if (1..=self.channels).contains(&ch) {
+                        self.finish_disconnect(ch, true);
+                    }
+                }
+            } else {
+                self.kiss_arm_disc_timer(channel);
+                if let Some(pad) = self.pads.get_mut(channel as usize) {
+                    pad.push(PadKind::System, "*** disconnecting — waiting for UA");
+                }
+                self.status = format!("KISS DISC ch{channel}");
+                self.last_link_status = self.status.clone();
+            }
+        } else {
+            self.tx_modem_line(channel, "D");
+            for other in also {
+                if other != channel && (1..=self.channels).contains(&other) {
+                    self.tx_modem_line(other, "D");
+                    self.finish_disconnect(other, true);
+                }
+            }
+            self.finish_disconnect(channel, true);
         }
+    }
+
+    fn channel_disconnecting(&self, channel: u8) -> bool {
+        self.ax25_disc_at
+            .get(channel as usize)
+            .and_then(|t| *t)
+            .is_some()
+    }
+
+    /// UA or DM answered our DISC, or T1/N2 gave up.
+    fn finish_disconnect(&mut self, channel: u8, play: bool) {
+        let was = self.channel_linked(channel) || self.channel_disconnecting(channel);
+        self.kiss_clear_disc_timer(channel);
         self.clear_channel_link_state(channel);
         self.drop_mail_for(channel);
-        if was_linked {
+        if was && play {
             play_wav(&self.disconnect_wav);
+        }
+        if was {
+            if let Some(pad) = self.pads.get_mut(channel as usize) {
+                pad.push(PadKind::System, "*** DISCONNECTED");
+            }
+            self.last_link_status = format!("*** DISCONNECTED ch{channel}");
         }
         if !self.any_channel_busy() {
             self.restore_global_identities();
         }
         self.status = format!("Disconnect ch{channel}");
-        self.last_link_status = self.status.clone();
     }
 
     fn kiss_send_disc(&mut self, channel: u8) {
@@ -1549,6 +1800,26 @@ impl GpGuiApp {
         let vias = self.link_vias(channel);
         let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
         self.tx_kiss_payload(0, &ax25::build_disc_via(&peer, &src, &via_ref));
+    }
+
+    fn kiss_arm_disc_timer(&mut self, channel: u8) {
+        let idx = channel as usize;
+        if let Some(t) = self.ax25_disc_at.get_mut(idx) {
+            *t = Some(Instant::now());
+        }
+        if let Some(n) = self.ax25_disc_tries.get_mut(idx) {
+            *n = 1;
+        }
+    }
+
+    fn kiss_clear_disc_timer(&mut self, channel: u8) {
+        let idx = channel as usize;
+        if let Some(t) = self.ax25_disc_at.get_mut(idx) {
+            *t = None;
+        }
+        if let Some(n) = self.ax25_disc_tries.get_mut(idx) {
+            *n = 0;
+        }
     }
 
     fn clear_channel_link_state(&mut self, channel: u8) {
@@ -1583,6 +1854,10 @@ impl GpGuiApp {
         if let Some(n) = self.ax25_sabm_tries.get_mut(idx) {
             *n = 0;
         }
+        if let Some(h) = self.ax25_peer_heard.get_mut(idx) {
+            *h = false;
+        }
+        self.kiss_clear_disc_timer(channel);
         if let Some(via) = self.channel_via.get_mut(idx) {
             via.clear();
         }
@@ -1656,8 +1931,9 @@ impl GpGuiApp {
             *c = None;
         }
         if let Some(p) = self.channel_peer.get_mut(idx) {
-            *p = Some(dest);
+            *p = Some(dest.clone());
         }
+        self.note_last_call(channel, &dest);
         play_wav(&self.connect_wav);
         self.prepare_busy_redirect_identities();
         // First data while we are still calling — we placed this call.
@@ -2133,7 +2409,45 @@ impl GpGuiApp {
 
     /// DM (busy) from `from` back to the station that called.
     fn kiss_send_dm(&mut self, to: &str, from: &str) {
-        self.tx_kiss_payload(0, &ax25::build_dm(to, from, true));
+        self.kiss_send_dm_via(to, from, &[]);
+    }
+
+    fn kiss_send_dm_via(&mut self, to: &str, from: &str, via: &[String]) {
+        let via_ref: Vec<&str> = via.iter().map(String::as_str).collect();
+        self.tx_kiss_payload(0, &ax25::build_dm_via(to, from, true, &via_ref));
+    }
+
+    fn kiss_send_ua_via(&mut self, to: &str, from: &str, via: &[String]) {
+        let via_ref: Vec<&str> = via.iter().map(String::as_str).collect();
+        self.tx_kiss_payload(0, &ax25::build_ua_via(to, from, true, &via_ref));
+    }
+
+    /// Digipeater path for a reply to this frame (reverse of how it arrived).
+    fn reply_path(frame: &Ax25Frame) -> Vec<String> {
+        ax25::reply_via(&frame.via)
+    }
+
+    /// True when `dest` is a call this station answers (pool or live temp).
+    fn is_our_dest(&self, dest: &str) -> bool {
+        if self.match_pool(dest).is_some() {
+            return true;
+        }
+        (1..=self.channels).any(|n| self.effective_mycall(n).eq_ignore_ascii_case(dest))
+    }
+
+    /// Spec: while disconnected, any command other than SABM/UI → DM F=1.
+    fn kiss_dm_if_ours_disconnected(&mut self, frame: &Ax25Frame) {
+        if !frame.command {
+            return;
+        }
+        if !self.is_our_dest(&frame.dest) {
+            return;
+        }
+        if self.channel_for_pair(&frame.src, &frame.dest).is_some() {
+            return;
+        }
+        let via = Self::reply_path(frame);
+        self.kiss_send_dm_via(&frame.src, &frame.dest, &via);
     }
 
     /// Raw KISS port payload (already AX.25-framed). Port 0 = Soundmodem radio 1.
@@ -2148,14 +2462,13 @@ impl GpGuiApp {
     /// Written on the air and fed to the send queue (`LocalAck`), because a
     /// self-connect does not hear its own frames come back. The driver holds
     /// it until the I-frame could have left the radio.
-    fn tx_local_rr(&mut self, i_src: &str, i_dest: &str, ns: u8) {
+    fn tx_local_rr(&mut self, rx_channel: u8, i_src: &str, i_dest: &str, ns: u8) {
         let nr = ns.wrapping_add(1) & 7;
-        if let Some(ch) = self.kiss_channel_owning_dest(i_dest) {
-            if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
-                *vr = nr;
-            }
-            self.kiss_link_activity(ch, true);
+        if let Some(vr) = self.ax25_vr.get_mut(rx_channel as usize) {
+            *vr = nr;
         }
+        self.kiss_link_activity(rx_channel, true);
+        self.note_ax25_peer(rx_channel);
         let frame = ax25::build_rr(i_src, i_dest, nr, false, false);
         let _ = self
             .cmd_tx
@@ -2182,6 +2495,29 @@ impl GpGuiApp {
         self.kiss_link_activity(other, true);
     }
 
+    /// One tick when channel chat appears. Quiet while a multi-line GPI/CTEXT
+    /// send is echoing, then flush a single pending play.
+    fn note_channel_chat_sound(&mut self) {
+        if self.newline_sound_quiet {
+            self.newline_sound_pending = true;
+            return;
+        }
+        play_wav_at(&self.newline_wav, 0.5);
+    }
+
+    fn begin_newline_coalesce(&mut self) {
+        self.newline_sound_quiet = true;
+        self.newline_sound_pending = false;
+    }
+
+    fn end_newline_coalesce(&mut self) {
+        self.newline_sound_quiet = false;
+        if self.newline_sound_pending {
+            self.newline_sound_pending = false;
+            play_wav_at(&self.newline_wav, 0.5);
+        }
+    }
+
     /// Terminal write. Bytes append to the open row. `\n` / `\r` end that row.
     /// The end of a packet does not.
     fn accept_rx_text(&mut self, channel: u8, chunk: &str, kind: PadKind) {
@@ -2193,6 +2529,14 @@ impl GpGuiApp {
             && chunk.as_bytes().contains(&0x07)
         {
             play_bell_wav(&self.bell_wav);
+        }
+        // Channel pads only — not Monitor (ch0), not system status lines.
+        // One play per write burst; multi-line CTEXT is coalesced by the caller.
+        if channel >= 1
+            && matches!(kind, PadKind::Own | PadKind::Incoming)
+            && chunk_has_chat(chunk)
+        {
+            self.note_channel_chat_sound();
         }
         let bytes = chunk.as_bytes();
         let mut i = 0;
@@ -2518,11 +2862,11 @@ impl GpGuiApp {
         self.tx_kiss_payload(0, &frame);
         self.kiss_link_activity(n, false);
         self.deliver_self_connect_rx(n, shown, info);
-        if self
-            .self_connect_live
-            .is_some_and(|(c, a)| n == c || n == a)
-        {
-            self.tx_local_rr(my, &peer, ns);
+        if let Some((c, a)) = self.self_connect_live {
+            if n == c || n == a {
+                let other = if n == c { a } else { c };
+                self.tx_local_rr(other, my, &peer, ns);
+            }
         }
         true
     }
@@ -2593,6 +2937,14 @@ impl GpGuiApp {
                         self.feed_spy_pads(&frame.src, PadKind::Incoming, &line);
                     }
                 }
+                // UI with P=1 while disconnected → DM (AX.25 §4.3.3.6).
+                let linked = self
+                    .channel_for_pair(&frame.src, &frame.dest)
+                    .is_some_and(|ch| self.channel_linked(ch));
+                if frame.poll && frame.command && self.is_our_dest(&frame.dest) && !linked {
+                    let via = Self::reply_path(&frame);
+                    self.kiss_send_dm_via(&frame.src, &frame.dest, &via);
+                }
             }
             Ax25FrameType::Sabm => {
                 // Pending KISS self-connect: this SABM is for our answer SSID —
@@ -2614,23 +2966,33 @@ impl GpGuiApp {
                         return;
                     }
                 }
-                // Same station SABMed the bare call again (first UA missed, or
-                // their stack did not take the SSID we moved them to). Answer
-                // from the channel they already hold — do not open -2, -3, …
-                if let Some(ch) = self.kiss_channel_holding_peer(&frame.src, &frame.dest) {
+                // Repeat SABM before this peer has spoken: same circuit (lost
+                // UA). Once the link has carried their traffic, a new SABM
+                // from them is another connect and is not swallowed here.
+                if let Some(ch) = self.sabm_retry_channel(&frame.src, &frame.dest) {
                     self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
                     let my = self.effective_mycall(ch);
-                    self.tx_kiss_payload(0, &ax25::build_ua(&frame.src, &my, true));
+                    let via = Self::reply_path(&frame);
+                    self.kiss_send_ua_via(&frame.src, &my, &via);
                     self.kiss_link_activity(ch, true);
+                    let heard = self
+                        .ax25_peer_heard
+                        .get(ch as usize)
+                        .copied()
+                        .unwrap_or(false);
+                    if !heard {
+                        self.send_connect_text(ch);
+                    }
                     self.status = format!("KISS UA again ch{ch} {my} ← {}", frame.src);
                     return;
                 }
-                let slot = self.incoming_slot(&frame.dest, None);
+                let slot = self.incoming_slot(&frame.dest, &frame.src, None);
+                let via = Self::reply_path(&frame);
                 let (ch, my) = match slot {
                     SlotAnswer::Foreign => return,
                     SlotAnswer::Busy { call } => {
                         self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
-                        self.kiss_send_dm(&frame.src, &call);
+                        self.kiss_send_dm_via(&frame.src, &call, &via);
                         return;
                     }
                     SlotAnswer::Accept { channel, call } => {
@@ -2641,10 +3003,14 @@ impl GpGuiApp {
                 // Heard SABM (even if we refuse).
                 self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
                 // SABM → UA (we answer connect requests).
-                self.tx_kiss_payload(0, &ax25::build_ua(&frame.src, &my, true));
+                self.kiss_send_ua_via(&frame.src, &my, &via);
+                if let Some(slot) = self.channel_via.get_mut(ch as usize) {
+                    *slot = via;
+                }
                 if let Some(p) = self.channel_peer.get_mut(ch as usize) {
                     *p = Some(frame.src.clone());
                 }
+                self.note_last_call(ch, &frame.src);
                 if let Some(c) = self.channel_connecting.get_mut(ch as usize) {
                     *c = None;
                 }
@@ -2655,6 +3021,7 @@ impl GpGuiApp {
                     *vr = 0;
                 }
                 self.kiss_clear_sabm_timer(ch);
+                self.kiss_clear_disc_timer(ch);
                 self.kiss_link_activity(ch, true);
                 play_wav(&self.connect_wav);
                 if let Some(pad) = self.pads.get_mut(ch as usize) {
@@ -2667,8 +3034,14 @@ impl GpGuiApp {
             }
             Ax25FrameType::Ua => {
                 self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
-                // SABM to NL0AS, UA from NL0AS-1: his first channel was busy
-                // and he answered on the next SSID. That UA is the connect.
+                if let Some(ch) = self.channel_for_pair(&frame.src, &frame.dest) {
+                    if self.channel_disconnecting(ch) {
+                        self.finish_disconnect(ch, true);
+                        return;
+                    }
+                }
+                // SABM to NL0AS, UA from NL0AS-1: same from↔to already up,
+                // answered on the next SSID. That UA is the connect.
                 let mycalls: Vec<String> = (0..=self.channels)
                     .map(|n| self.effective_mycall(n))
                     .collect();
@@ -2690,98 +3063,74 @@ impl GpGuiApp {
                         return;
                     }
                 }
-                let requested = self
-                    .channel_connecting
-                    .get(ch as usize)
-                    .and_then(|p| p.clone())
-                    .unwrap_or_default();
-                if let Some(c) = self.channel_connecting.get_mut(ch as usize) {
-                    *c = None;
-                }
-                if let Some(p) = self.channel_peer.get_mut(ch as usize) {
-                    *p = Some(frame.src.clone());
-                }
-                self.kiss_clear_sabm_timer(ch);
-                self.kiss_link_activity(ch, true);
-                play_wav(&self.connect_wav);
-                let moved = !requested.is_empty() && !requested.eq_ignore_ascii_case(&frame.src);
-                let line = if moved {
-                    format!("*** CONNECTED to {} — {requested} in use", frame.src)
-                } else {
-                    format!("*** CONNECTED to {}", frame.src)
-                };
-                if let Some(pad) = self.pads.get_mut(ch as usize) {
-                    pad.push(PadKind::System, line);
-                }
-                // UA: we placed the call, so this side does not send CTEXT.
-                self.finish_link_up(ch, false);
-                self.status = format!("KISS linked ch{ch} → {}", frame.src);
-                self.last_link_status = self.status.clone();
+                self.kiss_link_outgoing(ch, &frame.src);
             }
             Ax25FrameType::Info => {
-                // Route to channel whose peer is the sender (or dest is our call).
-                let ch = (1..=self.channels)
-                    .find(|&n| {
-                        self.channel_peer
-                            .get(n as usize)
-                            .and_then(|p| p.as_ref())
-                            .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
-                    })
-                    .or_else(|| {
-                        (1..=self.channels).find(|&n| {
-                            self.channel_linked(n)
-                                && self.effective_mycall(n).eq_ignore_ascii_case(&frame.dest)
-                        })
-                    })
-                    .unwrap_or(0);
+                // CTEXT can arrive on the redirected SSID, or in the same
+                // burst as the UA, before this channel is marked linked.
+                let ch = if let Some(ch) = self.channel_for_i(&frame.src, &frame.dest) {
+                    ch
+                } else if let Some(ch) = self.channel_awaiting_connect(&frame.src, &frame.dest) {
+                    self.kiss_link_outgoing(ch, &frame.src);
+                    ch
+                } else {
+                    0
+                };
                 self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon);
                 if ch >= 1 {
+                    if self.channel_disconnecting(ch) {
+                        return;
+                    }
+                    let expect = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
+                    let my = self.effective_mycall(ch);
+                    let vias = self.link_vias(ch);
+                    let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
+                    if frame.ns != expect {
+                        // Out of sequence — ask them to resend from V(R).
+                        self.tx_kiss_payload(
+                            0,
+                            &ax25::build_rej_via(
+                                &frame.src,
+                                &my,
+                                expect,
+                                frame.poll,
+                                &via_ref,
+                            ),
+                        );
+                        self.kiss_link_activity(ch, true);
+                        return;
+                    }
                     if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
                         *vr = (frame.ns.wrapping_add(1)) & 7;
                     }
-                    let my = self.effective_mycall(ch);
                     let nr = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
                     // Ack I with RR (Final if peer set P).
-                    let vias = self.link_vias(ch);
-                    let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
                     self.tx_kiss_payload(
                         0,
                         &ax25::build_rr_via(&frame.src, &my, nr, frame.poll, false, &via_ref),
                     );
                     self.kiss_link_activity(ch, true);
+                    self.note_ax25_peer(ch);
                     self.note_seven_payload(ch, &frame.info);
                     self.note_rx_calls(ch, &frame.src, &frame.dest);
                     self.accept_rx_text(ch, &info_text, PadKind::Incoming);
+                } else if frame.command {
+                    self.kiss_dm_if_ours_disconnected(&frame);
                 }
             }
             Ax25FrameType::Disc => {
                 self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
-                let ch = (1..=self.channels).find(|&n| {
-                    self.channel_peer
-                        .get(n as usize)
-                        .and_then(|p| p.as_ref())
-                        .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
-                        || self
-                            .channel_connecting
-                            .get(n as usize)
-                            .and_then(|p| p.as_ref())
-                            .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
-                });
-                if let Some(ch) = ch {
+                let via = Self::reply_path(&frame);
+                if let Some(ch) = self.channel_for_pair(&frame.src, &frame.dest) {
                     let my = self.effective_mycall(ch);
-                    self.tx_kiss_payload(0, &ax25::build_ua(&frame.src, &my, true));
-                    let was = self.channel_linked(ch);
-                    self.clear_channel_link_state(ch);
-                    if was {
-                        play_wav(&self.disconnect_wav);
-                    }
-                    if let Some(pad) = self.pads.get_mut(ch as usize) {
-                        pad.push(PadKind::System, "*** DISCONNECTED");
-                    }
-                    self.last_link_status = format!("*** DISCONNECTED ch{ch}");
+                    self.kiss_send_ua_via(&frame.src, &my, &via);
+                    self.finish_disconnect(ch, true);
+                } else if self.is_our_dest(&frame.dest) {
+                    // Already disconnected — DM, not UA.
+                    self.kiss_send_dm_via(&frame.src, &frame.dest, &via);
                 }
             }
-            Ax25FrameType::Rr => {
+            Ax25FrameType::Rr | Ax25FrameType::Rnr | Ax25FrameType::Rej => {
                 self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
                 // P=1 on a command asks for an answer. F=1 on a response is
                 // that answer — it must not be polled again or the two
@@ -2790,34 +3139,36 @@ impl GpGuiApp {
                 let ch = self.kiss_channel_for_frame(&frame.src, &frame.dest);
                 let Some(ch) = ch else {
                     if is_poll {
-                        if let Some(ch) = self.kiss_channel_owning_dest(&frame.dest) {
-                            self.kiss_link_activity(ch, true);
-                            self.kiss_reply_rr_final(ch, &frame.src);
-                        }
+                        self.kiss_dm_if_ours_disconnected(&frame);
                     }
                     return;
                 };
+                if self.channel_disconnecting(ch) {
+                    return;
+                }
                 // Peer traffic, including the answer to our poll, restarts
-                // the 5-minute idle clock on this side.
+                // the T3 idle clock on this side.
                 self.kiss_link_activity(ch, true);
+                self.note_ax25_peer(ch);
+                if matches!(frame.kind, Ax25FrameType::Rnr) {
+                    if let Some(pad) = self.pads.get_mut(ch as usize) {
+                        pad.push(PadKind::System, "*** peer busy (RNR)");
+                    }
+                }
                 if is_poll {
+                    // Answer with RR Final (ready) even after RNR/REJ —
+                    // we are not flow-controlling the peer.
                     self.kiss_reply_rr_final(ch, &frame.src);
                 }
             }
             Ax25FrameType::Dm => {
                 self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
-                let ch = (1..=self.channels).find(|&n| {
-                    self.channel_connecting
-                        .get(n as usize)
-                        .and_then(|p| p.as_ref())
-                        .is_some_and(|d| d.eq_ignore_ascii_case(&frame.src))
-                        || self
-                            .channel_peer
-                            .get(n as usize)
-                            .and_then(|p| p.as_ref())
-                            .is_some_and(|p| p.eq_ignore_ascii_case(&frame.src))
-                });
+                let ch = self.channel_for_pair(&frame.src, &frame.dest);
                 if let Some(ch) = ch {
+                    if self.channel_disconnecting(ch) {
+                        self.finish_disconnect(ch, true);
+                        return;
+                    }
                     if let Some(pad) = self.pads.get_mut(ch as usize) {
                         pad.push(
                             PadKind::System,
@@ -2825,10 +3176,36 @@ impl GpGuiApp {
                         );
                     }
                     self.kiss_clear_sabm_timer(ch);
-                    self.clear_channel_link_state(ch);
+                    self.finish_disconnect(ch, self.channel_linked(ch));
                 }
             }
-            Ax25FrameType::Other => {}
+            Ax25FrameType::Frmr => {
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                if let Some(ch) = self.channel_for_pair(&frame.src, &frame.dest) {
+                    if let Some(pad) = self.pads.get_mut(ch as usize) {
+                        pad.push(
+                            PadKind::System,
+                            format!("*** FRMR from {} — resetting link", frame.src),
+                        );
+                    }
+                    // Spec recovery: tear down; peer may SABM again.
+                    self.disconnect_channel(ch);
+                }
+            }
+            Ax25FrameType::Other => {
+                // Unknown U-frame (e.g. SABME from a v2.2 station). Refuse
+                // with DM when it is addressed to us and we are disconnected.
+                if frame.command {
+                    self.kiss_dm_if_ours_disconnected(&frame);
+                }
+            }
+        }
+    }
+
+    /// This circuit has carried a frame from the other station.
+    fn note_ax25_peer(&mut self, channel: u8) {
+        if let Some(h) = self.ax25_peer_heard.get_mut(channel as usize) {
+            *h = true;
         }
     }
 
@@ -2848,22 +3225,21 @@ impl GpGuiApp {
         }
     }
 
-    /// SABM retries while connecting; idle RR poll when linked.
+    /// SABM / DISC T1 retries; T3 idle RR poll when linked.
     ///
-    /// Five minutes after the last packet from either side, send one RR poll.
-    /// An answer restarts that clock on both ends. No answer is one timeout;
-    /// the same station tries again five minutes later. The third timeout
-    /// sends DISC.
+    /// T3 (5 min) after the last packet starts one RR poll (command, P=1).
+    /// T1 (5 s) waits for the Final. No answer retries up to N2, then DISC.
     fn kiss_link_timers(&mut self) {
         if !self.kiss_mode() {
             return;
         }
         self.kiss_sabm_timers();
+        self.kiss_disc_timers();
         let now = Instant::now();
         let mut poll: Vec<u8> = Vec::new();
         let mut drop: Vec<u8> = Vec::new();
         for ch in 1..=self.channels {
-            if !self.channel_linked(ch) {
+            if !self.channel_linked(ch) || self.channel_disconnecting(ch) {
                 continue;
             }
             let idx = ch as usize;
@@ -2871,7 +3247,7 @@ impl GpGuiApp {
             let pending = self.ax25_poll_at.get(idx).and_then(|t| *t);
             let tries = *self.ax25_poll_tries.get(idx).unwrap_or(&0);
             if let Some(sent) = pending {
-                if now.duration_since(sent) >= AX25_T3_IDLE {
+                if now.duration_since(sent) >= AX25_T1 {
                     if tries >= AX25_POLL_RETRIES {
                         drop.push(ch);
                     } else {
@@ -2896,13 +3272,13 @@ impl GpGuiApp {
         }
     }
 
-    /// No UA after SABM → resend every 5 s (up to 3 retries), then local give-up (no DISC).
+    /// No UA after SABM → resend every T1 (up to N2), then local give-up (no DISC).
     fn kiss_sabm_timers(&mut self) {
         let now = Instant::now();
         let mut retry: Vec<u8> = Vec::new();
         let mut give_up: Vec<u8> = Vec::new();
         for ch in 1..=self.channels {
-            if self.channel_linked(ch) {
+            if self.channel_linked(ch) || self.channel_disconnecting(ch) {
                 continue;
             }
             let idx = ch as usize;
@@ -2924,7 +3300,7 @@ impl GpGuiApp {
             let Some(sent) = self.ax25_sabm_at.get(idx).and_then(|t| *t) else {
                 continue;
             };
-            if now.duration_since(sent) < AX25_SABM_RETRY {
+            if now.duration_since(sent) < AX25_T1 {
                 continue;
             }
             let tries = *self.ax25_sabm_tries.get(idx).unwrap_or(&0);
@@ -2941,6 +3317,55 @@ impl GpGuiApp {
         for ch in give_up {
             self.kiss_sabm_give_up(ch);
         }
+    }
+
+    /// No UA after DISC → resend every T1, then clear locally.
+    fn kiss_disc_timers(&mut self) {
+        let now = Instant::now();
+        let mut retry: Vec<u8> = Vec::new();
+        let mut give_up: Vec<u8> = Vec::new();
+        for ch in 1..=self.channels {
+            let idx = ch as usize;
+            let Some(sent) = self.ax25_disc_at.get(idx).and_then(|t| *t) else {
+                continue;
+            };
+            if now.duration_since(sent) < AX25_T1 {
+                continue;
+            }
+            let tries = *self.ax25_disc_tries.get(idx).unwrap_or(&0);
+            if tries >= 1 + AX25_DISC_RETRIES {
+                give_up.push(ch);
+            } else {
+                retry.push(ch);
+            }
+        }
+        for ch in retry {
+            self.kiss_resend_disc(ch);
+        }
+        for ch in give_up {
+            if let Some(pad) = self.pads.get_mut(ch as usize) {
+                pad.push(
+                    PadKind::System,
+                    "*** no UA to DISC — clearing locally",
+                );
+            }
+            self.finish_disconnect(ch, true);
+        }
+    }
+
+    fn kiss_resend_disc(&mut self, channel: u8) {
+        self.kiss_send_disc(channel);
+        let idx = channel as usize;
+        if let Some(t) = self.ax25_disc_at.get_mut(idx) {
+            *t = Some(Instant::now());
+        }
+        if let Some(n) = self.ax25_disc_tries.get_mut(idx) {
+            *n = n.saturating_add(1);
+        }
+        if let Some(pad) = self.pads.get_mut(idx) {
+            pad.push(PadKind::System, "*** retry DISC");
+        }
+        self.status = format!("KISS DISC retry ch{channel}");
     }
 
     fn kiss_resend_sabm(&mut self, channel: u8) {
@@ -2988,49 +3413,190 @@ impl GpGuiApp {
         }
     }
 
-    /// Channel already in a link with `src` on the pool `dest` called.
-    ///
-    /// A second SABM to the bare name is a retry of that connect, so the UA
-    /// goes out from the SSID they were already moved to. A SABM to a
-    /// different specific SSID is a separate link and is left alone.
-    fn kiss_channel_holding_peer(&self, src: &str, dest: &str) -> Option<u8> {
-        let (pool, specific) = self.match_pool(dest)?;
-        if let Some(index) = specific {
-            let members = self.pool_channels(&pool);
-            let ch = *members.get(index)?;
-            let same = self
-                .channel_peer
-                .get(ch as usize)
-                .and_then(|p| p.as_ref())
-                .is_some_and(|p| p.eq_ignore_ascii_case(src));
-            return if same { Some(ch) } else { None };
+    /// Outgoing connect is up. `peer` is the call that answered, which may
+    /// be the next SSID when the one we called was busy. We placed the call,
+    /// so this side does not send CTEXT — theirs arrives as I-frames.
+    fn kiss_link_outgoing(&mut self, ch: u8, peer: &str) {
+        let requested = self
+            .channel_connecting
+            .get(ch as usize)
+            .and_then(|p| p.clone())
+            .unwrap_or_default();
+        if let Some(c) = self.channel_connecting.get_mut(ch as usize) {
+            *c = None;
         }
-        (1..=self.channels).find(|&n| {
-            self.pool_name(n).eq_ignore_ascii_case(&pool)
-                && self
-                    .channel_peer
-                    .get(n as usize)
-                    .and_then(|p| p.as_ref())
-                    .is_some_and(|p| p.eq_ignore_ascii_case(src))
-        })
+        if let Some(p) = self.channel_peer.get_mut(ch as usize) {
+            *p = Some(peer.to_string());
+        }
+        self.note_last_call(ch, peer);
+        self.kiss_clear_sabm_timer(ch);
+        self.kiss_link_activity(ch, true);
+        play_wav(&self.connect_wav);
+        let moved = !requested.is_empty() && !requested.eq_ignore_ascii_case(peer);
+        let line = if moved {
+            format!("*** CONNECTED to {peer} — {requested} in use")
+        } else {
+            format!("*** CONNECTED to {peer}")
+        };
+        if let Some(pad) = self.pads.get_mut(ch as usize) {
+            pad.push(PadKind::System, line);
+        }
+        self.note_ax25_peer(ch);
+        self.finish_link_up(ch, false);
+        self.status = format!("KISS linked ch{ch} → {peer}");
+        self.last_link_status = self.status.clone();
     }
 
-    /// Linked channel whose peer is `src`, or whose identity is `dest`.
+    /// Linked channel this I-frame belongs on.
+    ///
+    /// Exact peer first. A greeting from `NL1AS` still belongs on the channel
+    /// that was moved to `NL1AS-1` when that frame is addressed to us.
+    fn channel_for_i(&self, src: &str, dest: &str) -> Option<u8> {
+        if let Some(n) = self.channel_for_pair(src, dest) {
+            if self.channel_linked(n) {
+                return Some(n);
+            }
+        }
+        let src_base = cipher::base_call(src);
+        let mut same = None;
+        let mut same_many = false;
+        let mut mine = None;
+        let mut mine_many = false;
+        for n in 1..=self.channels {
+            if !self.channel_linked(n) {
+                continue;
+            }
+            if !self.effective_mycall(n).eq_ignore_ascii_case(dest) {
+                continue;
+            }
+            if mine.is_some() {
+                mine_many = true;
+            }
+            mine = Some(n);
+            let peer = self
+                .channel_peer
+                .get(n as usize)
+                .and_then(|p| p.as_ref())
+                .map(|p| cipher::base_call(p))
+                .unwrap_or_default();
+            if peer == src_base {
+                if same.is_some() {
+                    same_many = true;
+                }
+                same = Some(n);
+            }
+        }
+        if let Some(n) = same {
+            if !same_many {
+                return Some(n);
+            }
+        }
+        if mine_many {
+            None
+        } else {
+            mine
+        }
+    }
+
+    /// Channel still waiting on SABM whose UA or first I this frame is.
+    fn channel_awaiting_connect(&self, src: &str, dest: &str) -> Option<u8> {
+        let mycalls: Vec<String> = (0..=self.channels)
+            .map(|n| self.effective_mycall(n))
+            .collect();
+        channel_for_connect_ua(
+            self.channels,
+            &self.channel_connecting,
+            &mycalls,
+            src,
+            dest,
+        )
+    }
+
+    /// Channel whose other end is `src` and whose call is `dest`.
+    /// One matching peer still counts when the dest is not that call.
+    /// Two peers and no dest match: no guess.
+    fn channel_for_pair(&self, src: &str, dest: &str) -> Option<u8> {
+        let mut only = None;
+        let mut many = false;
+        for n in 1..=self.channels {
+            let Some(other) = self.channel_other_call(n) else {
+                continue;
+            };
+            if !other.eq_ignore_ascii_case(src) {
+                continue;
+            }
+            if self.effective_mycall(n).eq_ignore_ascii_case(dest) {
+                return Some(n);
+            }
+            if only.is_some() {
+                many = true;
+            }
+            only = Some(n);
+        }
+        if many { None } else { only }
+    }
+
+    /// Repeat SABM for a circuit this peer has not spoken on yet.
+    /// A numbered SSID that is already in a live QSO with them is that
+    /// same circuit too. A SABM to the bare name after they have been
+    /// heard is a new connect and is left for [`Self::incoming_slot`].
+    fn sabm_retry_channel(&self, src: &str, dest: &str) -> Option<u8> {
+        let (pool, specific) = self.match_pool(dest)?;
+        let bare = specific.is_none();
+        let mut retry = None;
+        for n in 1..=self.channels {
+            if !self.pool_name(n).eq_ignore_ascii_case(&pool) {
+                continue;
+            }
+            let Some(other) = self.channel_other_call(n) else {
+                continue;
+            };
+            if !other.eq_ignore_ascii_case(src) {
+                continue;
+            }
+            let air = self.effective_mycall(n);
+            let heard = self
+                .ax25_peer_heard
+                .get(n as usize)
+                .copied()
+                .unwrap_or(false);
+            let exact = air.eq_ignore_ascii_case(dest);
+            if exact && !heard {
+                return Some(n);
+            }
+            if exact && heard && !bare {
+                return Some(n);
+            }
+            if bare && !heard {
+                retry = Some(n);
+            }
+        }
+        retry
+    }
+
+    /// Linked channel for this pair. A dest owned by one channel is the
+    /// fallback when the peer is not stored yet. Two channels on the same
+    /// call (different stations) are not guessed.
     fn kiss_channel_for_frame(&self, src: &str, dest: &str) -> Option<u8> {
-        (1..=self.channels)
-            .find(|&n| {
-                self.channel_peer
-                    .get(n as usize)
-                    .and_then(|p| p.as_ref())
-                    .is_some_and(|p| p.eq_ignore_ascii_case(src))
-            })
-            .or_else(|| self.kiss_channel_owning_dest(dest))
+        if let Some(n) = self.channel_for_pair(src, dest) {
+            if self.channel_linked(n) || self.channel_connected(n) {
+                return Some(n);
+            }
+        }
+        self.kiss_channel_owning_dest(dest)
     }
 
     fn kiss_channel_owning_dest(&self, dest: &str) -> Option<u8> {
-        (1..=self.channels).find(|&n| {
-            self.channel_linked(n) && self.effective_mycall(n).eq_ignore_ascii_case(dest)
-        })
+        let mut hit = None;
+        for n in 1..=self.channels {
+            if self.channel_linked(n) && self.effective_mycall(n).eq_ignore_ascii_case(dest) {
+                if hit.is_some() {
+                    return None;
+                }
+                hit = Some(n);
+            }
+        }
+        hit
     }
 
     /// RR Final on air + Monitor (answer to peer poll / I+P).
@@ -3289,7 +3855,7 @@ impl GpGuiApp {
         Some(plain)
     }
 
-    /// `//Read` with no name sends this station's mail when `data/mail/{CALL}.GPM`
+    /// `//Read` with no name sends this station's mail when `data/MAIL/{CALL}.GPM`
     /// exists. A file name is still a USER file. `*.GPM` is never a USER read.
     fn read_user_or_mail(&mut self, channel: u8, args: &str) {
         let peer = self.linked_call(channel);
@@ -3372,9 +3938,11 @@ impl GpGuiApp {
         if lines.last().is_some_and(|s| s.is_empty()) {
             lines.pop();
         }
+        self.begin_newline_coalesce();
         for line in lines {
             self.echo_own_line(line);
         }
+        self.end_newline_coalesce();
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
         for chunk in wire.chunks(max) {
             if self.kiss_mode() {
@@ -3473,9 +4041,12 @@ impl GpGuiApp {
     }
 
     fn send_gpi_text(&mut self, text: &str) {
+        // CTEXT / QRT / mail: many rows on the pad, one newline.wav.
+        self.begin_newline_coalesce();
         for line in payload_lines(text) {
             self.echo_own_line(&line);
         }
+        self.end_newline_coalesce();
         self.send_operator_text(text);
     }
 
@@ -4068,6 +4639,17 @@ impl GpGuiApp {
             || self.session.show_spy_dialog
             || self.show_name_dialog
             || self.show_mheard_spy_confirm
+    }
+
+    /// Any titled dialog that should use the session-strip grey chrome.
+    fn popup_chrome_open(&self) -> bool {
+        self.modal_open()
+            || self.show_setup
+            || self.show_tnc
+            || self.find_open
+            || self.list_offer.is_some()
+            || self.show_connect_names
+            || self.show_radio_gate
     }
 
     fn active_channel(&self) -> Option<u8> {
@@ -4804,23 +5386,25 @@ impl GpGuiApp {
                     EditKind::BeaconText => "Beacon text",
                     EditKind::FileDrawer => "File drawer",
                 };
-                egui::Area::new(egui::Id::new("gp_setup_edit"))
-                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                    .order(egui::Order::Foreground)
-                    .show(ctx, |ui| {
-                        setup_frame(ui, title, |ui| {
-                            let edit = ui.add(
-                                egui::TextEdit::singleline(&mut text)
-                                    .desired_width(280.0)
-                                    .font(egui::FontId::monospace(14.0)),
-                            );
-                            edit.request_focus();
-                        });
-                    });
-                if let SetupView::Edit { text: slot, .. } = &mut self.setup_view {
+                let mut open = true;
+                centered_popup(title, egui::Id::new("gp_setup_edit"), &mut open).show(ctx, |ui| {
+                    ui.set_min_width(320.0);
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut text)
+                            .desired_width(280.0)
+                            .font(menu_font(14.0)),
+                    );
+                    edit.request_focus();
+                });
+                if !open {
+                    self.setup_view = if parent_beacon {
+                        SetupView::Beacon { cursor: 0 }
+                    } else {
+                        SetupView::Main
+                    };
+                } else if let SetupView::Edit { text: slot, .. } = &mut self.setup_view {
                     *slot = text;
                 }
-                let _ = parent_beacon;
             }
             SetupView::Colors {
                 slot,
@@ -4840,12 +5424,12 @@ impl GpGuiApp {
                     "Inverse",
                     "Use these colours and exit",
                 ];
-                egui::Area::new(egui::Id::new("gp_setup_colors"))
-                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                    .order(egui::Order::Foreground)
-                    .show(ctx, |ui| {
-                        setup_frame(ui, title, |ui| {
-                            ui.horizontal(|ui| {
+                let mut open = true;
+                centered_popup(title, egui::Id::new("gp_setup_colors"), &mut open).show(
+                    ctx,
+                    |ui| {
+                        ui.set_min_width(420.0);
+                        ui.horizontal(|ui| {
                                 ui.vertical(|ui| {
                                     for (i, label) in labels.iter().enumerate() {
                                         let value = if i < 3 {
@@ -4889,8 +5473,11 @@ impl GpGuiApp {
                                     color_sample(ui, "Inverted text", bg, inv);
                                 });
                             });
-                        });
-                    });
+                    },
+                );
+                if !open {
+                    self.setup_view = SetupView::Main;
+                }
                 let _ = cursor;
             }
             SetupView::Beacon { cursor } => {
@@ -4907,12 +5494,15 @@ impl GpGuiApp {
                     dotted("Period (Minutes)", &period, 32),
                     "OK".to_string(),
                 ];
-                egui::Area::new(egui::Id::new("gp_setup_beacon"))
-                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::new(0.0, 30.0))
-                    .order(egui::Order::Foreground)
-                    .show(ctx, |ui| {
-                        setup_frame(ui, "Beacon parameters", |ui| {
-                            for (i, line) in lines.iter().enumerate() {
+                let mut open = true;
+                centered_popup(
+                    "Beacon parameters",
+                    egui::Id::new("gp_setup_beacon"),
+                    &mut open,
+                )
+                .show(ctx, |ui| {
+                    ui.set_min_width(420.0);
+                    for (i, line) in lines.iter().enumerate() {
                                 let color = if i == 3 {
                                     Color32::from_rgb(255, 255, 85)
                                 } else {
@@ -4931,18 +5521,23 @@ impl GpGuiApp {
                                     self.activate_open_row();
                                 }
                             }
-                        });
-                    });
+                });
+                if !open {
+                    self.setup_view = SetupView::Main;
+                }
             }
             SetupView::Main => {
                 let rows = setup::rows_for(self.setup_pane);
                 let cursor = self.setup_cursor.min(rows.len().saturating_sub(1));
-                egui::Area::new(egui::Id::new("gp_setup_main"))
-                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                    .order(egui::Order::Foreground)
-                    .show(ctx, |ui| {
-                        setup_frame(ui, "Program parameters", |ui| {
-                            for (i, row) in rows.iter().enumerate() {
+                let mut open = true;
+                centered_popup(
+                    "Program parameters",
+                    egui::Id::new("gp_setup_main"),
+                    &mut open,
+                )
+                .show(ctx, |ui| {
+                    ui.set_min_width(420.0);
+                    for (i, row) in rows.iter().enumerate() {
                                 let value = self.setup_value(row.id);
                                 let line = if value.is_empty() {
                                     row.id.label().to_string()
@@ -4964,8 +5559,10 @@ impl GpGuiApp {
                                     self.activate_setup_row();
                                 }
                             }
-                        });
-                    });
+                });
+                if !open {
+                    self.close_setup();
+                }
             }
         }
     }
@@ -4991,31 +5588,34 @@ impl GpGuiApp {
         }
         let n = self.list_offer.as_ref().map(|o| o.rows.len()).unwrap_or(0);
         let mut answer = None;
-        egui::Area::new(egui::Id::new("gp_list_offer"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                setup_frame(ui, "Cancel the old list?", |ui| {
-                    ui.label(
-                        RichText::new(format!("{n} new lines"))
-                            .color(Color32::from_rgb(85, 255, 85))
-                            .font(FontId::monospace(14.0)),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("Yes — replace").clicked() {
-                            answer = Some(ListAnswer::Replace);
-                        }
-                        if ui.button("No — append").clicked() {
-                            answer = Some(ListAnswer::Append);
-                        }
-                        if ui.button("Interrupt").clicked() {
-                            answer = Some(ListAnswer::Interrupt);
-                        }
-                    });
-                });
+        let mut open = true;
+        centered_popup(
+            "Cancel the old list?",
+            egui::Id::new("gp_list_offer"),
+            &mut open,
+        )
+        .show(ctx, |ui| {
+            ui.label(
+                RichText::new(format!("{n} new lines"))
+                    .color(Color32::from_rgb(85, 255, 85))
+                    .font(menu_font(14.0)),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Yes — replace").clicked() {
+                    answer = Some(ListAnswer::Replace);
+                }
+                if ui.button("No — append").clicked() {
+                    answer = Some(ListAnswer::Append);
+                }
+                if ui.button("Interrupt").clicked() {
+                    answer = Some(ListAnswer::Interrupt);
+                }
             });
+        });
         if let Some(answer) = answer {
             self.answer_list_offer(answer);
+        } else if !open {
+            self.answer_list_offer(ListAnswer::Interrupt);
         }
     }
 
@@ -5024,20 +5624,20 @@ impl GpGuiApp {
             return;
         }
         let mut text = self.find_text.clone();
-        egui::Area::new(egui::Id::new("gp_find"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::new(0.0, -40.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                setup_frame(ui, "Find", |ui| {
-                    let edit = ui.add(
-                        egui::TextEdit::singleline(&mut text)
-                            .desired_width(220.0)
-                            .font(FontId::monospace(14.0)),
-                    );
-                    edit.request_focus();
-                });
-            });
+        let mut open = true;
+        centered_popup("Find", egui::Id::new("gp_find"), &mut open).show(ctx, |ui| {
+            ui.set_min_width(240.0);
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut text)
+                    .desired_width(220.0)
+                    .font(menu_font(14.0)),
+            );
+            edit.request_focus();
+        });
         self.find_text = text;
+        if !open {
+            self.find_open = false;
+        }
     }
 
     fn paint_tnc_command(&mut self, ctx: &Context) {
@@ -5045,20 +5645,20 @@ impl GpGuiApp {
             return;
         }
         let mut text = self.tnc_cmd.clone();
-        egui::Area::new(egui::Id::new("gp_tnc_cmd"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::new(0.0, -40.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                setup_frame(ui, "TNC command:", |ui| {
-                    let edit = ui.add(
-                        egui::TextEdit::singleline(&mut text)
-                            .desired_width(220.0)
-                            .font(egui::FontId::monospace(14.0)),
-                    );
-                    edit.request_focus();
-                });
-            });
+        let mut open = true;
+        centered_popup("TNC command", egui::Id::new("gp_tnc_cmd"), &mut open).show(ctx, |ui| {
+            ui.set_min_width(240.0);
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut text)
+                    .desired_width(220.0)
+                    .font(menu_font(14.0)),
+            );
+            edit.request_focus();
+        });
         self.tnc_cmd = text;
+        if !open {
+            self.show_tnc = false;
+        }
     }
 
     fn send_tnc_command(&mut self, cmd: &str) {
@@ -5167,6 +5767,9 @@ impl GpGuiApp {
         let ctrl = egui::Modifiers::CTRL;
         let shift = egui::Modifiers::SHIFT;
 
+        if self.show_connect_names && eat_key(ctx, none, egui::Key::Escape) {
+            self.show_connect_names = false;
+        }
         if self.modal_open() {
             return;
         }
@@ -5439,7 +6042,7 @@ impl GpGuiApp {
         match self.active {
             ActivePane::Editor => self.editor_save(),
             ActivePane::Check => self.sort_bbs(),
-            ActivePane::Channel(_) => self.status = "Continuous save is not built yet".into(),
+            ActivePane::Channel(n) => self.save_channel_transcript(n),
             _ => self.status = "Continuous save is not built yet".into(),
         }
     }
@@ -5597,6 +6200,7 @@ impl GpGuiApp {
         }
         let body = self.split_body_h.max(120.0);
         self.split_lower = clamp_split_lower(self.split_lower - delta_y / body);
+        self.status = format!("Splitscreen {:.0}% monitor", self.split_lower * 100.0);
     }
 
     fn note_split_right_click(&mut self, ui: &Ui, rect: Rect) {
@@ -5616,7 +6220,7 @@ impl GpGuiApp {
     /// Spy, BBS-Menu, and Box-List do not use them.
     fn on_scroll_arrow(&mut self, dir: f32) {
         if matches!(self.active, ActivePane::Channel(_)) {
-            if self.split_drag_dy.abs() >= 3.0 {
+            if self.split_drag_dy.abs() > SPLIT_DRAG_SLOP {
                 return;
             }
             self.step_split(dir);
@@ -5731,16 +6335,25 @@ impl GpGuiApp {
     }
 
     fn feed_spy_pads(&mut self, src: &str, kind: PadKind, line: &str) {
+        if kind == PadKind::System {
+            return;
+        }
         let src_up = src.to_ascii_uppercase();
-        for (i, call) in self.cfg.session.spy_calls.iter().enumerate() {
-            if call.is_empty() {
+        let calls = self.cfg.session.spy_calls.clone();
+        let mut saved: Vec<String> = Vec::new();
+        for (i, call) in calls.iter().enumerate() {
+            if call.is_empty() || !call.eq_ignore_ascii_case(&src_up) {
                 continue;
             }
-            if call.eq_ignore_ascii_case(&src_up) {
-                if let Some(pad) = self.spy_pads.get_mut(i) {
-                    pad.push(kind, line.to_string());
-                }
+            if let Some(pad) = self.spy_pads.get_mut(i) {
+                pad.push(kind, line.to_string());
             }
+            if !saved.iter().any(|c| c.eq_ignore_ascii_case(call)) {
+                saved.push(call.clone());
+            }
+        }
+        for call in saved {
+            self.append_spy_line(&call, line);
         }
     }
 }
@@ -5776,33 +6389,92 @@ fn dotted(label: &str, value: &str, width: usize) -> String {
     s
 }
 
-fn setup_frame(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
+/// Hard drop-shadow like classic DOS windows (no soft blur).
+fn popup_shadow() -> egui::epaint::Shadow {
+    egui::epaint::Shadow {
+        offset: Vec2::new(4.0, 4.0),
+        blur: 0.0,
+        spread: 0.0,
+        color: Color32::from_black_alpha(110),
+    }
+}
+
+/// Session-strip grey face for every dialog — retro GP, not egui dark mode.
+fn popup_visuals() -> egui::Visuals {
+    let mut v = egui::Visuals::light();
+    v.window_fill = VGA_GRAY;
+    v.panel_fill = VGA_GRAY;
+    v.window_stroke = Stroke::new(1.0, Color32::BLACK);
+    v.window_rounding = egui::Rounding::ZERO;
+    v.menu_rounding = egui::Rounding::ZERO;
+    v.window_shadow = popup_shadow();
+    v.popup_shadow = egui::epaint::Shadow::NONE;
+    v.override_text_color = Some(Color32::BLACK);
+    // Text fields a step lighter than the face; faint rows a step darker.
+    v.extreme_bg_color = Color32::from_rgb(220, 220, 220);
+    v.faint_bg_color = Color32::from_rgb(150, 150, 150);
+    v.code_bg_color = Color32::from_rgb(200, 200, 200);
+    let square = egui::Rounding::ZERO;
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.rounding = square;
+    }
+    v.widgets.noninteractive.bg_fill = VGA_GRAY;
+    v.widgets.noninteractive.weak_bg_fill = VGA_GRAY;
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, VGA_DARK_GRAY);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::BLACK);
+    // Raised button faces — same family as the QRG session strip.
+    v.widgets.inactive.bg_fill = Color32::from_rgb(200, 200, 200);
+    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(200, 200, 200);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::BLACK);
+    v.widgets.hovered.bg_fill = Color32::from_rgb(210, 210, 210);
+    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(210, 210, 210);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::BLACK);
+    v.widgets.active.bg_fill = Color32::from_rgb(150, 150, 150);
+    v.widgets.active.weak_bg_fill = Color32::from_rgb(150, 150, 150);
+    v.widgets.open.bg_fill = Color32::from_rgb(200, 200, 200);
+    v.widgets.open.weak_bg_fill = Color32::from_rgb(200, 200, 200);
+    v.selection.bg_fill = VGA_BLUE;
+    v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    v
+}
+
+fn popup_frame() -> Frame {
     Frame::none()
-        .fill(Color32::BLACK)
-        .stroke(Stroke::new(2.0, Color32::from_rgb(255, 255, 85)))
-        .inner_margin(6.0)
-        .show(ui, |ui| {
-            ui.set_min_width(420.0);
-            Frame::none()
-                .fill(Color32::from_rgb(170, 0, 170))
-                .inner_margin(4.0)
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new(title)
-                            .color(Color32::WHITE)
-                            .font(FontId::monospace(14.0)),
-                    );
-                });
-            ui.add_space(4.0);
-            body(ui);
-        });
+        .fill(VGA_GRAY)
+        .stroke(Stroke::new(1.0, Color32::BLACK))
+        .inner_margin(8.0)
+        .rounding(0.0)
+        .shadow(popup_shadow())
+}
+
+/// QRG chrome for every popup: named title bar, close X, centered, grey face.
+fn centered_popup<'a>(
+    title: impl Into<egui::WidgetText>,
+    id: egui::Id,
+    open: &'a mut bool,
+) -> egui::Window<'a> {
+    egui::Window::new(title)
+        .id(id)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .order(egui::Order::Foreground)
+        .frame(popup_frame())
+        .open(open)
 }
 
 fn setup_row(ui: &mut Ui, line: &str, color: Color32, selected: bool) -> egui::Response {
+    // Same grey family as the window; selection sinks to dark grey.
     let bg = if selected {
-        Color32::from_rgb(85, 85, 85)
+        VGA_DARK_GRAY
     } else {
-        Color32::BLACK
+        Color32::from_rgb(150, 150, 150)
     };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(400.0, 18.0), Sense::click());
     ui.painter().rect_filled(rect, 0.0, bg);
@@ -5823,7 +6495,7 @@ fn color_sample(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) {
         rect.center(),
         egui::Align2::CENTER_CENTER,
         text,
-        FontId::monospace(14.0),
+        menu_font(15.0),
         fg,
     );
 }
@@ -5862,6 +6534,15 @@ impl eframe::App for GpGuiApp {
         self.poll_beacon();
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
         self.poll_hotkeys(ctx);
+
+        // Dialogs share the QRG/session-bar grey; the main chrome paints its own colours.
+        if self.popup_chrome_open() {
+            ctx.set_visuals(popup_visuals());
+            apply_popup_text_style(ctx, true);
+        } else {
+            ctx.set_visuals(egui::Visuals::dark());
+            apply_popup_text_style(ctx, false);
+        }
 
         // Panels own reserved bands so CentralPanel (RX) cannot paint over them.
         // Strip height stays fixed; icons scale to fill it (1 px top/bottom).
@@ -5970,6 +6651,7 @@ impl eframe::App for GpGuiApp {
                 self.spy_dialog(ctx);
                 self.mheard_spy_confirm_dialog(ctx);
                 self.connect_dialog(ctx);
+                self.connect_names_window(ctx);
                 self.name_dialog(ctx);
             });
         self.paint_setup(ctx);
@@ -5977,6 +6659,13 @@ impl eframe::App for GpGuiApp {
         self.paint_list_offer(ctx);
         self.paint_find(ctx);
         self.paint_start_screen(ctx);
+        if !matches!(self.active, ActivePane::Channel(_)) {
+            self.split_dragging = false;
+            self.split_drag_dy = 0.0;
+        } else if self.split_dragging && self.split_drag_dy.abs() > SPLIT_DRAG_SLOP {
+            ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            ctx.request_repaint();
+        }
     }
 }
 
@@ -5996,15 +6685,22 @@ impl GpGuiApp {
             (screen.right() - 468.0).max(screen.left() + 8.0),
         );
         let y = (logo_bottom + 12.0).min((screen.bottom() - 28.0).max(screen.top() + 8.0));
+        let mut open = true;
         egui::Window::new("Radio setup")
+            .id(egui::Id::new("gp_radio_setup"))
             .collapsible(false)
             .resizable(false)
             .order(egui::Order::Foreground)
             .fixed_pos(Pos2::new(x, y))
             .default_width(460.0)
+            .frame(popup_frame())
+            .open(&mut open)
             .show(ctx, |ui| {
                 use_this = self.radio_setup_form(ui);
             });
+        if !open {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         if self.radio_form_key() != before {
             let saved = self.store_radio_form();
             self.note_radio_save(saved);
@@ -6076,7 +6772,7 @@ impl GpGuiApp {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.radio_call)
                         .desired_width(SETUP_FIELD_W)
-                        .font(FontId::monospace(14.0)),
+                        .font(menu_font(14.0)),
                 );
                 ui.end_row();
 
@@ -6152,14 +6848,14 @@ impl GpGuiApp {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.radio_host)
                             .desired_width(SETUP_FIELD_W)
-                            .font(FontId::monospace(14.0)),
+                            .font(menu_font(14.0)),
                     );
                     ui.end_row();
                     ui.label("Port");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.radio_tcp_port)
                             .desired_width(SETUP_FIELD_W)
-                            .font(FontId::monospace(14.0)),
+                            .font(menu_font(14.0)),
                     );
                     ui.end_row();
                 }
@@ -7155,6 +7851,23 @@ impl GpGuiApp {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         ui.painter_at(rect).rect_filled(rect, 0.0, VGA_GRAY);
 
+        // Behind the buttons. A still press still clicks; a move resizes.
+        // Drag-only, and not focusable, so the compose box keeps the keyboard.
+        let split_bar = if matches!(self.active, ActivePane::Channel(_)) {
+            Some(ui.interact(
+                rect,
+                egui::Id::new("gp_split_bar"),
+                Sense {
+                    click: false,
+                    drag: true,
+                    focusable: false,
+                },
+            ))
+        } else {
+            self.split_dragging = false;
+            None
+        };
+
         let on = VGA_GREEN; // same as clock ♫ when on (not bright LightGreen)
         let off = VGA_GRAY;
         let text_c = Color32::BLACK;
@@ -7163,6 +7876,7 @@ impl GpGuiApp {
         let gap = 2.0;
 
         let mut clicks: Vec<SessionClick> = Vec::new();
+        let mut controls: Vec<Rect> = Vec::new();
 
         let mut paint_cell = |ui: &mut Ui,
                               origin_x: f32,
@@ -7173,6 +7887,7 @@ impl GpGuiApp {
                               glyph: CellGlyph|
          -> f32 {
             let cell = Rect::from_min_size(Pos2::new(origin_x, y), Vec2::new(w, h));
+            controls.push(cell);
             let id = ui.id().with(("sess", action, label));
             let resp = ui.interact(cell, id, Sense::click());
             // ▲▼ are not toggles, so they never use the green “on” face.
@@ -7295,14 +8010,14 @@ impl GpGuiApp {
             }
             if matches!(action, SessionClick::Ctext) {
                 resp.clone().on_hover_text(format!(
-                    "Connect text: {}\nLeft: edit  ·  Right: pick file",
+                    "Connect text: {}\nChoose file",
                     self.session.ctext_display_name()
                 ));
             }
             if resp.clicked() && (!arrow || arrow_clickable) && !key_off {
                 clicks.push(action);
             }
-            // Right-click CT: pick another connect-text file (CTEXT_A.GPI, …).
+            // Right-click CT: same connect-text file picker.
             if resp.secondary_clicked() && matches!(action, SessionClick::Ctext) {
                 clicks.push(SessionClick::CtextPick);
             }
@@ -7492,36 +8207,38 @@ impl GpGuiApp {
             _ => {}
         }
 
-        if matches!(self.active, ActivePane::Channel(_)) {
-            let trail_left = rect.right() - trail_w - 2.0;
-            let arrow_x = trail_left + 54.0 + gap;
-            let arrow_rect =
-                Rect::from_min_size(Pos2::new(arrow_x, y), Vec2::new(22.0 + gap + 22.0, h));
-            let (hover, press, delta, down) = ui.input(|i| {
+        drop(paint_cell);
+
+        if let Some(resp) = split_bar {
+            let (hover, down, pressed, origin, delta, abort) = ui.input(|i| {
                 (
                     i.pointer.hover_pos(),
+                    i.pointer.primary_down(),
+                    i.pointer.primary_pressed(),
                     i.pointer.press_origin(),
                     i.pointer.delta().y,
-                    i.pointer.button_down(egui::PointerButton::Primary),
+                    i.key_pressed(egui::Key::Escape),
                 )
             });
-            if hover.is_some_and(|p| arrow_rect.contains(p)) {
+            if abort {
+                self.split_dragging = false;
+            } else if pressed && origin.is_some_and(|p| rect.contains(p)) {
+                // Whole grey bar, including the gaps around ▲▼. Latched for
+                // the whole press: the bar moves, so a fresh hit test drops it.
+                self.split_dragging = true;
+                self.split_drag_dy = 0.0;
+            }
+            let over_control = hover.is_some_and(|p| controls.iter().any(|c| c.contains(p)));
+            let resizing = self.split_drag_dy.abs() > SPLIT_DRAG_SLOP;
+            if resizing || (resp.hovered() && !over_control) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
             }
-            let dragging = down && press.is_some_and(|p| arrow_rect.contains(p));
-            if dragging && delta != 0.0 {
-                let before = self.split_drag_dy;
-                self.split_drag_dy += delta;
-                if self.split_drag_dy.abs() >= 3.0 {
-                    let apply = if before.abs() < 3.0 {
-                        self.split_drag_dy
-                    } else {
-                        delta
-                    };
+            if self.split_dragging && down && delta != 0.0 {
+                if let Some(apply) = split_drag_step(self.split_drag_dy, delta) {
                     self.drag_split(apply);
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
                     ui.ctx().request_repaint();
                 }
+                self.split_drag_dy += delta;
             }
             if self.split_on {
                 ui.painter()
@@ -7533,8 +8250,9 @@ impl GpGuiApp {
         for action in clicks {
             self.handle_session_click(action);
         }
-        let released = ui.input(|i| !i.pointer.button_down(egui::PointerButton::Primary));
+        let released = ui.input(|i| !i.pointer.primary_down());
         if released {
+            self.split_dragging = false;
             self.split_drag_dy = 0.0;
         }
     }
@@ -7586,8 +8304,7 @@ impl GpGuiApp {
     fn handle_session_click(&mut self, action: SessionClick) {
         match action {
             SessionClick::Qrg => self.session.open_qrg_dialog(),
-            SessionClick::Ctext => self.open_ctext_editor(),
-            SessionClick::CtextPick => self.pick_ctext_file(),
+            SessionClick::Ctext | SessionClick::CtextPick => self.pick_ctext_file(),
             SessionClick::Ascii => {
                 self.session.extended_ascii = !self.session.extended_ascii;
                 self.status = if self.session.extended_ascii {
@@ -7714,17 +8431,18 @@ impl GpGuiApp {
             return;
         }
         let mut open = true;
-        egui::Window::new("QRG — frequency (MHz)")
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        centered_popup(
+            "QRG — frequency (MHz)",
+            egui::Id::new("gp_qrg"),
+            &mut open,
+        )
+        .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("QRG:");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.session.qrg_edit)
                             .desired_width(100.0)
-                            .font(FontId::monospace(16.0)),
+                            .font(menu_font(16.0)),
                     );
                 });
                 ui.horizontal(|ui| {
@@ -7878,11 +8596,12 @@ impl GpGuiApp {
     /// WA8DED / TF hostmode connect: `C CALL` or `C CALL digi1 digi2…`.
     /// Does not mark the channel connected until the TNC reports CONNECTED.
     ///
-    /// Channels that share a configured name are one pool. The first free
-    /// channel answers as that name. The next answers as `NAME-1` until it
-    /// disconnects. One channel alone never takes a number: a second call
-    /// gets busy from that name. Empty, or the same as global, is the global
-    /// pool. A call to a name this station has is answered here, because
+    /// Channels that share a configured name are one pool, and every
+    /// station is answered on that bare name. A second link of the same
+    /// from↔to pair (either direction) is answered as `NAME-1`, then the
+    /// next free number, until that link disconnects. The number is not
+    /// the channel. Empty, or the same as global, is the global pool.
+    /// A call to a name this station has is answered here, because
     /// Soundmodem does not return our own SABM.
     fn begin_connect(&mut self, channel: u8, dest: &str, vias: &[String], downlinks: Vec<String>) {
         if !(1..=self.channels).contains(&channel) {
@@ -7896,8 +8615,9 @@ impl GpGuiApp {
         let mut self_connect = false;
         let mut local_link = false;
 
+        let caller_air = self.pool_name(channel);
         if vias.is_empty() {
-            match self.incoming_slot(&dest, Some(channel)) {
+            match self.incoming_slot(&dest, &caller_air, Some(channel)) {
                 SlotAnswer::Busy { call } => {
                     self.status = format!("{call} busy");
                     if let Some(pad) = self.pads.get_mut(channel as usize) {
@@ -7909,8 +8629,7 @@ impl GpGuiApp {
                     return;
                 }
                 SlotAnswer::Accept { channel: answer_ch, call } => {
-                    let air = self.pool_air_call(channel);
-                    self.adopt_air_call(channel, &air);
+                    self.adopt_air_call(channel, &caller_air);
                     outgoing = self.effective_mycall(channel);
                     self.adopt_air_call(answer_ch, &call);
                     dest = call;
@@ -7930,14 +8649,12 @@ impl GpGuiApp {
                     }
                 }
                 SlotAnswer::Foreign => {
-                    let air = self.pool_air_call(channel);
-                    self.adopt_air_call(channel, &air);
+                    self.adopt_air_call(channel, &caller_air);
                     outgoing = self.effective_mycall(channel);
                 }
             }
         } else {
-            let air = self.pool_air_call(channel);
-            self.adopt_air_call(channel, &air);
+            self.adopt_air_call(channel, &caller_air);
             outgoing = self.effective_mycall(channel);
         }
 
@@ -8053,6 +8770,7 @@ impl GpGuiApp {
         let ch = channel.clamp(1, self.channels);
         self.session.open_connect_dialog(ch, "");
         self.connect_dialog_focus = true;
+        self.show_connect_names = false;
         self.status = format!("Connect — enter call for ch{ch}");
     }
 
@@ -8123,20 +8841,18 @@ impl GpGuiApp {
             .get(ch as usize)
             .and_then(|p| p.clone())
             .unwrap_or_default();
-        let center = ctx.screen_rect().center();
-        egui::Window::new(format!("Name — {call}"))
-            .id(egui::Id::new(("gp_name_dialog", ch)))
-            .collapsible(false)
-            .resizable(false)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(center)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
+        let mut open = true;
+        centered_popup(
+            format!("Name — {call}"),
+            egui::Id::new(("gp_name_dialog", ch)),
+            &mut open,
+        )
+        .show(ctx, |ui| {
                 ui.label("Name in NAMES.GP (via path stays after the ;)");
                 let te = ui.add(
                     egui::TextEdit::singleline(&mut self.name_edit)
                         .desired_width(220.0)
-                        .font(FontId::monospace(16.0))
+                        .font(menu_font(16.0))
                         .hint_text("Bas"),
                 );
                 if self.name_dialog_focus {
@@ -8157,33 +8873,35 @@ impl GpGuiApp {
                     }
                 });
             });
+        if !open {
+            self.show_name_dialog = false;
+            self.status = "Name cancelled".into();
+        }
     }
 
     fn connect_dialog(&mut self, ctx: &Context) {
         if !self.session.show_connect_dialog {
+            self.show_connect_names = false;
             return;
         }
         let ch = self.session.connect_channel;
-        let center = ctx.screen_rect().center();
-        // Do not use `.open(&mut)` — egui memory can keep the window closed.
-        egui::Window::new(format!("Connect — channel {ch}"))
-            .id(egui::Id::new(("gp_connect_dialog", ch)))
-            .collapsible(false)
-            .resizable(false)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(center)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
+        let mut open = true;
+        centered_popup(
+            format!("Connect — channel {ch}"),
+            egui::Id::new(("gp_connect_dialog", ch)),
+            &mut open,
+        )
+        .show(ctx, |ui| {
                 ui.label("Whom to connect to?");
                 ui.label(
                     RichText::new("Call, name from NAMES.GP, or CALL,VIA")
                         .small()
-                        .color(Color32::DARK_GRAY),
+                        .color(VGA_DARK_GRAY),
                 );
                 let te = ui.add(
                     egui::TextEdit::singleline(&mut self.session.connect_edit)
                         .desired_width(220.0)
-                        .font(FontId::monospace(16.0))
+                        .font(menu_font(16.0))
                         .hint_text("N0CALL"),
                 );
                 if self.connect_dialog_focus {
@@ -8191,6 +8909,8 @@ impl GpGuiApp {
                     self.connect_dialog_focus = false;
                 }
                 let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.add_space(6.0);
+                self.connect_name_field(ui);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("Connect").clicked() || enter {
@@ -8200,10 +8920,116 @@ impl GpGuiApp {
                     }
                     if ui.button("Cancel").clicked() {
                         self.session.show_connect_dialog = false;
+                        self.show_connect_names = false;
                         self.status = "Connect cancelled".into();
                     }
                 });
             });
+        if !open {
+            self.session.show_connect_dialog = false;
+            self.show_connect_names = false;
+            self.status = "Connect cancelled".into();
+        }
+    }
+
+    /// The Name field on the connect dialog. A click opens `NAMES.GP`.
+    fn connect_name_field(&mut self, ui: &mut Ui) {
+        ui.label("Name");
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(220.0, 24.0), Sense::click());
+        // Sunken light-grey well on the session-strip face.
+        let fill = if resp.hovered() || self.show_connect_names {
+            Color32::from_rgb(210, 210, 220)
+        } else {
+            Color32::from_rgb(220, 220, 220)
+        };
+        ui.painter().rect_filled(rect, 0.0, fill);
+        paint_bevel(ui.painter(), rect, true);
+        let text = if self.show_connect_names {
+            "list open"
+        } else {
+            "click for NAMES.GP"
+        };
+        ui.painter().text(
+            rect.left_center() + Vec2::new(6.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            text,
+            menu_font(15.0),
+            Color32::BLACK,
+        );
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            if self.show_connect_names {
+                self.show_connect_names = false;
+            } else {
+                self.open_connect_name_list();
+            }
+        }
+    }
+
+    fn open_connect_name_list(&mut self) {
+        let path = self.names.path().to_path_buf();
+        self.names = NamesFile::load_from(path);
+        self.show_connect_names = true;
+    }
+
+    /// Click a stored name to connect. A path after `;` is the via.
+    fn connect_names_window(&mut self, ctx: &Context) {
+        if !self.show_connect_names || !self.session.show_connect_dialog {
+            return;
+        }
+        let picks = self.names.name_list(&self.names_qrg());
+        let mut chosen: Option<String> = None;
+        let mut open = true;
+        centered_popup(
+            "Names",
+            egui::Id::new(("gp_connect_names", self.session.connect_channel)),
+            &mut open,
+        )
+        .order(egui::Order::Tooltip)
+        .show(ctx, |ui| {
+                ui.set_min_width(280.0);
+                if picks.is_empty() {
+                    ui.label("No names in NAMES.GP");
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(280.0)
+                        .show(ui, |ui| {
+                            for entry in &picks {
+                                let line = listed_name_line(entry);
+                                let row = ui.add(
+                                    egui::Button::new(
+                                        RichText::new(line).font(menu_font(15.0)),
+                                    )
+                                    .frame(false)
+                                    .wrap_mode(TextWrapMode::Extend),
+                                );
+                                if row.clicked() {
+                                    chosen = Some(entry.call.clone());
+                                }
+                            }
+                        });
+                }
+            });
+        if !open {
+            self.show_connect_names = false;
+        }
+        if let Some(call) = chosen {
+            self.connect_listed(&call);
+        }
+    }
+
+    fn connect_listed(&mut self, call: &str) {
+        let ch = self.session.connect_channel.clamp(1, self.channels);
+        self.show_connect_names = false;
+        match self.resolve_connect_target(call) {
+            Ok((dest, vias, down)) => {
+                self.session.show_connect_dialog = false;
+                self.begin_connect(ch, &dest, &vias, down);
+            }
+            Err(err) => self.status = err,
+        }
     }
 
     fn assign_spy_first_empty(&mut self, call: &str) -> Result<u8, String> {
@@ -8226,11 +9052,7 @@ impl GpGuiApp {
         }
         let call = self.mheard_spy_pending.clone();
         let mut open = true;
-        egui::Window::new("Start Spy")
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        centered_popup("Start Spy", egui::Id::new("gp_mheard_spy"), &mut open).show(ctx, |ui| {
                 ui.label(format!("Start Spy for {call}"));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -8322,16 +9144,17 @@ impl GpGuiApp {
         }
         let slot = self.session.spy_slot.unwrap_or(1);
         let mut open = true;
-        egui::Window::new(format!("SPY — window {slot}"))
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        centered_popup(
+            format!("SPY — window {slot}"),
+            egui::Id::new("gp_spy"),
+            &mut open,
+        )
+        .show(ctx, |ui| {
                 ui.label("Call to spy (empty = off):");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.session.spy_edit)
                         .desired_width(120.0)
-                        .font(FontId::monospace(16.0)),
+                        .font(menu_font(16.0)),
                 );
                 ui.horizontal(|ui| {
                     if ui.button("OK").clicked() {
@@ -8359,17 +9182,13 @@ impl GpGuiApp {
             format!("MYCALL — Channel {}", self.session.mycall_slot)
         };
         let mut open = true;
-        egui::Window::new(title)
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        centered_popup(title, egui::Id::new("gp_mycall"), &mut open).show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Call:");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.session.mycall_edit)
                             .desired_width(120.0)
-                            .font(FontId::monospace(16.0)),
+                            .font(menu_font(16.0)),
                     );
                 });
                 if self.session.mycall_slot != 0 {
@@ -8485,12 +9304,15 @@ impl GpGuiApp {
                 }
                 "MONITOR" => self.select(ActivePane::Monitor),
                 "EDIT" => self.open_ctext_editor(),
-                "SAVE" => {
-                    if !matches!(self.active, ActivePane::Editor) {
-                        self.open_ctext_editor();
+                "SAVE" => match self.active {
+                    ActivePane::Channel(n) => self.save_channel_transcript(n),
+                    _ => {
+                        if !matches!(self.active, ActivePane::Editor) {
+                            self.open_ctext_editor();
+                        }
+                        self.editor_save();
                     }
-                    self.editor_save();
-                }
+                },
                 "LOAD" => self.editor_load_dialog(),
                 "MHEARD" => self.select(ActivePane::Mh),
                 "SPY" => {
@@ -8540,14 +9362,89 @@ struct ListOffer {
     channel: u8,
 }
 
+/// Call this station answers with for one more link to `peer`.
+///
+/// `circuits` are `(our call, their call)`. The same two calls in either
+/// order are one pair. SSID 0 is the bare pool name. The first extra
+/// link of that pair is `-1`, then the lowest number still free. A
+/// different peer stays on the bare name. Nothing here is a channel number.
+fn air_call_for_pair(pool: &str, peer: &str, circuits: &[(&str, &str)]) -> String {
+    call_with_ssid(pool, pair_ssid(pool, peer, circuits))
+}
+
+fn pair_ssid(pool: &str, peer: &str, circuits: &[(&str, &str)]) -> u8 {
+    let mut used = [false; 16];
+    for &(a, b) in circuits {
+        let Some(our) = our_call_in_circuit(pool, peer, a, b) else {
+            continue;
+        };
+        let Some(ssid) = occupied_ssid(our, pool) else {
+            continue;
+        };
+        if (ssid as usize) < used.len() {
+            used[ssid as usize] = true;
+        }
+    }
+    let mut n = 0u8;
+    while n < 15 && used[n as usize] {
+        n += 1;
+    }
+    n
+}
+
+/// End of the circuit that is this station, when the other end is `peer`.
+fn our_call_in_circuit<'a>(pool: &str, peer: &str, a: &'a str, b: &'a str) -> Option<&'a str> {
+    let base = cipher::base_call(pool);
+    let ours = |call: &str| cipher::base_call(call).eq_ignore_ascii_case(&base);
+    let is_peer = |call: &str| call.eq_ignore_ascii_case(peer);
+    if ours(a) && is_peer(b) {
+        Some(a)
+    } else if ours(b) && is_peer(a) {
+        Some(b)
+    } else {
+        None
+    }
+}
+
+/// SSID this call occupies in `pool`. The configured pool name is 0,
+/// including when that name itself has no numeric suffix.
+fn occupied_ssid(call: &str, pool: &str) -> Option<u8> {
+    let base = cipher::base_call(pool);
+    if !cipher::base_call(call).eq_ignore_ascii_case(&base) {
+        return None;
+    }
+    if call.eq_ignore_ascii_case(pool) || call.eq_ignore_ascii_case(&base) {
+        return Some(0);
+    }
+    let (_, ssid) = call.split_once('-')?;
+    let n: u8 = ssid.parse().ok()?;
+    if n > 15 {
+        None
+    } else {
+        Some(n)
+    }
+}
+
+fn call_with_ssid(pool: &str, ssid: u8) -> String {
+    let base = cipher::base_call(pool);
+    if ssid == 0 {
+        if pool.eq_ignore_ascii_case(&base) {
+            base
+        } else {
+            pool.to_ascii_uppercase()
+        }
+    } else {
+        format!("{base}-{ssid}")
+    }
+}
+
 /// Channel whose outstanding SABM this UA answers.
 ///
 /// An exact source match wins (`SABM` to `NL0AS`, `UA` from `NL0AS`).
-/// When that channel is busy the station answers from the next SSID
-/// (`UA` from `NL0AS-1`). That is the same connect when the UA is
-/// addressed to the call we sent from. Two channels waiting on the same
-/// station, with the same source call, stay unanswered rather than
-/// guessing.
+/// When that same from↔to pair is already up, the station answers from
+/// the next SSID (`UA` from `NL0AS-1`). A different station stays on the
+/// bare call. Two channels waiting on the same station, with the same
+/// source call, stay unanswered rather than guessing.
 fn channel_for_connect_ua(
     channels: u8,
     connecting: &[Option<String>],
@@ -8584,6 +9481,7 @@ fn channel_for_connect_ua(
 /// Where a call to one of our names is answered.
 enum SlotAnswer {
     /// Free channel in that name's pool, and the call it uses until disconnect.
+    /// The call is the bare name unless this from↔to pair is already up.
     Accept { channel: u8, call: String },
     /// Every channel that carries this call is already in use.
     Busy { call: String },
@@ -8610,8 +9508,9 @@ enum CellGlyph {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SessionClick {
     Qrg,
+    /// Choose the connect-text file (`CTEXT.GPI`, `CTEXT_A.GPI`, …).
     Ctext,
-    /// Right-click CT: choose another connect-text file.
+    /// Right-click on CT. Same file picker.
     CtextPick,
     Ascii,
     LineStep,
@@ -8635,6 +9534,19 @@ fn route_parts(route: Route) -> (String, Vec<String>, Vec<String>) {
     (route.link_call, route.link_digis, route.downlinks)
 }
 
+fn listed_name_line(entry: &ListedName) -> String {
+    if entry.via.is_empty() {
+        format!("{:<22} {}", entry.name, entry.call)
+    } else {
+        format!(
+            "{:<22} {} via {}",
+            entry.name,
+            entry.call,
+            entry.via.join(",")
+        )
+    }
+}
+
 /// `C DB0DOZ` / `C! ON5PL` / `C DH1DAE DB0FN` → the station we are waiting to see.
 fn downlink_target(cmd: &str) -> String {
     let rest = cmd.trim();
@@ -8651,6 +9563,54 @@ fn downlink_target(cmd: &str) -> String {
         .next()
         .unwrap_or("")
         .to_ascii_uppercase()
+}
+
+/// `CB0MVB-2` → `CB0MVB`. Empty when the token is not a call.
+fn transcript_call(call: &str) -> String {
+    let call = crate::journal::base_call(call);
+    call.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
+}
+
+/// `CALL.GPL` while that name is free, otherwise `CALL.000.GPL`, `CALL.001.GPL`, …
+fn next_gpl_path(dir: &std::path::Path, call: &str) -> Result<std::path::PathBuf, String> {
+    let primary = dir.join(format!("{call}.GPL"));
+    if !primary.exists() {
+        return Ok(primary);
+    }
+    for n in 0..1000 {
+        let path = dir.join(format!("{call}.{n:03}.GPL"));
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(format!("{call}: no free transcript name through 999"))
+}
+
+/// `ch call` lines. Missing file is an empty list.
+fn load_last_calls(path: &std::path::Path, n: usize) -> Vec<Option<String>> {
+    use std::io::BufRead;
+    let mut out = vec![None; n];
+    let Ok(file) = std::fs::File::open(path) else {
+        return out;
+    };
+    for raw in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        let mut parts = raw.split_whitespace();
+        let Some(idx) = parts.next().and_then(|s| s.parse::<usize>().ok()) else {
+            continue;
+        };
+        let Some(call) = parts.next() else {
+            continue;
+        };
+        if idx < out.len() {
+            let call = transcript_call(call);
+            if !call.is_empty() {
+                out[idx] = Some(call);
+            }
+        }
+    }
+    out
 }
 
 fn on_off(v: bool) -> &'static str {
@@ -8928,38 +9888,120 @@ fn load_icon_textures(ctx: &Context) -> Vec<TextureHandle> {
         .collect()
 }
 
-/// Prefer a real Windows console face for Monitor / Channel / BBS / Spy RX text
-/// so DOS-era ASCII art and box-drawing line up on a fixed grid.
+/// Grey-menu face. Named family so the terminal panes can keep Consolas.
+const MENU_FACE: &str = "gp_menu";
+
+fn menu_family() -> FontFamily {
+    FontFamily::Name(MENU_FACE.into())
+}
+
+/// Dialog labels, titles, and fields. Not the RX pads.
+fn menu_font(size: f32) -> FontId {
+    FontId::new(size, menu_family())
+}
+
+/// While a grey dialog is up, widget text uses the menu face.
+/// Closed, the defaults come back so hover tips stay as they were.
+fn apply_popup_text_style(ctx: &Context, menu: bool) {
+    ctx.style_mut(|style| {
+        if menu {
+            let face = menu_family();
+            style
+                .text_styles
+                .insert(egui::TextStyle::Small, FontId::new(12.0, face.clone()));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, FontId::new(14.0, face.clone()));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Button, FontId::new(14.0, face.clone()));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Heading, FontId::new(18.0, face));
+        } else {
+            let face = FontFamily::Proportional;
+            style
+                .text_styles
+                .insert(egui::TextStyle::Small, FontId::new(9.0, face.clone()));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, FontId::new(12.5, face.clone()));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Button, FontId::new(12.5, face.clone()));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Heading, FontId::new(18.0, face));
+        }
+    });
+}
+
+fn read_first_font(candidates: &[&str]) -> Option<(String, Vec<u8>)> {
+    for path in candidates {
+        let path = std::path::Path::new(path);
+        if !path.is_file() {
+            continue;
+        }
+        match std::fs::read(path) {
+            Ok(bytes) => return Some((path.display().to_string(), bytes)),
+            Err(err) => tracing::warn!("failed to read font {}: {err}", path.display()),
+        }
+    }
+    None
+}
+
+/// Consolas for the RX pads. Segoe UI for grey dialogs.
+///
+/// The built-in proportional face is Ubuntu Light. On a grey panel its stems
+/// are about one pixel, so black text looks jagged. Segoe UI is a regular
+/// weight and keeps a solid edge at dialog sizes.
 fn install_console_font(ctx: &Context) {
-    const CANDIDATES: &[&str] = &[
+    let mut fonts = FontDefinitions::default();
+    if let Some((path, bytes)) = read_first_font(&[
         r"C:\Windows\Fonts\consola.ttf",      // Consolas
         r"C:\Windows\Fonts\CascadiaMono.ttf", // Cascadia Mono
         r"C:\Windows\Fonts\lucon.ttf",        // Lucida Console
         r"C:\Windows\Fonts\cour.ttf",         // Courier New
-    ];
-    let Some(path) = CANDIDATES
-        .iter()
-        .map(std::path::Path::new)
-        .find(|p| p.exists())
-    else {
+    ]) {
+        fonts
+            .font_data
+            .insert("gp_console".into(), FontData::from_owned(bytes));
+        fonts
+            .families
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .insert(0, "gp_console".into());
+        tracing::info!("console font: {path}");
+    } else {
         tracing::warn!("no system console TTF found; keeping egui default monospace");
-        return;
-    };
-    let Ok(bytes) = std::fs::read(path) else {
-        tracing::warn!("failed to read console font {}", path.display());
-        return;
-    };
-    let mut fonts = FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("gp_console".into(), FontData::from_owned(bytes));
-    fonts
+    }
+
+    let proportional = fonts
         .families
-        .entry(FontFamily::Monospace)
-        .or_default()
-        .insert(0, "gp_console".into());
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    if let Some((path, bytes)) = read_first_font(&[
+        r"C:\Windows\Fonts\segoeui.ttf", // Segoe UI
+        r"C:\Windows\Fonts\calibri.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+    ]) {
+        fonts
+            .font_data
+            .insert(MENU_FACE.into(), FontData::from_owned(bytes));
+        let mut chain = vec![MENU_FACE.into()];
+        chain.extend(proportional);
+        fonts
+            .families
+            .insert(FontFamily::Name(MENU_FACE.into()), chain);
+        tracing::info!("menu font: {path}");
+    } else {
+        tracing::warn!("no system UI TTF found; grey menus keep the default face");
+        fonts
+            .families
+            .insert(FontFamily::Name(MENU_FACE.into()), proportional);
+    }
     ctx.set_fonts(fonts);
-    tracing::info!("console font: {}", path.display());
 }
 
 /// Draw the tall clock column. Returns `true` when the ♫ gong button was clicked.
@@ -9348,8 +10390,31 @@ fn history_step(len: usize, cursor: Option<usize>, older: bool) -> HistMove {
     }
 }
 
+/// True when a channel write has real chat text (not only CR/LF/spaces/BEL).
+fn chunk_has_chat(chunk: &str) -> bool {
+    strip_ansi(chunk)
+        .chars()
+        .any(|c| !c.is_control() && !c.is_whitespace())
+}
+
 fn clamp_split_lower(v: f32) -> f32 {
     v.clamp(0.15, 0.75)
+}
+
+/// Movement before a press on the session bar counts as a split drag.
+/// Same distance egui uses before a press is no longer a button click.
+const SPLIT_DRAG_SLOP: f32 = 6.0;
+
+/// Pixels to apply this frame. `None` while the press is still a click.
+fn split_drag_step(travel_before: f32, delta_y: f32) -> Option<f32> {
+    let travel = travel_before + delta_y;
+    if travel.abs() <= SPLIT_DRAG_SLOP {
+        None
+    } else if travel_before.abs() <= SPLIT_DRAG_SLOP {
+        Some(travel)
+    } else {
+        Some(delta_y)
+    }
 }
 
 /// Height of the monitor under the session bar. `body` is QSO + monitor.
@@ -9398,7 +10463,7 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
 
 #[cfg(test)]
 mod split_tests {
-    use super::{clamp_split_lower, split_monitor_height};
+    use super::{clamp_split_lower, split_drag_step, split_monitor_height};
 
     #[test]
     fn monitor_keeps_a_qso_strip() {
@@ -9414,6 +10479,61 @@ mod split_tests {
         assert!((clamp_split_lower(2.0) - 0.75).abs() < f32::EPSILON);
         let mon = split_monitor_height(400.0, 0.99);
         assert!((mon - 300.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn a_short_press_is_a_click_and_the_rest_resizes() {
+        assert_eq!(split_drag_step(0.0, 4.0), None);
+        assert_eq!(split_drag_step(4.0, 4.0), Some(8.0));
+        assert_eq!(split_drag_step(8.0, 3.0), Some(3.0));
+        assert_eq!(split_drag_step(0.0, -8.0), Some(-8.0));
+    }
+}
+
+#[cfg(test)]
+mod chat_sound_tests {
+    use super::chunk_has_chat;
+
+    #[test]
+    fn empty_and_whitespace_are_quiet() {
+        assert!(!chunk_has_chat(""));
+        assert!(!chunk_has_chat("\r\n"));
+        assert!(!chunk_has_chat(" \t"));
+        assert!(!chunk_has_chat("\u{0007}"));
+    }
+
+    #[test]
+    fn real_chat_counts() {
+        assert!(chunk_has_chat("hi"));
+        assert!(chunk_has_chat("\rhello\n"));
+        assert!(chunk_has_chat("\x1b[32mgreen\x1b[0m"));
+    }
+}
+
+#[cfg(test)]
+mod transcript_tests {
+    use super::{next_gpl_path, transcript_call};
+
+    #[test]
+    fn call_file_drops_the_ssid() {
+        assert_eq!(transcript_call("cb0mvb-2"), "CB0MVB");
+        assert_eq!(transcript_call("****"), "");
+    }
+
+    #[test]
+    fn the_first_file_is_gpl_and_the_next_are_numbered() {
+        let dir = std::env::temp_dir().join(format!("gpng-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = next_gpl_path(&dir, "CB0MVB").unwrap();
+        assert_eq!(first.file_name().unwrap(), "CB0MVB.GPL");
+        std::fs::write(&first, b"a").unwrap();
+        let second = next_gpl_path(&dir, "CB0MVB").unwrap();
+        assert_eq!(second.file_name().unwrap(), "CB0MVB.000.GPL");
+        std::fs::write(&second, b"b").unwrap();
+        let third = next_gpl_path(&dir, "CB0MVB").unwrap();
+        assert_eq!(third.file_name().unwrap(), "CB0MVB.001.GPL");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -9525,6 +10645,43 @@ mod connect_ua_tests {
             channel_for_connect_ua(3, &connecting, &mycall, "NL0AS-1", "NL0MSK"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod pair_ssid_tests {
+    use super::air_call_for_pair;
+
+    #[test]
+    fn different_station_stays_on_the_bare_call() {
+        // A is already on channel 1 as NL0MSK. C, even on channel 2, is a
+        // different from↔to and does not take a number.
+        let up = [("NL0MSK", "NL0AS")];
+        assert_eq!(air_call_for_pair("NL0MSK", "NL1C", &up), "NL0MSK");
+        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &[]), "NL0MSK");
+    }
+
+    #[test]
+    fn second_link_of_the_same_pair_is_dash_1_not_the_channel() {
+        // A connects again. The free channel may be 3; the first duplicate
+        // is still -1, and it is the called station that takes the number.
+        let up = [("NL0MSK", "NL0AS")];
+        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &up), "NL0MSK-1");
+        // The link we placed the other way is the same combination.
+        let reverse = [("NL0AS", "NL0MSK")];
+        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &reverse), "NL0MSK-1");
+    }
+
+    #[test]
+    fn the_number_stays_and_the_next_duplicate_takes_the_next_free() {
+        let both = [("NL0MSK", "NL0AS"), ("NL0MSK-1", "NL0AS")];
+        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &both), "NL0MSK-2");
+        // -1 dropped. -2 is left alone. The bare pair is free again.
+        let kept = [("NL0MSK-2", "NL0AS")];
+        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &kept), "NL0MSK");
+        // Bare is up, -1 dropped, -2 still up: the new duplicate is -1.
+        let hole = [("NL0MSK", "NL0AS"), ("NL0MSK-2", "NL0AS")];
+        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &hole), "NL0MSK-1");
     }
 }
 

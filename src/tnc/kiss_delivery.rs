@@ -1,7 +1,9 @@
 //! KISS connected-mode pacing (AX.25 modulo 8).
 //!
-//! The UI may hand over several I-frames at once. This queue sends one,
-//! waits for an RR or I whose N(R) acknowledges it, then sends the next.
+//! The UI may hand over several I-frames at once. Each link (our call to
+//! their call) sends one, waits for an RR or I whose N(R) acknowledges it,
+//! then sends the next. A channel that is already in use does not hold
+//! another station's frames — the redirected user still gets CTEXT.
 //! UI and supervisory frames (SABM, DISC, UA, RR, DM) go out immediately.
 //! Every I-frame, including NL0MSK to NL0MSK-2, waits for an RR. A
 //! self-connect has no RF loopback, so the UI invents that RR
@@ -36,6 +38,12 @@ struct Inflight {
     tries: u32,
 }
 
+/// Peer asked us to stop sending (RNR). Cleared by RR / REJ / I.
+#[derive(Default)]
+struct PeerFlow {
+    busy: bool,
+}
+
 #[derive(Debug)]
 pub enum Tick {
     Resend(Outgoing),
@@ -58,10 +66,19 @@ pub struct Released {
     pub next: Option<Outgoing>,
 }
 
+/// One AX.25 link (our call → their call), including a redirected SSID.
 #[derive(Default)]
-pub struct KissDelivery {
+struct Link {
     queued: VecDeque<Outgoing>,
     inflight: Option<Inflight>,
+    flow: PeerFlow,
+}
+
+#[derive(Default)]
+pub struct KissDelivery {
+    /// Key is `SRC|DEST` of the frames we send. A busy channel does not hold
+    /// I-frames for a different call.
+    links: BTreeMap<String, Link>,
     held_acks: VecDeque<HeldLocalAck>,
 }
 
@@ -85,37 +102,39 @@ impl KissDelivery {
         Self::default()
     }
 
-    /// One row per peer. `tries` is repeats so far (0 while the first copy is
+    /// One row per link. `tries` is repeats so far (0 while the first copy is
     /// still waiting). `unack` is 1 for the frame on the air. Bytes still
     /// sitting in the queue, not the frame already sent, are `waiting_bytes`.
     pub fn tx_snapshots(&self) -> Vec<TxSnap> {
         let mut map: BTreeMap<String, TxSnap> = BTreeMap::new();
-        if let Some(cur) = &self.inflight {
-            let peer = peer_of(&cur.frame);
-            map.insert(
-                peer.clone(),
-                TxSnap {
+        for (key, link) in &self.links {
+            if let Some(cur) = &link.inflight {
+                let peer = peer_of(&cur.frame);
+                map.insert(
+                    key.clone(),
+                    TxSnap {
+                        channel: 0,
+                        peer,
+                        not_sent: 0,
+                        unack: 1,
+                        tries: cur.tries.saturating_sub(1),
+                        waiting_bytes: 0,
+                    },
+                );
+            }
+            for job in &link.queued {
+                let peer = peer_of(&job.frame);
+                let snap = map.entry(key.clone()).or_insert(TxSnap {
                     channel: 0,
                     peer,
                     not_sent: 0,
-                    unack: 1,
-                    tries: cur.tries.saturating_sub(1),
+                    unack: 0,
+                    tries: 0,
                     waiting_bytes: 0,
-                },
-            );
-        }
-        for job in &self.queued {
-            let peer = peer_of(&job.frame);
-            let snap = map.entry(peer.clone()).or_insert(TxSnap {
-                channel: 0,
-                peer,
-                not_sent: 0,
-                unack: 0,
-                tries: 0,
-                waiting_bytes: 0,
-            });
-            snap.not_sent += 1;
-            snap.waiting_bytes += packet_len(&job.frame);
+                });
+                snap.not_sent += 1;
+                snap.waiting_bytes += packet_len(&job.frame);
+            }
         }
         map.into_values().collect()
     }
@@ -123,13 +142,22 @@ impl KissDelivery {
     /// Decide what to put on the wire for this AX.25 frame.
     pub fn push(&mut self, port: u8, frame: Vec<u8>, now: Instant) -> Option<Outgoing> {
         let parsed = ax25::parse_frame(&frame);
-        if parsed
+        if let Some(parsed) = parsed
             .as_ref()
-            .is_some_and(|f| matches!(f.kind, Ax25FrameType::Sabm | Ax25FrameType::Disc))
+            .filter(|f| matches!(f.kind, Ax25FrameType::Sabm | Ax25FrameType::Disc))
         {
-            self.queued.clear();
-            self.inflight = None;
-            self.held_acks.clear();
+            let key = pair_key(&parsed.src, &parsed.dest);
+            let src = parsed.src.clone();
+            let dest = parsed.dest.clone();
+            self.links.remove(&key);
+            // Drop invented RRs for this link only. Another QSO keeps its queue.
+            self.held_acks.retain(|ack| {
+                ax25::parse_frame(&ack.frame)
+                    .map(|a| {
+                        !(a.src.eq_ignore_ascii_case(&dest) && a.dest.eq_ignore_ascii_case(&src))
+                    })
+                    .unwrap_or(true)
+            });
             return Some(Outgoing { port, frame });
         }
         let Some(parsed) = parsed else {
@@ -138,11 +166,13 @@ impl KissDelivery {
         if parsed.kind != Ax25FrameType::Info {
             return Some(Outgoing { port, frame });
         }
-        if self.inflight.is_some() {
-            self.queued.push_back(Outgoing { port, frame });
+        let key = pair_key(&parsed.src, &parsed.dest);
+        let link = self.links.entry(key).or_default();
+        if link.inflight.is_some() || link.flow.busy {
+            link.queued.push_back(Outgoing { port, frame });
             return None;
         }
-        self.inflight = Some(Inflight {
+        link.inflight = Some(Inflight {
             port,
             frame: frame.clone(),
             ns: parsed.ns & 7,
@@ -159,13 +189,10 @@ impl KissDelivery {
 
     /// One due local RR, if the in-flight frame has had time to go out on the air.
     pub fn poll_local_ack(&mut self, now: Instant, hbaud: u32) -> Option<Released> {
-        if self.held_acks.is_empty() {
+        let ack = self.held_acks.front()?;
+        let (sent, len) = self.inflight_age_for_ack(&ack.frame)?;
+        if now.duration_since(sent) < radio_ack_wait(len, hbaud) {
             return None;
-        }
-        if let Some(cur) = &self.inflight {
-            if now.duration_since(cur.sent) < radio_ack_wait(cur.frame.len(), hbaud) {
-                return None;
-            }
         }
         let ack = self.held_acks.pop_front()?;
         let next = self.on_rx(&ack.frame, now);
@@ -178,54 +205,115 @@ impl KissDelivery {
         })
     }
 
-    /// Peer RR or I. N(R) is the next N(S) the peer expects.
+    /// Peer RR / REJ / RNR / I. N(R) is the next N(S) the peer expects.
+    ///
+    /// RR and I clear peer-busy and free the acknowledged frame. REJ with
+    /// N(R) past our frame does the same; REJ naming our outstanding N(S)
+    /// resends that frame. RNR acks what it can and holds further I-frames.
     pub fn on_rx(&mut self, ax25_payload: &[u8], now: Instant) -> Option<Outgoing> {
         let Some(frame) = ax25::parse_frame(ax25_payload) else {
             return None;
         };
-        if !matches!(frame.kind, Ax25FrameType::Rr | Ax25FrameType::Info) {
+        if !matches!(
+            frame.kind,
+            Ax25FrameType::Rr | Ax25FrameType::Rnr | Ax25FrameType::Rej | Ax25FrameType::Info
+        ) {
             return None;
         }
-        let ack_ok = {
-            let Some(current) = self.inflight.as_ref() else {
-                return None;
+        let Some(key) = self.links.iter().find_map(|(key, link)| {
+            // Match the link even with nothing in flight (RNR while idle).
+            let peer_ok = if let Some(current) = link.inflight.as_ref() {
+                let sent = ax25::parse_frame(&current.frame)?;
+                frame.src.eq_ignore_ascii_case(&sent.dest)
+                    && frame.dest.eq_ignore_ascii_case(&sent.src)
+            } else {
+                let (src, dest) = split_key(key)?;
+                frame.src.eq_ignore_ascii_case(dest) && frame.dest.eq_ignore_ascii_case(src)
             };
-            if frame.nr != (current.ns + 1) & 7 {
-                return None;
+            if peer_ok {
+                Some(key.clone())
+            } else {
+                None
             }
-            // The ack has to be from the station we sent to, back to us.
-            match ax25::parse_frame(&current.frame) {
-                Some(sent) => {
-                    frame.src.eq_ignore_ascii_case(&sent.dest)
-                        && frame.dest.eq_ignore_ascii_case(&sent.src)
-                }
-                None => true,
-            }
-        };
-        if !ack_ok {
+        }) else {
             return None;
+        };
+        let link = self.links.get_mut(&key)?;
+        match frame.kind {
+            Ax25FrameType::Rnr => {
+                link.flow.busy = true;
+                if link
+                    .inflight
+                    .as_ref()
+                    .is_some_and(|cur| frame.nr == (cur.ns + 1) & 7)
+                {
+                    let _ = release_inflight_only(link);
+                }
+                None
+            }
+            Ax25FrameType::Rej => {
+                link.flow.busy = false;
+                if let Some(cur) = link.inflight.as_ref() {
+                    if frame.nr == (cur.ns & 7) {
+                        // Rejected the outstanding frame — send it again.
+                        let out = Outgoing {
+                            port: cur.port,
+                            frame: cur.frame.clone(),
+                        };
+                        if let Some(cur) = link.inflight.as_mut() {
+                            cur.sent = now;
+                            cur.tries = cur.tries.saturating_add(1);
+                        }
+                        return Some(out);
+                    }
+                    if frame.nr == (cur.ns + 1) & 7 {
+                        return release_next(link, now);
+                    }
+                }
+                None
+            }
+            Ax25FrameType::Rr | Ax25FrameType::Info => {
+                link.flow.busy = false;
+                if link
+                    .inflight
+                    .as_ref()
+                    .is_some_and(|cur| frame.nr == (cur.ns + 1) & 7)
+                {
+                    release_next(link, now)
+                } else if link.inflight.is_none() {
+                    // Peer reopened the pipe; start the next queued I.
+                    release_next(link, now)
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
-        self.inflight = None;
-        self.send_next(now)
     }
 
     pub fn tick(&mut self, now: Instant) -> Option<Tick> {
-        let due = self
-            .inflight
-            .as_ref()
-            .is_some_and(|f| now.duration_since(f.sent) >= T1);
-        if !due {
-            return None;
-        }
-        let tries = self.inflight.as_ref().map(|f| f.tries).unwrap_or(0);
+        self.links
+            .retain(|_, link| link.inflight.is_some() || !link.queued.is_empty());
+        let due_key = self.links.iter().find_map(|(key, link)| {
+            if link.flow.busy {
+                return None;
+            }
+            let cur = link.inflight.as_ref()?;
+            if now.duration_since(cur.sent) >= T1 {
+                Some(key.clone())
+            } else {
+                None
+            }
+        })?;
+        let link = self.links.get_mut(&due_key)?;
+        let tries = link.inflight.as_ref().map(|f| f.tries).unwrap_or(0);
         if tries >= N2 {
-            let port = self.inflight.as_ref().map(|f| f.port).unwrap_or(0);
-            self.inflight = None;
-            self.queued.clear();
-            self.held_acks.clear();
+            let port = link.inflight.as_ref().map(|f| f.port).unwrap_or(0);
+            link.inflight = None;
+            link.queued.clear();
             return Some(Tick::GaveUp { port });
         }
-        let inflight = self.inflight.as_mut().expect("inflight");
+        let inflight = link.inflight.as_mut().expect("inflight");
         inflight.tries += 1;
         inflight.sent = now;
         Some(Tick::Resend(Outgoing {
@@ -234,20 +322,56 @@ impl KissDelivery {
         }))
     }
 
-    fn send_next(&mut self, now: Instant) -> Option<Outgoing> {
-        let next = self.queued.pop_front()?;
-        let ns = ax25::parse_frame(&next.frame)
-            .map(|f| f.ns & 7)
-            .unwrap_or(0);
-        self.inflight = Some(Inflight {
-            port: next.port,
-            frame: next.frame.clone(),
-            ns,
-            sent: now,
-            tries: 1,
-        });
-        Some(next)
+    /// When the invented RR was queued, and how long that I-frame is.
+    fn inflight_age_for_ack(&self, ack: &[u8]) -> Option<(Instant, usize)> {
+        let frame = ax25::parse_frame(ack)?;
+        for link in self.links.values() {
+            let Some(current) = link.inflight.as_ref() else {
+                continue;
+            };
+            if frame.nr != (current.ns + 1) & 7 {
+                continue;
+            }
+            let sent = ax25::parse_frame(&current.frame)?;
+            if frame.src.eq_ignore_ascii_case(&sent.dest)
+                && frame.dest.eq_ignore_ascii_case(&sent.src)
+            {
+                return Some((current.sent, current.frame.len()));
+            }
+        }
+        None
     }
+}
+
+fn release_inflight_only(link: &mut Link) {
+    link.inflight = None;
+}
+
+fn release_next(link: &mut Link, now: Instant) -> Option<Outgoing> {
+    link.inflight = None;
+    if link.flow.busy {
+        return None;
+    }
+    let next = link.queued.pop_front()?;
+    let ns = ax25::parse_frame(&next.frame)
+        .map(|f| f.ns & 7)
+        .unwrap_or(0);
+    link.inflight = Some(Inflight {
+        port: next.port,
+        frame: next.frame.clone(),
+        ns,
+        sent: now,
+        tries: 1,
+    });
+    Some(next)
+}
+
+fn split_key(key: &str) -> Option<(&str, &str)> {
+    key.split_once('|')
+}
+
+fn pair_key(src: &str, dest: &str) -> String {
+    format!("{}|{}", src.to_ascii_uppercase(), dest.to_ascii_uppercase())
 }
 
 fn peer_of(frame: &[u8]) -> String {
@@ -344,6 +468,40 @@ mod tests {
         let rr = build_rr("ME", "ME-1", 1, false, false);
         let second = q.on_rx(&rr, t).expect("RR releases the next I");
         assert_eq!(super::ax25::parse_frame(&second.frame).unwrap().ns, 1);
+    }
+
+    #[test]
+    fn busy_link_does_not_hold_another_stations_ctext() {
+        let mut q = KissDelivery::new();
+        let t = now();
+        // The channel that is already in use still has an I-frame out.
+        q.push(0, build_i("OTHER", "NL1AS", 0, 0, false, b"qso"), t)
+            .unwrap();
+        // The station we moved to NL1AS-1 gets the greeting now.
+        let ctext = q
+            .push(
+                0,
+                build_i("NL0MSK", "NL1AS-1", 0, 0, false, b"welcome"),
+                t,
+            )
+            .expect("CTEXT is not queued behind the busy channel");
+        assert_eq!(
+            ax25::parse_frame(&ctext.frame).unwrap().info,
+            b"welcome"
+        );
+        // The next greeting chunk still waits on that same redirected link.
+        assert!(q
+            .push(
+                0,
+                build_i("NL0MSK", "NL1AS-1", 1, 0, false, b"more"),
+                t
+            )
+            .is_none());
+        let rr = build_rr("NL1AS-1", "NL0MSK", 1, false, false);
+        let more = q.on_rx(&rr, t).expect("RR from the redirected user");
+        assert_eq!(ax25::parse_frame(&more.frame).unwrap().info, b"more");
+        // The original QSO is still waiting on its own ack.
+        assert!(q.tx_snapshots().iter().any(|s| s.peer == "OTHER" && s.unack == 1));
     }
 
     #[test]

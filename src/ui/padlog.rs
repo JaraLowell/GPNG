@@ -1,6 +1,6 @@
 //! Persist RX pads across restarts.
 //!
-//! Files under `[paths].log_dir`/`pads/`:
+//! Files under `[paths].log_dir`/`PADS/`:
 //! `monitor.txt`, `ch01.txt`…, `spy01.txt`…, `bbs.txt`, `box.txt`.
 //!
 //! Channel rows stay white (own) or green (incoming). The monitor uses
@@ -10,7 +10,7 @@
 //! Record format: `W|text` (own) or `G|text` (incoming).
 
 use std::collections::VecDeque;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -311,9 +311,26 @@ impl TextPad {
         }
     }
 
+    /// Own and incoming rows, oldest first, DOS line endings. System lines stay out.
+    pub fn transcript_text(&self) -> String {
+        let mut out = String::new();
+        for line in &self.lines {
+            if line.kind == PadKind::System {
+                continue;
+            }
+            let text = line.text.replace(['\r', '\n'], " ").trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            out.push_str(&text);
+            out.push_str("\r\n");
+        }
+        out
+    }
+
     pub fn save_log(&self, path: &Path) {
         if let Some(parent) = path.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
+            if let Err(e) = crate::paths::ensure_dir(parent) {
                 warn!(error = %e, "pad log mkdir");
                 return;
             }
@@ -337,9 +354,9 @@ impl TextPad {
     }
 }
 
-/// `data/log/pads` (created on save).
+/// `data/LOG/PADS` (created on save).
 pub fn pads_dir(log_dir: &Path) -> PathBuf {
-    log_dir.join("pads")
+    log_dir.join("PADS")
 }
 
 pub fn monitor_path(log_dir: &Path) -> PathBuf {

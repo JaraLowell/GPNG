@@ -3,7 +3,7 @@
 //! The clock is the PC clock plus `UTC` minutes (`UTC = -120` means the
 //! log is two hours behind the PC). `QRG` is at most 7 characters.
 
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -54,7 +54,7 @@ pub fn format_line(open: &OpenQso, end: DateTime<Local>, qrg: &str) -> String {
 
 pub fn append(path: &Path, open: &OpenQso, end: DateTime<Local>, qrg: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+        crate::paths::ensure_dir(dir)?;
     }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(format_line(open, end, qrg).as_bytes())?;

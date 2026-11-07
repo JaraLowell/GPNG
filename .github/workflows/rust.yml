@@ -69,8 +69,37 @@ jobs:
           cp "$bin" stage/
           cp Config.toml stage/
           cp -R data/. stage/data/
-          rm -rf stage/data/log
-          mkdir -p stage/data/log
+          # Live logs stay out of the zip. The empty folder keeps the classic name.
+          rm -rf stage/data/log stage/data/LOG
+          mkdir -p stage/data/LOG
+          # Checkout case does not matter: the zip uses the capital spellings.
+          stage_capital() {
+            want="$1"
+            dir="stage/data"
+            found=""
+            for path in "$dir"/*; do
+              [ -e "$path" ] || continue
+              base="$(basename "$path")"
+              if [ "$base" = "$want" ]; then
+                return
+              fi
+              lowbase="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+              lowwant="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"
+              if [ "$lowbase" = "$lowwant" ]; then
+                found="$path"
+              fi
+            done
+            if [ -n "$found" ]; then
+              tmp="$dir/.case-$$-$RANDOM"
+              mv "$found" "$tmp"
+              mv "$tmp" "$dir/$want"
+            fi
+          }
+          stage_capital BELL.WAV
+          stage_capital CONNECT.WAV
+          stage_capital DISCONECT.WAV
+          stage_capital NEWLINE.WAV
+          stage_capital MAIL
 
       - name: Zip (Windows)
         if: runner.os == 'Windows'

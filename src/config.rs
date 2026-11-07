@@ -1130,7 +1130,7 @@ impl Default for PathConfig {
             user_dir: PathBuf::from("data/USER"),
             external_dir: PathBuf::from("data/EXTERNAL"),
             save_dir: PathBuf::from("data/SAVE"),
-            log_dir: PathBuf::from("data/log"),
+            log_dir: PathBuf::from("data/LOG"),
             spy_dir: PathBuf::from("data/SPY"),
         }
     }

@@ -1,4 +1,4 @@
-//! Personal mail, `data/mail/{CALL}.GPM`.
+//! Personal mail, `data/MAIL/{CALL}.GPM`.
 //!
 //! The folder is not a `//CATalog` directory. A linked station can read and
 //! delete only the file for its own call. Another call's mail stays put.
@@ -16,13 +16,13 @@ On connect, and on //Read with no file name, that station receives its mail.\r\n
 //DEL with no file name deletes only the linked station's mail.\r\n\
 This folder is not listed by //CATalog or //Read of USER.\r\n";
 
-/// `data/mail`.
+/// `data/MAIL`.
 pub fn mail_dir() -> PathBuf {
-    crate::paths::data_dir().join("mail")
+    crate::paths::data_dir().join("MAIL")
 }
 
 pub fn ensure_mail_dir(dir: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dir)?;
+    crate::paths::ensure_dir(dir)?;
     let note = dir.join("README.txt");
     if !note.is_file() {
         fs::write(note, README)?;
@@ -92,7 +92,7 @@ pub fn delete_own(dir: &Path, call: &str) -> Result<bool, String> {
         return Ok(false);
     }
     if !inside(dir, &path) {
-        return Err("mail stays in data/mail".into());
+        return Err("mail stays in data/MAIL".into());
     }
     fs::remove_file(&path).map_err(|e| format!("delete mail: {e}"))?;
     Ok(true)

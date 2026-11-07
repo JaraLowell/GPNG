@@ -38,7 +38,7 @@ pub fn is_protected(name: &str) -> bool {
     name.eq_ignore_ascii_case("README.txt")
 }
 
-/// `{CALL}.GPM` lives in `data/mail`, never in the USER listing.
+/// `{CALL}.GPM` lives in `data/MAIL`, never in the USER listing.
 pub fn is_mail_name(name: &str) -> bool {
     name.trim().to_ascii_uppercase().ends_with(".GPM")
 }
@@ -67,7 +67,7 @@ pub fn write_file(dir: &Path, name: &str, text: &str) -> Result<(), String> {
     if is_protected(&name) {
         return Err("README.txt stays".into());
     }
-    fs::create_dir_all(dir).map_err(|e| format!("USER: {e}"))?;
+    crate::paths::ensure_dir(dir).map_err(|e| format!("USER: {e}"))?;
     let path = dir.join(&name);
     if path.parent() != Some(dir) {
         return Err("USER only".into());

@@ -156,7 +156,7 @@ impl SevenPlusAutosave {
 
 /// Create USER (and the short explanation) if it is not there yet.
 pub fn ensure_user_dir(dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
+    crate::paths::ensure_dir(dir)?;
     let note = dir.join("README.txt");
     if !note.is_file() {
         fs::write(note, USER_README)?;

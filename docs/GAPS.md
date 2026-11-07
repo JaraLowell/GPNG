@@ -273,7 +273,7 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 ## Already in place (so this list stays honest)
 
 - Pixel layout: channel grid, analog clock with hourly gong, status grid, monitor and channel pads, compose history, icon strip from `ICONS.GP`, session bar.
-- KISS AX.25: UI monitor, SABM/UA connect, I + RR, DISC, idle RR, self-connect between two local channels, TCP KISS (Soundmodem / Direwolf) and serial KISS.
+- KISS AX.25: UI monitor, SABM/UA/DM connect, I + RR/REJ, DISC/UA teardown with T1, T3 idle poll with T1 retry, digi path on replies, self-connect between two local channels, TCP KISS (Soundmodem / Direwolf) and serial KISS.
 - Hostmode drivers for WA8DED and TFPCX (untested on a real TNC).
 - Per-channel callsigns, connect and disconnect, connect text with `%` macros. Names and the autorouter come from `data/NAMES.GP` (`//Name`, channel **Name**). MHeard is heard stations only.
 - Manual spy slots that follow a callsign on the monitor.
