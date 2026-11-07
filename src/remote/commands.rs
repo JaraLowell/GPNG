@@ -284,17 +284,35 @@ fn cmd(
     }
 }
 
+/// A `//` line typed into a live QSO belongs to the other station.
+/// This station runs it only when the channel is not linked.
+/// `//Bell` is always a page to the other station, never a local ring.
+pub fn typed_runs_locally(linked: bool, action: RemoteAction) -> bool {
+    !linked && action != RemoteAction::Bell
+}
+
 /// Parse a line that may be a remote command → `(action, args)`.
+///
+/// A leading space means plain text (` //Help` in a help file), not a command.
+/// Trailing spaces are ignored. Runs of spaces inside the command collapse to one.
 pub fn parse_line(line: &str) -> Option<(RemoteAction, String)> {
-    let line = line.trim();
+    let line = line.trim_end_matches(['\r', '\n']).trim_end();
     if line.is_empty() {
+        return None;
+    }
+    // Indented ` //cmd` is prose, not remote control.
+    if line
+        .bytes()
+        .next()
+        .is_some_and(|b| b.is_ascii_whitespace())
+    {
         return None;
     }
     if line == "#" {
         return Some((RemoteAction::ChatMode, String::new()));
     }
 
-    let rest = line.strip_prefix("//")?.trim_start();
+    let rest = squeeze_spaces(line.strip_prefix("//")?);
     if rest.is_empty() {
         return None;
     }
@@ -307,13 +325,31 @@ pub fn parse_line(line: &str) -> Option<(RemoteAction, String)> {
 
     // //1 hello  — cross-channel text
     if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-        return Some((RemoteAction::CrossChannelText, rest.to_string()));
+        return Some((RemoteAction::CrossChannelText, rest));
     }
 
-    let (verb, args) = split_verb(rest);
+    let (verb, args) = split_verb(&rest);
     let verb_up = verb.to_ascii_uppercase();
     let action = match_verb(&verb_up)?;
     Some((action, args.to_string()))
+}
+
+/// Collapse runs of whitespace to a single space and trim ends.
+fn squeeze_spaces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut gap = false;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            gap = true;
+            continue;
+        }
+        if gap && !out.is_empty() {
+            out.push(' ');
+        }
+        gap = false;
+        out.push(c);
+    }
+    out
 }
 
 fn match_verb(verb_up: &str) -> Option<RemoteAction> {
@@ -347,9 +383,9 @@ fn verb_matches(verb: &str, key: &str, min_prefix: usize) -> bool {
 }
 
 fn split_verb(rest: &str) -> (&str, &str) {
-    let mut split = rest.splitn(2, char::is_whitespace);
+    let mut split = rest.splitn(2, ' ');
     let verb = split.next().unwrap_or("");
-    let args = split.next().unwrap_or("").trim();
+    let args = split.next().unwrap_or("").trim_end();
     (verb, args)
 }
 
@@ -391,5 +427,29 @@ mod tests {
         assert_eq!(parse_line("//ring").unwrap().0, RemoteAction::Bell);
         assert_eq!(parse_line("//RI").unwrap().0, RemoteAction::Bell);
         assert_eq!(parse_line("//R").unwrap().0, RemoteAction::Read);
+        assert_eq!(
+            parse_line("//Name   Jara  ").unwrap(),
+            (RemoteAction::Name, "Jara".into())
+        );
+        assert_eq!(
+            parse_line("//mh  50").unwrap(),
+            (RemoteAction::MHeard, "50".into())
+        );
+    }
+
+    #[test]
+    fn leading_space_is_not_a_command() {
+        assert_eq!(parse_line(" //mh"), None);
+        assert_eq!(parse_line("  //Help"), None);
+        assert_eq!(parse_line("\t//VER"), None);
+        assert_eq!(parse_line("//VER").unwrap().0, RemoteAction::Version);
+    }
+
+    #[test]
+    fn typed_command_on_a_link_is_for_the_other_station() {
+        assert!(!typed_runs_locally(true, RemoteAction::MHeard));
+        assert!(!typed_runs_locally(true, RemoteAction::Bell));
+        assert!(typed_runs_locally(false, RemoteAction::MHeard));
+        assert!(!typed_runs_locally(false, RemoteAction::Bell));
     }
 }

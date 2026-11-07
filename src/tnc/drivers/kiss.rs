@@ -182,7 +182,7 @@ pub fn run(
                 stream.extend_from_slice(chunk);
                 let send = drain_kiss_frames(&mut stream, &mut delivery, &events);
                 for out in send {
-                    let _ = write_kiss_data(&mut link, out.port, &out.frame);
+                    let _ = write_kiss_data(&mut link, out.port, &out.frame, &events);
                 }
             }
             Err(err) => {
@@ -193,7 +193,7 @@ pub fn run(
 
         match delivery.tick(Instant::now()) {
             Some(Tick::Resend(out)) => {
-                let _ = write_kiss_data(&mut link, out.port, &out.frame);
+                let _ = write_kiss_data(&mut link, out.port, &out.frame, &events);
             }
             Some(Tick::GaveUp { port }) => {
                 let _ = events.blocking_send(TncEvent::Warning(format!(
@@ -285,7 +285,7 @@ fn handle_command(
     match cmd {
         TncCommand::HostFrame { channel, data } => {
             if let Some(out) = delivery.push(channel, data, Instant::now()) {
-                if let Err(err) = write_kiss_data(link, out.port, &out.frame) {
+                if let Err(err) = write_kiss_data(link, out.port, &out.frame, events) {
                     let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
                 }
             }
@@ -336,17 +336,22 @@ fn release_local_ack(
     let Some(released) = delivery.poll_local_ack(Instant::now(), hbaud) else {
         return;
     };
-    if let Err(err) = write_kiss_data(link, released.ack.port, &released.ack.frame) {
+    if let Err(err) = write_kiss_data(link, released.ack.port, &released.ack.frame, events) {
         let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
     }
     if let Some(out) = released.next {
-        if let Err(err) = write_kiss_data(link, out.port, &out.frame) {
+        if let Err(err) = write_kiss_data(link, out.port, &out.frame, events) {
             let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
         }
     }
 }
 
-fn write_kiss_data(link: &mut KissLink, port: u8, payload: &[u8]) -> Result<(), TncError> {
+fn write_kiss_data(
+    link: &mut KissLink,
+    port: u8,
+    payload: &[u8],
+    events: &mpsc::Sender<TncEvent>,
+) -> Result<(), TncError> {
     let mut frame = Vec::with_capacity(payload.len() * 2 + 4);
     frame.push(FEND);
     frame.push(port << 4);
@@ -366,6 +371,9 @@ fn write_kiss_data(link: &mut KissLink, port: u8, payload: &[u8]) -> Result<(), 
     frame.push(FEND);
     link.write_all(&frame)?;
     debug!(port, len = payload.len(), "tx kiss frame");
+    let _ = events.blocking_send(TncEvent::KissTx {
+        frame: payload.to_vec(),
+    });
     Ok(())
 }
 

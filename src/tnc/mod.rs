@@ -144,6 +144,13 @@ pub enum TncEvent {
         code: HostCode,
         payload: Vec<u8>,
     },
+    /// KISS AX.25 frame that was just written to the modem (monitor TX).
+    /// Queued I-frames raise this only when they leave the radio, so a file
+    /// send is listed next to the peer's RR instead of in one burst up front.
+    KissTx {
+        /// Unescaped AX.25 frame bytes (not KISS-wrapped).
+        frame: Vec<u8>,
+    },
     /// Free RAM and the channel counters (not displayed / not sent / tries / unack).
     Buffers(BufferReport),
     /// Human-readable status for the terminal pane.

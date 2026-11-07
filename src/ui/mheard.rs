@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use super::session::Ax25UiFrame;
 
 const MAX_ENTRIES: usize = 500;
+/// Classic DOS GP: bare `//MHeard` sends this many newest rows.
+const DEFAULT_REMOTE_LINES: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeardStation {
@@ -161,6 +163,35 @@ impl MheardList {
             .map(HeardStation::display_line)
             .collect()
     }
+
+    /// Lines for `//MHeard` / `//mh`.
+    ///
+    /// - no args → newest [`DEFAULT_REMOTE_LINES`] (classic default 10)
+    /// - a number → that many newest rows (`//mh 50`, `//mh 5`)
+    /// - a callsign → that station's row when it is on the list
+    pub fn remote_lines(&self, args: &str) -> Vec<String> {
+        let args = args.trim();
+        if args.is_empty() {
+            return self.newest_lines(DEFAULT_REMOTE_LINES);
+        }
+        if let Ok(n) = args.parse::<usize>() {
+            return self.newest_lines(n);
+        }
+        self.entries
+            .iter()
+            .filter(|e| e.listed() && e.call.eq_ignore_ascii_case(args))
+            .map(HeardStation::display_line)
+            .collect()
+    }
+
+    fn newest_lines(&self, n: usize) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|e| e.listed())
+            .take(n)
+            .map(HeardStation::display_line)
+            .collect()
+    }
 }
 
 /// Fixed-width call field so MHeard lines align as a table.
@@ -202,6 +233,22 @@ mod tests {
         assert!(line.contains("NL0MSK"));
         list.hear(&ui("NL0MSK"));
         assert_eq!(list.listed_len(), 1);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn remote_default_is_ten_newest() {
+        let path = scratch("remote-default");
+        let mut list = MheardList::load_from(path.clone());
+        for i in 0..20 {
+            list.hear(&ui(&format!("N{i:02}CALL")));
+        }
+        assert_eq!(list.remote_lines("").len(), 10);
+        assert_eq!(list.remote_lines("5").len(), 5);
+        assert_eq!(list.remote_lines("50").len(), 20);
+        let one = list.remote_lines("N19CALL");
+        assert_eq!(one.len(), 1);
+        assert!(one[0].contains("N19CALL"));
         let _ = fs::remove_file(&path);
     }
 }

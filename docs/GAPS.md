@@ -183,7 +183,7 @@ These are the DOS features an operator would notice first.
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
 | Live list from the monitor | **Have** | UI frames on KISS. Hostmode monitor text is not folded into the same list yet |
-| `//MHeard` sends the list | **Have** | |
+| `//MHeard` sends the list | **Have** | Bare `//mh` sends the newest 10. `//mh 50` / `//mh 5` set the count. A callsign asks for that station only |
 | Enter on a row checks `NAMES.GP` / starts a connect the way the BBS menu does | **Partial** | **CONNECT** uses the selected call on the first free channel and applies a `NAMES.GP` path when that call is listed. Enter on the row still does not connect. The BBS menu’s Enter sends `READ`, which is a different window |
 | Fixed 40-entry DOS window | **Partial** | Cap is 500 |
 

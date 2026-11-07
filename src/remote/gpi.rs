@@ -71,9 +71,18 @@ pub fn news_available() -> bool {
     resolve_named("NEWS.GPI").is_some()
 }
 
-/// Default connect-text path (`GTEXT.GPI`).
+/// Default connect-text path (`CTEXT.GPI`). Classic GP uses **C**onnect text.
+///
+/// Falls back to a leftover `GTEXT.GPI` so older data folders still work.
+pub fn default_ctext_path() -> PathBuf {
+    resolve_named("CTEXT.GPI")
+        .or_else(|| resolve_named("GTEXT.GPI"))
+        .unwrap_or_else(|| crate::paths::data_file("CTEXT.GPI"))
+}
+
+/// Old name — prefer [`default_ctext_path`].
 pub fn default_gtext_path() -> PathBuf {
-    resolve_named("GTEXT.GPI").unwrap_or_else(|| crate::paths::data_file("GTEXT.GPI"))
+    default_ctext_path()
 }
 
 #[derive(Debug, Clone)]

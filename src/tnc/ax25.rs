@@ -1,4 +1,4 @@
-//! AX.25 L2 helpers for the **KISS** driver path (no FCS — the TNC adds CRC).
+﻿//! AX.25 L2 helpers for the **KISS** driver path (no FCS — the TNC adds CRC).
 //!
 //! Encoding/decoding uses the [`ax25`] crate. WA8DED/TFPCX keep L2 inside the
 //! TNC via hostmode and do **not** use this module.
@@ -710,4 +710,6 @@ mod tests {
         assert_eq!(bytes_to_monitor_body("ä".as_bytes(), false), "ä");
         assert_eq!(bytes_to_monitor_body(&[0xFF, 0x00], false), "<0xff><0x00>");
     }
+
+
 }

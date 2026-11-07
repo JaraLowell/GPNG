@@ -74,7 +74,7 @@ allow_color_ansi = true
 # Session-bar button state (restored on start; rewritten when you toggle).
 [session.chrome]
 qrg_mhz = 144.800
-ctext = "data/GTEXT.GPI"
+ctext = "D:\\MyPython\\GPNG\\data\\CTEXT.GPI"
 extended_ascii = false
 smooth_scroll = false
 echo = true
@@ -202,8 +202,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1268
-y = 44
-width = 1024
-height = 820
+x = 1344
+y = 122
+width = 1014
+height = 993
 maximized = false

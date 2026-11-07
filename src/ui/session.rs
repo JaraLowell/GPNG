@@ -115,7 +115,7 @@ impl Default for SessionChrome {
 }
 
 impl SessionChrome {
-    /// Apply persisted `[session.chrome]` values (empty `ctext` → default GTEXT).
+    /// Apply persisted `[session.chrome]` values (empty `ctext` → default CTEXT).
     pub fn from_config(chrome: &SessionChromeConfig) -> Self {
         let mut s = Self::default();
         s.qrg_mhz = chrome.qrg_mhz;
@@ -227,9 +227,9 @@ impl SessionChrome {
     }
 }
 
-/// Resolve connect-text GPI (`data/GTEXT.GPI`).
+/// Resolve connect-text GPI (`data/CTEXT.GPI`).
 pub fn default_ctext_path() -> PathBuf {
-    crate::remote::gpi::default_gtext_path()
+    crate::remote::gpi::default_ctext_path()
 }
 
 pub fn default_bell_wav() -> PathBuf {

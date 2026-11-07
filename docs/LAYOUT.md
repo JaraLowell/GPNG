@@ -27,7 +27,7 @@ Reference PNGs live in `docs/screenshots/`.
 Session strip behaviour (see `src/ui/session.rs`):
 
 - **QRG** — dialog to set MHz (default 27.235)
-- **CT** — file picker for connect text (default `CTEXT.GPI`)
+- **CT** — left-click edits the connect-text file on the button (default `CTEXT.GPI`); right-click picks another (e.g. `CTEXT_A.GPI`)
 - **äöü** — plain vs extended DOS ASCII in the RX pane
 - **/** ↔ **≣** — hard line step vs smooth scroll feel
 - **Echo** — mirror TX into Monitor

@@ -413,14 +413,28 @@ fn parse_station(line: &str) -> Option<Station> {
     let mut hops = Vec::new();
     if !path.is_empty() {
         for tok in path.split_whitespace() {
-            let (hk, hr) = split_type(tok)?;
-            if hr.is_empty() {
-                return None;
+            if let Some((hk, hr)) = split_type(tok) {
+                if hr.is_empty() {
+                    return None;
+                }
+                hops.push(Hop {
+                    kind: hk,
+                    token: hr.to_string(),
+                });
+                continue;
             }
-            hops.push(Hop {
-                kind: hk,
-                token: hr.to_string(),
-            });
+            // Bare digis after `;` — `NL0PEL,NL1WIM` or `NL0PEL NL1WIM`.
+            for piece in tok.split(',') {
+                let piece = piece.trim();
+                if piece.is_empty() {
+                    continue;
+                }
+                let call = normalize_mycall(piece).ok()?;
+                hops.push(Hop {
+                    kind: StationKind::Digi,
+                    token: call,
+                });
+            }
         }
     }
     Some(Station {
@@ -585,6 +599,16 @@ mod tests {
         assert_eq!(route.link_digis, vec!["DB0NWS", "DB0FN"]);
         assert!(route.downlinks.is_empty());
         assert_eq!(route.name, "Ulf");
+    }
+
+    #[test]
+    fn bare_comma_digis_after_semicolon() {
+        // Classic short form: name, then digis after `;` (no D> prefix).
+        let n = book("T>NL1AS  Bas; NL0PEL,NL1WIM\n");
+        let route = n.route_for("NL1AS", "").unwrap().unwrap();
+        assert_eq!(route.name, "Bas");
+        assert_eq!(route.link_call, "NL1AS");
+        assert_eq!(route.link_digis, vec!["NL0PEL", "NL1WIM"]);
     }
 
     #[test]

@@ -41,7 +41,7 @@ use crate::config::{normalize_mycall, Config, HostProtocol};
 use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
 use crate::names::{NamesFile, Route};
-use crate::remote::commands::{parse_line, RemoteAction};
+use crate::remote::commands::{parse_line, typed_runs_locally, RemoteAction};
 use crate::remote::gph;
 use crate::remote::gpi;
 use crate::remote::macros::{self, MacroContext};
@@ -307,9 +307,6 @@ pub struct GpGuiApp {
     rx_calls: Vec<Option<(String, String)>>,
     /// Previous packet ended on CR; the next LF is the same newline.
     rx_cr: Vec<bool>,
-    /// `//` command already run from the incoming message, so the later
-    /// terminal line-close does not run it again.
-    cmd_ran: Vec<Option<String>>,
     /// Colour pen for the channel. A packet cut does not reset it.
     rx_ansi: Vec<AnsiDecoder>,
     /// Unfinished 7Plus row per channel (raw payload bytes, not the painted text).
@@ -351,7 +348,7 @@ pub struct GpGuiApp {
     #[allow(dead_code)]
     connect_fg: Color32,
     session: SessionChrome,
-    /// Internal GPI / text editor (EDIT icon → default GTEXT.GPI).
+    /// Internal GPI / text editor (EDIT / CT → session connect-text file).
     editor: GpEditor,
     /// Stations heard (APRS/AX.25 UI) — JSON-backed.
     mheard: MheardList,
@@ -610,7 +607,6 @@ impl GpGuiApp {
             rx_row: vec![None; slots],
             rx_calls: vec![None; slots],
             rx_cr: vec![false; slots],
-            cmd_ran: vec![None; slots],
             rx_ansi: vec![AnsiDecoder::new(); slots],
             seven_pending: vec![Vec::new(); slots],
             seven: (0..slots)
@@ -647,21 +643,43 @@ impl GpGuiApp {
         }
     }
 
-    /// Open Editor on `GTEXT.GPI` (classic default connect-text file).
-    fn open_editor_default(&mut self) {
+    /// Load `session.ctext_path` into the editor (create empty if missing).
+    fn open_ctext_editor(&mut self) {
         self.select(ActivePane::Editor);
-        let path = gpi::default_gtext_path();
+        let path = self.resolve_ctext_path();
         match self.editor.load_path(&path) {
             Ok(()) => {
+                self.session.set_ctext_path(path);
                 self.status = format!("EDIT {}", self.editor.display_name());
             }
             Err(e) => {
-                self.editor.path = path;
+                self.editor.path = path.clone();
                 self.editor.text.clear();
                 self.editor.dirty = false;
-                self.status = e.clone();
+                self.session.set_ctext_path(path);
+                self.status = e;
             }
         }
+    }
+
+    /// Prefer the path on the CT button; fall back to classic `CTEXT.GPI`.
+    fn resolve_ctext_path(&self) -> PathBuf {
+        let path = &self.session.ctext_path;
+        if path.as_os_str().is_empty() {
+            return gpi::default_ctext_path();
+        }
+        if path.is_file() {
+            return path.clone();
+        }
+        // Relative name from Config → try under data/.
+        if path.is_relative() {
+            let under_data = crate::paths::data_dir().join(path);
+            if under_data.is_file() {
+                return under_data;
+            }
+        }
+        // Stem-only / renamed: resolve CTEXT.GPI (or leftover GTEXT.GPI).
+        gpi::default_ctext_path()
     }
 
     fn editor_save(&mut self) {
@@ -671,12 +689,17 @@ impl GpGuiApp {
                 self.log_event(format!("BAK: {e}"));
             }
         }
+        let before = self.editor.path.clone();
         match self.editor.save() {
             Ok(()) => {
                 self.status = format!("saved {}", self.editor.display_name());
-                // Keep session CT in sync when editing GTEXT.
-                if self.editor.display_name().eq_ignore_ascii_case("GTEXT.GPI") {
+                // Keep CT on the file we just edited (including Save As rename).
+                if self.session.ctext_path == before
+                    || self.session.ctext_path == self.editor.path
+                    || paths_same_connect_text(&self.session.ctext_path, &before)
+                {
                     self.session.set_ctext_path(self.editor.path.clone());
+                    self.persist_session_chrome();
                 }
             }
             Err(e) => {
@@ -794,6 +817,9 @@ impl GpGuiApp {
                     self.serial_rx_bytes += bytes.len() as u64;
                 }
                 TncEvent::Buffers(report) => self.apply_buffers(report),
+                TncEvent::KissTx { frame } => {
+                    self.note_kiss_tx(&frame);
+                }
                 TncEvent::HostFrame {
                     channel,
                     code,
@@ -1298,7 +1324,7 @@ impl GpGuiApp {
         // Intentionally empty — channel numbers are internal unless user-set.
     }
 
-    /// Expand and TX `GTEXT.GPI` (or picked CT file) on the given channel.
+    /// Expand and TX the CT button file (classic `CTEXT.GPI`) on the channel.
     fn send_connect_text(&mut self, channel: u8) {
         let Some(text) = self.load_connect_text(channel) else {
             return;
@@ -1321,8 +1347,9 @@ impl GpGuiApp {
             return Some(gpi::expand_gpi_text(&text, &ctx));
         }
         let raw = [
-            self.session.ctext_path.clone(),
-            gpi::default_gtext_path(),
+            self.resolve_ctext_path(),
+            gpi::default_ctext_path(),
+            crate::paths::data_file("CTEXT.GPI"),
             crate::paths::data_file("GTEXT.GPI"),
         ]
         .into_iter()
@@ -1358,20 +1385,8 @@ impl GpGuiApp {
     fn kiss_finish_self_connect(&mut self, caller: u8, answer: u8) {
         let answer_call = self.effective_mycall(answer);
         let caller_call = self.effective_mycall(caller);
-        // Answer SABM with UA (visible in Soundmodem + Monitor).
+        // Answer SABM with UA (Monitor lists it from KissTx when written).
         self.tx_kiss_payload(0, &ax25::build_ua(&caller_call, &answer_call, true));
-        self.push_kiss_mon(
-            PadKind::Own,
-            &answer_call,
-            &caller_call,
-            &[],
-            Ax25FrameType::Ua,
-            0,
-            0,
-            true,
-            false,
-            None,
-        );
         if let Some(pad) = self.pads.get_mut(answer as usize) {
             pad.push(PadKind::System, format!("*** CONNECTED to {caller_call}"));
         }
@@ -1446,18 +1461,6 @@ impl GpGuiApp {
                     *vs = (ns + 1) & 7;
                 }
                 self.tx_kiss_payload(0, &frame);
-                self.push_kiss_mon(
-                    PadKind::Own,
-                    &my,
-                    &peer,
-                    &[],
-                    Ax25FrameType::Info,
-                    ns,
-                    nr,
-                    false,
-                    true,
-                    Some(&chunk),
-                );
                 // Caller answers this I-frame. No RF loopback, so the RR is
                 // generated here and applied to the send queue.
                 self.tx_local_rr(&my, &peer, ns);
@@ -1546,22 +1549,14 @@ impl GpGuiApp {
         let vias = self.link_vias(channel);
         let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
         self.tx_kiss_payload(0, &ax25::build_disc_via(&peer, &src, &via_ref));
-        self.push_kiss_mon(
-            PadKind::Own,
-            &src,
-            &peer,
-            &vias,
-            Ax25FrameType::Disc,
-            0,
-            0,
-            true,
-            true,
-            None,
-        );
     }
 
     fn clear_channel_link_state(&mut self, channel: u8) {
         self.close_journal(channel);
+        if self.show_name_dialog && self.name_channel == channel {
+            self.show_name_dialog = false;
+            self.name_edit.clear();
+        }
         let idx = channel as usize;
         if let Some(p) = self.channel_peer.get_mut(idx) {
             *p = None;
@@ -1934,10 +1929,13 @@ impl GpGuiApp {
             })
     }
 
-    /// Local TX echo into the RX pad(s). Channel pads always keep a transcript;
-    /// Monitor (and the monitor copy of channel TX) follows the Echo toggle.
-    /// KISS: channel body only here — Monitor gets `fm … ctl …` in `send_kiss_text`.
+    /// Local TX echo into the RX pad(s). Channel pads follow the Echo toggle.
+    /// Hostmode also copies the line onto the Monitor. KISS Monitor lines come
+    /// from [`TncEvent::KissTx`] when the frame leaves the modem.
     fn echo_own_line(&mut self, line: &str) {
+        if !self.session.echo {
+            return;
+        }
         let idx = match self.active {
             ActivePane::Channel(n) => n as usize,
             _ => 0,
@@ -1959,9 +1957,25 @@ impl GpGuiApp {
         if self.kiss_mode() {
             return;
         }
-        if self.session.echo {
-            self.pads[0].push_monitor(PadKind::Own, strip_ansi(line));
-        }
+        self.pads[0].push_monitor(PadKind::Own, strip_ansi(line));
+    }
+
+    /// Monitor listing for a KISS frame that was just written to the modem.
+    fn note_kiss_tx(&mut self, raw: &[u8]) {
+        let Some(frame) = ax25::parse_frame(raw) else {
+            return;
+        };
+        let info = if matches!(frame.kind, Ax25FrameType::Info | Ax25FrameType::Ui) {
+            let body = ax25::bytes_to_monitor_body(&frame.info, self.session.extended_ascii);
+            if body.is_empty() {
+                None
+            } else {
+                Some(body)
+            }
+        } else {
+            None
+        };
+        self.push_kiss_mon_frame(PadKind::Own, &frame, info.as_deref());
     }
 
     fn kiss_mode(&self) -> bool {
@@ -2120,18 +2134,6 @@ impl GpGuiApp {
     /// DM (busy) from `from` back to the station that called.
     fn kiss_send_dm(&mut self, to: &str, from: &str) {
         self.tx_kiss_payload(0, &ax25::build_dm(to, from, true));
-        self.push_kiss_mon(
-            PadKind::Own,
-            from,
-            to,
-            &[],
-            Ax25FrameType::Dm,
-            0,
-            0,
-            true,
-            false,
-            None,
-        );
     }
 
     /// Raw KISS port payload (already AX.25-framed). Port 0 = Soundmodem radio 1.
@@ -2158,18 +2160,6 @@ impl GpGuiApp {
         let _ = self
             .cmd_tx
             .try_send(TncCommand::LocalAck { port: 0, frame });
-        self.push_kiss_mon(
-            PadKind::Incoming,
-            i_dest,
-            i_src,
-            &[],
-            Ax25FrameType::Rr,
-            0,
-            nr,
-            false,
-            false,
-            None,
-        );
     }
 
     /// Self-connect: other channel sees this text as Incoming (no RF loopback).
@@ -2213,12 +2203,11 @@ impl GpGuiApp {
             if bytes.first() == Some(&b'\n') {
                 i = 1;
             }
-            self.finish_rx_line(channel, kind);
-        }
-        // A // command is one short line. Answer it from this message.
-        // The terminal row is unchanged and may still be waiting on CR/LF.
-        if kind == PadKind::Incoming && channel >= 1 {
-            self.commands_in_message(channel, chunk);
+            // CR already closed the row when we answered a `//` command.
+            // Only finish when that row is still open.
+            if self.rx_row.get(channel as usize).copied().flatten().is_some() {
+                self.finish_rx_line(channel, kind);
+            }
         }
         while i < bytes.len() {
             if bytes[i] == b'\n' {
@@ -2252,6 +2241,10 @@ impl GpGuiApp {
                     self.term_append(channel, kind, &text, style);
                 }
             }
+        }
+        // Show the `//` line, close it, then answer. Do not answer before paint.
+        if kind == PadKind::Incoming && channel >= 1 {
+            self.finish_pending_remote_command(channel);
         }
         // A packet that ends on CR keeps the row open (the next byte may be LF).
         // A sealed line is already complete, so show the plaintext now.
@@ -2349,18 +2342,30 @@ impl GpGuiApp {
         }
     }
 
-    /// Run `//` commands found in one incoming message. Pieces are split on
-    /// CR/LF only to find the line; nothing is written to the terminal here.
-    fn commands_in_message(&mut self, channel: u8, chunk: &str) {
-        for piece in chunk.split(|c| c == '\r' || c == '\n') {
-            let piece = piece.trim();
-            if piece.is_empty() || parse_line(piece).is_none() {
-                continue;
-            }
-            self.maybe_remote_line(channel, piece, true);
-            if let Some(slot) = self.cmd_ran.get_mut(channel as usize) {
-                *slot = Some(piece.to_string());
-            }
+    /// Packet ended on CR with a `//` command still on the open row: close that
+    /// row so the operator sees the command, then answer on the next line.
+    /// Keep `rx_cr` set so a following LF in the next packet is not a blank row.
+    fn finish_pending_remote_command(&mut self, channel: u8) {
+        if !self.rx_cr.get(channel as usize).copied().unwrap_or(false) {
+            return;
+        }
+        let idx = channel as usize;
+        let text = self
+            .rx_row
+            .get(idx)
+            .copied()
+            .flatten()
+            .and_then(|seq| self.pads.get(idx).and_then(|pad| pad.text_if_seq(seq)))
+            .unwrap_or_default();
+        if parse_line(&text).is_none() {
+            return;
+        }
+        if let Some(flag) = self.rx_cr.get_mut(idx) {
+            *flag = false;
+        }
+        self.finish_rx_line(channel, PadKind::Incoming);
+        if let Some(flag) = self.rx_cr.get_mut(idx) {
+            *flag = true;
         }
     }
 
@@ -2378,25 +2383,19 @@ impl GpGuiApp {
         if channel < 1 {
             return;
         }
-        let trimmed = line.trim();
-        if incoming {
-            if let Some(done) = self.cmd_ran.get_mut(channel as usize) {
-                if done.as_deref() == Some(trimmed) {
-                    *done = None;
-                    return;
-                }
-            }
-        }
-        let Some((action, args)) = parse_line(trimmed) else {
+        let Some((action, args)) = parse_line(line) else {
             return;
         };
+        // Only a line that arrived from the other station is a command.
+        // Text this station typed or echoed is sent on, not run here.
+        if !incoming {
+            return;
+        }
         // //Bell / //B / //Ring is a page, not general remote control.
         // It runs on the station that received the line. The bell icon
         // only decides whether that station also plays the sound.
         if action == RemoteAction::Bell {
-            if incoming {
-                self.handle_remote_on_channel(channel, action, &args);
-            }
+            self.handle_remote_on_channel(channel, action, &args);
             return;
         }
         if self.session.remote {
@@ -2518,18 +2517,6 @@ impl GpGuiApp {
         }
         self.tx_kiss_payload(0, &frame);
         self.kiss_link_activity(n, false);
-        self.push_kiss_mon(
-            PadKind::Own,
-            my,
-            &peer,
-            &[],
-            Ax25FrameType::Info,
-            ns,
-            nr,
-            false,
-            true,
-            Some(shown),
-        );
         self.deliver_self_connect_rx(n, shown, info);
         if self
             .self_connect_live
@@ -2570,18 +2557,6 @@ impl GpGuiApp {
                 let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
                 let frame = ax25::build_ui(&dest, &my, &via_ref, info);
                 self.tx_kiss_payload(0, &frame);
-                self.push_kiss_mon(
-                    PadKind::Own,
-                    &my,
-                    &dest,
-                    &vias,
-                    Ax25FrameType::Ui,
-                    0,
-                    0,
-                    false,
-                    true,
-                    Some(shown),
-                );
                 self.status = format!("KISS UI {my} {}", ax25::unproto_to(&dest, &vias));
             }
         }
@@ -2639,6 +2614,17 @@ impl GpGuiApp {
                         return;
                     }
                 }
+                // Same station SABMed the bare call again (first UA missed, or
+                // their stack did not take the SSID we moved them to). Answer
+                // from the channel they already hold — do not open -2, -3, …
+                if let Some(ch) = self.kiss_channel_holding_peer(&frame.src, &frame.dest) {
+                    self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                    let my = self.effective_mycall(ch);
+                    self.tx_kiss_payload(0, &ax25::build_ua(&frame.src, &my, true));
+                    self.kiss_link_activity(ch, true);
+                    self.status = format!("KISS UA again ch{ch} {my} ← {}", frame.src);
+                    return;
+                }
                 let slot = self.incoming_slot(&frame.dest, None);
                 let (ch, my) = match slot {
                     SlotAnswer::Foreign => return,
@@ -2674,18 +2660,6 @@ impl GpGuiApp {
                 if let Some(pad) = self.pads.get_mut(ch as usize) {
                     pad.push(PadKind::System, format!("*** CONNECTED to {}", frame.src));
                 }
-                self.push_kiss_mon(
-                    PadKind::Own,
-                    &my,
-                    &frame.src,
-                    &[],
-                    Ax25FrameType::Ua,
-                    0,
-                    0,
-                    true,
-                    false,
-                    None,
-                );
                 // SABM: they called us, so this side sends CTEXT.
                 self.finish_link_up(ch, true);
                 self.status = format!("KISS linked ch{ch} ← {}", frame.src);
@@ -2693,12 +2667,18 @@ impl GpGuiApp {
             }
             Ax25FrameType::Ua => {
                 self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
-                let ch = (1..=self.channels).find(|&n| {
-                    self.channel_connecting
-                        .get(n as usize)
-                        .and_then(|p| p.as_ref())
-                        .is_some_and(|d| d.eq_ignore_ascii_case(&frame.src))
-                });
+                // SABM to NL0AS, UA from NL0AS-1: his first channel was busy
+                // and he answered on the next SSID. That UA is the connect.
+                let mycalls: Vec<String> = (0..=self.channels)
+                    .map(|n| self.effective_mycall(n))
+                    .collect();
+                let ch = channel_for_connect_ua(
+                    self.channels,
+                    &self.channel_connecting,
+                    &mycalls,
+                    &frame.src,
+                    &frame.dest,
+                );
                 let Some(ch) = ch else {
                     return;
                 };
@@ -2710,6 +2690,11 @@ impl GpGuiApp {
                         return;
                     }
                 }
+                let requested = self
+                    .channel_connecting
+                    .get(ch as usize)
+                    .and_then(|p| p.clone())
+                    .unwrap_or_default();
                 if let Some(c) = self.channel_connecting.get_mut(ch as usize) {
                     *c = None;
                 }
@@ -2719,8 +2704,14 @@ impl GpGuiApp {
                 self.kiss_clear_sabm_timer(ch);
                 self.kiss_link_activity(ch, true);
                 play_wav(&self.connect_wav);
+                let moved = !requested.is_empty() && !requested.eq_ignore_ascii_case(&frame.src);
+                let line = if moved {
+                    format!("*** CONNECTED to {} — {requested} in use", frame.src)
+                } else {
+                    format!("*** CONNECTED to {}", frame.src)
+                };
                 if let Some(pad) = self.pads.get_mut(ch as usize) {
-                    pad.push(PadKind::System, format!("*** CONNECTED to {}", frame.src));
+                    pad.push(PadKind::System, line);
                 }
                 // UA: we placed the call, so this side does not send CTEXT.
                 self.finish_link_up(ch, false);
@@ -2757,18 +2748,6 @@ impl GpGuiApp {
                         0,
                         &ax25::build_rr_via(&frame.src, &my, nr, frame.poll, false, &via_ref),
                     );
-                    self.push_kiss_mon(
-                        PadKind::Own,
-                        &my,
-                        &frame.src,
-                        &vias,
-                        Ax25FrameType::Rr,
-                        0,
-                        nr,
-                        frame.poll,
-                        false,
-                        None,
-                    );
                     self.kiss_link_activity(ch, true);
                     self.note_seven_payload(ch, &frame.info);
                     self.note_rx_calls(ch, &frame.src, &frame.dest);
@@ -2791,18 +2770,6 @@ impl GpGuiApp {
                 if let Some(ch) = ch {
                     let my = self.effective_mycall(ch);
                     self.tx_kiss_payload(0, &ax25::build_ua(&frame.src, &my, true));
-                    self.push_kiss_mon(
-                        PadKind::Own,
-                        &my,
-                        &frame.src,
-                        &[],
-                        Ax25FrameType::Ua,
-                        0,
-                        0,
-                        true,
-                        false,
-                        None,
-                    );
                     let was = self.channel_linked(ch);
                     self.clear_channel_link_state(ch);
                     if was {
@@ -2995,18 +2962,6 @@ impl GpGuiApp {
         if let Some(n) = self.ax25_sabm_tries.get_mut(idx) {
             *n = n.saturating_add(1);
         }
-        self.push_kiss_mon(
-            PadKind::Own,
-            &src,
-            &dest,
-            &vias,
-            Ax25FrameType::Sabm,
-            0,
-            0,
-            true,
-            true,
-            None,
-        );
         if let Some(pad) = self.pads.get_mut(idx) {
             pad.push(PadKind::System, format!("*** retry connect to {dest}"));
         }
@@ -3031,6 +2986,33 @@ impl GpGuiApp {
         if !self.any_channel_busy() {
             self.restore_global_identities();
         }
+    }
+
+    /// Channel already in a link with `src` on the pool `dest` called.
+    ///
+    /// A second SABM to the bare name is a retry of that connect, so the UA
+    /// goes out from the SSID they were already moved to. A SABM to a
+    /// different specific SSID is a separate link and is left alone.
+    fn kiss_channel_holding_peer(&self, src: &str, dest: &str) -> Option<u8> {
+        let (pool, specific) = self.match_pool(dest)?;
+        if let Some(index) = specific {
+            let members = self.pool_channels(&pool);
+            let ch = *members.get(index)?;
+            let same = self
+                .channel_peer
+                .get(ch as usize)
+                .and_then(|p| p.as_ref())
+                .is_some_and(|p| p.eq_ignore_ascii_case(src));
+            return if same { Some(ch) } else { None };
+        }
+        (1..=self.channels).find(|&n| {
+            self.pool_name(n).eq_ignore_ascii_case(&pool)
+                && self
+                    .channel_peer
+                    .get(n as usize)
+                    .and_then(|p| p.as_ref())
+                    .is_some_and(|p| p.eq_ignore_ascii_case(src))
+        })
     }
 
     /// Linked channel whose peer is `src`, or whose identity is `dest`.
@@ -3058,18 +3040,6 @@ impl GpGuiApp {
         let vias = self.link_vias(channel);
         let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
         self.tx_kiss_payload(0, &ax25::build_rr_via(peer, &my, nr, true, false, &via_ref));
-        self.push_kiss_mon(
-            PadKind::Own,
-            &my,
-            peer,
-            &vias,
-            Ax25FrameType::Rr,
-            0,
-            nr,
-            true,
-            false,
-            None,
-        );
         self.kiss_link_activity(channel, false);
     }
 
@@ -3094,18 +3064,6 @@ impl GpGuiApp {
         if let Some(n) = self.ax25_poll_tries.get_mut(idx) {
             *n = n.saturating_add(1);
         }
-        self.push_kiss_mon(
-            PadKind::Own,
-            &my,
-            &peer,
-            &vias,
-            Ax25FrameType::Rr,
-            0,
-            nr,
-            true,
-            true,
-            None,
-        );
         self.status = format!("KISS T3 poll ch{channel}");
 
         // Self-connect: no RF loopback — answer locally from the other channel.
@@ -3175,7 +3133,7 @@ impl GpGuiApp {
         self.hist_cursor = None;
         self.hist_stash.clear();
 
-        // Always show what we typed when Echo is on (before any early return).
+        // Channel transcript when Echo is on (before any early return).
         self.echo_own_line(&line);
 
         let write_ch = match self.active {
@@ -3212,21 +3170,23 @@ impl GpGuiApp {
             return;
         }
 
+        // A linked channel: `//mh` and the rest go to the other station.
+        // Running them here as well shows this station's answer (its own
+        // heard list) and then the other station's answer on top.
+        let linked = matches!(self.active, ActivePane::Channel(n) if self.channel_linked(n));
         if let Some((action, args)) = parse_line(&line) {
-            // Page the other station. Do not ring here.
-            if action != RemoteAction::Bell {
+            if typed_runs_locally(linked, action) {
                 self.handle_remote(action, &args);
                 return;
             }
-        }
-        // Unregistered `//verb` → serve matching data/*.GPI (not ORIGIN).
-        if let Some(verb) = line
-            .strip_prefix("//")
-            .or_else(|| line.strip_prefix("\\\\"))
-        {
-            let verb = verb.split_whitespace().next().unwrap_or("");
-            if !verb.is_empty() {
-                if self.serve_gpi_verb(verb) {
+        } else if !linked {
+            // Unregistered `//verb` → serve matching data/*.GPI (not ORIGIN).
+            if let Some(verb) = line
+                .strip_prefix("//")
+                .or_else(|| line.strip_prefix("\\\\"))
+            {
+                let verb = verb.split_whitespace().next().unwrap_or("");
+                if !verb.is_empty() && self.serve_gpi_verb(verb) {
                     return;
                 }
             }
@@ -3687,7 +3647,7 @@ impl GpGuiApp {
                 }
             }
             RemoteAction::MHeard => {
-                let lines = self.mheard.lines();
+                let lines = self.mheard.remote_lines(args);
                 let body = if lines.is_empty() {
                     "MHeard: (empty)".into()
                 } else {
@@ -3892,8 +3852,7 @@ impl GpGuiApp {
 
     fn capture_write_line(&mut self, channel: u8, line: &str) {
         let line = line.trim_end_matches(['\r', '\n']);
-        let end =
-            parse_line(line.trim()).is_some_and(|(action, _)| action == RemoteAction::EndWrite);
+        let end = parse_line(line).is_some_and(|(action, _)| action == RemoteAction::EndWrite);
         if end {
             self.finish_user_write(channel);
             self.maybe_send_prompt();
@@ -5150,18 +5109,6 @@ impl GpGuiApp {
         let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
         let frame = ax25::build_ui(&dest, &my, &via_ref, text.as_bytes());
         self.tx_kiss_payload(0, &frame);
-        self.push_kiss_mon(
-            PadKind::Own,
-            &my,
-            &dest,
-            &vias,
-            Ax25FrameType::Ui,
-            0,
-            0,
-            false,
-            true,
-            Some(&text),
-        );
         self.status = format!("beacon {my} {}", ax25::unproto_to(&dest, &vias));
     }
 
@@ -5276,7 +5223,7 @@ impl GpGuiApp {
             return;
         }
         if eat_key(ctx, alt, egui::Key::E) {
-            self.open_editor_default();
+            self.open_ctext_editor();
             return;
         }
         if eat_key(ctx, alt, egui::Key::O) {
@@ -7346,8 +7293,18 @@ impl GpGuiApp {
                     resp.clone().on_hover_text(hint);
                 }
             }
+            if matches!(action, SessionClick::Ctext) {
+                resp.clone().on_hover_text(format!(
+                    "Connect text: {}\nLeft: edit  ·  Right: pick file",
+                    self.session.ctext_display_name()
+                ));
+            }
             if resp.clicked() && (!arrow || arrow_clickable) && !key_off {
                 clicks.push(action);
+            }
+            // Right-click CT: pick another connect-text file (CTEXT_A.GPI, …).
+            if resp.secondary_clicked() && matches!(action, SessionClick::Ctext) {
+                clicks.push(SessionClick::CtextPick);
             }
             w + gap
         };
@@ -7503,7 +7460,12 @@ impl GpGuiApp {
                     ("Remote", self.session.remote, SessionClick::Remote, 50.0),
                     ("BIN-RX", self.session.bin_rx, SessionClick::BinRx, 50.0),
                     ("BIN-TX", self.session.bin_tx, SessionClick::BinTx, 50.0),
-                    ("Name", false, SessionClick::Name, 42.0),
+                    (
+                        "Name",
+                        self.peer_name_known(n),
+                        SessionClick::Name,
+                        42.0,
+                    ),
                 ] {
                     if x + w > left_limit {
                         break;
@@ -7624,7 +7586,8 @@ impl GpGuiApp {
     fn handle_session_click(&mut self, action: SessionClick) {
         match action {
             SessionClick::Qrg => self.session.open_qrg_dialog(),
-            SessionClick::Ctext => self.pick_ctext_file(),
+            SessionClick::Ctext => self.open_ctext_editor(),
+            SessionClick::CtextPick => self.pick_ctext_file(),
             SessionClick::Ascii => {
                 self.session.extended_ascii = !self.session.extended_ascii;
                 self.status = if self.session.extended_ascii {
@@ -7723,9 +7686,8 @@ impl GpGuiApp {
     }
 
     fn pick_ctext_file(&mut self) {
-        let start = self
-            .session
-            .ctext_path
+        let current = self.resolve_ctext_path();
+        let start = current
             .parent()
             .map(PathBuf::from)
             .filter(|p| p.is_dir())
@@ -8039,18 +8001,6 @@ impl GpGuiApp {
             let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
             let frame = ax25::build_sabm_via(&dest, &src, &via_ref);
             self.tx_kiss_payload(0, &frame);
-            self.push_kiss_mon(
-                PadKind::Own,
-                &src,
-                &dest,
-                &vias,
-                Ax25FrameType::Sabm,
-                0,
-                0,
-                true,
-                true,
-                None,
-            );
             if self_connect {
                 // Soundmodem / half-duplex will not RX our own SABM — finish the
                 // answer side locally (UA on air + both channels linked + CTEXT).
@@ -8114,6 +8064,17 @@ impl GpGuiApp {
         Ok(())
     }
 
+    /// True while linked and that peer has a non-empty name in `NAMES.GP`.
+    /// Goes dark as soon as the channel disconnects.
+    fn peer_name_known(&self, channel: u8) -> bool {
+        if !self.channel_linked(channel) {
+            return false;
+        }
+        self.linked_call(channel)
+            .and_then(|call| self.names.name_for(&call, &self.names_qrg()))
+            .is_some()
+    }
+
     fn open_name_dialog(&mut self) {
         let ActivePane::Channel(ch) = self.active else {
             self.status = "Name — select a channel".into();
@@ -8171,12 +8132,12 @@ impl GpGuiApp {
             .default_pos(center)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                ui.label("Store this station in NAMES.GP");
+                ui.label("Name in NAMES.GP (via path stays after the ;)");
                 let te = ui.add(
                     egui::TextEdit::singleline(&mut self.name_edit)
                         .desired_width(220.0)
                         .font(FontId::monospace(16.0))
-                        .hint_text("Jara"),
+                        .hint_text("Bas"),
                 );
                 if self.name_dialog_focus {
                     te.request_focus();
@@ -8523,10 +8484,10 @@ impl GpGuiApp {
                     }
                 }
                 "MONITOR" => self.select(ActivePane::Monitor),
-                "EDIT" => self.open_editor_default(),
+                "EDIT" => self.open_ctext_editor(),
                 "SAVE" => {
                     if !matches!(self.active, ActivePane::Editor) {
-                        self.open_editor_default();
+                        self.open_ctext_editor();
                     }
                     self.editor_save();
                 }
@@ -8579,6 +8540,47 @@ struct ListOffer {
     channel: u8,
 }
 
+/// Channel whose outstanding SABM this UA answers.
+///
+/// An exact source match wins (`SABM` to `NL0AS`, `UA` from `NL0AS`).
+/// When that channel is busy the station answers from the next SSID
+/// (`UA` from `NL0AS-1`). That is the same connect when the UA is
+/// addressed to the call we sent from. Two channels waiting on the same
+/// station, with the same source call, stay unanswered rather than
+/// guessing.
+fn channel_for_connect_ua(
+    channels: u8,
+    connecting: &[Option<String>],
+    mycall_of: &[String],
+    src: &str,
+    dest: &str,
+) -> Option<u8> {
+    let src_base = cipher::base_call(src);
+    let mut exact = None;
+    let mut moved = None;
+    let mut moved_many = false;
+    for n in 1..=channels {
+        let Some(target) = connecting.get(n as usize).and_then(|p| p.as_ref()) else {
+            continue;
+        };
+        let mine = mycall_of.get(n as usize).map(String::as_str).unwrap_or("");
+        if !mine.eq_ignore_ascii_case(dest) {
+            continue;
+        }
+        if target.eq_ignore_ascii_case(src) {
+            exact = Some(n);
+            break;
+        }
+        if cipher::base_call(target) == src_base {
+            if moved.is_some() {
+                moved_many = true;
+            }
+            moved = Some(n);
+        }
+    }
+    exact.or(if moved_many { None } else { moved })
+}
+
 /// Where a call to one of our names is answered.
 enum SlotAnswer {
     /// Free channel in that name's pool, and the call it uses until disconnect.
@@ -8609,6 +8611,8 @@ enum CellGlyph {
 enum SessionClick {
     Qrg,
     Ctext,
+    /// Right-click CT: choose another connect-text file.
+    CtextPick,
     Ascii,
     LineStep,
     Echo,
@@ -8654,6 +8658,17 @@ fn on_off(v: bool) -> &'static str {
         "ON"
     } else {
         "OFF"
+    }
+}
+
+/// Same connect-text file under different absolute/relative spellings.
+fn paths_same_connect_text(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.file_name(), b.file_name()) {
+        (Some(x), Some(y)) => x.eq_ignore_ascii_case(y),
+        _ => false,
     }
 }
 
@@ -9431,6 +9446,85 @@ mod soft_scroll_tests {
         assert!(!keep_following(false, 200.0, 200.0, 216.0, 200.0, true));
         // Clear shortens the pad; that is not the operator scrolling up.
         assert!(keep_following(true, 0.0, 400.0, 0.0, 400.0, true));
+    }
+}
+
+#[cfg(test)]
+mod connect_ua_tests {
+    use super::channel_for_connect_ua;
+
+    fn calls(n: usize) -> Vec<Option<String>> {
+        vec![None; n]
+    }
+
+    #[test]
+    fn ua_from_next_ssid_completes_the_connect() {
+        let mut connecting = calls(5);
+        connecting[1] = Some("NL0AS".into());
+        let mycall = vec![
+            "NL0MSK".into(),
+            "NL0MSK".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ];
+        // SABM was to NL0AS. His channel is busy, so the UA is from NL0AS-1.
+        assert_eq!(
+            channel_for_connect_ua(4, &connecting, &mycall, "NL0AS-1", "NL0MSK"),
+            Some(1)
+        );
+        assert_eq!(
+            channel_for_connect_ua(4, &connecting, &mycall, "NL0AS", "NL0MSK"),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn overheard_ua_and_other_station_are_ignored() {
+        let mut connecting = calls(3);
+        connecting[1] = Some("NL0AS".into());
+        let mycall = vec!["NL0MSK".into(), "NL0MSK".into(), String::new()];
+        assert_eq!(
+            channel_for_connect_ua(2, &connecting, &mycall, "NL0AS-1", "DL0ABC"),
+            None
+        );
+        assert_eq!(
+            channel_for_connect_ua(2, &connecting, &mycall, "DB0XYZ-2", "NL0MSK"),
+            None
+        );
+    }
+
+    #[test]
+    fn exact_ssid_wins_when_another_channel_waits_on_the_same_station() {
+        let mut connecting = calls(4);
+        connecting[1] = Some("NL0AS".into());
+        connecting[2] = Some("NL0AS-3".into());
+        let mycall = vec![
+            "NL0MSK".into(),
+            "NL0MSK".into(),
+            "NL0MSK-1".into(),
+            String::new(),
+        ];
+        assert_eq!(
+            channel_for_connect_ua(3, &connecting, &mycall, "NL0AS-3", "NL0MSK-1"),
+            Some(2)
+        );
+        assert_eq!(
+            channel_for_connect_ua(3, &connecting, &mycall, "NL0AS-1", "NL0MSK"),
+            Some(1)
+        );
+        // Same source call on two waits: do not guess.
+        connecting[2] = Some("NL0AS".into());
+        let mycall = vec![
+            "NL0MSK".into(),
+            "NL0MSK".into(),
+            "NL0MSK".into(),
+            String::new(),
+        ];
+        assert_eq!(
+            channel_for_connect_ua(3, &connecting, &mycall, "NL0AS-1", "NL0MSK"),
+            None
+        );
     }
 }
 

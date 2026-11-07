@@ -162,6 +162,7 @@ impl UiApp {
                 tracing::debug!(len = bytes.len(), "raw RX (ui)");
             }
             TncEvent::Buffers(_) => {}
+            TncEvent::KissTx { .. } => {}
             TncEvent::HostFrame {
                 channel,
                 code,

@@ -68,7 +68,7 @@ pub struct GpEditor {
 impl Default for GpEditor {
     fn default() -> Self {
         Self {
-            path: crate::paths::data_file("GTEXT.GPI"),
+            path: crate::paths::data_file("CTEXT.GPI"),
             text: String::new(),
             dirty: false,
             cursor_line: 1,
