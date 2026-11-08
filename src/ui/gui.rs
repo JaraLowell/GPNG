@@ -7050,9 +7050,10 @@ impl eframe::App for GpGuiApp {
         }
 
         // Panels own reserved bands so CentralPanel (RX) cannot paint over them.
-        // Strip height stays fixed; icons fill it (1px air) with the DOS bevel.
-        let icons_h = ICON_STRIP_H;
-        let min_w = icon_row_min_width(icons_h, ICON_TOOLBAR_SLOTS);
+        // Each art pixel is a 2×2 block, so the one-pixel lettering stays even.
+        let ppp = ctx.pixels_per_point();
+        let icons_h = icon_strip_height(ppp);
+        let min_w = icon_row_min_width(ppp, ICON_TOOLBAR_SLOTS);
         ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
             min_w, 700.0,
         )));
@@ -10205,14 +10206,15 @@ impl GpGuiApp {
             other => toolbar_for(other),
         };
         let n = toolbar.len().max(1);
-        let size = icon_display_size(rect.height());
+        let ppp = ui.ctx().pixels_per_point();
+        let size = icon_display_size(ppp);
         let icon_w = size.x;
         let icon_h = size.y;
         let gap = ICON_STRIP_GAP;
         // Fixed 5px red between icons; center the row when the strip is wider.
         let row_w = n as f32 * icon_w + (n.saturating_sub(1) as f32) * gap;
-        let start_x = rect.left() + ((rect.width() - row_w) * 0.5).max(0.0);
-        let y = rect.top() + ((rect.height() - icon_h) * 0.5).max(0.0);
+        let start_x = snap_to_pixel(rect.left() + ((rect.width() - row_w) * 0.5).max(0.0), ppp);
+        let y = snap_to_pixel(rect.top() + ((rect.height() - icon_h) * 0.5).max(0.0), ppp);
 
         let mut clicked: Option<&'static str> = None;
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
@@ -11677,30 +11679,43 @@ fn split_monitor_height(body: f32, lower: f32) -> f32 {
     (body * clamp_split_lower(lower)).clamp(min, body - min)
 }
 
-/// Bottom icon strip height (panel). Top edge sits 4px higher than the old 72px bar.
-const ICON_STRIP_H: f32 = 76.0;
 /// Red air between neighbouring icon faces.
 const ICON_STRIP_GAP: f32 = 5.0;
-const ICON_STRIP_VPAD: f32 = 1.0;
+/// Red air above and below the pictures.
+const ICON_STRIP_VPAD: f32 = 2.0;
+/// Screen pixels per art pixel. 2 keeps a one-pixel stroke an even 2×2 block.
+/// 1 is the file size. Anything between 1 and 2 makes some strokes fatter.
+const ICON_PIXEL_SCALE: f32 = 2.0;
 /// Every toolbar has eight slots (EXIT is the last).
 const ICON_TOOLBAR_SLOTS: usize = 8;
 
-fn icon_display_size(strip_h: f32) -> Vec2 {
-    let icon_h = (strip_h - ICON_STRIP_VPAD * 2.0).max(1.0);
-    let icon_w = ICON_WIDTH as f32 * (icon_h / ICON_HEIGHT as f32);
-    Vec2::new(icon_w, icon_h)
+fn icon_display_size(pixels_per_point: f32) -> Vec2 {
+    let ppp = pixels_per_point.max(1.0);
+    Vec2::new(
+        ICON_WIDTH as f32 * ICON_PIXEL_SCALE / ppp,
+        ICON_HEIGHT as f32 * ICON_PIXEL_SCALE / ppp,
+    )
+}
+
+fn icon_strip_height(pixels_per_point: f32) -> f32 {
+    icon_display_size(pixels_per_point).y + ICON_STRIP_VPAD * 2.0
+}
+
+fn snap_to_pixel(v: f32, pixels_per_point: f32) -> f32 {
+    let ppp = pixels_per_point.max(1.0);
+    (v * ppp).round() / ppp
 }
 
 /// Minimum width for `count` icons with [`ICON_STRIP_GAP`] between them.
-fn icon_row_min_width(strip_h: f32, count: usize) -> f32 {
-    let size = icon_display_size(strip_h);
+fn icon_row_min_width(pixels_per_point: f32, count: usize) -> f32 {
+    let size = icon_display_size(pixels_per_point);
     let n = count.max(1) as f32;
     n * size.x + (n - 1.0).max(0.0) * ICON_STRIP_GAP
 }
 
 pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Result<()> {
     let title = version::window_title();
-    let min_w = icon_row_min_width(ICON_STRIP_H, ICON_TOOLBAR_SLOTS);
+    let min_w = icon_row_min_width(1.0, ICON_TOOLBAR_SLOTS);
     let width = cfg.window.width.max(min_w);
     let height = cfg.window.height.max(700.0);
     let mut viewport = egui::ViewportBuilder::default()
