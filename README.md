@@ -126,7 +126,9 @@ KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` str
 
 **Graphic Packet** was written by Ulf Saran (DH1DAE). This crate is a new implementation of that terminal for current operating systems. It does not include the DOS binary.
 
-7Plus Code-AutoSave follows the file format of **7PLUS 2.2** by Axel Bauda (DG1BBQ). The part names (`picture.p01`, a single part as `picture.7pl`, part 10 as `picture.p0a`) and the `go_7+.` / `stop_7+.` markers are taken from the C sources maintained by HB9XAR:
+**GP Paint** was writteb be Stefan Pfeiffer (DL1ELY). While we had no access to any sourse material, the concept and visual examples for Icons and how to Edit was a great aid.
+
+**7Plus** Code-AutoSave follows the file format of 7PLUS 2.2 by Axel Bauda (DG1BBQ). The part names (`picture.p01`, a single part as `picture.7pl`, part 10 as `picture.p0a`) and the `go_7+.` / `stop_7+.` markers are taken from the C sources maintained by HB9XAR:
 
 [https://github.com/hb9xar/7plus](https://github.com/hb9xar/7plus)
 
