@@ -299,11 +299,7 @@ mod tests {
             "/dev/cu.usbserial-1".to_string(),
             "/dev/tty.Bluetooth-Incoming-Port".to_string(),
         ];
-        let kept: Vec<_> = all
-            .iter()
-            .filter(|n| keep_port(n, &all))
-            .cloned()
-            .collect();
+        let kept: Vec<_> = all.iter().filter(|n| keep_port(n, &all)).cloned().collect();
         assert_eq!(
             kept,
             vec![

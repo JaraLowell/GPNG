@@ -37,7 +37,10 @@ use tokio::sync::mpsc;
 
 use crate::bbs::{self, Entry as MailEntry};
 use crate::cipher;
-use crate::config::{normalize_mycall, Config, HostProtocol};
+use crate::config::{
+    beacon_minutes, clip_beacon, normalize_mycall, BeaconConfig, Config, HostProtocol,
+    BEACON_FILE_MAX, BEACON_MINUTES_MAX, BEACON_TEXT_MAX,
+};
 use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
 use crate::names::{ListedName, NamesFile, Route};
@@ -50,9 +53,8 @@ use crate::remote::userdir;
 use crate::tnc::ax25::{self, Ax25Frame, Ax25FrameType};
 use crate::tnc::{
     detect_serial_ports, normalize_call, pack_text_payloads, parse_heard, payload_lines,
-    DetectedPort,
-    BufferReport, ChannelBuffers, FrameClass, HostCode, MonitorFilter, MonitorInput, RadioLink,
-    TncCommand, TncEvent, TNC_RAM,
+    BufferReport, ChannelBuffers, DetectedPort, FrameClass, HostCode, MonitorFilter, MonitorInput,
+    RadioLink, TncCommand, TncEvent, TNC_RAM,
 };
 use crate::transfer::sevenplus::{self, SevenPlusAutosave};
 use crate::version;
@@ -60,15 +62,17 @@ use crate::version;
 use super::ansi::{strip_ansi, AnsiDecoder, AnsiStyle};
 use super::editor::GpEditor;
 use super::icons::{
-    toolbar_for, toolbar_for_channel, IconLibrary, ICON_HEIGHT, ICON_SLOT_LABELS, ICON_WIDTH,
+    icon_file_label, list_icon_files, resolve_icon_path, toolbar_for, toolbar_for_channel,
+    IconEdit, IconLibrary, ICON_HEIGHT, ICON_SLOT_LABELS, ICON_WIDTH, VGA16_RGB,
 };
 use super::layout::ActivePane;
 use super::mheard::MheardList;
 use super::padlog::{self, PadKind, TextPad};
+use super::retro;
 use super::session::{
     decode_rx_text, default_bell_wav, default_connect_wav, default_disconnect_wav,
-    default_newline_wav, format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav,
-    play_wav_at, Ax25UiFrame, SessionChrome,
+    default_newline_wav, format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav, play_wav_at,
+    Ax25UiFrame, SessionChrome,
 };
 use super::setup::{self, ColorSlot, EditKind, RowId, RowKind, View as SetupView};
 use super::theme::vga;
@@ -127,16 +131,20 @@ const VGA_GRAY: Color32 = Color32::from_rgb(170, 170, 170);
 const VGA_DARK_GRAY: Color32 = Color32::from_rgb(85, 85, 85);
 /// Classic GP text-window colours (Monitor / Channel / Spy pads).
 
-/// Classic DOS / BGI 3D bevel: raised = light-grey top+left, black bottom+right;
-/// pressed (sunken) = reversed.
+/// Thin 3D rim for the small session cells. Same colours as the menus:
+/// white on the left and top, black on the bottom and right.
 fn mix_rgb(from: Color32, to: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let ch = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
-    Color32::from_rgb(ch(from.r(), to.r()), ch(from.g(), to.g()), ch(from.b(), to.b()))
+    Color32::from_rgb(
+        ch(from.r(), to.r()),
+        ch(from.g(), to.g()),
+        ch(from.b(), to.b()),
+    )
 }
 
 fn paint_bevel(painter: &egui::Painter, rect: Rect, pressed: bool) {
-    let hi_face = Color32::from_rgb(200, 200, 200); // soft highlight (channel / session chrome)
+    let hi_face = Color32::WHITE;
     let (hi, lo) = if pressed {
         (Color32::BLACK, hi_face)
     } else {
@@ -196,6 +204,15 @@ fn egui_color(name: &str) -> Color32 {
         ratatui::style::Color::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
         _ => Color32::WHITE,
     }
+}
+
+/// Which startup-card list is open. Choosing a line writes it back and closes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RadioPick {
+    Protocol,
+    Connection,
+    Port,
+    Baud,
 }
 
 /// Text captured by `//Write` until `//END` or Ctrl-Z.
@@ -342,6 +359,8 @@ pub struct GpGuiApp {
     /// Ports the OS reported, not counting a saved name that is unplugged.
     radio_live_ports: usize,
     radio_error: String,
+    /// Second panel for Protocol, Port, Baud, and the KISS connection.
+    radio_pick: Option<RadioPick>,
     /// WA8DED monitor flags, e.g. `IUSC` (from TNC / local set).
     monitor_mode: String,
     /// KISS / TFPCX monitor listing. WA8DED applies the same rule in the modem.
@@ -431,6 +450,12 @@ pub struct GpGuiApp {
     setup_pane: ActivePane,
     setup_cursor: usize,
     setup_view: SetupView,
+    /// Which colour line has its name list open (Background, Foreground, Inverse).
+    setup_color_pick: Option<usize>,
+    /// System Icons list is open over the program parameters.
+    setup_icon_pick: bool,
+    /// Pixel editor for the icon library on the bar.
+    icon_editor: Option<IconEdit>,
     show_tnc: bool,
     tnc_cmd: String,
     /// Last beacon UI. The next one waits `period_minutes`.
@@ -530,7 +555,7 @@ impl GpGuiApp {
 
         let slots = channels as usize + 1;
         install_console_font(&cc.egui_ctx);
-        let icon_tex = load_icon_textures(&cc.egui_ctx);
+        let icon_tex = load_icon_textures(&cc.egui_ctx, &cfg.session.icon_file);
         let start_screen = load_start_screen(&cc.egui_ctx);
         let status = if icon_tex.is_empty() {
             "data/ICONS.GP not found".into()
@@ -669,6 +694,7 @@ impl GpGuiApp {
             radio_ports_at: None,
             radio_live_ports: 0,
             radio_error: String::new(),
+            radio_pick: None,
             monitor_mode,
             monitor_filter,
             monitor_follow: None,
@@ -713,6 +739,9 @@ impl GpGuiApp {
             setup_pane: ActivePane::Monitor,
             setup_cursor: 0,
             setup_view: SetupView::Main,
+            setup_color_pick: None,
+            setup_icon_pick: false,
+            icon_editor: None,
             show_tnc: false,
             tnc_cmd: String::new(),
             last_beacon: Instant::now(),
@@ -834,10 +863,7 @@ impl GpGuiApp {
         };
         match std::fs::write(&path, body) {
             Ok(()) => {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&call);
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&call);
                 self.status = format!("saved {name}");
             }
             Err(e) => self.status = format!("Save: {e}"),
@@ -2396,7 +2422,9 @@ impl GpGuiApp {
             .or_else(|| is_fm_header(fallback).then_some(fallback));
         if let Some(header) = header {
             let show = self.monitor_lists_text(header);
-            let info_here = rows.iter().any(|row| !is_fm_header(row) && !row.trim().is_empty());
+            let info_here = rows
+                .iter()
+                .any(|row| !is_fm_header(row) && !row.trim().is_empty());
             self.monitor_follow = if info_here { None } else { Some(show) };
             return show;
         }
@@ -2579,9 +2607,7 @@ impl GpGuiApp {
         }
         // Channel pads only — not Monitor (ch0), not system status lines.
         // One play per write burst; multi-line CTEXT is coalesced by the caller.
-        if channel >= 1
-            && matches!(kind, PadKind::Own | PadKind::Incoming)
-            && chunk_has_chat(chunk)
+        if channel >= 1 && matches!(kind, PadKind::Own | PadKind::Incoming) && chunk_has_chat(chunk)
         {
             self.note_channel_chat_sound();
         }
@@ -2596,7 +2622,13 @@ impl GpGuiApp {
             }
             // CR already closed the row when we answered a `//` command.
             // Only finish when that row is still open.
-            if self.rx_row.get(channel as usize).copied().flatten().is_some() {
+            if self
+                .rx_row
+                .get(channel as usize)
+                .copied()
+                .flatten()
+                .is_some()
+            {
                 self.finish_rx_line(channel, kind);
             }
         }
@@ -2971,12 +3003,8 @@ impl GpGuiApp {
                     info: info_text.clone(),
                 };
                 self.mheard.hear(&ui);
-                if self.monitor_lists_frame(
-                    Ax25FrameType::Ui,
-                    &frame.src,
-                    &frame.dest,
-                    &frame.via,
-                ) {
+                if self.monitor_lists_frame(Ax25FrameType::Ui, &frame.src, &frame.dest, &frame.via)
+                {
                     self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon);
                     let mon = frame.monitor_line();
                     self.feed_spy_pads(&frame.src, PadKind::Incoming, &mon);
@@ -3136,13 +3164,7 @@ impl GpGuiApp {
                         // Out of sequence — ask them to resend from V(R).
                         self.tx_kiss_payload(
                             0,
-                            &ax25::build_rej_via(
-                                &frame.src,
-                                &my,
-                                expect,
-                                frame.poll,
-                                &via_ref,
-                            ),
+                            &ax25::build_rej_via(&frame.src, &my, expect, frame.poll, &via_ref),
                         );
                         self.kiss_link_activity(ch, true);
                         return;
@@ -3391,10 +3413,7 @@ impl GpGuiApp {
         }
         for ch in give_up {
             if let Some(pad) = self.pads.get_mut(ch as usize) {
-                pad.push(
-                    PadKind::System,
-                    "*** no UA to DISC — clearing locally",
-                );
+                pad.push(PadKind::System, "*** no UA to DISC — clearing locally");
             }
             self.finish_disconnect(ch, true);
         }
@@ -3550,13 +3569,7 @@ impl GpGuiApp {
         let mycalls: Vec<String> = (0..=self.channels)
             .map(|n| self.effective_mycall(n))
             .collect();
-        channel_for_connect_ua(
-            self.channels,
-            &self.channel_connecting,
-            &mycalls,
-            src,
-            dest,
-        )
+        channel_for_connect_ua(self.channels, &self.channel_connecting, &mycalls, src, dest)
     }
 
     /// Channel whose other end is `src` and whose call is `dest`.
@@ -3580,7 +3593,11 @@ impl GpGuiApp {
             }
             only = Some(n);
         }
-        if many { None } else { only }
+        if many {
+            None
+        } else {
+            only
+        }
     }
 
     /// Repeat SABM for a circuit this peer has not spoken on yet.
@@ -4785,8 +4802,25 @@ impl GpGuiApp {
         self.show_tnc = false;
     }
 
+    fn open_icon_editor(&mut self) {
+        if self.icon_editor.is_some() {
+            return;
+        }
+        self.setup_icon_pick = false;
+        let path = resolve_icon_path(&self.cfg.session.icon_file);
+        match IconEdit::open(path) {
+            Ok(edit) => {
+                self.status = format!("Editing {}", edit.file_name());
+                self.icon_editor = Some(edit);
+            }
+            Err(err) => self.status = format!("Icon editor: {err}"),
+        }
+    }
+
     fn close_setup(&mut self) {
         self.show_setup = false;
+        self.setup_color_pick = None;
+        self.setup_icon_pick = false;
         self.setup_view = SetupView::Main;
         self.last_beacon = Instant::now();
         if let Err(e) = self.cfg.persist_setup(&self.config_path) {
@@ -4949,6 +4983,7 @@ impl GpGuiApp {
             ))
             .into(),
             RowId::Language => s.remote_language.clone(),
+            RowId::Icons => icon_file_label(&s.icon_file),
             RowId::PacketLen => self.cfg.buffers.packet_payload.to_string(),
             RowId::AutoSave => on_off(self.session.seven_plus).into(),
             RowId::WordWrap => s.editor_wrap.to_string(),
@@ -5010,7 +5045,7 @@ impl GpGuiApp {
             }
             RowId::Beacon => {
                 let n = self.cfg.beacon.period_minutes as i32 + step;
-                self.cfg.beacon.period_minutes = n.clamp(0, 60) as u32;
+                self.cfg.beacon.period_minutes = n.clamp(0, BEACON_MINUTES_MAX as i32) as u32;
             }
             _ => {}
         }
@@ -5023,7 +5058,8 @@ impl GpGuiApp {
         };
         match row.kind {
             RowKind::Submenu => match row.id {
-                RowId::Beacon => self.setup_view = SetupView::Beacon { cursor: 0 },
+                RowId::Beacon => self.setup_view = self.beacon_view(),
+                RowId::Icons => self.setup_icon_pick = !self.setup_icon_pick,
                 RowId::Prompt => {
                     self.setup_view = SetupView::Edit {
                         kind: EditKind::Prompt,
@@ -5355,15 +5391,25 @@ impl GpGuiApp {
             EditKind::BeaconText => self.cfg.beacon.text = text,
         }
         self.setup_view = if parent_beacon {
-            SetupView::Beacon { cursor: 0 }
+            self.beacon_view()
         } else {
             SetupView::Main
         };
     }
 
+    fn beacon_view(&self) -> SetupView {
+        SetupView::Beacon {
+            cursor: 0,
+            period: self.cfg.beacon.period_minutes.to_string(),
+        }
+    }
+
     fn poll_setup_keys(&mut self, ctx: &Context) {
         let none = egui::Modifiers::NONE;
-        if !matches!(self.setup_view, SetupView::Edit { .. }) {
+        if !matches!(
+            self.setup_view,
+            SetupView::Edit { .. } | SetupView::Beacon { .. }
+        ) {
             ctx.memory_mut(|m| m.stop_text_input());
         }
         if matches!(self.setup_view, SetupView::Edit { .. }) {
@@ -5372,7 +5418,7 @@ impl GpGuiApp {
                     SetupView::Edit {
                         parent_beacon: true,
                         ..
-                    } => SetupView::Beacon { cursor: 0 },
+                    } => self.beacon_view(),
                     _ => SetupView::Main,
                 };
             }
@@ -5403,14 +5449,17 @@ impl GpGuiApp {
         if eat_key(ctx, none, egui::Key::ArrowDown) {
             self.step_setup_cursor(1, n);
         }
-        if eat_key(ctx, none, egui::Key::ArrowLeft) {
-            self.nudge_open_value(-1);
-        }
-        if eat_key(ctx, none, egui::Key::ArrowRight) {
-            self.nudge_open_value(1);
-        }
-        if eat_key(ctx, none, egui::Key::Enter) {
-            self.activate_open_row();
+        // The beacon box types its period and its text, so the caret keeps the arrows.
+        if !matches!(self.setup_view, SetupView::Beacon { .. }) {
+            if eat_key(ctx, none, egui::Key::ArrowLeft) {
+                self.nudge_open_value(-1);
+            }
+            if eat_key(ctx, none, egui::Key::ArrowRight) {
+                self.nudge_open_value(1);
+            }
+            if eat_key(ctx, none, egui::Key::Enter) {
+                self.activate_open_row();
+            }
         }
     }
 
@@ -5420,7 +5469,7 @@ impl GpGuiApp {
                 let len = 4usize;
                 *cursor = (*cursor as i32 + step).rem_euclid(len as i32) as usize;
             }
-            SetupView::Beacon { cursor } => {
+            SetupView::Beacon { cursor, .. } => {
                 *cursor = (*cursor as i32 + step).rem_euclid(4) as usize;
             }
             SetupView::Main => {
@@ -5435,9 +5484,6 @@ impl GpGuiApp {
         match &mut self.setup_view {
             SetupView::Colors { cursor, draft, .. } if *cursor < 3 => {
                 draft[*cursor] = setup::next_name(setup::VGA_NAMES, &draft[*cursor], step);
-            }
-            SetupView::Beacon { cursor } if *cursor == 2 => {
-                self.nudge_setup(RowId::Beacon, step);
             }
             SetupView::Main => {
                 let rows = setup::rows_for(self.setup_pane);
@@ -5465,24 +5511,7 @@ impl GpGuiApp {
                     self.setup_view = SetupView::Main;
                 }
             }
-            SetupView::Beacon { cursor } => match cursor {
-                0 => {
-                    self.setup_view = SetupView::Edit {
-                        kind: EditKind::BeaconAddress,
-                        text: self.cfg.beacon.address.clone(),
-                        parent_beacon: true,
-                    };
-                }
-                1 => {
-                    self.setup_view = SetupView::Edit {
-                        kind: EditKind::BeaconText,
-                        text: self.cfg.beacon.text.clone(),
-                        parent_beacon: true,
-                    };
-                }
-                3 => self.setup_view = SetupView::Main,
-                _ => self.nudge_setup(RowId::Beacon, 1),
-            },
+            SetupView::Beacon { .. } => {}
             SetupView::Edit { .. } => {}
         }
     }
@@ -5505,18 +5534,21 @@ impl GpGuiApp {
                     EditKind::FileDrawer => "File drawer",
                 };
                 let mut open = true;
+                let mut applied = false;
                 centered_popup(title, egui::Id::new("gp_setup_edit"), &mut open).show(ctx, |ui| {
-                    ui.set_min_width(320.0);
-                    let edit = ui.add(
-                        egui::TextEdit::singleline(&mut text)
-                            .desired_width(280.0)
-                            .font(menu_font(14.0)),
-                    );
+                    ui.set_min_width(360.0);
+                    let edit =
+                        retro::field(ui, &mut text, ui.available_width(), "", menu_font(17.0));
                     edit.request_focus();
+                    if retro::apply(ui, false, menu_font(20.0)) {
+                        applied = true;
+                    }
                 });
-                if !open {
+                if applied {
+                    self.commit_setup_edit(kind, text, parent_beacon);
+                } else if !open {
                     self.setup_view = if parent_beacon {
-                        SetupView::Beacon { cursor: 0 }
+                        self.beacon_view()
                     } else {
                         SetupView::Main
                     };
@@ -5536,155 +5568,374 @@ impl GpGuiApp {
                     ColorSlot::State => "Colours of state window",
                     ColorSlot::Menu => "Colours of menu window",
                 };
-                let labels = [
-                    "Background",
-                    "Foreground",
-                    "Inverse",
-                    "Use these colours and exit",
-                ];
+                let labels = ["Background", "Foreground", "Inverse"];
                 let mut open = true;
+                let mut applied = false;
                 centered_popup(title, egui::Id::new("gp_setup_colors"), &mut open).show(
                     ctx,
                     |ui| {
-                        ui.set_min_width(420.0);
+                        ui.set_min_width(retro::ROW_W);
+                        ui.spacing_mut().item_spacing.y = 4.0;
                         ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    for (i, label) in labels.iter().enumerate() {
-                                        let value = if i < 3 {
-                                            draft[i].to_ascii_uppercase()
-                                        } else {
-                                            String::new()
-                                        };
-                                        let line = if value.is_empty() {
-                                            (*label).to_string()
-                                        } else {
-                                            dotted(label, &value, 36)
-                                        };
-                                        let color = if i == 3 {
-                                            Color32::from_rgb(255, 255, 85)
-                                        } else {
-                                            Color32::from_rgb(85, 255, 85)
-                                        };
-                                        let resp = setup_row(ui, &line, color, i == cursor);
-                                        if resp.clicked() {
-                                            if let SetupView::Colors { cursor, .. } =
-                                                &mut self.setup_view
-                                            {
-                                                *cursor = i;
-                                            }
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 4.0;
+                                for (i, label) in labels.iter().enumerate() {
+                                    let value = draft[i].to_ascii_uppercase();
+                                    let resp = retro::entry(
+                                        ui,
+                                        label,
+                                        &value,
+                                        retro::TAB_OPEN,
+                                        i == cursor,
+                                        300.0,
+                                        menu_font(17.0),
+                                    );
+                                    if resp.clicked() && !resp.double_clicked() {
+                                        if let SetupView::Colors { cursor, .. } =
+                                            &mut self.setup_view
+                                        {
+                                            *cursor = i;
                                         }
-                                        if resp.double_clicked() {
-                                            if let SetupView::Colors { cursor, .. } =
-                                                &mut self.setup_view
-                                            {
-                                                *cursor = i;
-                                            }
-                                            self.activate_open_row();
-                                        }
+                                        self.setup_color_pick = if self.setup_color_pick == Some(i)
+                                        {
+                                            None
+                                        } else {
+                                            Some(i)
+                                        };
                                     }
-                                });
-                                let bg = egui_color(&draft[0]);
-                                let fg = egui_color(&draft[1]);
-                                let inv = egui_color(&draft[2]);
-                                ui.vertical(|ui| {
-                                    color_sample(ui, "Normal text", fg, bg);
-                                    color_sample(ui, "Inverted text", bg, inv);
-                                });
+                                }
                             });
+                            let bg = egui_color(&draft[0]);
+                            let fg = egui_color(&draft[1]);
+                            let inv = egui_color(&draft[2]);
+                            ui.vertical(|ui| {
+                                color_sample(ui, "Normal text", fg, bg);
+                                color_sample(ui, "Inverted text", bg, inv);
+                            });
+                        });
+                        if retro::apply(ui, cursor == 3, menu_font(20.0)) {
+                            applied = true;
+                        }
                     },
                 );
-                if !open {
+                if applied {
+                    self.set_color_triple(slot, draft);
+                    self.setup_color_pick = None;
+                    self.setup_view = SetupView::Main;
+                } else if !open {
+                    self.setup_color_pick = None;
                     self.setup_view = SetupView::Main;
                 }
-                let _ = cursor;
             }
-            SetupView::Beacon { cursor } => {
-                let addr = self.cfg.beacon.address.clone();
-                let text = self.cfg.beacon.text.clone();
-                let period = if self.cfg.beacon.period_minutes == 0 {
-                    String::new()
-                } else {
-                    self.cfg.beacon.period_minutes.to_string()
-                };
-                let lines = [
-                    dotted("Beacon address", &addr, 32),
-                    dotted("Beacon text", &text, 32),
-                    dotted("Period (Minutes)", &period, 32),
-                    "OK".to_string(),
-                ];
+            SetupView::Beacon { mut period, .. } => {
                 let mut open = true;
+                let mut applied = false;
+                let mut edit_address = false;
+                let mut pick_file = false;
                 centered_popup(
                     "Beacon parameters",
                     egui::Id::new("gp_setup_beacon"),
                     &mut open,
                 )
                 .show(ctx, |ui| {
-                    ui.set_min_width(420.0);
-                    for (i, line) in lines.iter().enumerate() {
-                                let color = if i == 3 {
-                                    Color32::from_rgb(255, 255, 85)
-                                } else {
-                                    Color32::from_rgb(85, 255, 85)
-                                };
-                                let resp = setup_row(ui, line, color, i == cursor);
-                                if resp.clicked() {
-                                    if let SetupView::Beacon { cursor } = &mut self.setup_view {
-                                        *cursor = i;
-                                    }
-                                }
-                                if resp.double_clicked() {
-                                    if let SetupView::Beacon { cursor } = &mut self.setup_view {
-                                        *cursor = i;
-                                    }
-                                    self.activate_open_row();
-                                }
-                            }
+                    ui.set_min_width(retro::ROW_W);
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    let addr = self.cfg.beacon.address.clone();
+                    let resp = retro::entry(
+                        ui,
+                        "Beacon address",
+                        &addr,
+                        retro::TAB_OPEN,
+                        false,
+                        retro::ROW_W,
+                        menu_font(17.0),
+                    );
+                    if resp.clicked() && !resp.double_clicked() {
+                        edit_address = true;
+                    }
+                    let file_mode = self.cfg.beacon.uses_file();
+                    let source = if file_mode { "File" } else { "Text" };
+                    let resp = retro::entry(
+                        ui,
+                        "Beacon from",
+                        source,
+                        retro::TAB_VALUE,
+                        false,
+                        retro::ROW_W,
+                        menu_font(17.0),
+                    );
+                    if resp.clicked() && !resp.double_clicked() {
+                        self.cfg.beacon.set_uses_file(!file_mode);
+                    }
+                    if self.cfg.beacon.uses_file() {
+                        let name = beacon_file_label(&self.cfg.beacon.file);
+                        let resp = retro::entry(
+                            ui,
+                            "Beacon file",
+                            &name,
+                            retro::TAB_OPEN,
+                            false,
+                            retro::ROW_W,
+                            menu_font(17.0),
+                        );
+                        if resp.clicked() && !resp.double_clicked() {
+                            pick_file = true;
+                        }
+                    } else {
+                        ui.label(
+                            RichText::new("Beacon text")
+                                .font(menu_font(16.0))
+                                .color(Color32::BLACK),
+                        );
+                        let mut text = self.cfg.beacon.text.clone();
+                        retro::field(
+                            ui,
+                            &mut text,
+                            retro::ROW_W,
+                            "up to 81 characters",
+                            menu_font(17.0),
+                        );
+                        self.cfg.beacon.text = clip_beacon(&text, BEACON_TEXT_MAX);
+                    }
+                    ui.label(
+                        RichText::new("Period (minutes, 0 = off, 1440 = once a day)")
+                            .font(menu_font(16.0))
+                            .color(Color32::BLACK),
+                    );
+                    retro::field(ui, &mut period, retro::ROW_W, "minutes", menu_font(17.0));
+                    if retro::apply(ui, false, menu_font(20.0)) {
+                        applied = true;
+                    }
                 });
-                if !open {
+                store_beacon_period(&mut self.cfg.beacon, &mut period);
+                if pick_file {
+                    self.pick_beacon_file();
+                }
+                if edit_address {
+                    let text = self.cfg.beacon.address.clone();
+                    self.setup_view = SetupView::Edit {
+                        kind: EditKind::BeaconAddress,
+                        text,
+                        parent_beacon: true,
+                    };
+                } else if applied || !open {
                     self.setup_view = SetupView::Main;
+                } else if let SetupView::Beacon { period: slot, .. } = &mut self.setup_view {
+                    *slot = period;
                 }
             }
             SetupView::Main => {
                 let rows = setup::rows_for(self.setup_pane);
                 let cursor = self.setup_cursor.min(rows.len().saturating_sub(1));
                 let mut open = true;
+                let mut applied = false;
+                let on_exit = rows
+                    .get(cursor)
+                    .is_some_and(|row| row.kind == RowKind::Exit);
                 centered_popup(
                     "Program parameters",
                     egui::Id::new("gp_setup_main"),
                     &mut open,
                 )
                 .show(ctx, |ui| {
-                    ui.set_min_width(420.0);
-                    // Keep the fixed-width rows centered in the grey dialog face.
-                    ui.vertical_centered(|ui| {
-                        for (i, row) in rows.iter().enumerate() {
-                            let value = self.setup_value(row.id);
-                            let line = if value.is_empty() {
-                                row.id.label().to_string()
-                            } else {
-                                dotted(row.id.label(), &value, 42)
-                            };
-                            let color = match row.kind {
-                                RowKind::Toggle | RowKind::Number => {
-                                    Color32::from_rgb(85, 255, 85)
-                                }
-                                _ => Color32::from_rgb(255, 255, 85),
-                            };
-                            let resp = setup_row(ui, &line, color, i == cursor);
-                            if resp.clicked() {
-                                self.setup_cursor = i;
-                            }
-                            if resp.double_clicked() {
-                                self.setup_cursor = i;
-                                self.activate_setup_row();
-                            }
+                    ui.set_min_width(retro::ROW_W);
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    for (i, row) in rows.iter().enumerate() {
+                        if row.kind == RowKind::Exit {
+                            continue;
                         }
-                    });
+                        let value = self.setup_value(row.id);
+                        let tab = match row.kind {
+                            RowKind::Submenu | RowKind::Action => retro::TAB_OPEN,
+                            _ => retro::TAB_VALUE,
+                        };
+                        let resp = retro::entry(
+                            ui,
+                            row.id.label(),
+                            &value,
+                            tab,
+                            i == cursor,
+                            retro::ROW_W,
+                            menu_font(17.0),
+                        );
+                        if resp.clicked() && !resp.double_clicked() {
+                            self.setup_cursor = i;
+                            self.activate_setup_row();
+                        }
+                    }
+                    if retro::apply(ui, on_exit, menu_font(20.0)) {
+                        applied = true;
+                    }
                 });
-                if !open {
+                if applied || !open {
                     self.close_setup();
                 }
             }
+        }
+        self.paint_color_names(ctx);
+        self.paint_icon_sets(ctx);
+    }
+
+    /// Files in `data/ICONS`, plus the stock `data/ICONS.GP`. A click reloads the bar.
+    fn paint_icon_sets(&mut self, ctx: &Context) {
+        if !self.setup_icon_pick {
+            return;
+        }
+        if !matches!(self.setup_view, SetupView::Main) {
+            self.setup_icon_pick = false;
+            return;
+        }
+        let current = icon_file_label(&self.cfg.session.icon_file);
+        let names = list_icon_files();
+        let mut open = true;
+        let mut chosen: Option<String> = None;
+        let mut edit = false;
+        centered_popup("System Icons", egui::Id::new("gp_setup_icons"), &mut open)
+            .order(egui::Order::Tooltip)
+            .show(ctx, |ui| {
+                ui.set_min_width(280.0);
+                ui.spacing_mut().item_spacing.y = 6.0;
+                let width = ui.available_width().max(240.0);
+                if retro::button(ui, "Icon editor", width, 30.0, menu_font(18.0)) {
+                    edit = true;
+                }
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        let width = ui.available_width().max(240.0);
+                        for name in &names {
+                            let selected = name.eq_ignore_ascii_case(&current);
+                            let row = retro::entry(
+                                ui,
+                                name,
+                                "",
+                                Color32::TRANSPARENT,
+                                selected,
+                                width,
+                                menu_font(17.0),
+                            );
+                            if row.clicked() && !row.double_clicked() {
+                                chosen = Some(name.clone());
+                            }
+                        }
+                    });
+            });
+        if edit {
+            self.setup_icon_pick = false;
+            self.open_icon_editor();
+        } else if let Some(name) = chosen {
+            self.use_icon_file(ctx, &name);
+            self.setup_icon_pick = false;
+        } else if !open {
+            self.setup_icon_pick = false;
+        }
+    }
+
+    fn use_icon_file(&mut self, ctx: &Context, name: &str) {
+        let path = resolve_icon_path(name);
+        let tex = textures_from_icon_file(ctx, &path);
+        if tex.is_empty() {
+            self.status = format!("Icons not readable ({})", path.display());
+            return;
+        }
+        self.icon_tex = tex;
+        self.cfg.session.icon_file = name.to_string();
+        self.status = format!("Icons {name}");
+    }
+
+    /// Grid on the left, the 17 icons and the VGA palette on the right.
+    /// Save writes the library that is on the bar. Apply closes.
+    fn paint_icon_editor(&mut self, ctx: &Context) {
+        if self.icon_editor.is_none() {
+            return;
+        }
+        let mut open = true;
+        let mut close = false;
+        let mut reload: Option<PathBuf> = None;
+        let mut note: Option<String> = None;
+        {
+            let edit = self.icon_editor.as_mut().expect("editor open");
+            centered_popup("Icon editor", egui::Id::new("gp_icon_editor"), &mut open).show(
+                ctx,
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 16.0;
+                        paint_icon_grid(ui, edit);
+                        icon_editor_side(ui, edit, &mut close, &mut reload, &mut note);
+                    });
+                },
+            );
+        }
+        if let Some(path) = reload {
+            let tex = textures_from_icon_file(ctx, &path);
+            if !tex.is_empty() {
+                self.icon_tex = tex;
+            }
+        }
+        if let Some(note) = note {
+            self.status = note;
+        }
+        if close || !open {
+            self.icon_editor = None;
+        }
+    }
+
+    /// Colour name list for Background, Foreground, or Inverse. A click writes it back.
+    fn paint_color_names(&mut self, ctx: &Context) {
+        let Some(which) = self.setup_color_pick else {
+            return;
+        };
+        let SetupView::Colors { draft, .. } = &self.setup_view else {
+            self.setup_color_pick = None;
+            return;
+        };
+        let titles = ["Background", "Foreground", "Inverse"];
+        let title = titles.get(which).copied().unwrap_or("Colour");
+        let current = draft.get(which).cloned().unwrap_or_default();
+        let mut open = true;
+        let mut chosen: Option<usize> = None;
+        centered_popup(title, egui::Id::new("gp_setup_color_name"), &mut open)
+            .order(egui::Order::Tooltip)
+            .show(ctx, |ui| {
+                ui.set_min_width(280.0);
+                ui.spacing_mut().item_spacing.y = 3.0;
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        let width = ui.available_width().max(240.0);
+                        for (i, name) in setup::VGA_NAMES.iter().enumerate() {
+                            let selected = name.eq_ignore_ascii_case(&current);
+                            let row = retro::entry(
+                                ui,
+                                name,
+                                "",
+                                Color32::TRANSPARENT,
+                                selected,
+                                width,
+                                menu_font(17.0),
+                            );
+                            if row.clicked() && !row.double_clicked() {
+                                chosen = Some(i);
+                            }
+                        }
+                    });
+            });
+        if let Some(i) = chosen {
+            let name = setup::VGA_NAMES.get(i).map(|s| (*s).to_string());
+            if let (Some(name), SetupView::Colors { draft, cursor, .. }) =
+                (name, &mut self.setup_view)
+            {
+                if let Some(slot) = draft.get_mut(which) {
+                    *slot = name;
+                }
+                *cursor = which;
+            }
+            self.setup_color_pick = None;
+        } else if !open {
+            self.setup_color_pick = None;
         }
     }
 
@@ -5716,22 +5967,27 @@ impl GpGuiApp {
             &mut open,
         )
         .show(ctx, |ui| {
+            ui.set_min_width(360.0);
+            ui.spacing_mut().item_spacing.y = 6.0;
             ui.label(
                 RichText::new(format!("{n} new lines"))
-                    .color(Color32::from_rgb(85, 255, 85))
-                    .font(menu_font(14.0)),
+                    .color(Color32::BLACK)
+                    .font(menu_font(18.0)),
             );
-            ui.horizontal(|ui| {
-                if ui.button("Yes — replace").clicked() {
-                    answer = Some(ListAnswer::Replace);
-                }
-                if ui.button("No — append").clicked() {
-                    answer = Some(ListAnswer::Append);
-                }
-                if ui.button("Interrupt").clicked() {
-                    answer = Some(ListAnswer::Interrupt);
-                }
-            });
+            ui.label(
+                RichText::new("What should happen to the old list?")
+                    .color(Color32::BLACK)
+                    .font(menu_font(16.0)),
+            );
+            if retro::choice(ui, "Yes — replace", menu_font(17.0)) {
+                answer = Some(ListAnswer::Replace);
+            }
+            if retro::choice(ui, "No — append", menu_font(17.0)) {
+                answer = Some(ListAnswer::Append);
+            }
+            if retro::choice(ui, "Interrupt", menu_font(17.0)) {
+                answer = Some(ListAnswer::Interrupt);
+            }
         });
         if let Some(answer) = answer {
             self.answer_list_offer(answer);
@@ -5746,17 +6002,20 @@ impl GpGuiApp {
         }
         let mut text = self.find_text.clone();
         let mut open = true;
+        let mut applied = false;
         centered_popup("Find", egui::Id::new("gp_find"), &mut open).show(ctx, |ui| {
-            ui.set_min_width(240.0);
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut text)
-                    .desired_width(220.0)
-                    .font(menu_font(14.0)),
-            );
+            ui.set_min_width(320.0);
+            ui.label(RichText::new("Find this word").font(menu_font(16.0)));
+            let edit = retro::field(ui, &mut text, ui.available_width(), "", menu_font(17.0));
             edit.request_focus();
+            if retro::apply(ui, false, menu_font(20.0)) {
+                applied = true;
+            }
         });
         self.find_text = text;
-        if !open {
+        if applied {
+            self.run_find();
+        } else if !open {
             self.find_open = false;
         }
     }
@@ -5767,17 +6026,22 @@ impl GpGuiApp {
         }
         let mut text = self.tnc_cmd.clone();
         let mut open = true;
+        let mut applied = false;
         centered_popup("TNC command", egui::Id::new("gp_tnc_cmd"), &mut open).show(ctx, |ui| {
-            ui.set_min_width(240.0);
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut text)
-                    .desired_width(220.0)
-                    .font(menu_font(14.0)),
-            );
+            ui.set_min_width(320.0);
+            ui.label(RichText::new("Command for the TNC").font(menu_font(16.0)));
+            let edit = retro::field(ui, &mut text, ui.available_width(), "", menu_font(17.0));
             edit.request_focus();
+            if retro::apply(ui, false, menu_font(20.0)) {
+                applied = true;
+            }
         });
         self.tnc_cmd = text;
-        if !open {
+        if applied {
+            let cmd = std::mem::take(&mut self.tnc_cmd);
+            self.show_tnc = false;
+            self.send_tnc_command(&cmd);
+        } else if !open {
             self.show_tnc = false;
         }
     }
@@ -5807,10 +6071,10 @@ impl GpGuiApp {
     }
 
     fn poll_beacon(&mut self) {
-        let mins = self.cfg.beacon.period_minutes;
-        if mins == 0 || self.cfg.beacon.text.trim().is_empty() {
+        if !self.cfg.beacon.armed() {
             return;
         }
+        let mins = self.cfg.beacon.period_minutes;
         let wait = Duration::from_secs(u64::from(mins) * 60);
         if self.last_beacon.elapsed() < wait {
             return;
@@ -5820,8 +6084,25 @@ impl GpGuiApp {
     }
 
     fn send_beacon(&mut self) {
+        let raw = match self.cfg.beacon.body() {
+            Ok(Some(text)) => text,
+            Ok(None) => {
+                if self.cfg.beacon.uses_file() {
+                    self.status = "Beacon file is empty".into();
+                }
+                return;
+            }
+            Err(err) => {
+                self.status = err;
+                return;
+            }
+        };
+        let text = beacon_on_air(&raw, self.cfg.beacon.uses_file(), &self.beacon_macro_ctx());
+        if text.is_empty() {
+            self.status = "Beacon is empty".into();
+            return;
+        }
         let (dest, vias) = ax25::parse_unproto(&self.cfg.beacon.address);
-        let text = self.cfg.beacon.text.clone();
         if !self.kiss_mode() {
             self.status = "Beacon is stored. It is sent as a UI frame on KISS".into();
             return;
@@ -5831,6 +6112,42 @@ impl GpGuiApp {
         let frame = ax25::build_ui(&dest, &my, &via_ref, text.as_bytes());
         self.tx_kiss_payload(0, &frame);
         self.status = format!("beacon {my} {}", ax25::unproto_to(&dest, &vias));
+    }
+
+    /// Unproto beacon: own call, no connected station. `%Y` matches the frame.
+    fn beacon_macro_ctx(&self) -> MacroContext {
+        let mut ctx = self.macro_ctx();
+        ctx.my_call = self.cfg.primary_mycall().to_string();
+        ctx.peer_call.clear();
+        ctx.peer_name.clear();
+        ctx.channel = 0;
+        ctx.name_unknown = false;
+        ctx
+    }
+
+    fn pick_beacon_file(&mut self) {
+        let current = PathBuf::from(self.cfg.beacon.file.trim());
+        let start = current
+            .parent()
+            .filter(|p| p.is_dir())
+            .map(std::path::Path::to_path_buf)
+            .or_else(|| Some(crate::paths::data_dir()));
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("Beacon file", &["gp", "GP", "txt", "TXT"])
+            .add_filter("All files", &["*"])
+            .set_title("Select beacon file");
+        if let Some(dir) = start {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.pick_file() {
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            self.cfg.beacon.file = path.display().to_string();
+            self.cfg.beacon.set_uses_file(true);
+            self.status = format!("Beacon file {name}");
+        }
     }
 
     /// DOS chapter 4 keys. A key with no product yet answers on the status line.
@@ -5975,7 +6292,10 @@ impl GpGuiApp {
         }
         if eat_key(ctx, alt, egui::Key::G) {
             self.session.hour_gong = !self.session.hour_gong;
-            self.status = format!("Hourly gong {}", if self.session.hour_gong { "ON" } else { "OFF" });
+            self.status = format!(
+                "Hourly gong {}",
+                if self.session.hour_gong { "ON" } else { "OFF" }
+            );
             self.persist_session_chrome();
             return;
         }
@@ -6516,6 +6836,33 @@ impl GpGuiApp {
     }
 }
 
+fn store_beacon_period(beacon: &mut BeaconConfig, text: &mut String) {
+    text.retain(|c| c.is_ascii_digit());
+    if text.len() > 4 {
+        text.truncate(4);
+    }
+    let minutes = beacon_minutes(text);
+    if text
+        .parse::<u32>()
+        .ok()
+        .is_some_and(|n| n > BEACON_MINUTES_MAX)
+    {
+        *text = minutes.to_string();
+    }
+    beacon.period_minutes = minutes;
+}
+
+fn beacon_file_label(path: &str) -> String {
+    let path = path.trim();
+    if path.is_empty() {
+        return "choose a file".into();
+    }
+    std::path::Path::new(path)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
 fn fn_key(n: u8) -> Option<egui::Key> {
     Some(match n {
         1 => egui::Key::F1,
@@ -6532,19 +6879,6 @@ fn fn_key(n: u8) -> Option<egui::Key> {
         12 => egui::Key::F12,
         _ => return None,
     })
-}
-
-fn dotted(label: &str, value: &str, width: usize) -> String {
-    let mut s = label.to_string();
-    let value_len = value.chars().count();
-    while s.chars().count() + value_len + 1 < width {
-        s.push('.');
-    }
-    if !value.is_empty() {
-        s.push(' ');
-        s.push_str(value);
-    }
-    s
 }
 
 /// Hard drop-shadow like classic DOS windows (no soft blur).
@@ -6564,7 +6898,7 @@ fn popup_visuals() -> egui::Visuals {
     v.panel_fill = VGA_GRAY;
     v.window_stroke = Stroke::new(1.0, Color32::BLACK);
     v.window_rounding = egui::Rounding::ZERO;
-    v.menu_rounding = egui::Rounding::ZERO;
+    v.menu_rounding = egui::Rounding::same(retro::TOP_ROUND);
     v.window_shadow = popup_shadow();
     v.popup_shadow = egui::epaint::Shadow::NONE;
     v.override_text_color = Some(Color32::BLACK);
@@ -6572,15 +6906,15 @@ fn popup_visuals() -> egui::Visuals {
     v.extreme_bg_color = Color32::from_rgb(220, 220, 220);
     v.faint_bg_color = Color32::from_rgb(150, 150, 150);
     v.code_bg_color = Color32::from_rgb(200, 200, 200);
-    let square = egui::Rounding::ZERO;
+    let slight = egui::Rounding::same(retro::TOP_ROUND);
+    v.widgets.noninteractive.rounding = egui::Rounding::ZERO;
     for w in [
-        &mut v.widgets.noninteractive,
         &mut v.widgets.inactive,
         &mut v.widgets.hovered,
         &mut v.widgets.active,
         &mut v.widgets.open,
     ] {
-        w.rounding = square;
+        w.rounding = slight;
     }
     v.widgets.noninteractive.bg_fill = VGA_GRAY;
     v.widgets.noninteractive.weak_bg_fill = VGA_GRAY;
@@ -6605,59 +6939,67 @@ fn popup_visuals() -> egui::Visuals {
 fn popup_frame() -> Frame {
     Frame::none()
         .fill(VGA_GRAY)
-        .stroke(Stroke::new(1.0, Color32::BLACK))
-        .inner_margin(8.0)
+        .stroke(Stroke::NONE)
+        .inner_margin(12.0)
         .rounding(0.0)
         .shadow(popup_shadow())
 }
 
-/// QRG chrome for every popup: named title bar, close X, centered, grey face.
+/// White top and left, black bottom and right, on the window itself.
+fn paint_menu_border(ctx: &Context, response: &egui::Response) {
+    let painter = ctx.layer_painter(response.layer_id);
+    retro::border(&painter, response.rect);
+}
+
+/// One menu window. `.show` paints the shared 3D rim after the body.
+struct MenuPopup<'a> {
+    window: egui::Window<'a>,
+}
+
+impl<'a> MenuPopup<'a> {
+    fn order(mut self, order: egui::Order) -> Self {
+        self.window = self.window.order(order);
+        self
+    }
+
+    fn show<R>(
+        self,
+        ctx: &Context,
+        add_contents: impl FnOnce(&mut Ui) -> R,
+    ) -> Option<egui::InnerResponse<Option<R>>> {
+        let shown = self.window.show(ctx, add_contents)?;
+        paint_menu_border(ctx, &shown.response);
+        Some(shown)
+    }
+}
+
+/// Shared chrome for every popup: named title bar, close X, centered, grey face.
+/// The body is painted with `retro` (rows, fields, and Apply).
 fn centered_popup<'a>(
     title: impl Into<egui::WidgetText>,
     id: egui::Id,
     open: &'a mut bool,
-) -> egui::Window<'a> {
-    egui::Window::new(title)
-        .id(id)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .order(egui::Order::Foreground)
-        .frame(popup_frame())
-        .open(open)
-}
-
-fn setup_row(ui: &mut Ui, line: &str, color: Color32, selected: bool) -> egui::Response {
-    // Idle near-black grey; the row being edited is dark red.
-    let bg = if selected {
-        Color32::from_rgb(128, 0, 0)
-    } else {
-        Color32::from_rgb(48, 48, 48)
-    };
-    let font = FontId::monospace(14.0);
-    // Size the bar to the text so the box and line stay aligned.
-    let text_w = ui.fonts(|f| f.layout_no_wrap(line.to_string(), font.clone(), color).size().x);
-    let width = (text_w + 12.0).max(400.0);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::click());
-    ui.painter().rect_filled(rect, 0.0, bg);
-    ui.painter().text(
-        rect.left_center() + Vec2::new(6.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        line,
-        font,
-        color,
-    );
-    resp
+) -> MenuPopup<'a> {
+    MenuPopup {
+        window: egui::Window::new(title)
+            .id(id)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .frame(popup_frame())
+            .open(open),
+    }
 }
 
 fn color_sample(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(150.0, 40.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, bg);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(168.0, 36.0), Sense::hover());
+    retro::paint(ui.painter(), rect, bg, false, retro::ROW_ROUND);
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         text,
-        menu_font(15.0),
+        menu_font(16.0),
         fg,
     );
 }
@@ -6711,7 +7053,9 @@ impl eframe::App for GpGuiApp {
         // Strip height stays fixed; icons fill it (1px air) with the DOS bevel.
         let icons_h = ICON_STRIP_H;
         let min_w = icon_row_min_width(icons_h, ICON_TOOLBAR_SLOTS);
-        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(min_w, 700.0)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(
+            min_w, 700.0,
+        )));
         let session_h = if self.show_session_bar() { 26.0 } else { 0.0 };
         let status_h = 44.0_f32;
         // Channel / BBS / Box row is 20% shorter than the old 72px grid.
@@ -6820,6 +7164,7 @@ impl eframe::App for GpGuiApp {
                 self.name_dialog(ctx);
             });
         self.paint_setup(ctx);
+        self.paint_icon_editor(ctx);
         self.paint_tnc_command(ctx);
         self.paint_list_offer(ctx);
         self.paint_find(ctx);
@@ -6851,7 +7196,7 @@ impl GpGuiApp {
         );
         let y = (logo_bottom + 12.0).min((screen.bottom() - 28.0).max(screen.top() + 8.0));
         let mut open = true;
-        egui::Window::new("Radio setup")
+        let shown = egui::Window::new("Radio setup")
             .id(egui::Id::new("gp_radio_setup"))
             .collapsible(false)
             .resizable(false)
@@ -6863,6 +7208,9 @@ impl GpGuiApp {
             .show(ctx, |ui| {
                 use_this = self.radio_setup_form(ui);
             });
+        if let Some(shown) = &shown {
+            paint_menu_border(ctx, &shown.response);
+        }
         if !open {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -6878,6 +7226,7 @@ impl GpGuiApp {
             }
         }
         if self.show_radio_gate {
+            self.paint_radio_pick(ctx);
             egui::Area::new(egui::Id::new("gp_start_credits"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(screen.min)
@@ -6904,8 +7253,9 @@ impl GpGuiApp {
                     let ppp = ctx.pixels_per_point().max(1.0);
                     let tex_size = tex.size_vec2() / ppp;
                     if tex_size.x > 0.0 && tex_size.y > 0.0 {
-                        let max_h = (screen.height() - margin * 2.0 - 12.0 - reserve - START_CREDITS_H)
-                            .max(72.0);
+                        let max_h =
+                            (screen.height() - margin * 2.0 - 12.0 - reserve - START_CREDITS_H)
+                                .max(72.0);
                         let max_w = (screen.width() - margin * 2.0).max(72.0);
                         let scale = (max_w / tex_size.x).min(max_h / tex_size.y).min(1.0);
                         let draw = tex_size * scale;
@@ -6927,110 +7277,68 @@ impl GpGuiApp {
     }
 
     fn radio_setup_form(&mut self, ui: &mut Ui) -> bool {
-        ui.set_min_width(420.0);
+        ui.set_min_width(retro::ROW_W);
+        ui.spacing_mut().item_spacing.y = 4.0;
+        let row_w = retro::ROW_W;
+        let font = menu_font(17.0);
         let ports = self.radio_ports.clone();
-        egui::Grid::new("radio_setup")
-            .num_columns(2)
-            .spacing([12.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Call Sign");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.radio_call)
-                        .desired_width(SETUP_FIELD_W)
-                        .font(menu_font(14.0)),
-                );
-                ui.end_row();
 
-                ui.label("Protocol");
-                egui::ComboBox::from_id_salt("radio_protocol")
-                    .selected_text(clip_chars(protocol_label(self.radio_protocol), SETUP_FIELD_CHARS))
-                    .width(SETUP_FIELD_W)
-                    .show_ui(ui, |ui| {
-                        for kind in [HostProtocol::Wa8ded, HostProtocol::Tfpcx, HostProtocol::Kiss]
-                        {
-                            ui.selectable_value(
-                                &mut self.radio_protocol,
-                                kind,
-                                protocol_label(kind),
-                            );
-                        }
-                    });
-                ui.end_row();
+        ui.label(
+            RichText::new("Call sign")
+                .color(Color32::BLACK)
+                .font(menu_font(16.0)),
+        );
+        retro::field(ui, &mut self.radio_call, row_w, "", font.clone());
 
-                ui.label("Connection");
-                if self.radio_protocol == HostProtocol::Kiss {
-                    egui::ComboBox::from_id_salt("radio_connection")
-                        .selected_text(if self.radio_tcp { "TCP" } else { "Serial" })
-                        .width(SETUP_FIELD_W)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.radio_tcp, false, "Serial");
-                            ui.selectable_value(&mut self.radio_tcp, true, "TCP");
-                        });
-                } else {
-                    ui.label("Serial");
-                }
-                ui.end_row();
+        let protocol = protocol_label(self.radio_protocol).to_string();
+        if menu_open(ui, "Protocol", &protocol, row_w) {
+            self.toggle_radio_pick(RadioPick::Protocol);
+        }
 
-                let serial = self.radio_protocol != HostProtocol::Kiss || !self.radio_tcp;
-                if serial {
-                    ui.label("Port");
-                    egui::ComboBox::from_id_salt("radio_port")
-                        .selected_text(clip_chars(
-                            &port_menu_label(&ports, &self.radio_port),
-                            SETUP_FIELD_CHARS,
-                        ))
-                        .width(SETUP_FIELD_W)
-                        .show_ui(ui, |ui| {
-                            if ports.is_empty() {
-                                ui.label("No ports found");
-                            }
-                            for port in &ports {
-                                ui.selectable_value(
-                                    &mut self.radio_port,
-                                    port.name.clone(),
-                                    clip_chars(&port.menu_label(), SETUP_FIELD_CHARS),
-                                );
-                            }
-                        });
-                    ui.end_row();
-
-                    ui.label("Baud to TNC");
-                    egui::ComboBox::from_id_salt("radio_baud")
-                        .selected_text(self.radio_baud.to_string())
-                        .width(SETUP_FIELD_W)
-                        .show_ui(ui, |ui| {
-                            for baud in baud_choices(self.radio_baud) {
-                                ui.selectable_value(
-                                    &mut self.radio_baud,
-                                    baud,
-                                    baud.to_string(),
-                                );
-                            }
-                        });
-                    ui.end_row();
-                } else {
-                    ui.label("IP");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.radio_host)
-                            .desired_width(SETUP_FIELD_W)
-                            .font(menu_font(14.0)),
-                    );
-                    ui.end_row();
-                    ui.label("Port");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.radio_tcp_port)
-                            .desired_width(SETUP_FIELD_W)
-                            .font(menu_font(14.0)),
-                    );
-                    ui.end_row();
-                }
-            });
+        if self.radio_protocol == HostProtocol::Kiss {
+            let how = if self.radio_tcp { "TCP" } else { "Serial" };
+            if menu_open(ui, "Connection", how, row_w) {
+                self.toggle_radio_pick(RadioPick::Connection);
+            }
+        }
 
         let serial = self.radio_protocol != HostProtocol::Kiss || !self.radio_tcp;
+        if serial {
+            let port_value = if ports.is_empty() {
+                "No port found".to_string()
+            } else {
+                port_menu_label(&ports, &self.radio_port)
+            };
+            if menu_open(ui, "Port", &port_value, row_w) && !ports.is_empty() {
+                self.toggle_radio_pick(RadioPick::Port);
+            }
+            let baud = self.radio_baud.to_string();
+            if menu_open(ui, "Baud to TNC", &baud, row_w) {
+                self.toggle_radio_pick(RadioPick::Baud);
+            }
+        } else {
+            ui.label(
+                RichText::new("IP address")
+                    .color(Color32::BLACK)
+                    .font(menu_font(16.0)),
+            );
+            retro::field(ui, &mut self.radio_host, row_w, "", font.clone());
+            ui.label(
+                RichText::new("TCP port")
+                    .color(Color32::BLACK)
+                    .font(menu_font(16.0)),
+            );
+            retro::field(ui, &mut self.radio_tcp_port, row_w, "", font);
+        }
+
+        let warn = Color32::from_rgb(140, 0, 0);
         if serial && self.radio_live_ports == 0 {
             ui.label(
-                RichText::new("No serial port found yet. Plug in the radio and it will show up here.")
-                    .color(Color32::from_rgb(140, 40, 40)),
+                RichText::new(
+                    "No serial port found yet. Plug in the radio and it will show up here.",
+                )
+                .color(warn)
+                .font(menu_font(16.0)),
             );
         } else if serial && self.radio_port.is_empty() && !self.radio_saved_port.is_empty() {
             let still_there = self
@@ -7038,35 +7346,23 @@ impl GpGuiApp {
                 .iter()
                 .any(|p| p.name.eq_ignore_ascii_case(&self.radio_saved_port));
             let msg = if still_there {
-                format!(
-                    "{} changed. Choose the port again.",
-                    self.radio_saved_port
-                )
+                format!("{} changed. Choose the port again.", self.radio_saved_port)
             } else {
                 format!(
                     "{} is not connected. Choose a port that is.",
                     self.radio_saved_port
                 )
             };
-            ui.label(RichText::new(msg).color(Color32::from_rgb(140, 40, 40)));
+            ui.label(RichText::new(msg).color(warn).font(menu_font(16.0)));
         }
         if !self.radio_error.is_empty() {
-            ui.label(RichText::new(&self.radio_error).color(Color32::from_rgb(180, 0, 0)));
+            ui.label(
+                RichText::new(&self.radio_error)
+                    .color(Color32::from_rgb(160, 0, 0))
+                    .font(menu_font(16.0)),
+            );
         }
-        ui.add_space(8.0);
-        let mut use_this = false;
-        ui.vertical_centered(|ui| {
-            if ui
-                .add_sized(
-                    [200.0, 28.0],
-                    egui::Button::new(RichText::new("Use this").strong()),
-                )
-                .clicked()
-            {
-                use_this = true;
-            }
-        });
-        use_this
+        retro::apply(ui, false, menu_font(20.0))
     }
 
     fn refresh_radio_ports(&mut self) {
@@ -7230,7 +7526,130 @@ impl GpGuiApp {
             self.pads[0].push(PadKind::System, version::startup_local_call(&call));
         }
         self.show_radio_gate = false;
+        self.radio_pick = None;
         self.start_screen = None;
+    }
+
+    fn toggle_radio_pick(&mut self, pick: RadioPick) {
+        self.radio_pick = if self.radio_pick == Some(pick) {
+            None
+        } else {
+            Some(pick)
+        };
+    }
+
+    /// Second panel. A click writes the choice back onto the radio card.
+    fn paint_radio_pick(&mut self, ctx: &Context) {
+        let Some(pick) = self.radio_pick else {
+            return;
+        };
+        let ports = self.radio_ports.clone();
+        let title = match pick {
+            RadioPick::Protocol => "Protocol",
+            RadioPick::Connection => "Connection",
+            RadioPick::Port => "Port",
+            RadioPick::Baud => "Baud to TNC",
+        };
+        let options: Vec<String> = match pick {
+            RadioPick::Protocol => ["WA8DED", "TFPCX", "KISS"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            RadioPick::Connection => vec!["Serial".into(), "TCP".into()],
+            RadioPick::Port => {
+                if ports.is_empty() {
+                    vec!["No port found".into()]
+                } else {
+                    ports.iter().map(DetectedPort::menu_label).collect()
+                }
+            }
+            RadioPick::Baud => baud_choices(self.radio_baud)
+                .into_iter()
+                .map(|n| n.to_string())
+                .collect(),
+        };
+        let current = match pick {
+            RadioPick::Protocol => protocol_label(self.radio_protocol).to_string(),
+            RadioPick::Connection => {
+                if self.radio_tcp {
+                    "TCP".into()
+                } else {
+                    "Serial".into()
+                }
+            }
+            RadioPick::Port => port_menu_label(&ports, &self.radio_port),
+            RadioPick::Baud => self.radio_baud.to_string(),
+        };
+        let mut open = true;
+        let mut chosen: Option<usize> = None;
+        centered_popup(title, egui::Id::new("gp_radio_pick"), &mut open)
+            .order(egui::Order::Tooltip)
+            .show(ctx, |ui| {
+                ui.set_min_width(360.0);
+                ui.spacing_mut().item_spacing.y = 3.0;
+                if options.is_empty() {
+                    ui.label(RichText::new("Nothing to choose").font(menu_font(16.0)));
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            let width = ui.available_width().max(280.0);
+                            for (i, opt) in options.iter().enumerate() {
+                                let selected = opt == &current
+                                    || (pick == RadioPick::Port
+                                        && ports.get(i).is_some_and(|p| {
+                                            p.name.eq_ignore_ascii_case(&self.radio_port)
+                                        }));
+                                let row = retro::entry(
+                                    ui,
+                                    opt,
+                                    "",
+                                    Color32::TRANSPARENT,
+                                    selected,
+                                    width,
+                                    menu_font(17.0),
+                                );
+                                if row.clicked() && !(pick == RadioPick::Port && ports.is_empty()) {
+                                    chosen = Some(i);
+                                }
+                            }
+                        });
+                }
+            });
+        if let Some(i) = chosen {
+            self.apply_radio_pick(pick, i, &ports);
+            self.radio_pick = None;
+        } else if !open {
+            self.radio_pick = None;
+        }
+    }
+
+    fn apply_radio_pick(&mut self, pick: RadioPick, index: usize, ports: &[DetectedPort]) {
+        match pick {
+            RadioPick::Protocol => {
+                let order = [
+                    HostProtocol::Wa8ded,
+                    HostProtocol::Tfpcx,
+                    HostProtocol::Kiss,
+                ];
+                if let Some(kind) = order.get(index) {
+                    self.radio_protocol = *kind;
+                }
+            }
+            RadioPick::Connection => self.radio_tcp = index == 1,
+            RadioPick::Port => {
+                if let Some(port) = ports.get(index) {
+                    self.radio_port = port.name.clone();
+                }
+            }
+            RadioPick::Baud => {
+                let rates = baud_choices(self.radio_baud);
+                if let Some(rate) = rates.get(index) {
+                    self.radio_baud = *rate;
+                }
+            }
+        }
     }
 }
 
@@ -7275,7 +7694,10 @@ impl GpGuiApp {
         self.draw_status_grid(ui, st_r);
         if draw_analog_clock(ui, clock_rect, self.session.hour_gong) {
             self.session.hour_gong = !self.session.hour_gong;
-            self.status = format!("Hourly gong {}", if self.session.hour_gong { "ON" } else { "OFF" });
+            self.status = format!(
+                "Hourly gong {}",
+                if self.session.hour_gong { "ON" } else { "OFF" }
+            );
             self.persist_session_chrome();
             if self.session.hour_gong {
                 play_bell_wav(&self.bell_wav);
@@ -7399,9 +7821,7 @@ impl GpGuiApp {
 
                     let compose_font = FontId::monospace(COMPOSE_FONT_SIZE);
                     let row_h = ui.fonts(|f| f.row_height(&compose_font)).max(1.0);
-                    let char_w = ui
-                        .fonts(|f| f.glyph_width(&compose_font, '_'))
-                        .max(6.0);
+                    let char_w = ui.fonts(|f| f.glyph_width(&compose_font, '_')).max(6.0);
                     let w = ui.available_width();
                     let total_h = ui.available_height();
                     // Height follows wrapped content (1..=COMPOSE_ROWS). Always
@@ -7498,8 +7918,7 @@ impl GpGuiApp {
                         place_compose_caret(ui.ctx(), focus_id, len);
                     }
                     // Hide egui's tall bar caret; we paint a DOS `_` after show().
-                    ui.visuals_mut().text_cursor.stroke =
-                        Stroke::new(0.0, Color32::TRANSPARENT);
+                    ui.visuals_mut().text_cursor.stroke = Stroke::new(0.0, Color32::TRANSPARENT);
                     // Exact rows×row_h flush to the purple floor (history fills above).
                     let output = {
                         let input_ref = &mut self.compose[slot].input;
@@ -7986,14 +8405,25 @@ impl GpGuiApp {
                 };
                 let id = ui.id().with(("ch", n));
                 let resp = ui.interact(cell, id, Sense::click());
-                painter.rect_filled(cell, 0.0, fill);
-                // Selected / enabled → sunken; also while the pointer is held.
-                paint_bevel(&painter, cell, selected || resp.is_pointer_button_down_on());
-                let font = FontId::proportional(15.0);
+                // Top of the main window: slight round, white left/top, black bottom/right.
+                retro::paint(
+                    &painter,
+                    cell,
+                    fill,
+                    selected || resp.is_pointer_button_down_on(),
+                    retro::TOP_ROUND,
+                );
+                let font = FontId::proportional(16.0);
                 let anchor = egui::Align2::CENTER_CENTER;
                 let at = cell.center();
                 if connected {
-                    painter.text(at + Vec2::new(0.7, 0.0), anchor, &label, font.clone(), text_color);
+                    painter.text(
+                        at + Vec2::new(0.7, 0.0),
+                        anchor,
+                        &label,
+                        font.clone(),
+                        text_color,
+                    );
                 }
                 painter.text(at, anchor, &label, font, text_color);
                 if resp.clicked() {
@@ -8265,40 +8695,40 @@ impl GpGuiApp {
                     Vec2::new(editor_col_w, pane_h),
                     egui::Layout::top_down(egui::Align::LEFT),
                     |ui| {
-                    Frame::none()
-                        .fill(bg)
-                        .stroke(Stroke::new(1.0, VGA_GRAY))
-                        .inner_margin(4.0)
-                        .show(ui, |ui| {
-                            ui.set_min_size(Vec2::new(
-                                (editor_col_w - 2.0).max(40.0),
-                                (pane_h - 2.0).max(40.0),
-                            ));
-                            ui.set_max_size(ui.min_size());
-                            let avail = ui.available_size();
-                            // Fill the viewport with editable rows so the caret can go
-                            // under the last line; never shorter than the text itself.
-                            let min_rows = ((avail.y / row_h).floor() as usize).max(8);
-                            let content_rows = self.editor.text.split('\n').count().max(1);
-                            let rows = content_rows.max(min_rows);
-                            let before = self.editor.text.clone();
-                            let underscore_w = ui
-                                .fonts(|f| f.glyph_width(&font, '_'))
-                                .max(6.0);
-                            // Hide egui's tall bar; paint a DOS `_` after show().
-                            ui.visuals_mut().text_cursor.stroke =
-                                Stroke::new(0.0, Color32::TRANSPARENT);
-                            let mut output = None;
-                            egui::ScrollArea::vertical()
-                                .id_salt("gp_editor_scroll")
-                                .auto_shrink([false, false])
-                                .max_height(avail.y)
-                                .show(ui, |ui| {
-                                    ui.with_layout(
-                                        egui::Layout::top_down(egui::Align::LEFT),
-                                        |ui| {
-                                            output = Some(
-                                                egui::TextEdit::multiline(&mut self.editor.text)
+                        Frame::none()
+                            .fill(bg)
+                            .stroke(Stroke::new(1.0, VGA_GRAY))
+                            .inner_margin(4.0)
+                            .show(ui, |ui| {
+                                ui.set_min_size(Vec2::new(
+                                    (editor_col_w - 2.0).max(40.0),
+                                    (pane_h - 2.0).max(40.0),
+                                ));
+                                ui.set_max_size(ui.min_size());
+                                let avail = ui.available_size();
+                                // Fill the viewport with editable rows so the caret can go
+                                // under the last line; never shorter than the text itself.
+                                let min_rows = ((avail.y / row_h).floor() as usize).max(8);
+                                let content_rows = self.editor.text.split('\n').count().max(1);
+                                let rows = content_rows.max(min_rows);
+                                let before = self.editor.text.clone();
+                                let underscore_w = ui.fonts(|f| f.glyph_width(&font, '_')).max(6.0);
+                                // Hide egui's tall bar; paint a DOS `_` after show().
+                                ui.visuals_mut().text_cursor.stroke =
+                                    Stroke::new(0.0, Color32::TRANSPARENT);
+                                let mut output = None;
+                                egui::ScrollArea::vertical()
+                                    .id_salt("gp_editor_scroll")
+                                    .auto_shrink([false, false])
+                                    .max_height(avail.y)
+                                    .show(ui, |ui| {
+                                        ui.with_layout(
+                                            egui::Layout::top_down(egui::Align::LEFT),
+                                            |ui| {
+                                                output = Some(
+                                                    egui::TextEdit::multiline(
+                                                        &mut self.editor.text,
+                                                    )
                                                     .id_salt("gp_editor")
                                                     .font(font.clone())
                                                     .text_color(fg)
@@ -8307,32 +8737,33 @@ impl GpGuiApp {
                                                     .desired_rows(rows)
                                                     .lock_focus(true)
                                                     .show(ui),
-                                            );
-                                        },
-                                    );
-                                });
-                            if let Some(output) = output {
-                                if output.response.changed() && self.editor.text != before {
-                                    self.editor.dirty = true;
-                                }
-                                if let Some(cursor) = output.cursor_range {
-                                    let cc = cursor.as_sorted_char_range().start;
-                                    let snap = self.editor.text.clone();
-                                    self.editor.update_cursor_from_galley(&snap, cc);
-                                    if output.response.has_focus() {
-                                        paint_dos_caret(
-                                            ui,
-                                            output.galley_pos,
-                                            output.galley.as_ref(),
-                                            &cursor.primary,
-                                            row_h,
-                                            underscore_w,
+                                                );
+                                            },
                                         );
+                                    });
+                                if let Some(output) = output {
+                                    if output.response.changed() && self.editor.text != before {
+                                        self.editor.dirty = true;
+                                    }
+                                    if let Some(cursor) = output.cursor_range {
+                                        let cc = cursor.as_sorted_char_range().start;
+                                        let snap = self.editor.text.clone();
+                                        self.editor.update_cursor_from_galley(&snap, cc);
+                                        if output.response.has_focus() {
+                                            paint_dos_caret(
+                                                ui,
+                                                output.galley_pos,
+                                                output.galley.as_ref(),
+                                                &cursor.primary,
+                                                row_h,
+                                                underscore_w,
+                                            );
+                                        }
                                     }
                                 }
-                            }
-                        });
-                });
+                            });
+                    },
+                );
 
                 let help_w = ui.available_width().max(0.0);
                 if help_w > 40.0 {
@@ -8340,52 +8771,53 @@ impl GpGuiApp {
                         Vec2::new(help_w, pane_h),
                         egui::Layout::top_down(egui::Align::LEFT),
                         |ui| {
-                        Frame::none()
-                            .fill(help_bg)
-                            .stroke(Stroke::new(1.0, VGA_GRAY))
-                            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-                            .show(ui, |ui| {
-                                // Fixed cheat-sheet: no scroll — only the blue editor scrolls.
-                                ui.set_min_size(Vec2::new(
-                                    (help_w - 2.0).max(40.0),
-                                    (pane_h - 2.0).max(40.0),
-                                ));
-                                ui.set_max_size(ui.min_size());
-                                ui.with_layout(
-                                    egui::Layout::top_down(egui::Align::LEFT),
-                                    |ui| {
-                                        ui.label(
-                                            RichText::new("Macros")
-                                                .strong()
-                                                .color(help_fg)
-                                                .size(15.0),
-                                        );
-                                        ui.label(
-                                            RichText::new("*.GPI / CTEXT / mail")
-                                                .color(help_fg)
-                                                .size(12.0),
-                                        );
-                                        ui.add_space(4.0);
-                                        for (token, desc) in macros::help_entries() {
-                                            ui.horizontal(|ui| {
-                                                ui.spacing_mut().item_spacing.x = 6.0;
-                                                ui.label(
-                                                    RichText::new(*token)
-                                                        .monospace()
-                                                        .color(help_fg)
-                                                        .size(13.0),
-                                                );
-                                                ui.label(
-                                                    RichText::new(*desc)
-                                                        .color(help_fg)
-                                                        .size(12.0),
-                                                );
-                                            });
-                                        }
-                                    },
-                                );
-                            });
-                    });
+                            Frame::none()
+                                .fill(help_bg)
+                                .stroke(Stroke::new(1.0, VGA_GRAY))
+                                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                                .show(ui, |ui| {
+                                    // Fixed cheat-sheet: no scroll — only the blue editor scrolls.
+                                    ui.set_min_size(Vec2::new(
+                                        (help_w - 2.0).max(40.0),
+                                        (pane_h - 2.0).max(40.0),
+                                    ));
+                                    ui.set_max_size(ui.min_size());
+                                    ui.with_layout(
+                                        egui::Layout::top_down(egui::Align::LEFT),
+                                        |ui| {
+                                            ui.label(
+                                                RichText::new("Macros")
+                                                    .strong()
+                                                    .color(help_fg)
+                                                    .size(15.0),
+                                            );
+                                            ui.label(
+                                                RichText::new("*.GPI / CTEXT / mail")
+                                                    .color(help_fg)
+                                                    .size(12.0),
+                                            );
+                                            ui.add_space(4.0);
+                                            for (token, desc) in macros::help_entries() {
+                                                ui.horizontal(|ui| {
+                                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                                    ui.label(
+                                                        RichText::new(*token)
+                                                            .monospace()
+                                                            .color(help_fg)
+                                                            .size(13.0),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(*desc)
+                                                            .color(help_fg)
+                                                            .size(12.0),
+                                                    );
+                                                });
+                                            }
+                                        },
+                                    );
+                                });
+                        },
+                    );
                 }
             });
         });
@@ -8397,8 +8829,16 @@ impl GpGuiApp {
         painter.rect_filled(rect, 0.0, VGA_GRAY);
         // Classic raised strip: white on top, black underneath (also when the
         // bar rides up for channel splitscreen + monitor).
-        painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, Color32::WHITE));
-        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, Color32::BLACK));
+        painter.hline(
+            rect.x_range(),
+            rect.top() + 0.5,
+            Stroke::new(1.0, Color32::WHITE),
+        );
+        painter.hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            Stroke::new(1.0, Color32::BLACK),
+        );
 
         // Behind the buttons. A still press still clicks; a move resizes.
         // Drag-only, and not focusable, so the compose box keeps the keyboard.
@@ -8724,12 +9164,7 @@ impl GpGuiApp {
                     ("Remote", self.session.remote, SessionClick::Remote, 50.0),
                     ("BIN-RX", self.session.bin_rx, SessionClick::BinRx, 50.0),
                     ("BIN-TX", self.session.bin_tx, SessionClick::BinTx, 50.0),
-                    (
-                        "Name",
-                        self.peer_name_known(n),
-                        SessionClick::Name,
-                        42.0,
-                    ),
+                    ("Name", self.peer_name_known(n), SessionClick::Name, 42.0),
                 ] {
                     if x + w > left_limit {
                         break;
@@ -8738,11 +9173,7 @@ impl GpGuiApp {
                 }
                 let trail_left = rect.right() - trail_w - 2.0;
                 let lit = self.channel_linked(n)
-                    && self
-                        .channel_lock
-                        .get(n as usize)
-                        .copied()
-                        .unwrap_or(false);
+                    && self.channel_lock.get(n as usize).copied().unwrap_or(false);
                 let _ = paint_cell(
                     ui,
                     trail_left - (lock_w + gap),
@@ -8817,10 +9248,7 @@ impl GpGuiApp {
                 v.minimized.unwrap_or(false),
             )
         });
-        let next = self
-            .cfg
-            .window
-            .remember(outer, inner, maximized, minimized);
+        let next = self.cfg.window.remember(outer, inner, maximized, minimized);
         if next != self.cfg.window {
             self.cfg.window = next;
             self.window_dirty = true;
@@ -8980,36 +9408,31 @@ impl GpGuiApp {
             return;
         }
         let mut open = true;
-        centered_popup(
-            "QRG — frequency (MHz)",
-            egui::Id::new("gp_qrg"),
-            &mut open,
-        )
-        .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("QRG:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.session.qrg_edit)
-                            .desired_width(100.0)
-                            .font(menu_font(16.0)),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() {
-                        match self.session.set_qrg_from_edit() {
-                            Ok(()) => {
-                                self.status = self.session.qrg_label();
-                                self.log_event(self.session.qrg_label());
-                                self.persist_session_chrome();
-                            }
-                            Err(e) => self.status = e,
+        centered_popup("QRG — frequency (MHz)", egui::Id::new("gp_qrg"), &mut open).show(
+            ctx,
+            |ui| {
+                ui.set_min_width(280.0);
+                ui.label(RichText::new("Frequency in MHz").font(menu_font(16.0)));
+                let edit = retro::field(
+                    ui,
+                    &mut self.session.qrg_edit,
+                    ui.available_width(),
+                    "27.235",
+                    menu_font(17.0),
+                );
+                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if retro::apply(ui, false, menu_font(20.0)) || enter {
+                    match self.session.set_qrg_from_edit() {
+                        Ok(()) => {
+                            self.status = self.session.qrg_label();
+                            self.log_event(self.session.qrg_label());
+                            self.persist_session_chrome();
                         }
+                        Err(e) => self.status = e,
                     }
-                    if ui.button("Cancel").clicked() {
-                        self.session.show_qrg_dialog = false;
-                    }
-                });
-            });
+                }
+            },
+        );
         if !open {
             self.session.show_qrg_dialog = false;
         }
@@ -9177,7 +9600,10 @@ impl GpGuiApp {
                     }
                     return;
                 }
-                SlotAnswer::Accept { channel: answer_ch, call } => {
+                SlotAnswer::Accept {
+                    channel: answer_ch,
+                    call,
+                } => {
                     self.adopt_air_call(channel, &caller_air);
                     outgoing = self.effective_mycall(channel);
                     self.adopt_air_call(answer_ch, &call);
@@ -9397,31 +9823,28 @@ impl GpGuiApp {
             &mut open,
         )
         .show(ctx, |ui| {
-                ui.label("Name in NAMES.GP (via path stays after the ;)");
-                let te = ui.add(
-                    egui::TextEdit::singleline(&mut self.name_edit)
-                        .desired_width(220.0)
-                        .font(menu_font(16.0))
-                        .hint_text("Bas"),
-                );
-                if self.name_dialog_focus {
-                    te.request_focus();
-                    self.name_dialog_focus = false;
+            ui.set_min_width(320.0);
+            ui.label(
+                RichText::new("Name in NAMES.GP. A path after ; is the via.").font(menu_font(16.0)),
+            );
+            let te = retro::field(
+                ui,
+                &mut self.name_edit,
+                ui.available_width(),
+                "Bas",
+                menu_font(17.0),
+            );
+            if self.name_dialog_focus {
+                te.request_focus();
+                self.name_dialog_focus = false;
+            }
+            let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if retro::apply(ui, false, menu_font(20.0)) || enter {
+                if let Err(e) = self.apply_name_from_edit() {
+                    self.status = e;
                 }
-                let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() || enter {
-                        if let Err(e) = self.apply_name_from_edit() {
-                            self.status = e;
-                        }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.show_name_dialog = false;
-                        self.status = "Name cancelled".into();
-                    }
-                });
-            });
+            }
+        });
         if !open {
             self.show_name_dialog = false;
             self.status = "Name cancelled".into();
@@ -9441,39 +9864,33 @@ impl GpGuiApp {
             &mut open,
         )
         .show(ctx, |ui| {
-                ui.label("Whom to connect to?");
-                ui.label(
-                    RichText::new("Call, name from NAMES.GP, or CALL,VIA")
-                        .small()
-                        .color(VGA_DARK_GRAY),
-                );
-                let te = ui.add(
-                    egui::TextEdit::singleline(&mut self.session.connect_edit)
-                        .desired_width(220.0)
-                        .font(menu_font(16.0))
-                        .hint_text("N0CALL"),
-                );
-                if self.connect_dialog_focus {
-                    te.request_focus();
-                    self.connect_dialog_focus = false;
+            ui.set_min_width(360.0);
+            ui.label(RichText::new("Whom to connect to?").font(menu_font(18.0)));
+            ui.label(
+                RichText::new("Call, a name from NAMES.GP, or CALL,VIA")
+                    .color(Color32::BLACK)
+                    .font(menu_font(16.0)),
+            );
+            let te = retro::field(
+                ui,
+                &mut self.session.connect_edit,
+                ui.available_width(),
+                "N0CALL",
+                menu_font(17.0),
+            );
+            if self.connect_dialog_focus {
+                te.request_focus();
+                self.connect_dialog_focus = false;
+            }
+            let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.add_space(6.0);
+            self.connect_name_field(ui);
+            if retro::apply(ui, false, menu_font(20.0)) || enter {
+                if let Err(e) = self.apply_connect_from_edit() {
+                    self.status = e;
                 }
-                let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                ui.add_space(6.0);
-                self.connect_name_field(ui);
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Connect").clicked() || enter {
-                        if let Err(e) = self.apply_connect_from_edit() {
-                            self.status = e;
-                        }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.session.show_connect_dialog = false;
-                        self.show_connect_names = false;
-                        self.status = "Connect cancelled".into();
-                    }
-                });
-            });
+            }
+        });
         if !open {
             self.session.show_connect_dialog = false;
             self.show_connect_names = false;
@@ -9483,26 +9900,25 @@ impl GpGuiApp {
 
     /// The Name field on the connect dialog. A click opens `NAMES.GP`.
     fn connect_name_field(&mut self, ui: &mut Ui) {
-        ui.label("Name");
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(220.0, 24.0), Sense::click());
-        // Sunken light-grey well on the session-strip face.
+        ui.label(RichText::new("Name").font(menu_font(16.0)));
+        let width = ui.available_width().max(220.0);
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
         let fill = if resp.hovered() || self.show_connect_names {
-            Color32::from_rgb(210, 210, 220)
+            Color32::from_rgb(214, 214, 214)
         } else {
-            Color32::from_rgb(220, 220, 220)
+            Color32::from_rgb(236, 236, 236)
         };
-        ui.painter().rect_filled(rect, 0.0, fill);
-        paint_bevel(ui.painter(), rect, true);
+        retro::paint(ui.painter(), rect, fill, true, retro::ROW_ROUND);
         let text = if self.show_connect_names {
             "list open"
         } else {
             "click for NAMES.GP"
         };
         ui.painter().text(
-            rect.left_center() + Vec2::new(6.0, 0.0),
-            egui::Align2::LEFT_CENTER,
+            egui::pos2(rect.center().x, rect.center().y - 2.0),
+            egui::Align2::CENTER_CENTER,
             text,
-            menu_font(15.0),
+            menu_font(17.0),
             Color32::BLACK,
         );
         if resp.hovered() {
@@ -9523,13 +9939,15 @@ impl GpGuiApp {
         self.show_connect_names = true;
     }
 
-    /// Click a stored name to connect. A path after `;` is the via.
+    /// Click a stored station to connect. The button shows the call, and the
+    /// name in parentheses when one is stored. The connect uses the call and,
+    /// when the line has one, the via path. Ten rows show at once.
     fn connect_names_window(&mut self, ctx: &Context) {
         if !self.show_connect_names || !self.session.show_connect_dialog {
             return;
         }
         let picks = self.names.name_list(&self.names_qrg());
-        let mut chosen: Option<String> = None;
+        let mut chosen: Option<ListedName> = None;
         let mut open = true;
         centered_popup(
             "Names",
@@ -9538,47 +9956,50 @@ impl GpGuiApp {
         )
         .order(egui::Order::Tooltip)
         .show(ctx, |ui| {
-                ui.set_min_width(280.0);
-                if picks.is_empty() {
-                    ui.label("No names in NAMES.GP");
-                } else {
-                    egui::ScrollArea::vertical()
-                        .max_height(280.0)
-                        .show(ui, |ui| {
-                            for entry in &picks {
-                                let line = listed_name_line(entry);
-                                let row = ui.add(
-                                    egui::Button::new(
-                                        RichText::new(line).font(menu_font(15.0)),
-                                    )
-                                    .frame(false)
-                                    .wrap_mode(TextWrapMode::Extend),
-                                );
-                                if row.clicked() {
-                                    chosen = Some(entry.call.clone());
-                                }
+            ui.set_min_width(360.0);
+            ui.spacing_mut().item_spacing.y = 4.0;
+            if picks.is_empty() {
+                ui.label(RichText::new("No names in NAMES.GP").font(menu_font(16.0)));
+            } else {
+                let gap = 4.0;
+                let rows = 10.0;
+                let max_h = retro::ROW_H * rows + gap * (rows - 1.0);
+                egui::ScrollArea::vertical()
+                    .max_height(max_h)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = gap;
+                        let width = ui.available_width().max(320.0);
+                        for entry in &picks {
+                            let row = retro::entry(
+                                ui,
+                                &entry.button_label(),
+                                "",
+                                Color32::TRANSPARENT,
+                                false,
+                                width,
+                                menu_font(17.0),
+                            );
+                            if row.clicked() && !row.double_clicked() {
+                                chosen = Some(entry.clone());
                             }
-                        });
-                }
-            });
+                        }
+                    });
+            }
+        });
         if !open {
             self.show_connect_names = false;
         }
-        if let Some(call) = chosen {
-            self.connect_listed(&call);
+        if let Some(entry) = chosen {
+            self.connect_listed(&entry);
         }
     }
 
-    fn connect_listed(&mut self, call: &str) {
+    fn connect_listed(&mut self, entry: &ListedName) {
         let ch = self.session.connect_channel.clamp(1, self.channels);
         self.show_connect_names = false;
-        match self.resolve_connect_target(call) {
-            Ok((dest, vias, down)) => {
-                self.session.show_connect_dialog = false;
-                self.begin_connect(ch, &dest, &vias, down);
-            }
-            Err(err) => self.status = err,
-        }
+        self.session.show_connect_dialog = false;
+        self.begin_connect(ch, &entry.call, &entry.via, Vec::new());
     }
 
     fn assign_spy_first_empty(&mut self, call: &str) -> Result<u8, String> {
@@ -9602,35 +10023,37 @@ impl GpGuiApp {
         let call = self.mheard_spy_pending.clone();
         let mut open = true;
         centered_popup("Start Spy", egui::Id::new("gp_mheard_spy"), &mut open).show(ctx, |ui| {
-                ui.label(format!("Start Spy for {call}"));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Yes").clicked() {
-                        match self.assign_spy_first_empty(&call) {
-                            Ok(slot) => {
-                                self.show_mheard_spy_confirm = false;
-                                self.mheard_spy_pick = false;
-                                self.session.spy_slot = Some(slot);
-                                self.active = ActivePane::Spy(slot);
-                                self.status = format!("Spying Call {call}");
-                            }
-                            Err(e) => self.status = e,
-                        }
-                    }
-                    if ui.button("No").clicked() {
-                        // Keep pick mode so another MHeard row can be chosen.
-                        self.show_mheard_spy_confirm = false;
-                        self.mheard_spy_pending.clear();
-                        self.status = "Select a call in MHeard for Spy".into();
-                    }
-                    if ui.button("Abort").clicked() {
+            ui.set_min_width(360.0);
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.label(
+                RichText::new(format!("Start Spy for {call}"))
+                    .color(Color32::BLACK)
+                    .font(menu_font(18.0)),
+            );
+            if retro::choice(ui, "Yes — start Spy", menu_font(17.0)) {
+                match self.assign_spy_first_empty(&call) {
+                    Ok(slot) => {
                         self.show_mheard_spy_confirm = false;
                         self.mheard_spy_pick = false;
-                        self.mheard_spy_pending.clear();
-                        self.status = "Spy from MHeard aborted".into();
+                        self.session.spy_slot = Some(slot);
+                        self.active = ActivePane::Spy(slot);
+                        self.status = format!("Spying Call {call}");
                     }
-                });
-            });
+                    Err(e) => self.status = e,
+                }
+            }
+            if retro::choice(ui, "No — pick another", menu_font(17.0)) {
+                self.show_mheard_spy_confirm = false;
+                self.mheard_spy_pending.clear();
+                self.status = "Select a call in MHeard for Spy".into();
+            }
+            if retro::choice(ui, "Abort", menu_font(17.0)) {
+                self.show_mheard_spy_confirm = false;
+                self.mheard_spy_pick = false;
+                self.mheard_spy_pending.clear();
+                self.status = "Spy from MHeard aborted".into();
+            }
+        });
         if !open {
             self.show_mheard_spy_confirm = false;
             self.mheard_spy_pick = false;
@@ -9699,23 +10122,23 @@ impl GpGuiApp {
             &mut open,
         )
         .show(ctx, |ui| {
-                ui.label("Call to spy (empty = off):");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.session.spy_edit)
-                        .desired_width(120.0)
-                        .font(menu_font(16.0)),
-                );
-                ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() {
-                        if let Err(e) = self.apply_spy_call_from_edit() {
-                            self.status = e;
-                        }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.session.show_spy_dialog = false;
-                    }
-                });
-            });
+            ui.set_min_width(320.0);
+            ui.label(
+                RichText::new("Call to spy. Leave empty to turn it off.").font(menu_font(16.0)),
+            );
+            retro::field(
+                ui,
+                &mut self.session.spy_edit,
+                ui.available_width(),
+                "",
+                menu_font(17.0),
+            );
+            if retro::apply(ui, false, menu_font(20.0)) {
+                if let Err(e) = self.apply_spy_call_from_edit() {
+                    self.status = e;
+                }
+            }
+        });
         if !open {
             self.session.show_spy_dialog = false;
         }
@@ -9732,28 +10155,27 @@ impl GpGuiApp {
         };
         let mut open = true;
         centered_popup(title, egui::Id::new("gp_mycall"), &mut open).show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Call:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.session.mycall_edit)
-                            .desired_width(120.0)
-                            .font(menu_font(16.0)),
-                    );
-                });
-                if self.session.mycall_slot != 0 {
-                    ui.label("Empty, or the global call, joins the global pool.");
+            ui.set_min_width(360.0);
+            ui.label(RichText::new("Call sign").font(menu_font(16.0)));
+            retro::field(
+                ui,
+                &mut self.session.mycall_edit,
+                ui.available_width(),
+                "",
+                menu_font(17.0),
+            );
+            if self.session.mycall_slot != 0 {
+                ui.label(
+                    RichText::new("Empty, or the same as the global call, joins the global pool.")
+                        .font(menu_font(16.0)),
+                );
+            }
+            if retro::apply(ui, false, menu_font(20.0)) {
+                if let Err(e) = self.apply_mycall_from_edit() {
+                    self.status = e;
                 }
-                ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() {
-                        if let Err(e) = self.apply_mycall_from_edit() {
-                            self.status = e;
-                        }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.session.show_mycall_dialog = false;
-                    }
-                });
-            });
+            }
+        });
         if !open {
             self.session.show_mycall_dialog = false;
         }
@@ -10085,19 +10507,6 @@ fn route_parts(route: Route) -> (String, Vec<String>, Vec<String>) {
     (route.link_call, route.link_digis, route.downlinks)
 }
 
-fn listed_name_line(entry: &ListedName) -> String {
-    if entry.via.is_empty() {
-        format!("{:<22} {}", entry.name, entry.call)
-    } else {
-        format!(
-            "{:<22} {} via {}",
-            entry.name,
-            entry.call,
-            entry.via.join(",")
-        )
-    }
-}
-
 /// `C DB0DOZ` / `C! ON5PL` / `C DH1DAE DB0FN` → the station we are waiting to see.
 fn downlink_target(cmd: &str) -> String {
     let rest = cmd.trim();
@@ -10119,9 +10528,7 @@ fn downlink_target(cmd: &str) -> String {
 /// `CB0MVB-2` → `CB0MVB`. Empty when the token is not a call.
 fn transcript_call(call: &str) -> String {
     let call = crate::journal::base_call(call);
-    call.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect()
+    call.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
 }
 
 /// `CALL.GPL` while that name is free, otherwise `CALL.000.GPL`, `CALL.001.GPL`, …
@@ -10346,21 +10753,23 @@ fn paint_start_credits(painter: &egui::Painter, screen: Rect) {
     }
 }
 
-/// Wide enough for 30 characters in the startup card's font.
-const SETUP_FIELD_W: f32 = 300.0;
-const SETUP_FIELD_CHARS: usize = 30;
-
-fn clip_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        text.to_string()
-    } else {
-        text.chars().take(max).collect()
-    }
-}
-
 /// Empty saved detail means we have not recorded a device yet, so the port name is enough.
 fn port_identity_matches(saved: &str, live: &str) -> bool {
     saved.is_empty() || live.is_empty() || saved.eq_ignore_ascii_case(live)
+}
+
+/// A closed list. One click opens the second panel. No arrow on the row.
+fn menu_open(ui: &mut Ui, label: &str, value: &str, width: f32) -> bool {
+    let resp = retro::entry(
+        ui,
+        label,
+        value,
+        retro::TAB_OPEN,
+        false,
+        width,
+        menu_font(17.0),
+    );
+    resp.clicked() && !resp.double_clicked()
 }
 
 fn port_menu_label(ports: &[DetectedPort], selected: &str) -> String {
@@ -10418,16 +10827,228 @@ fn load_start_screen(ctx: &Context) -> Option<TextureHandle> {
     Some(ctx.load_texture("gp_start", color, TextureOptions::NEAREST))
 }
 
-fn load_icon_textures(ctx: &Context) -> Vec<TextureHandle> {
-    let path = crate::paths::data_file("ICONS.GP");
+fn paint_icon_grid(ui: &mut Ui, edit: &mut IconEdit) {
+    let (w, h, mut pixels) = {
+        let Some(icon) = edit.icons.get(edit.index) else {
+            return;
+        };
+        (icon.width, icon.height, icon.pixels.clone())
+    };
+    if w == 0 || h == 0 {
+        return;
+    }
+    let cell = (560.0 / w as f32).clamp(4.0, 8.0);
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(w as f32 * cell, h as f32 * cell),
+        Sense::click_and_drag(),
+    );
+    let color = edit.color & 15;
+    if resp.is_pointer_button_down_on() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            if let Some((x, y)) = icon_cell(rect, pos, w, h) {
+                let i = y * w + x;
+                if let Some(px) = pixels.get_mut(i) {
+                    *px = color;
+                }
+                if let Some(icon) = edit.current_mut() {
+                    if let Some(px) = icon.pixels.get_mut(i) {
+                        *px = color;
+                    }
+                }
+            }
+        }
+    }
+    blit_pixels(ui.painter(), rect, &pixels, w, h);
+    ui.painter()
+        .rect_stroke(rect.expand(1.0), 0.0, Stroke::new(2.0, Color32::BLACK));
+    if let Some(pos) = resp.hover_pos() {
+        if let Some((x, y)) = icon_cell(rect, pos, w, h) {
+            let cw = rect.width() / w as f32;
+            let ch = rect.height() / h as f32;
+            let cell_rect = Rect::from_min_size(
+                rect.min + Vec2::new(x as f32 * cw, y as f32 * ch),
+                Vec2::new(cw, ch),
+            );
+            ui.painter()
+                .rect_stroke(cell_rect, 0.0, Stroke::new(1.0, Color32::WHITE));
+        }
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+}
+
+fn icon_editor_side(
+    ui: &mut Ui,
+    edit: &mut IconEdit,
+    close: &mut bool,
+    reload: &mut Option<PathBuf>,
+    note: &mut Option<String>,
+) {
+    ui.vertical(|ui| {
+        ui.set_width(188.0);
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.label(
+            RichText::new(edit.file_name())
+                .font(menu_font(16.0))
+                .color(Color32::BLACK),
+        );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(140.0, 80.0), Sense::hover());
+            if let Some(icon) = edit.icons.get(edit.index) {
+                blit_pixels(ui.painter(), rect, &icon.pixels, icon.width, icon.height);
+            }
+            ui.painter()
+                .rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::BLACK));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                if retro::button(ui, "Up", 52.0, 28.0, menu_font(15.0)) {
+                    edit.step(-1);
+                }
+                if retro::button(ui, "Down", 52.0, 28.0, menu_font(15.0)) {
+                    edit.step(1);
+                }
+            });
+        });
+        let n = edit.icons.len().max(1);
+        ui.label(
+            RichText::new(format!("Icon:  {}/{n}", edit.index + 1))
+                .font(menu_font(16.0))
+                .color(Color32::BLACK),
+        );
+        if let Some(slot) = ICON_SLOT_LABELS.get(edit.index) {
+            ui.label(
+                RichText::new(*slot)
+                    .font(menu_font(16.0))
+                    .color(Color32::BLACK),
+            );
+        }
+        ui.label(
+            RichText::new("Color:")
+                .font(menu_font(16.0))
+                .color(Color32::BLACK),
+        );
+        let pen = (edit.color as usize) & 15;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let (swatch, _) = ui.allocate_exact_size(Vec2::new(72.0, 40.0), Sense::hover());
+            let (r, g, b) = VGA16_RGB[pen];
+            ui.painter()
+                .rect_filled(swatch, 0.0, Color32::from_rgb(r, g, b));
+            ui.painter()
+                .rect_stroke(swatch, 0.0, Stroke::new(1.0, Color32::BLACK));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                if retro::button(ui, "Up", 52.0, 28.0, menu_font(15.0)) {
+                    edit.color = (pen as u8 + 15) % 16;
+                }
+                if retro::button(ui, "Down", 52.0, 28.0, menu_font(15.0)) {
+                    edit.color = (pen as u8 + 1) % 16;
+                }
+            });
+        });
+        let name = setup::VGA_NAMES.get(pen).copied().unwrap_or("");
+        ui.label(
+            RichText::new(name)
+                .font(menu_font(16.0))
+                .color(Color32::BLACK),
+        );
+        let (pal, pal_resp) =
+            ui.allocate_exact_size(Vec2::new(8.0 * 22.0, 2.0 * 22.0), Sense::click());
+        for i in 0..16 {
+            let col = i % 8;
+            let row = i / 8;
+            let cell = Rect::from_min_size(
+                pal.min + Vec2::new(col as f32 * 22.0, row as f32 * 22.0),
+                Vec2::splat(20.0),
+            );
+            let (r, g, b) = VGA16_RGB[i];
+            ui.painter()
+                .rect_filled(cell, 0.0, Color32::from_rgb(r, g, b));
+            let stroke = if i == pen {
+                Stroke::new(2.0, Color32::WHITE)
+            } else {
+                Stroke::new(1.0, Color32::BLACK)
+            };
+            ui.painter().rect_stroke(cell, 0.0, stroke);
+        }
+        if pal_resp.clicked() {
+            if let Some(pos) = pal_resp.interact_pointer_pos() {
+                let col = ((pos.x - pal.left()) / 22.0) as usize;
+                let row = ((pos.y - pal.top()) / 22.0) as usize;
+                if col < 8 && row < 2 {
+                    edit.color = (row * 8 + col) as u8;
+                }
+            }
+        }
+        ui.add_space(8.0);
+        if retro::button(ui, "Save", 168.0, 32.0, menu_font(18.0)) {
+            match edit.save() {
+                Ok(()) => {
+                    *reload = Some(edit.path.clone());
+                    *note = Some(format!("Saved {}", edit.file_name()));
+                }
+                Err(err) => *note = Some(format!("Save: {err}")),
+            }
+        }
+        if retro::button(ui, "Apply", 168.0, 32.0, menu_font(18.0)) {
+            *close = true;
+        }
+    });
+}
+
+fn icon_cell(rect: Rect, pos: Pos2, w: usize, h: usize) -> Option<(usize, usize)> {
+    if w == 0 || h == 0 || !rect.contains(pos) {
+        return None;
+    }
+    let x = ((pos.x - rect.left()) / rect.width() * w as f32) as usize;
+    let y = ((pos.y - rect.top()) / rect.height() * h as f32) as usize;
+    (x < w && y < h).then_some((x, y))
+}
+
+fn blit_pixels(painter: &egui::Painter, rect: Rect, pixels: &[u8], w: usize, h: usize) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    let cw = rect.width() / w as f32;
+    let ch = rect.height() / h as f32;
+    for y in 0..h {
+        for x in 0..w {
+            let Some(idx) = pixels.get(y * w + x) else {
+                continue;
+            };
+            let (r, g, b) = VGA16_RGB[(*idx as usize) & 15];
+            let cell = Rect::from_min_size(
+                rect.min + Vec2::new(x as f32 * cw, y as f32 * ch),
+                Vec2::new(cw + 0.4, ch + 0.4),
+            );
+            painter.rect_filled(cell, 0.0, Color32::from_rgb(r, g, b));
+        }
+    }
+}
+
+fn load_icon_textures(ctx: &Context, icon_file: &str) -> Vec<TextureHandle> {
+    let path = resolve_icon_path(icon_file);
+    let loaded = textures_from_icon_file(ctx, &path);
+    if !loaded.is_empty() {
+        return loaded;
+    }
+    let fallback = crate::paths::data_file("ICONS.GP");
+    if fallback != path {
+        return textures_from_icon_file(ctx, &fallback);
+    }
+    Vec::new()
+}
+
+fn textures_from_icon_file(ctx: &Context, path: &std::path::Path) -> Vec<TextureHandle> {
     if !path.is_file() {
         return Vec::new();
     }
-    tracing::info!(file = %path.display(), "loading ICONS.GP");
-    let Ok(lib) = IconLibrary::load(&path) else {
+    tracing::info!(file = %path.display(), "loading icon library");
+    let Ok(lib) = IconLibrary::load(path) else {
         return Vec::new();
     };
-
     lib.icons
         .iter()
         .enumerate()
@@ -10455,34 +11076,39 @@ fn menu_font(size: f32) -> FontId {
 /// Closed, the defaults come back so hover tips stay as they were.
 fn apply_popup_text_style(ctx: &Context, menu: bool) {
     ctx.style_mut(|style| {
-        if menu {
-            let face = menu_family();
-            style
-                .text_styles
-                .insert(egui::TextStyle::Small, FontId::new(12.0, face.clone()));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Body, FontId::new(14.0, face.clone()));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Button, FontId::new(14.0, face.clone()));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Heading, FontId::new(18.0, face));
+        let face = if menu {
+            menu_family()
         } else {
-            let face = FontFamily::Proportional;
-            style
-                .text_styles
-                .insert(egui::TextStyle::Small, FontId::new(9.0, face.clone()));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Body, FontId::new(12.5, face.clone()));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Button, FontId::new(12.5, face.clone()));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Heading, FontId::new(18.0, face));
+            FontFamily::Proportional
+        };
+        // Dialog type is a step larger so it stays easy to read.
+        let (small, body, button, heading) = if menu {
+            (14.0, 16.0, 18.0, 20.0)
+        } else {
+            (9.0, 12.5, 12.5, 18.0)
+        };
+        style
+            .text_styles
+            .insert(egui::TextStyle::Small, FontId::new(small, face.clone()));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, FontId::new(body, face.clone()));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, FontId::new(button, face.clone()));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Heading, FontId::new(heading, face));
+        let d = egui::Style::default();
+        if menu {
+            style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+            style.spacing.button_padding = Vec2::new(12.0, 6.0);
+            // Short rows: a stock widget must not grow taller than the line.
+            style.spacing.interact_size.y = 22.0;
+        } else {
+            style.spacing.item_spacing = d.spacing.item_spacing;
+            style.spacing.button_padding = d.spacing.button_padding;
+            style.spacing.interact_size = d.spacing.interact_size;
         }
     });
 }
@@ -10614,8 +11240,14 @@ fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool) -> bool {
     let date_pos = Pos2::new(cx, dial_center.y + radius + 8.0 + badge_h * 0.5);
     let date_rect = Rect::from_center_size(date_pos, Vec2::new(86.0, badge_h));
     // Date / version badges: dark grey raised buttons (unpressed bevel).
-    painter.rect_filled(date_rect, 0.0, VGA_DARK_GRAY);
-    paint_bevel(&painter, date_rect, false);
+    retro::paint_edge(
+        &painter,
+        date_rect,
+        VGA_DARK_GRAY,
+        false,
+        retro::TOP_ROUND,
+        1.5,
+    );
     painter.text(
         date_pos,
         egui::Align2::CENTER_CENTER,
@@ -10626,8 +11258,14 @@ fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool) -> bool {
 
     let ver_pos = Pos2::new(cx, date_pos.y + badge_h * 0.5 + badge_gap + badge_h * 0.5);
     let ver_rect = Rect::from_center_size(ver_pos, Vec2::new(92.0, badge_h));
-    painter.rect_filled(ver_rect, 0.0, VGA_DARK_GRAY);
-    paint_bevel(&painter, ver_rect, false);
+    retro::paint_edge(
+        &painter,
+        ver_rect,
+        VGA_DARK_GRAY,
+        false,
+        retro::TOP_ROUND,
+        1.5,
+    );
     painter.text(
         ver_pos,
         egui::Align2::CENTER_CENTER,
@@ -10648,9 +11286,14 @@ fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool) -> bool {
         Color32::from_rgb(60, 60, 60)
     };
     let painter = ui.painter();
-    painter.rect_filled(btn, 0.0, fill);
-    // Gong enabled → sunken (same as classic ALT-G toggle).
-    paint_bevel(painter, btn, gong_on || resp.is_pointer_button_down_on());
+    retro::paint_edge(
+        painter,
+        btn,
+        fill,
+        gong_on || resp.is_pointer_button_down_on(),
+        retro::TOP_ROUND,
+        1.5,
+    );
     painter.text(
         btn.center(),
         egui::Align2::CENTER_CENTER,
@@ -10893,13 +11536,8 @@ fn paint_text_pane(
                         crawl.follow,
                     );
                     if crawl.follow {
-                        let (y, carry) = soft_scroll_toward(
-                            state.offset.y,
-                            max_off,
-                            crawl.carry,
-                            dt,
-                            smooth,
-                        );
+                        let (y, carry) =
+                            soft_scroll_toward(state.offset.y, max_off, crawl.carry, dt, smooth);
                         state.offset.y = y;
                         crawl.carry = carry;
                         if max_off - y > 0.5 {
@@ -10970,8 +11608,10 @@ fn paint_dos_caret(
     let y = rect.bottom() - 1.5;
     let x0 = rect.left();
     let x1 = x0 + char_w;
-    ui.painter()
-        .line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], Stroke::new(2.0, Color32::WHITE));
+    ui.painter().line_segment(
+        [Pos2::new(x0, y), Pos2::new(x1, y)],
+        Stroke::new(2.0, Color32::WHITE),
+    );
 }
 
 enum HistMove {
@@ -11319,6 +11959,34 @@ mod pair_ssid_tests {
         // Bare is up, -1 dropped, -2 still up: the new duplicate is -1.
         let hole = [("NL0MSK", "NL0AS"), ("NL0MSK-2", "NL0AS")];
         assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &hole), "NL0MSK-1");
+    }
+}
+
+/// Expand `%` macros, then keep the beacon inside one UI frame.
+fn beacon_on_air(raw: &str, from_file: bool, ctx: &MacroContext) -> String {
+    let max = if from_file {
+        BEACON_FILE_MAX
+    } else {
+        BEACON_TEXT_MAX
+    };
+    clip_beacon(macros::expand(raw, ctx).trim(), max)
+}
+
+#[cfg(test)]
+mod beacon_macro_tests {
+    use super::beacon_on_air;
+    use crate::remote::macros::MacroContext;
+
+    #[test]
+    fn text_and_file_expand_the_same_macros() {
+        let mut ctx = MacroContext::demo();
+        ctx.my_call = "NL0MSK".into();
+        ctx.qrg = "430.625".into();
+        let line = "de %Y qrg %Q";
+        assert_eq!(beacon_on_air(line, false, &ctx), "de NL0MSK qrg 430.625");
+        assert_eq!(beacon_on_air(line, true, &ctx), "de NL0MSK qrg 430.625");
+        let long = format!("{}%Y", "x".repeat(80));
+        assert_eq!(beacon_on_air(&long, false, &ctx).chars().count(), 81);
     }
 }
 

@@ -1,4 +1,4 @@
-﻿//! AX.25 L2 helpers for the **KISS** driver path (no FCS — the TNC adds CRC).
+//! AX.25 L2 helpers for the **KISS** driver path (no FCS — the TNC adds CRC).
 //!
 //! Encoding/decoding uses the [`ax25`] crate. WA8DED/TFPCX keep L2 inside the
 //! TNC via hostmode and do **not** use this module.
@@ -9,8 +9,8 @@
 
 use ax25::frame::{
     Address, Ax25Frame as LibFrame, CommandResponse, Disconnect, DisconnectedMode, FrameContent,
-    Information, ProtocolIdentifier, ReceiveReady, Reject, RouteEntry,
-    SetAsynchronousBalancedMode, UnnumberedAcknowledge, UnnumberedInformation,
+    Information, ProtocolIdentifier, ReceiveReady, Reject, RouteEntry, SetAsynchronousBalancedMode,
+    UnnumberedAcknowledge, UnnumberedInformation,
 };
 
 /// AX.25 PID: no layer 3 (`0xF0`).
@@ -700,7 +700,10 @@ mod tests {
         assert_eq!(ua.via, ["DB0FN"]);
         let dm = parse_frame(&build_dm_via("A", "B", true, &["DB0FN", "DB0ABC"])).unwrap();
         assert_eq!(dm.via, ["DB0FN", "DB0ABC"]);
-        assert_eq!(reply_via(&["DB0FN".into(), "DB0ABC".into()]), ["DB0ABC", "DB0FN"]);
+        assert_eq!(
+            reply_via(&["DB0FN".into(), "DB0ABC".into()]),
+            ["DB0ABC", "DB0FN"]
+        );
     }
 
     #[test]
@@ -784,6 +787,4 @@ mod tests {
         assert_eq!(bytes_to_monitor_body("ä".as_bytes(), false), "ä");
         assert_eq!(bytes_to_monitor_body(&[0xFF, 0x00], false), "<0xff><0x00>");
     }
-
-
 }

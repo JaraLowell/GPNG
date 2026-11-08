@@ -135,10 +135,7 @@ mod tests {
         let body = sealed_body(&sealed).unwrap();
         assert!(body.bytes().all(|b| b.is_ascii()));
         assert_eq!(body.len(), plain.len());
-        assert_eq!(
-            open("DL0XYZ", "OK1ABC", &sealed).as_deref(),
-            Some(plain)
-        );
+        assert_eq!(open("DL0XYZ", "OK1ABC", &sealed).as_deref(), Some(plain));
         let extended = format!("{MARK_START_EXT}{body}{MARK_END_EXT}");
         assert_eq!(
             open("OK1ABC-4", "dl0xyz-1", &extended).as_deref(),

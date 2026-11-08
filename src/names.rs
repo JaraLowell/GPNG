@@ -90,6 +90,18 @@ pub struct ListedName {
     pub via: Vec<String>,
 }
 
+impl ListedName {
+    /// `CALL (name)` when a name is stored, otherwise the call alone.
+    pub fn button_label(&self) -> String {
+        let name = self.name.trim();
+        if name.is_empty() {
+            self.call.clone()
+        } else {
+            format!("{} ({name})", self.call)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NamesFile {
     path: PathBuf,
@@ -157,12 +169,12 @@ impl NamesFile {
             .map(|s| s.kind)
     }
 
-    /// Named stations on this QRG, in file order. A click on the connect
-    /// dialog's Name field lists these. `via` is the digipeater path after `;`.
+    /// Stations on this QRG, in file order. A click on the connect dialog's
+    /// Name field lists these. `via` is the digipeater path after `;`.
+    /// A station with no name is still listed; the button shows the call only.
     pub fn name_list(&self, qrg: &str) -> Vec<ListedName> {
         self.active(qrg)
             .into_iter()
-            .filter(|s| !s.name.is_empty())
             .map(|st| {
                 let via = self.digi_via(&st.call, qrg);
                 ListedName {
@@ -665,16 +677,18 @@ mod tests {
         );
         let list = n.name_list("");
         assert_eq!(
-            list.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
-            vec!["Jara", "Bas"]
+            list.iter().map(|e| e.call.as_str()).collect::<Vec<_>>(),
+            vec!["NL0MSK", "NL1AS", "DB0FN"]
         );
+        assert_eq!(list[0].button_label(), "NL0MSK (Jara)");
+        assert_eq!(list[2].button_label(), "DB0FN");
         assert!(list[0].via.is_empty());
         assert_eq!(list[1].call, "NL1AS");
         assert_eq!(list[1].via, vec!["NL0PEL", "NL1WIM"]);
         let on_qrg = n.name_list("430.625");
         assert_eq!(
-            on_qrg.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
-            vec!["Jara", "Bas", "Wim"]
+            on_qrg.iter().map(|e| e.call.as_str()).collect::<Vec<_>>(),
+            vec!["NL0MSK", "NL1AS", "NL1WNB", "DB0FN"]
         );
     }
 

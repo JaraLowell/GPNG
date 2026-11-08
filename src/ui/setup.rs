@@ -41,6 +41,7 @@ pub enum RowId {
     Softscroll,
     Beacon,
     Language,
+    Icons,
     PacketLen,
     AutoSave,
     WordWrap,
@@ -94,6 +95,7 @@ impl RowId {
             Self::Softscroll => "Softscroll",
             Self::Beacon => "Beacon parameters",
             Self::Language => "System language",
+            Self::Icons => "System Icons",
             Self::PacketLen => "Packet length",
             Self::AutoSave => "Code-AutoSave",
             Self::WordWrap => "Word wrapping",
@@ -135,6 +137,8 @@ pub enum View {
     },
     Beacon {
         cursor: usize,
+        /// Minutes as typed. `0` is off, `1440` is once a day.
+        period: String,
     },
     Edit {
         kind: EditKind,
@@ -174,6 +178,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::PacketLen, RowKind::Number),
             (RowId::AutoSave, RowKind::Toggle),
             (RowId::Language, RowKind::Number),
+            (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
         ActivePane::Editor => rows(&[
@@ -186,6 +191,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::EditorBak, RowKind::Toggle),
             (RowId::WordWrap, RowKind::Number),
             (RowId::Language, RowKind::Number),
+            (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
         ActivePane::Check => list_rows(false),
@@ -198,6 +204,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::RxClick, RowKind::Number),
             (RowId::Softscroll, RowKind::Toggle),
             (RowId::Language, RowKind::Number),
+            (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
         _ => rows(&[
@@ -214,6 +221,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::Softscroll, RowKind::Toggle),
             (RowId::Beacon, RowKind::Submenu),
             (RowId::Language, RowKind::Number),
+            (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
     }
@@ -234,6 +242,7 @@ fn list_rows(file_drawer: bool) -> Vec<Row> {
     }
     items.push((RowId::InsertFromEditor, RowKind::Action));
     items.push((RowId::Language, RowKind::Number));
+    items.push((RowId::Icons, RowKind::Submenu));
     items.push((RowId::Use, RowKind::Exit));
     rows(&items)
 }
@@ -253,6 +262,8 @@ mod tests {
     #[test]
     fn monitor_has_beacon_and_channel_has_packet_length() {
         let mon = rows_for(ActivePane::Monitor);
+        let lang = mon.iter().position(|r| r.id == RowId::Language).unwrap();
+        assert_eq!(mon[lang + 1].id, RowId::Icons);
         assert!(mon.iter().any(|r| r.id == RowId::Beacon));
         assert!(mon.iter().any(|r| r.id == RowId::InsertMon));
         let ch = rows_for(ActivePane::Channel(1));

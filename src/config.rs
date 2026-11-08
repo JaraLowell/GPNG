@@ -534,6 +534,7 @@ impl Config {
             "remote_language",
             &toml_string(&s.remote_language),
         )?;
+        put_key(path, "session", "icon_file", &toml_string(&s.icon_file))?;
         put_key(
             path,
             "session",
@@ -593,9 +594,11 @@ impl Config {
         }
         let b = &self.beacon;
         let body = format!(
-            "address = {}\ntext = {}\nperiod_minutes = {}\n",
+            "address = {}\nsource = {}\ntext = {}\nfile = {}\nperiod_minutes = {}\n",
             toml_string(&b.address),
+            toml_string(&b.source),
             toml_string(&b.text),
+            toml_string(&b.file),
             b.period_minutes,
         );
         upsert_toml_section(path, "beacon", &body)
@@ -951,6 +954,10 @@ pub struct SessionConfig {
     pub prompt: String,
     pub noname: String,
     pub remote_language: String,
+    /// Icon library file name. Empty or `ICONS.GP` is `data/ICONS.GP`.
+    /// Any other name is a file in `data/ICONS`.
+    #[serde(default)]
+    pub icon_file: String,
     /// `LOG=ON` — append a line to `<base call>.GPL` when a QSO ends.
     pub log: bool,
     /// `UTC=` minutes added to the PC clock for the journal.
@@ -1011,6 +1018,7 @@ impl Default for SessionConfig {
             prompt: "%c to %y>".into(),
             noname: "%c".into(),
             remote_language: "EN".into(),
+            icon_file: String::new(),
             log: false,
             utc_offset_min: 0,
             qrg_text: String::new(),
@@ -1238,23 +1246,114 @@ fn default_white_name() -> String {
     "White".into()
 }
 
+/// Longest line the beacon text box accepts.
+pub const BEACON_TEXT_MAX: usize = 81;
+/// Once a day. Zero minutes means the beacon is off.
+pub const BEACON_MINUTES_MAX: u32 = 24 * 60;
+/// AX.25 information field. A beacon file is cut to this many characters.
+pub const BEACON_FILE_MAX: usize = 256;
+
 /// Monitor beacon (setup menu). `period_minutes = 0` is off.
+///
+/// `source` is `text` or `file`. Text mode stays off while `text` is empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BeaconConfig {
     pub address: String,
+    /// `text` sends the typed line. `file` sends the contents of `file`.
+    #[serde(default = "default_beacon_source")]
+    pub source: String,
     pub text: String,
+    /// Path from the file browser. Empty until a file is chosen.
+    #[serde(default)]
+    pub file: String,
     pub period_minutes: u32,
+}
+
+fn default_beacon_source() -> String {
+    "text".into()
 }
 
 impl Default for BeaconConfig {
     fn default() -> Self {
         Self {
             address: "CQ".into(),
+            source: default_beacon_source(),
             text: String::new(),
+            file: String::new(),
             period_minutes: 0,
         }
     }
+}
+
+impl BeaconConfig {
+    pub fn uses_file(&self) -> bool {
+        self.source.eq_ignore_ascii_case("file")
+    }
+
+    pub fn set_uses_file(&mut self, file: bool) {
+        self.source = if file {
+            "file".into()
+        } else {
+            default_beacon_source()
+        };
+    }
+
+    /// A period is set and the chosen source has something to send.
+    /// Does not open the file.
+    pub fn armed(&self) -> bool {
+        if self.period_minutes == 0 {
+            return false;
+        }
+        if self.uses_file() {
+            !self.file.trim().is_empty()
+        } else {
+            !self.text.trim().is_empty()
+        }
+    }
+
+    /// Body of the next UI frame.
+    ///
+    /// `Ok(None)` stays quiet: no period, text mode with no text, or an empty
+    /// file. `Err` means the chosen file could not be read.
+    pub fn body(&self) -> Result<Option<String>, String> {
+        if self.period_minutes == 0 {
+            return Ok(None);
+        }
+        if self.uses_file() {
+            let path = self.file.trim();
+            if path.is_empty() {
+                return Ok(None);
+            }
+            let bytes =
+                std::fs::read(path).map_err(|e| format!("Beacon file cannot be read ({e})"))?;
+            let text = String::from_utf8_lossy(&bytes);
+            let flat = text.replace("\r\n", " ").replace(['\n', '\r'], " ");
+            let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+            if flat.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(clip_beacon(&flat, BEACON_FILE_MAX)));
+        }
+        let text = clip_beacon(self.text.trim(), BEACON_TEXT_MAX);
+        if text.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(text))
+        }
+    }
+}
+
+pub fn clip_beacon(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
+/// Minutes typed in the beacon box. Empty is off. Above once a day clamps.
+pub fn beacon_minutes(text: &str) -> u32 {
+    text.trim()
+        .parse::<u32>()
+        .unwrap_or(0)
+        .min(BEACON_MINUTES_MAX)
 }
 
 /// Classic VGA colour attribute names (kept as strings for theme migration).
@@ -1398,7 +1497,9 @@ impl WindowConfig {
         }
         let pos = outer_xy.and_then(|(x, y)| {
             let (x, y) = (x.round(), y.round());
-            (x.is_finite() && y.is_finite() && (-16000.0..=16000.0).contains(&x)
+            (x.is_finite()
+                && y.is_finite()
+                && (-16000.0..=16000.0).contains(&x)
                 && (-16000.0..=16000.0).contains(&y))
             .then_some((x, y))
         });
@@ -1597,10 +1698,9 @@ mod tests {
         let missing: Config = toml::from_str("channels = 10\n").unwrap();
         assert_eq!(missing.window, WindowConfig::default());
 
-        let saved: WindowConfig = toml::from_str(
-            "x = 40\ny = 12\nwidth = 1100\nheight = 760\nmaximized = true\n",
-        )
-        .unwrap();
+        let saved: WindowConfig =
+            toml::from_str("x = 40\ny = 12\nwidth = 1100\nheight = 760\nmaximized = true\n")
+                .unwrap();
         assert_eq!(saved.x, Some(40.0));
         assert_eq!(saved.y, Some(12.0));
         assert!((saved.width - 1100.0).abs() < f32::EPSILON);
@@ -1661,6 +1761,39 @@ mod tests {
         assert!(text.contains("kiss_transport = \"tcp\""));
         assert!(text.contains("kiss_tcp_host = \"192.168.1.9\""));
         assert!(text.contains("kiss_tcp_port = 8001 # soundmodem"));
+    }
+
+    #[test]
+    fn old_beacon_table_stays_on_text_and_off_without_text() {
+        let beacon: BeaconConfig =
+            toml::from_str("address = \"CQ\"\ntext = \"\"\nperiod_minutes = 60\n").unwrap();
+        assert!(!beacon.uses_file());
+        assert!(beacon.file.is_empty());
+        assert!(!beacon.armed());
+        assert_eq!(beacon.body().unwrap(), None);
+        assert_eq!(beacon_minutes("1440"), 1440);
+        assert_eq!(beacon_minutes("9999"), BEACON_MINUTES_MAX);
+        assert_eq!(beacon_minutes(""), 0);
+    }
+
+    #[test]
+    fn beacon_sends_typed_text_or_the_file() {
+        let mut beacon = BeaconConfig::default();
+        beacon.period_minutes = 15;
+        beacon.text = format!("{} extra", "x".repeat(81));
+        let text = beacon.body().unwrap().unwrap();
+        assert_eq!(text.chars().count(), BEACON_TEXT_MAX);
+
+        let path = std::env::temp_dir().join("gpng-beacon-test.gp");
+        std::fs::write(&path, "hello from file\r\n").unwrap();
+        beacon.file = path.display().to_string();
+        beacon.set_uses_file(true);
+        assert_eq!(beacon.body().unwrap().as_deref(), Some("hello from file"));
+        let _ = std::fs::remove_file(&path);
+
+        beacon.file = path.display().to_string();
+        let err = beacon.body().unwrap_err();
+        assert!(err.contains("cannot be read"));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! 70×40 VGA icons in Borland-style row-interleaved 4-bitplane form.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
@@ -82,6 +82,23 @@ impl IconLibrary {
         Self::parse(&fs::read(path)?)
     }
 
+    /// Put these pixels back into an existing library. Banner, fingerprint, and
+    /// record padding stay as they were.
+    pub fn write_pixels(raw: &mut [u8], icons: &[GpIcon]) -> Result<(), IconError> {
+        if raw.len() < DATA_BASE + ICON_RECORD || !raw.starts_with(b"Graphic Packet  Icon Libary") {
+            return Err(IconError::Format("not an icon library"));
+        }
+        let available = (raw.len() - DATA_BASE) / ICON_RECORD;
+        if icons.len() != available {
+            return Err(IconError::Format("icon count does not match the file"));
+        }
+        for (i, icon) in icons.iter().enumerate() {
+            let off = DATA_BASE + i * ICON_RECORD;
+            encode_record(&mut raw[off..off + ICON_RECORD], icon)?;
+        }
+        Ok(())
+    }
+
     pub fn parse(raw: &[u8]) -> Result<Self, IconError> {
         if raw.len() < DATA_BASE + ICON_RECORD {
             return Err(IconError::Format("file too small"));
@@ -100,6 +117,59 @@ impl IconLibrary {
             icons.push(decode_record(&raw[off..off + ICON_RECORD])?);
         }
         Ok(Self { fingerprint, icons })
+    }
+}
+
+/// One library open in the icon editor.
+#[derive(Debug, Clone)]
+pub struct IconEdit {
+    pub path: PathBuf,
+    pub raw: Vec<u8>,
+    pub icons: Vec<GpIcon>,
+    pub index: usize,
+    pub color: u8,
+}
+
+impl IconEdit {
+    pub fn open(path: PathBuf) -> Result<Self, IconError> {
+        let raw = fs::read(&path)?;
+        let lib = IconLibrary::parse(&raw)?;
+        if lib.icons.is_empty() {
+            return Err(IconError::Format("no icons"));
+        }
+        Ok(Self {
+            path,
+            raw,
+            icons: lib.icons,
+            index: 0,
+            color: 0,
+        })
+    }
+
+    pub fn file_name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| DEFAULT_ICON_FILE.to_string())
+    }
+
+    pub fn step(&mut self, delta: i32) {
+        let n = self.icons.len() as i32;
+        if n == 0 {
+            return;
+        }
+        self.index = (self.index as i32 + delta).rem_euclid(n) as usize;
+    }
+
+    pub fn current_mut(&mut self) -> Option<&mut GpIcon> {
+        self.icons.get_mut(self.index)
+    }
+
+    /// Write the pictures into the open file.
+    pub fn save(&mut self) -> Result<(), IconError> {
+        IconLibrary::write_pixels(&mut self.raw, &self.icons)?;
+        fs::write(&self.path, &self.raw)?;
+        Ok(())
     }
 }
 
@@ -140,6 +210,102 @@ fn decode_record(chunk: &[u8]) -> Result<GpIcon, IconError> {
         height,
         pixels,
     })
+}
+
+fn encode_record(chunk: &mut [u8], icon: &GpIcon) -> Result<(), IconError> {
+    if chunk.len() < 4 {
+        return Err(IconError::Format("truncated icon record"));
+    }
+    let width = u16::from_le_bytes([chunk[0], chunk[1]]) as usize;
+    let height = u16::from_le_bytes([chunk[2], chunk[3]]) as usize;
+    if icon.width != width || icon.height != height || icon.pixels.len() != width * height {
+        return Err(IconError::Format("icon size does not match the file"));
+    }
+    let bpr = (width + 7) / 8;
+    let need = 4 + height * bpr * 4;
+    if chunk.len() < need {
+        return Err(IconError::Format("icon pixel data truncated"));
+    }
+    // Bits past the width stay as they were. Stock files set some of them.
+    for y in 0..height {
+        for plane in 0..4 {
+            let color_bit = 3 - plane;
+            let plane_off = 4 + y * bpr * 4 + plane * bpr;
+            for x in 0..width {
+                let bit = 7 - (x % 8);
+                let byte = &mut chunk[plane_off + x / 8];
+                if icon.pixels[y * width + x] & (1 << color_bit) != 0 {
+                    *byte |= 1 << bit;
+                } else {
+                    *byte &= !(1 << bit);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Stock library next to `data/`. Sets in `data/ICONS` replace it.
+pub const DEFAULT_ICON_FILE: &str = "ICONS.GP";
+
+/// Name shown on the System Icons row. An empty setting is the stock library.
+pub fn icon_file_label(stored: &str) -> String {
+    let name = stored.trim();
+    if name.is_empty() {
+        return DEFAULT_ICON_FILE.to_string();
+    }
+    Path::new(name)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_ICON_FILE.to_string())
+}
+
+/// `ICONS.GP` in `data/`, or a file of that name in `data/ICONS`.
+pub fn resolve_icon_path(stored: &str) -> std::path::PathBuf {
+    let name = icon_file_label(stored);
+    if name.eq_ignore_ascii_case(DEFAULT_ICON_FILE) {
+        return crate::paths::data_file(DEFAULT_ICON_FILE);
+    }
+    let as_given = Path::new(stored.trim());
+    if as_given.is_file() {
+        return as_given.to_path_buf();
+    }
+    for dir in crate::paths::data_dirs() {
+        let in_set = dir.join("ICONS").join(&name);
+        if in_set.is_file() {
+            return in_set;
+        }
+    }
+    crate::paths::data_dir().join("ICONS").join(name)
+}
+
+/// Stock `ICONS.GP`, then every `*.GP` in `data/ICONS`.
+pub fn list_icon_files() -> Vec<String> {
+    let mut extra = Vec::new();
+    for dir in crate::paths::data_dirs() {
+        let folder = dir.join("ICONS");
+        let Ok(rd) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.to_ascii_lowercase().ends_with(".gp") {
+                continue;
+            }
+            if name.eq_ignore_ascii_case(DEFAULT_ICON_FILE) {
+                continue;
+            }
+            if extra.iter().any(|n: &String| n.eq_ignore_ascii_case(&name)) {
+                continue;
+            }
+            extra.push(name);
+        }
+    }
+    extra.sort_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
+    let mut names = vec![DEFAULT_ICON_FILE.to_string()];
+    names.extend(extra);
+    names
 }
 
 /// Labels drawn into `ICONS.GP` slots 0..16.
@@ -218,6 +384,15 @@ mod tests {
         }
         let lib = IconLibrary::load(&path).expect("data/ICONS.GP");
         assert_eq!(lib.icons.len(), 17);
+        let sets = list_icon_files();
+        assert_eq!(sets.first().map(String::as_str), Some(DEFAULT_ICON_FILE));
+        if crate::paths::data_dir()
+            .join("ICONS")
+            .join("ICONS-A.GP")
+            .is_file()
+        {
+            assert!(sets.iter().any(|n| n.eq_ignore_ascii_case("ICONS-A.GP")));
+        }
         assert_eq!(lib.icons[0].width, ICON_WIDTH);
         assert_eq!(lib.icons[0].height, ICON_HEIGHT);
         // Icons use more than a flat colour.
@@ -229,5 +404,29 @@ mod tests {
             7,
             "MONITOR chrome should be LightGray"
         );
+    }
+
+    #[test]
+    fn pixels_round_trip_and_a_changed_dot_comes_back() {
+        let path = crate::paths::data_file("ICONS.GP");
+        if !path.is_file() {
+            return;
+        }
+        let raw = fs::read(&path).unwrap();
+        let lib = IconLibrary::parse(&raw).unwrap();
+        let mut same = raw.clone();
+        IconLibrary::write_pixels(&mut same, &lib.icons).unwrap();
+        assert_eq!(same, raw);
+
+        let mut icons = lib.icons.clone();
+        let was = icons[0].pixels[0] & 15;
+        icons[0].pixels[0] = was ^ 1;
+        let mut changed = raw.clone();
+        IconLibrary::write_pixels(&mut changed, &icons).unwrap();
+        let back = IconLibrary::parse(&changed).unwrap();
+        assert_eq!(back.icons[0].pixels[0] & 15, was ^ 1);
+        assert_eq!(&back.icons[0].pixels[1..], &lib.icons[0].pixels[1..]);
+        assert_eq!(back.icons[1].pixels, lib.icons[1].pixels);
+        assert_eq!(&changed[0..DATA_BASE], &raw[0..DATA_BASE]);
     }
 }

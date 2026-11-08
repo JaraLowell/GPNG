@@ -36,9 +36,7 @@ use crate::config::{HostProtocol, SerialConfig, TncConfig};
 
 pub use ax25::{Ax25Frame, Ax25FrameType};
 pub use hostmode::HostCode;
-pub use monitor_filter::{
-    normalize_call, parse_heard, FrameClass, MonitorFilter, MonitorInput,
-};
+pub use monitor_filter::{normalize_call, parse_heard, FrameClass, MonitorFilter, MonitorInput};
 pub use payload::{
     flush_rx_line, normalize_newlines, pack_text_payloads, payload_lines, take_rx_lines,
 };

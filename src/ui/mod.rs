@@ -11,6 +11,7 @@ pub mod icons;
 pub mod layout;
 pub mod mheard;
 pub mod padlog;
+pub mod retro;
 pub mod session;
 pub mod setup;
 pub mod theme;

@@ -771,10 +771,7 @@ mod tests {
         let job = pad.layout_job_wrapped(40);
         // Hard `\n` still splits; each side also folds to the pane width.
         assert!(job.text.contains("Ulf Saran"));
-        assert!(job
-            .text
-            .lines()
-            .all(|row| row.chars().count() <= 40));
+        assert!(job.text.lines().all(|row| row.chars().count() <= 40));
     }
 
     #[test]

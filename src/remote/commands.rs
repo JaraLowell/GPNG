@@ -301,11 +301,7 @@ pub fn parse_line(line: &str) -> Option<(RemoteAction, String)> {
         return None;
     }
     // Indented ` //cmd` is prose, not remote control.
-    if line
-        .bytes()
-        .next()
-        .is_some_and(|b| b.is_ascii_whitespace())
-    {
+    if line.bytes().next().is_some_and(|b| b.is_ascii_whitespace()) {
         return None;
     }
     if line == "#" {

@@ -72,6 +72,7 @@ spy_calls = ["", "", "", "", "", "", "", "", "", ""]
 allow_color_ansi = true
 
 # Session-bar button state (restored on start; rewritten when you toggle).
+icon_file = "ICONS.GP"
 [session.chrome]
 qrg_mhz = 144.800
 ctext = "D:\\MyPython\\GPNG\\data\\CTEXT.GPI"
@@ -194,16 +195,18 @@ spy_invers_attr = "LightCyan"
 
 [beacon]
 address = "CQ"
+source = "text"
 text = ""
-period_minutes = 60
+file = ""
+period_minutes = 0
 [print]
 # Legacy ESC/P printer attribute byte sequences.
 default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 3432
-y = 399
+x = 3754
+y = 146
 width = 1071
 height = 786
 maximized = false

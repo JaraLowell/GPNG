@@ -479,29 +479,21 @@ mod tests {
             .unwrap();
         // The station we moved to NL1AS-1 gets the greeting now.
         let ctext = q
-            .push(
-                0,
-                build_i("NL0MSK", "NL1AS-1", 0, 0, false, b"welcome"),
-                t,
-            )
+            .push(0, build_i("NL0MSK", "NL1AS-1", 0, 0, false, b"welcome"), t)
             .expect("CTEXT is not queued behind the busy channel");
-        assert_eq!(
-            ax25::parse_frame(&ctext.frame).unwrap().info,
-            b"welcome"
-        );
+        assert_eq!(ax25::parse_frame(&ctext.frame).unwrap().info, b"welcome");
         // The next greeting chunk still waits on that same redirected link.
         assert!(q
-            .push(
-                0,
-                build_i("NL0MSK", "NL1AS-1", 1, 0, false, b"more"),
-                t
-            )
+            .push(0, build_i("NL0MSK", "NL1AS-1", 1, 0, false, b"more"), t)
             .is_none());
         let rr = build_rr("NL1AS-1", "NL0MSK", 1, false, false);
         let more = q.on_rx(&rr, t).expect("RR from the redirected user");
         assert_eq!(ax25::parse_frame(&more.frame).unwrap().info, b"more");
         // The original QSO is still waiting on its own ack.
-        assert!(q.tx_snapshots().iter().any(|s| s.peer == "OTHER" && s.unack == 1));
+        assert!(q
+            .tx_snapshots()
+            .iter()
+            .any(|s| s.peer == "OTHER" && s.unack == 1));
     }
 
     #[test]

@@ -203,10 +203,7 @@ mod tests {
         std::fs::write(root.join("bell.wav"), b"RIFF").unwrap();
         let found = super::find_named_file(&root, "BELL.WAV").unwrap();
         assert!(found.is_file());
-        assert!(found
-            .file_name()
-            .unwrap()
-            .eq_ignore_ascii_case("BELL.WAV"));
+        assert!(found.file_name().unwrap().eq_ignore_ascii_case("BELL.WAV"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

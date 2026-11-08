@@ -121,8 +121,7 @@ pub fn run(
             // A poll occupies the one outstanding host frame, so its reply is
             // not taken as the acknowledgement of operator data.
             let queued = if !asked_monitor {
-                let queued =
-                    delivery.enqueue_kind(0, b"M".to_vec(), HostKind::Poll, now);
+                let queued = delivery.enqueue_kind(0, b"M".to_vec(), HostKind::Poll, now);
                 if queued.is_some() {
                     asked_monitor = true;
                 }
