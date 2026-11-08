@@ -34,8 +34,8 @@ use super::layout::{compute, toolbar_caption, ActivePane, PaneRects, SplitState}
 use super::theme::Theme;
 
 const MAX_LINES: usize = 2_000;
-/// Fixed cell width for ` N: ...... ` tabs (fits channel 10).
-const CHANNEL_TAB_WIDTH: u16 = 12;
+/// Fixed cell width for ` N: · · · · · · ` tabs (fits channel 10).
+const CHANNEL_TAB_WIDTH: u16 = 16;
 
 #[derive(Debug, Clone, Copy)]
 enum HitAction {
@@ -566,7 +566,7 @@ fn channel_tab_span(n: u8, active: ActivePane, t: &Theme) -> Span<'static> {
         Style::default().fg(Color::Black).bg(Color::Gray)
     };
     // Pad to CHANNEL_TAB_WIDTH for stable mouse hit boxes.
-    let mut label = format!(" {n}: ...... ");
+    let mut label = format!(" {n}: · · · · · · ");
     while label.chars().count() < CHANNEL_TAB_WIDTH as usize {
         label.push(' ');
     }

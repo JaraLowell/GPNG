@@ -234,18 +234,42 @@ impl TextPad {
     /// repeat the three-space indent on every continuation. A wrap prefers a
     /// space. A `<0xNN>` / `<U+NNNN>` token moves as a whole.
     pub fn layout_job_wrapped(&self, columns: usize) -> LayoutJob {
+        self.layout_job_wrapped_indent(columns, true)
+    }
+
+    /// Channel / spy / mail pads: wrap at `columns` with no continuation indent.
+    pub fn layout_job_wrapped_plain(&self, columns: usize) -> LayoutJob {
+        self.layout_job_wrapped_indent(columns, false)
+    }
+
+    fn layout_job_wrapped_indent(&self, columns: usize, monitor_indent: bool) -> LayoutJob {
         let mut job = LayoutJob::default();
         let font = FontId::monospace(PAD_FONT_SIZE);
         let mut first = true;
         for line in &self.lines {
-            let indent = monitor_wrap_indent(line);
+            let indent = if monitor_indent {
+                monitor_wrap_indent(line)
+            } else {
+                0
+            };
             let base = if line.runs.is_empty() {
                 line.kind.color()
             } else {
                 monitor_color(&line.text)
             };
             let rows = if line.nowrap {
+                // Keep hard `\n` breaks, but still fold each segment to the pane.
                 fixed_rows(&line.text, base)
+                    .into_iter()
+                    .flat_map(|seg| {
+                        let text: String = seg.iter().map(|r| r.text.as_str()).collect();
+                        if text.is_empty() {
+                            vec![Vec::new()]
+                        } else {
+                            wrap_monitor_rows(&text, &[], columns, indent, base)
+                        }
+                    })
+                    .collect()
             } else {
                 wrap_monitor_rows(&line.text, &line.runs, columns, indent, base)
             };
@@ -745,6 +769,26 @@ mod tests {
         let mut pad = TextPad::new(4);
         pad.push_unwrapped(PadKind::System, text);
         let job = pad.layout_job_wrapped(40);
-        assert_eq!(job.text, text);
+        // Hard `\n` still splits; each side also folds to the pane width.
+        assert!(job.text.contains("Ulf Saran"));
+        assert!(job
+            .text
+            .lines()
+            .all(|row| row.chars().count() <= 40));
+    }
+
+    #[test]
+    fn long_payload_with_hex_tokens_stays_within_columns() {
+        let text = "   e gebruik ik op een oude P3 200 MHz,<0x0a>onder DOS. als je ook van die oude goede tijd wild genieten neem dan,<0x0a>";
+        let runs = monitor_paint_runs(text, MONITOR_PAYLOAD);
+        let rows = wrap_monitor_rows(text, &runs, 48, 3, MONITOR_PAYLOAD);
+        assert!(rows.iter().all(|row| {
+            row.iter()
+                .map(|run| run.text.chars().count())
+                .sum::<usize>()
+                <= 48
+        }));
+        assert!(shown(&rows).iter().any(|r| r.contains("<0x0a>")));
+        assert!(shown(&rows).iter().all(|r| r.starts_with("   ")));
     }
 }

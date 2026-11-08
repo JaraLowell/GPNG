@@ -85,6 +85,8 @@ const AX25_SABM_RETRIES: u8 = 3;
 /// Extra DISC sends after the first while waiting for UA, then clear locally.
 const AX25_DISC_RETRIES: u8 = 3;
 const COMPOSE_ROWS: usize = 3;
+/// Pre-write font. Sized so three rows fill the compose strip with no orphan gap.
+const COMPOSE_FONT_SIZE: f32 = 15.0;
 /// After `//Q` queues QRT, wait at least this long for TX counters before
 /// treating an idle buffer as "already sent" (avoids DISC wiping the queue).
 const QRT_DISC_ARM: Duration = Duration::from_millis(400);
@@ -134,12 +136,28 @@ fn mix_rgb(from: Color32, to: Color32, t: f32) -> Color32 {
 }
 
 fn paint_bevel(painter: &egui::Painter, rect: Rect, pressed: bool) {
-    let hi_face = Color32::from_rgb(200, 200, 200); // soft highlight (not hard white)
+    let hi_face = Color32::from_rgb(200, 200, 200); // soft highlight (channel / session chrome)
     let (hi, lo) = if pressed {
         (Color32::BLACK, hi_face)
     } else {
         (hi_face, Color32::BLACK)
     };
+    paint_bevel_colors(painter, rect, hi, lo);
+}
+
+/// Classic DOS icon bevel: hard white / black.
+/// Raised = white top+left, black bottom+right.
+/// Sunken (active pane / mouse down) = reversed.
+fn paint_icon_bevel(painter: &egui::Painter, rect: Rect, pressed: bool) {
+    let (hi, lo) = if pressed {
+        (Color32::BLACK, Color32::WHITE)
+    } else {
+        (Color32::WHITE, Color32::BLACK)
+    };
+    paint_bevel_colors(painter, rect, hi, lo);
+}
+
+fn paint_bevel_colors(painter: &egui::Painter, rect: Rect, hi: Color32, lo: Color32) {
     // egui Rect max edge is exclusive — keep the stroke inside the filled area.
     let x0 = rect.left();
     let y0 = rect.top();
@@ -2198,7 +2216,7 @@ impl GpGuiApp {
         } else if let Some(call) = self.channel_connecting.get(idx).and_then(|p| p.as_ref()) {
             format!("{n}: {call}")
         } else {
-            format!("{n}: ......")
+            format!("{n}: · · · · · ·")
         }
     }
 
@@ -4697,32 +4715,29 @@ impl GpGuiApp {
         }
     }
 
-    fn active_layout(&self) -> LayoutJob {
+    /// Channel / spy / mail pads wrapped to the live viewport width.
+    fn active_layout_for(&self, columns: usize) -> LayoutJob {
         match self.active {
             ActivePane::Spy(n) => {
                 let idx = n.saturating_sub(1) as usize;
                 self.spy_pads
                     .get(idx)
-                    .map(TextPad::layout_job)
+                    .map(|pad| pad.layout_job_wrapped_plain(columns))
                     .unwrap_or_default()
             }
-            ActivePane::Check => self.bbs_pad.layout_job(),
-            ActivePane::List => self.box_pad.layout_job(),
+            ActivePane::Check => self.bbs_pad.layout_job_wrapped_plain(columns),
+            ActivePane::List => self.box_pad.layout_job_wrapped_plain(columns),
             ActivePane::Channel(n) => self
                 .pads
                 .get(n as usize)
-                .map(TextPad::layout_job)
+                .map(|pad| pad.layout_job_wrapped_plain(columns))
                 .unwrap_or_default(),
-            _ => self.monitor_layout(),
+            _ => self.monitor_layout_for(columns),
         }
     }
 
     /// Monitor pad (`pads[0]`). The full Monitor pane and the channel split
     /// both paint this job — there is no second monitor buffer.
-    fn monitor_layout(&self) -> LayoutJob {
-        self.monitor_layout_for(usize::MAX)
-    }
-
     /// `columns` is how many monospace cells fit in the pane right now.
     fn monitor_layout_for(&self, columns: usize) -> LayoutJob {
         self.pads
@@ -5640,28 +5655,31 @@ impl GpGuiApp {
                 )
                 .show(ctx, |ui| {
                     ui.set_min_width(420.0);
-                    for (i, row) in rows.iter().enumerate() {
-                                let value = self.setup_value(row.id);
-                                let line = if value.is_empty() {
-                                    row.id.label().to_string()
-                                } else {
-                                    dotted(row.id.label(), &value, 42)
-                                };
-                                let color = match row.kind {
-                                    RowKind::Toggle | RowKind::Number => {
-                                        Color32::from_rgb(85, 255, 85)
-                                    }
-                                    _ => Color32::from_rgb(255, 255, 85),
-                                };
-                                let resp = setup_row(ui, &line, color, i == cursor);
-                                if resp.clicked() {
-                                    self.setup_cursor = i;
+                    // Keep the fixed-width rows centered in the grey dialog face.
+                    ui.vertical_centered(|ui| {
+                        for (i, row) in rows.iter().enumerate() {
+                            let value = self.setup_value(row.id);
+                            let line = if value.is_empty() {
+                                row.id.label().to_string()
+                            } else {
+                                dotted(row.id.label(), &value, 42)
+                            };
+                            let color = match row.kind {
+                                RowKind::Toggle | RowKind::Number => {
+                                    Color32::from_rgb(85, 255, 85)
                                 }
-                                if resp.double_clicked() {
-                                    self.setup_cursor = i;
-                                    self.activate_setup_row();
-                                }
+                                _ => Color32::from_rgb(255, 255, 85),
+                            };
+                            let resp = setup_row(ui, &line, color, i == cursor);
+                            if resp.clicked() {
+                                self.setup_cursor = i;
                             }
+                            if resp.double_clicked() {
+                                self.setup_cursor = i;
+                                self.activate_setup_row();
+                            }
+                        }
+                    });
                 });
                 if !open {
                     self.close_setup();
@@ -6610,19 +6628,23 @@ fn centered_popup<'a>(
 }
 
 fn setup_row(ui: &mut Ui, line: &str, color: Color32, selected: bool) -> egui::Response {
-    // Same grey family as the window; selection sinks to dark grey.
+    // Idle near-black grey; the row being edited is dark red.
     let bg = if selected {
-        VGA_DARK_GRAY
+        Color32::from_rgb(128, 0, 0)
     } else {
-        Color32::from_rgb(150, 150, 150)
+        Color32::from_rgb(48, 48, 48)
     };
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(400.0, 18.0), Sense::click());
+    let font = FontId::monospace(14.0);
+    // Size the bar to the text so the box and line stay aligned.
+    let text_w = ui.fonts(|f| f.layout_no_wrap(line.to_string(), font.clone(), color).size().x);
+    let width = (text_w + 12.0).max(400.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::click());
     ui.painter().rect_filled(rect, 0.0, bg);
     ui.painter().text(
         rect.left_center() + Vec2::new(6.0, 0.0),
         egui::Align2::LEFT_CENTER,
         line,
-        FontId::monospace(14.0),
+        font,
         color,
     );
     resp
@@ -6686,8 +6708,10 @@ impl eframe::App for GpGuiApp {
         }
 
         // Panels own reserved bands so CentralPanel (RX) cannot paint over them.
-        // Strip height stays fixed; icons scale to fill it (1 px top/bottom).
-        let icons_h = 72.0_f32;
+        // Strip height stays fixed; icons fill it (1px air) with the DOS bevel.
+        let icons_h = ICON_STRIP_H;
+        let min_w = icon_row_min_width(icons_h, ICON_TOOLBAR_SLOTS);
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(min_w, 700.0)));
         let session_h = if self.show_session_bar() { 26.0 } else { 0.0 };
         let status_h = 44.0_f32;
         // Channel / BBS / Box row is 20% shorter than the old 72px grid.
@@ -6761,7 +6785,7 @@ impl eframe::App for GpGuiApp {
                         pane_scroll_owner(ActivePane::Monitor),
                         show_bar,
                         0.0,
-                        true,
+                        false,
                         |ui| {
                             let cols = text_columns(ui);
                             self.monitor_layout_for(cols)
@@ -7346,20 +7370,25 @@ impl GpGuiApp {
             Frame::none()
                 .fill(fill)
                 .stroke(Stroke::new(1.0, stroke))
-                .inner_margin(4.0)
+                // Thin bottom margin so the compose strip can sit on the purple floor.
+                .inner_margin(egui::Margin {
+                    left: 4.0,
+                    right: 4.0,
+                    top: 4.0,
+                    bottom: 1.0,
+                })
                 .show(ui, |ui| {
-                    let inner = Vec2::new(
-                        (rect.width() - 2.0).max(1.0),
-                        (rect.height() - 2.0).max(1.0),
-                    );
-                    ui.set_min_size(inner);
-                    ui.set_max_size(inner);
+                    let avail = ui.available_size();
+                    ui.set_min_size(avail);
+                    ui.set_max_size(avail);
+                    // No gap between history and compose — that band looked like a dead line.
+                    ui.spacing_mut().item_spacing.y = 0.0;
                     if !enabled {
                         ui.centered_and_justified(|ui| {
                             ui.label(
                                 RichText::new("Input — Monitor or channel only")
                                     .color(Color32::from_rgb(200, 200, 200))
-                                    .font(FontId::monospace(13.0)),
+                                    .font(FontId::monospace(15.0)),
                             );
                         });
                         return;
@@ -7368,8 +7397,29 @@ impl GpGuiApp {
                     // Flush multi-line paste before layout so history stays one row each.
                     self.absorb_compose_newlines();
 
-                    let compose_h = 52.0_f32.min(inner.y * 0.55).max(24.0);
-                    let hist_h = (ui.available_height() - compose_h - 2.0).max(8.0);
+                    let compose_font = FontId::monospace(COMPOSE_FONT_SIZE);
+                    let row_h = ui.fonts(|f| f.row_height(&compose_font)).max(1.0);
+                    let char_w = ui
+                        .fonts(|f| f.glyph_width(&compose_font, '_'))
+                        .max(6.0);
+                    let w = ui.available_width();
+                    let total_h = ui.available_height();
+                    // Height follows wrapped content (1..=COMPOSE_ROWS). Always
+                    // reserving 3 rows left empty purple under a short line like "b".
+                    let cols = ((w / char_w).floor() as usize).max(1);
+                    let chars = self
+                        .compose
+                        .get(slot)
+                        .map(|c| c.input.chars().count())
+                        .unwrap_or(0);
+                    let wrapped = if chars == 0 {
+                        1
+                    } else {
+                        chars.div_ceil(cols).max(1)
+                    };
+                    let compose_rows = wrapped.clamp(1, COMPOSE_ROWS);
+                    let compose_h = row_h * compose_rows as f32;
+                    let hist_h = (total_h - compose_h).max(8.0);
                     let hist_cursor = self.compose.get(slot).and_then(|c| c.hist_cursor);
                     let history: Vec<String> = self
                         .compose
@@ -7382,35 +7432,42 @@ impl GpGuiApp {
                         })
                         .unwrap_or_default();
                     let mut pick: Option<usize> = None;
-                    egui::ScrollArea::vertical()
-                        .max_height(hist_h)
-                        .stick_to_bottom(hist_cursor.is_none())
-                        .id_salt(("typed_history", slot))
-                        .show(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            for (i, line) in history.iter().enumerate() {
-                                let selected = hist_cursor == Some(i);
-                                let color = if selected {
-                                    Color32::from_rgb(255, 255, 85)
-                                } else {
-                                    Color32::WHITE
-                                };
-                                let resp = ui.add(
-                                    egui::Label::new(
-                                        RichText::new(line)
-                                            .color(color)
-                                            .font(FontId::monospace(12.0)),
-                                    )
-                                    .sense(Sense::click()),
-                                );
-                                if resp.clicked() {
-                                    pick = Some(i);
+                    ui.allocate_ui(Vec2::new(w, hist_h), |ui| {
+                        ui.set_min_size(Vec2::new(w, hist_h));
+                        ui.set_max_size(Vec2::new(w, hist_h));
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        egui::ScrollArea::vertical()
+                            .max_height(hist_h)
+                            .auto_shrink([false, false])
+                            .stick_to_bottom(hist_cursor.is_none())
+                            .id_salt(("typed_history", slot))
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                for (i, line) in history.iter().enumerate() {
+                                    let selected = hist_cursor == Some(i);
+                                    let color = if selected {
+                                        Color32::from_rgb(255, 255, 85)
+                                    } else {
+                                        Color32::WHITE
+                                    };
+                                    let resp = ui.add(
+                                        egui::Label::new(
+                                            RichText::new(line)
+                                                .color(color)
+                                                .font(FontId::monospace(14.0)),
+                                        )
+                                        .sense(Sense::click()),
+                                    );
+                                    if resp.clicked() {
+                                        pick = Some(i);
+                                    }
+                                    if selected {
+                                        resp.scroll_to_me(Some(egui::Align::Center));
+                                    }
                                 }
-                                if selected {
-                                    resp.scroll_to_me(Some(egui::Align::Center));
-                                }
-                            }
-                        });
+                            });
+                    });
                     if let Some(i) = pick {
                         self.load_history_line(i);
                     }
@@ -7440,23 +7497,46 @@ impl GpGuiApp {
                             .unwrap_or(0);
                         place_compose_caret(ui.ctx(), focus_id, len);
                     }
-                    // Frameless compose — fixed height; soft-wrap only (no raw newlines).
-                    let edit = {
+                    // Hide egui's tall bar caret; we paint a DOS `_` after show().
+                    ui.visuals_mut().text_cursor.stroke =
+                        Stroke::new(0.0, Color32::TRANSPARENT);
+                    // Exact rows×row_h flush to the purple floor (history fills above).
+                    let output = {
                         let input_ref = &mut self.compose[slot].input;
-                        ui.add_sized(
-                            Vec2::new(ui.available_width(), compose_h),
-                            egui::TextEdit::multiline(input_ref)
-                                .id(focus_id)
-                                .desired_rows(COMPOSE_ROWS)
-                                .desired_width(f32::INFINITY)
-                                .frame(false)
-                                .margin(egui::Margin::ZERO)
-                                .text_color(Color32::WHITE)
-                                .font(FontId::monospace(14.0)),
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(w, compose_h),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
+                                ui.set_min_size(Vec2::new(w, compose_h));
+                                ui.set_max_size(Vec2::new(w, compose_h));
+                                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                                egui::TextEdit::multiline(input_ref)
+                                    .id(focus_id)
+                                    .desired_rows(compose_rows)
+                                    .desired_width(w)
+                                    .frame(false)
+                                    .margin(egui::Margin::ZERO)
+                                    .text_color(Color32::WHITE)
+                                    .font(compose_font)
+                                    .show(ui)
+                            },
                         )
+                        .inner
                     };
-                    let changed = edit.changed();
-                    let focused = edit.has_focus();
+                    let changed = output.response.changed();
+                    let focused = output.response.has_focus();
+                    if focused {
+                        if let Some(range) = output.cursor_range {
+                            paint_dos_caret(
+                                ui,
+                                output.galley_pos,
+                                output.galley.as_ref(),
+                                &range.primary,
+                                row_h,
+                                char_w,
+                            );
+                        }
+                    }
                     if changed {
                         // Paste of a document lands as newlines; send lines immediately.
                         self.absorb_compose_newlines();
@@ -7844,22 +7924,28 @@ impl GpGuiApp {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, self.menu_bg);
+        // Full red field so a 1px strip stays visible above/below the buttons.
+        painter.rect_filled(rect, 0.0, VGA_DARK_RED);
 
         let cols = 6usize;
         let rows = 2usize;
-        let cell_w = rect.width() / cols as f32;
-        let cell_h = rect.height() / rows as f32;
+        // Inset: 1px white border + 1px red above/below the button rows.
+        let grid = Rect::from_min_max(
+            Pos2::new(rect.left() + 1.0, rect.top() + 2.0),
+            Pos2::new(rect.right() - 1.0, rect.bottom() - 2.0),
+        );
+        let cell_w = grid.width() / cols as f32;
+        let cell_h = grid.height() / rows as f32;
 
         for row in 0..rows {
             for col in 0..cols {
                 let n = (row * cols + col + 1) as u8;
                 let cell = Rect::from_min_size(
                     Pos2::new(
-                        rect.left() + col as f32 * cell_w + 1.0,
-                        rect.top() + row as f32 * cell_h + 1.0,
+                        grid.left() + col as f32 * cell_w + 1.0,
+                        grid.top() + row as f32 * cell_h + 1.0,
                     ),
-                    Vec2::new(cell_w - 2.0, cell_h - 2.0),
+                    Vec2::new((cell_w - 2.0).max(1.0), (cell_h - 2.0).max(1.0)),
                 );
                 let (label, action) = if n <= self.channels {
                     (self.channel_label(n), Some(ActivePane::Channel(n)))
@@ -7917,6 +8003,10 @@ impl GpGuiApp {
                 }
             }
         }
+
+        // 1px white surround — same treatment as the clock column.
+        ui.painter()
+            .rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0, Color32::WHITE));
     }
 
     fn mail_list_pane(&mut self, ui: &mut Ui, width: f32, height: f32, list: bool) {
@@ -8008,17 +8098,13 @@ impl GpGuiApp {
             _ => self.monitor_bg,
         };
         let monitor = matches!(self.active, ActivePane::Monitor);
-        let job = if monitor {
-            None
-        } else {
-            Some(self.active_layout())
-        };
         let nudge = self.session.take_scroll_nudge();
         // ScrLock off → follow last line; on → freeze (QSO and split monitor).
         let stick = !self.session.scr_lock;
         let smooth = matches!(self.session.line_step, super::session::LineStep::Smooth);
         let show_bar = self.session.scrollbar;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+        // Never enable horizontal scroll — wrap to the viewport instead.
         paint_text_pane(
             ui,
             rect,
@@ -8029,12 +8115,13 @@ impl GpGuiApp {
             pane_scroll_owner(self.active),
             show_bar,
             nudge,
-            true,
+            false,
             |ui| {
+                let cols = text_columns(ui);
                 if monitor {
-                    self.monitor_layout_for(text_columns(ui))
+                    self.monitor_layout_for(cols)
                 } else {
-                    job.unwrap_or_default()
+                    self.active_layout_for(cols)
                 }
             },
         );
@@ -8156,6 +8243,7 @@ impl GpGuiApp {
     /// an outer `ScrollArea` (TextEdit alone was clipping long buffers).
     fn editor_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
         const EDITOR_COLS: f32 = 90.0;
+        const EDITOR_FONT_SIZE: f32 = 16.0;
         let bg = self.editor_bg;
         let fg = self.editor_fg;
         // Same idle channel-button fill; white labels on dark grey.
@@ -8163,7 +8251,7 @@ impl GpGuiApp {
         let help_fg = Color32::WHITE;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
-            let font = FontId::monospace(14.0);
+            let font = FontId::monospace(EDITOR_FONT_SIZE);
             let char_w = ui.fonts(|f| f.glyph_width(&font, 'M'));
             let row_h = ui.fonts(|f| f.row_height(&font)).max(1.0);
             let editor_text_w = char_w * EDITOR_COLS;
@@ -8171,8 +8259,12 @@ impl GpGuiApp {
             let editor_col_w = (editor_text_w + 18.0).min(ui.available_width());
             let pane_h = ui.available_height();
 
-            ui.horizontal(|ui| {
-                ui.allocate_ui(Vec2::new(editor_col_w, pane_h), |ui| {
+            // TOP — not horizontal()'s vertical center — so a short CTEXT stays at the top.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                ui.allocate_ui_with_layout(
+                    Vec2::new(editor_col_w, pane_h),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
                     Frame::none()
                         .fill(bg)
                         .stroke(Stroke::new(1.0, VGA_GRAY))
@@ -8184,26 +8276,39 @@ impl GpGuiApp {
                             ));
                             ui.set_max_size(ui.min_size());
                             let avail = ui.available_size();
+                            // Fill the viewport with editable rows so the caret can go
+                            // under the last line; never shorter than the text itself.
                             let min_rows = ((avail.y / row_h).floor() as usize).max(8);
                             let content_rows = self.editor.text.split('\n').count().max(1);
                             let rows = content_rows.max(min_rows);
                             let before = self.editor.text.clone();
+                            let underscore_w = ui
+                                .fonts(|f| f.glyph_width(&font, '_'))
+                                .max(6.0);
+                            // Hide egui's tall bar; paint a DOS `_` after show().
+                            ui.visuals_mut().text_cursor.stroke =
+                                Stroke::new(0.0, Color32::TRANSPARENT);
                             let mut output = None;
                             egui::ScrollArea::vertical()
                                 .id_salt("gp_editor_scroll")
                                 .auto_shrink([false, false])
                                 .max_height(avail.y)
                                 .show(ui, |ui| {
-                                    output = Some(
-                                        egui::TextEdit::multiline(&mut self.editor.text)
-                                            .id_salt("gp_editor")
-                                            .font(font.clone())
-                                            .text_color(fg)
-                                            .frame(false)
-                                            .desired_width(editor_text_w)
-                                            .desired_rows(rows)
-                                            .lock_focus(true)
-                                            .show(ui),
+                                    ui.with_layout(
+                                        egui::Layout::top_down(egui::Align::LEFT),
+                                        |ui| {
+                                            output = Some(
+                                                egui::TextEdit::multiline(&mut self.editor.text)
+                                                    .id_salt("gp_editor")
+                                                    .font(font.clone())
+                                                    .text_color(fg)
+                                                    .frame(false)
+                                                    .desired_width(editor_text_w)
+                                                    .desired_rows(rows)
+                                                    .lock_focus(true)
+                                                    .show(ui),
+                                            );
+                                        },
                                     );
                                 });
                             if let Some(output) = output {
@@ -8214,6 +8319,16 @@ impl GpGuiApp {
                                     let cc = cursor.as_sorted_char_range().start;
                                     let snap = self.editor.text.clone();
                                     self.editor.update_cursor_from_galley(&snap, cc);
+                                    if output.response.has_focus() {
+                                        paint_dos_caret(
+                                            ui,
+                                            output.galley_pos,
+                                            output.galley.as_ref(),
+                                            &cursor.primary,
+                                            row_h,
+                                            underscore_w,
+                                        );
+                                    }
                                 }
                             }
                         });
@@ -8221,7 +8336,10 @@ impl GpGuiApp {
 
                 let help_w = ui.available_width().max(0.0);
                 if help_w > 40.0 {
-                    ui.allocate_ui(Vec2::new(help_w, pane_h), |ui| {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(help_w, pane_h),
+                        egui::Layout::top_down(egui::Align::LEFT),
+                        |ui| {
                         Frame::none()
                             .fill(help_bg)
                             .stroke(Stroke::new(1.0, VGA_GRAY))
@@ -8275,7 +8393,12 @@ impl GpGuiApp {
 
     fn session_bar(&mut self, ui: &mut Ui, width: f32, height: f32) {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-        ui.painter_at(rect).rect_filled(rect, 0.0, VGA_GRAY);
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, VGA_GRAY);
+        // Classic raised strip: white on top, black underneath (also when the
+        // bar rides up for channel splitscreen + monitor).
+        painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, Color32::WHITE));
+        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, Color32::BLACK));
 
         // Behind the buttons. A still press still clicks; a move resizes.
         // Drag-only, and not focusable, so the compose box keeps the keyboard.
@@ -9659,18 +9782,19 @@ impl GpGuiApp {
             ActivePane::Channel(n) => toolbar_for_channel(self.channel_linked(n)),
             other => toolbar_for(other),
         };
-        let n = toolbar.len().max(1) as f32;
-        // Fill strip height with 1 px air above/below; width follows aspect.
-        let vpad = 1.0;
-        let icon_h = (rect.height() - vpad * 2.0).max(1.0);
-        let scale = icon_h / ICON_HEIGHT as f32;
-        let icon_w = ICON_WIDTH as f32 * scale;
-        let gap = ((rect.width() - n * icon_w) / (n + 1.0)).max(4.0);
+        let n = toolbar.len().max(1);
+        let size = icon_display_size(rect.height());
+        let icon_w = size.x;
+        let icon_h = size.y;
+        let gap = ICON_STRIP_GAP;
+        // Fixed 5px red between icons; center the row when the strip is wider.
+        let row_w = n as f32 * icon_w + (n.saturating_sub(1) as f32) * gap;
+        let start_x = rect.left() + ((rect.width() - row_w) * 0.5).max(0.0);
+        let y = rect.top() + ((rect.height() - icon_h) * 0.5).max(0.0);
 
         let mut clicked: Option<&'static str> = None;
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
-            let mut x = rect.left() + gap;
-            let y = rect.top() + vpad;
+            let mut x = start_x;
             for &icon_idx in toolbar {
                 let label = ICON_SLOT_LABELS.get(icon_idx).copied().unwrap_or("?");
                 let cell = Rect::from_min_size(Pos2::new(x, y), Vec2::new(icon_w, icon_h));
@@ -9698,7 +9822,8 @@ impl GpGuiApp {
                     ("LIST", ActivePane::List) => true,
                     _ => false,
                 };
-                paint_bevel(
+                // DOS 3D: active / held → sunken (black TL, white BR); else raised.
+                paint_icon_bevel(
                     ui.painter(),
                     cell,
                     icon_on || resp.is_pointer_button_down_on(),
@@ -10450,19 +10575,21 @@ fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool) -> bool {
     let cx = rect.center().x;
     let dial_center = Pos2::new(cx, rect.top() + 12.0 + radius);
 
-    // No green rim — dark face only on the dark-green field.
-    painter.circle_filled(dial_center, radius + 1.0, Color32::from_rgb(20, 40, 20));
-    painter.circle_stroke(
-        dial_center,
-        radius,
-        Stroke::new(1.5, Color32::from_rgb(200, 200, 200)),
-    );
+    // Dark grey face, no outline ring.
+    painter.circle_filled(dial_center, radius + 1.0, VGA_DARK_GRAY);
 
-    for i in 0..12 {
-        let a = (i as f32) / 12.0 * TAU - TAU / 4.0;
+    let tick_yellow = Color32::from_rgb(255, 255, 85);
+    let hour_len = 8.0;
+    let minute_len = hour_len * 0.5;
+    // 60 minute ticks; every 5th is a longer hour mark.
+    for i in 0..60 {
+        let a = (i as f32) / 60.0 * TAU - TAU / 4.0;
+        let hour = i % 5 == 0;
+        let len = if hour { hour_len } else { minute_len };
+        let width = if hour { 2.0 } else { 1.0 };
         let outer = dial_center + Vec2::angled(a) * (radius - 2.0);
-        let inner = dial_center + Vec2::angled(a) * (radius - 10.0);
-        painter.line_segment([inner, outer], Stroke::new(2.0, Color32::WHITE));
+        let inner = dial_center + Vec2::angled(a) * (radius - 2.0 - len);
+        painter.line_segment([inner, outer], Stroke::new(width, tick_yellow));
     }
 
     let h = now.hour() as f32 % 12.0 + now.minute() as f32 / 60.0;
@@ -10573,8 +10700,9 @@ fn text_columns(ui: &Ui) -> usize {
     let char_w = ui
         .fonts(|fonts| fonts.glyph_width(&FontId::monospace(padlog::PAD_FONT_SIZE), '0'))
         .max(1.0);
-    // One cell of slack so pixel rounding cannot open a horizontal scrollbar.
-    let width = (ui.available_width() - char_w).max(char_w);
+    // Two cells of slack: pixel rounding + room so a vertical bar cannot shove
+    // a wrapped row past the viewport and invent a horizontal scrollbar.
+    let width = (ui.available_width() - 2.0 * char_w).max(char_w);
     ((width / char_w).floor() as usize).max(8)
 }
 
@@ -10667,8 +10795,9 @@ fn soft_scroll_toward(offset: f32, max_off: f32, carry: f32, dt: f32, smooth: bo
 /// Scrollable text. `id` keeps the Monitor pane and the channel split from
 /// sharing one scrollbar position. The bytes are still the same pad.
 ///
-/// `scroll_x` is off for the monitor: rows are wrapped to `ui`'s width.
-/// The job is built inside the scroll area so that width is the live viewport.
+/// `scroll_x` must stay off for monitor/channel pads: `ScrollArea::both`
+/// makes `available_width` unbounded so word-wrap never fires. Rows are
+/// wrapped to the live viewport width inside the vertical scroll area.
 ///
 /// With ScrLock off, `/` jumps to a new line and the stair crawls there.
 fn paint_text_pane(
@@ -10806,6 +10935,45 @@ fn place_compose_caret(ctx: &Context, id: egui::Id, char_index: usize) {
     state.store(ctx, id);
 }
 
+/// Classic MS-DOS caret: a blinking underscore under the insert point.
+fn paint_dos_caret(
+    ui: &Ui,
+    galley_pos: Pos2,
+    galley: &egui::Galley,
+    cursor: &egui::epaint::text::cursor::Cursor,
+    row_h: f32,
+    char_w: f32,
+) {
+    let rect =
+        egui::text_selection::text_cursor_state::cursor_rect(galley_pos, galley, cursor, row_h);
+    let style = &ui.visuals().text_cursor;
+    let on = if style.blink {
+        let t = ui.input(|i| i.time);
+        let period = f64::from(style.on_duration + style.off_duration).max(0.05);
+        let phase = t % period;
+        if phase < f64::from(style.on_duration) {
+            ui.ctx()
+                .request_repaint_after(Duration::from_secs_f32(style.on_duration - phase as f32));
+            true
+        } else {
+            ui.ctx().request_repaint_after(Duration::from_secs_f32(
+                (style.on_duration + style.off_duration) - phase as f32,
+            ));
+            false
+        }
+    } else {
+        true
+    };
+    if !on {
+        return;
+    }
+    let y = rect.bottom() - 1.5;
+    let x0 = rect.left();
+    let x1 = x0 + char_w;
+    ui.painter()
+        .line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], Stroke::new(2.0, Color32::WHITE));
+}
+
 enum HistMove {
     Stay,
     Load(usize),
@@ -10869,13 +11037,35 @@ fn split_monitor_height(body: f32, lower: f32) -> f32 {
     (body * clamp_split_lower(lower)).clamp(min, body - min)
 }
 
+/// Bottom icon strip height (panel). Top edge sits 4px higher than the old 72px bar.
+const ICON_STRIP_H: f32 = 76.0;
+/// Red air between neighbouring icon faces.
+const ICON_STRIP_GAP: f32 = 5.0;
+const ICON_STRIP_VPAD: f32 = 1.0;
+/// Every toolbar has eight slots (EXIT is the last).
+const ICON_TOOLBAR_SLOTS: usize = 8;
+
+fn icon_display_size(strip_h: f32) -> Vec2 {
+    let icon_h = (strip_h - ICON_STRIP_VPAD * 2.0).max(1.0);
+    let icon_w = ICON_WIDTH as f32 * (icon_h / ICON_HEIGHT as f32);
+    Vec2::new(icon_w, icon_h)
+}
+
+/// Minimum width for `count` icons with [`ICON_STRIP_GAP`] between them.
+fn icon_row_min_width(strip_h: f32, count: usize) -> f32 {
+    let size = icon_display_size(strip_h);
+    let n = count.max(1) as f32;
+    n * size.x + (n - 1.0).max(0.0) * ICON_STRIP_GAP
+}
+
 pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Result<()> {
     let title = version::window_title();
-    let width = cfg.window.width.max(860.0);
+    let min_w = icon_row_min_width(ICON_STRIP_H, ICON_TOOLBAR_SLOTS);
+    let width = cfg.window.width.max(min_w);
     let height = cfg.window.height.max(700.0);
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([width, height])
-        .with_min_inner_size([860.0, 700.0])
+        .with_min_inner_size([min_w, 700.0])
         .with_title(title.clone())
         .with_icon(load_window_icon());
     if let (Some(x), Some(y)) = (cfg.window.x, cfg.window.y) {
