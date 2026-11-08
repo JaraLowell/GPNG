@@ -1,16 +1,12 @@
-Externe programma's werkend onder GP
+ .ooO  NL0MSK Run Ooo
+|
+| External programs running under GP
+|
+| NAME          INFO
+|
+| NEWS       -  Displays the latest news (updated every 3 hours)
+| FREE       -  Provides information about the SYSOP computer's memory.
+| BELL       -  Rings the SYSOP bell
+|
+| Run the programs with: //NAME [options]
 
-NAAM          INFO
-
-NEWS       -  Laat actueel nieuws zien (vernieuwd elke 3 uur)
-FREE       -  Geeft info over geheugen van de SYSOP-Compie.
-BELL       -  even de bell by SYSOP aan slingeren
-ELIZA      -  uw persoonlijke psychiater
-GDOS       -  gp dos, snuffel op de harde schijf van de SYSOP
-TTT        -  Spel Boter kaas en eieren
-CRYPTO     -  Programma om gecodeerd over de packet te schrijfen
-CONV       -  Comuniceer progie. van GP. kun je op andere kanaalen
-              hier bij (NL0MSK) tokkelen.
-7P0SER     -  mmmm..... weet nog niet wat het doet....
-
-Roep de programma's aan met: //NAAM [opties]
