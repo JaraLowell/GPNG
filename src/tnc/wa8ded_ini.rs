@@ -138,13 +138,23 @@ pub fn format_timing_banner(
     let t = from_open("T");
     let o = from_open("O");
 
+    // On-air / pad text uses CR (classic GP / the Python remote dump).
     format!(
-        "Timing-Parameters of {mycall}:\r\n\
-         P-Persistance: {p:<9}Slottime: {w}\r\n\
-         Frack: {frac}\r\n\
-         T2-Timer: {t2:<14}T3-Timer: {t3}\r\n\
+        "Timing-Parameters of {mycall}:\r\
+         P-Persistance: {p:<9}Slottime: {w}\r\
+         Frack: {frac}\r\
+         T2-Timer: {t2:<14}T3-Timer: {t3}\r\
          TXDelay: {t:<15}MaxUnack: {o}"
     )
+}
+
+/// Banner from `[open]` (or `init[]`) alone — live F/@T2/@T3 show as `?`.
+pub fn timing_banner_fallback(mycall: &str, open_or_init: &[String], monitor_mode: &str) -> String {
+    let open: Vec<String> = open_or_init
+        .iter()
+        .map(|l| expand_placeholders(l, monitor_mode))
+        .collect();
+    format_timing_banner(mycall, &[], &open)
 }
 
 fn wait_reply(
@@ -287,5 +297,29 @@ JHOST0
             extract_section(text, "close").unwrap(),
             vec!["MN", "JHOST0"]
         );
+    }
+
+    #[test]
+    fn timing_banner_matches_python_layout() {
+        let open = vec![
+            "P 63".into(),
+            "W 9".into(),
+            "T 45".into(),
+            "O 3".into(),
+        ];
+        let replies = vec![
+            ("F".into(), "5".into()),
+            ("@T2".into(), "100".into()),
+            ("@T3".into(), "18000".into()),
+        ];
+        let text = format_timing_banner("NL0MSK", &replies, &open);
+        assert!(text.contains("Timing-Parameters of NL0MSK:"));
+        assert!(text.contains("P-Persistance: 63"));
+        assert!(text.contains("Slottime: 9"));
+        assert!(text.contains("Frack: 5"));
+        assert!(text.contains("T2-Timer: 100"));
+        assert!(text.contains("T3-Timer: 18000"));
+        assert!(text.contains("TXDelay: 45"));
+        assert!(text.contains("MaxUnack: 3"));
     }
 }

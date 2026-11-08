@@ -53,8 +53,9 @@ use crate::remote::userdir;
 use crate::tnc::ax25::{self, Ax25Frame, Ax25FrameType};
 use crate::tnc::{
     detect_serial_ports, normalize_call, pack_text_payloads, parse_heard, payload_lines,
-    BufferReport, ChannelBuffers, DetectedPort, FrameClass, HostCode, MonitorFilter, MonitorInput,
-    RadioLink, TncCommand, TncEvent, TNC_RAM,
+    resolve_wa8ded_ini, timing_banner_fallback, wa8ded_section_lines, BufferReport,
+    ChannelBuffers, DetectedPort, FrameClass, HostCode, MonitorFilter, MonitorInput, RadioLink,
+    TncCommand, TncEvent, TNC_RAM,
 };
 use crate::transfer::sevenplus::{self, SevenPlusAutosave};
 use crate::version;
@@ -126,7 +127,6 @@ enum QrtDiscState {
 const VGA_BLUE: Color32 = Color32::from_rgb(0, 0, 170);
 const VGA_DARK_GREEN: Color32 = Color32::from_rgb(0, 85, 0);
 const VGA_GREEN: Color32 = Color32::from_rgb(0, 170, 0);
-const VGA_DARK_RED: Color32 = Color32::from_rgb(170, 0, 0);
 const VGA_GRAY: Color32 = Color32::from_rgb(170, 170, 170);
 const VGA_DARK_GRAY: Color32 = Color32::from_rgb(85, 85, 85);
 /// Classic GP text-window colours (Monitor / Channel / Spy pads).
@@ -397,6 +397,10 @@ pub struct GpGuiApp {
     user_written: Vec<String>,
     /// `//PRompt ON` — send the prompt template after a remote command.
     remote_prompt: bool,
+    /// Last WA8DED timing banner (`//P` / open `[status]`).
+    timing_banner: Option<String>,
+    /// Live `QueryTiming` reply target: (channel, pane to restore afterward).
+    pending_timing: Option<(u8, ActivePane)>,
     /// Serial device for the session-bar badge (`COM6`).
     serial_port: String,
     /// Serial baud for the session-bar badge.
@@ -716,6 +720,8 @@ impl GpGuiApp {
             user_write: (0..slots).map(|_| None).collect(),
             user_written: Vec::new(),
             remote_prompt: false,
+            timing_banner: None,
+            pending_timing: None,
             serial_port,
             serial_baud,
             serial_open: false,
@@ -994,6 +1000,16 @@ impl GpGuiApp {
     fn drain_tnc(&mut self) {
         while let Ok(ev) = self.events.try_recv() {
             match ev {
+                TncEvent::TimingBanner(banner) => {
+                    self.timing_banner = Some(banner.clone());
+                    if let Some((ch, prev)) = self.pending_timing.take() {
+                        if ch >= 1 {
+                            self.active = ActivePane::Channel(ch);
+                        }
+                        self.send_gpi_text(&banner);
+                        self.close_remote(prev);
+                    }
+                }
                 TncEvent::Status(m) => {
                     self.status = m.clone();
                     let low = m.to_ascii_lowercase();
@@ -1023,6 +1039,8 @@ impl GpGuiApp {
                     }
                 }
                 TncEvent::LinkDown(m) => {
+                    self.timing_banner = None;
+                    self.pending_timing = None;
                     self.status = format!("link down: {m}");
                     self.serial_open = false;
                     self.log_event(format!("link down: {m}"));
@@ -4324,13 +4342,28 @@ impl GpGuiApp {
                 return;
             }
             RemoteAction::Parameters => {
+                // WA8DED: live F/@T2/@T3 query (Python //P). Else INI/config fallback.
+                if self.cfg.tnc.protocol_kind() == HostProtocol::Wa8ded
+                    && self.serial_open
+                    && self.cmd_tx.try_send(TncCommand::QueryTiming).is_ok()
+                {
+                    self.pending_timing = Some((channel, prev));
+                    self.status = "//P — querying TNC".into();
+                    return;
+                }
                 let text = self.parameters_text();
                 self.send_gpi_text(&text);
                 self.close_remote(prev);
                 return;
             }
+            RemoteAction::ChannelStatus => {
+                let text = self.cstatus_text(channel);
+                self.send_gpi_text(&text);
+                self.close_remote(prev);
+                return;
+            }
             RemoteAction::Usage => {
-                let text = self.usage_text(args);
+                let text = self.usage_text(channel, args);
                 self.send_gpi_text(&text);
                 self.close_remote(prev);
                 return;
@@ -4461,35 +4494,77 @@ impl GpGuiApp {
         }
     }
 
+    /// Classic `//PARameters` / `//P` — TNC timing block (not the station chrome).
     fn parameters_text(&self) -> String {
-        format!(
-            "{}\rMycall: {}\rQRG: {:.3}\rChannels: {}\rPaclen: {}\rMonitor: {}\r7+: {}\rRemote: {}\rLanguage: {}\rUSER",
-            version::startup_credits(),
-            self.mycall_for_active(),
-            self.session.qrg_mhz,
-            self.channels,
-            self.cfg.buffers.packet_payload,
-            self.monitor_mode,
-            on_off(self.session.seven_plus),
-            on_off(self.session.remote),
-            self.cfg.session.remote_language,
-        )
+        let mycall = self.mycall_for_active();
+        if let Some(banner) = &self.timing_banner {
+            return rewrite_timing_mycall(banner, &mycall);
+        }
+        self.fallback_timing_banner(&mycall)
     }
 
-    fn usage_text(&self, args: &str) -> String {
+    fn fallback_timing_banner(&self, mycall: &str) -> String {
+        let path = resolve_wa8ded_ini(&self.cfg.tnc.wa8ded_ini);
+        let open = if path.is_file() {
+            wa8ded_section_lines(&path, "open")
+        } else {
+            self.cfg.tnc.init.clone()
+        };
+        timing_banner_fallback(mycall, &open, &self.cfg.tnc.monitor_mode)
+    }
+
+    /// PK-88 `CSTATUS`: one line per channel with link state, peer, via path,
+    /// and an `IO` mark on the channel that issued the remote command.
+    fn cstatus_text(&self, io_channel: u8) -> String {
+        (1..=self.channels)
+            .map(|n| self.cstatus_line(n, n == io_channel))
+            .collect::<Vec<_>>()
+            .join("\r")
+    }
+
+    fn cstatus_line(&self, n: u8, io: bool) -> String {
+        let io_mark = if io { "IO " } else { "" };
+        let idx = n as usize;
+        if self.channel_disconnecting(n) {
+            let call = self
+                .channel_peer
+                .get(idx)
+                .and_then(|p| p.as_ref())
+                .or_else(|| self.channel_last_call.get(idx).and_then(|p| p.as_ref()))
+                .map(String::as_str)
+                .unwrap_or("?");
+            return format!("Ch. {n} - {io_mark}DISCONNECT in progress to {call}");
+        }
+        if let Some(call) = self.channel_peer.get(idx).and_then(|p| p.as_ref()) {
+            let vias = self.link_vias(n);
+            if vias.is_empty() {
+                format!("Ch. {n} - {io_mark}CONNECTED to {call}")
+            } else {
+                format!(
+                    "Ch. {n} - {io_mark}CONNECTED to {call} via {}",
+                    vias.join(" ")
+                )
+            }
+        } else if let Some(call) = self.channel_connecting.get(idx).and_then(|p| p.as_ref()) {
+            format!("Ch. {n} - {io_mark}CONNECT in progress to {call}")
+        } else {
+            format!("Ch. {n} - {io_mark}DISCONNECTED")
+        }
+    }
+
+    fn usage_text(&self, channel: u8, args: &str) -> String {
         let args = args.trim();
         if args.is_empty() {
-            let mut lines = vec!["Channel  Call".to_string()];
-            for n in 1..=self.channels {
-                let call = self
-                    .channel_peer
-                    .get(n as usize)
-                    .and_then(|p| p.clone())
-                    .filter(|c| !c.is_empty())
-                    .unwrap_or_else(|| "----".into());
-                lines.push(format!("{n:<7}  {call}"));
-            }
-            return lines.join("\r");
+            // Bare //Usage: this channel only. Full grid is //CSTATUS.
+            let n = if (1..=self.channels).contains(&channel) {
+                channel
+            } else {
+                match self.active {
+                    ActivePane::Channel(n) if (1..=self.channels).contains(&n) => n,
+                    _ => 1,
+                }
+            };
+            return self.cstatus_line(n, true);
         }
         let qrg = self.names_qrg();
         match self.names.route_for(args, &qrg) {
@@ -7077,7 +7152,7 @@ impl eframe::App for GpGuiApp {
         egui::TopBottomPanel::top("gp_top")
             .exact_height(top_h)
             .show_separator_line(false)
-            .frame(Frame::none().fill(VGA_DARK_RED))
+            .frame(Frame::none().fill(self.menu_bg))
             .show(ctx, |ui| {
                 self.top_stack_with_clock(
                     ui,
@@ -7092,7 +7167,7 @@ impl eframe::App for GpGuiApp {
         egui::TopBottomPanel::bottom("gp_icons")
             .exact_height(icons_h)
             .show_separator_line(false)
-            .frame(Frame::none().fill(VGA_DARK_RED))
+            .frame(Frame::none().fill(self.menu_bg))
             .show(ctx, |ui| {
                 let h = ui.available_height();
                 let w = ui.available_width();
@@ -7685,8 +7760,9 @@ impl GpGuiApp {
         );
         let clock_rect = Rect::from_min_max(Pos2::new(left_r, rect.top()), rect.right_bottom());
 
-        // Channel chrome = dark red (same as icon strip). Clock column = dark green.
-        ui.painter_at(left).rect_filled(left, 0.0, VGA_DARK_RED);
+        // Channel chrome uses the menu-window background, same as the icon strip.
+        // Clock column stays dark green.
+        ui.painter_at(left).rect_filled(left, 0.0, self.menu_bg);
         ui.painter_at(clock_rect)
             .rect_filled(clock_rect, 0.0, VGA_DARK_GREEN);
 
@@ -8344,12 +8420,13 @@ impl GpGuiApp {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
         let painter = ui.painter_at(rect);
-        // Full red field so a 1px strip stays visible above/below the buttons.
-        painter.rect_filled(rect, 0.0, VGA_DARK_RED);
+        // Menu-window background, so a 1px strip stays visible above/below the buttons.
+        let menu_bg = self.menu_bg;
+        painter.rect_filled(rect, 0.0, menu_bg);
 
         let cols = 6usize;
         let rows = 2usize;
-        // Inset: 1px white border + 1px red above/below the button rows.
+        // Inset: 1px white border + 1px of that colour above/below the button rows.
         let grid = Rect::from_min_max(
             Pos2::new(rect.left() + 1.0, rect.top() + 2.0),
             Pos2::new(rect.right() - 1.0, rect.bottom() - 2.0),
@@ -8383,14 +8460,14 @@ impl GpGuiApp {
                     (Some(ActivePane::List), ActivePane::List) => true,
                     _ => false,
                 };
-                // Idle dark grey · connected light grey · active (any) dark red.
+                // Idle dark grey · connected light grey · active uses the menu background.
                 let connected =
                     matches!(action, Some(ActivePane::Channel(ch)) if self.channel_connected(ch));
                 let unread = matches!(action, Some(ActivePane::Channel(ch)) if {
                     !selected && self.channel_unread.get(ch as usize).copied().unwrap_or(false)
                 });
                 let (fill, text_color) = if selected {
-                    (VGA_DARK_RED, Color32::WHITE)
+                    (menu_bg, Color32::WHITE)
                 } else if connected {
                     (VGA_GRAY, Color32::BLACK)
                 } else {
@@ -10184,7 +10261,7 @@ impl GpGuiApp {
 
     fn icon_strip(&mut self, ui: &mut Ui, width: f32, height: f32) {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, VGA_DARK_RED);
+        ui.painter().rect_filled(rect, 0.0, self.menu_bg);
 
         if self.icon_tex.is_empty() {
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
@@ -10211,7 +10288,7 @@ impl GpGuiApp {
         let icon_w = size.x;
         let icon_h = size.y;
         let gap = ICON_STRIP_GAP;
-        // Fixed 5px red between icons; center the row when the strip is wider.
+        // Fixed 5px of the menu colour between icons; center the row when the strip is wider.
         let row_w = n as f32 * icon_w + (n.saturating_sub(1) as f32) * gap;
         let start_x = snap_to_pixel(rect.left() + ((rect.width() - row_w) * 0.5).max(0.0), ppp);
         let y = snap_to_pixel(rect.top() + ((rect.height() - icon_h) * 0.5).max(0.0), ppp);
@@ -10227,7 +10304,7 @@ impl GpGuiApp {
                 // Grey raised button face (classic GP), then the bitmap.
                 ui.painter().rect_filled(cell, 0.0, VGA_GRAY);
                 if label == "EMPTY" || self.icon_tex.get(icon_idx).is_none() {
-                    // empty slot keeps grey face on dark-red strip
+                    // empty slot keeps the grey face on the menu-colour strip
                 } else if let Some(tex) = self.icon_tex.get(icon_idx).cloned() {
                     ui.painter().image(
                         tex.id(),
@@ -10571,6 +10648,18 @@ fn load_last_calls(path: &std::path::Path, n: usize) -> Vec<Option<String>> {
         }
     }
     out
+}
+
+/// Keep a cached open-time banner, but stamp the call that asked `//P`.
+fn rewrite_timing_mycall(banner: &str, mycall: &str) -> String {
+    const PREFIX: &str = "Timing-Parameters of ";
+    let Some(rest) = banner.strip_prefix(PREFIX) else {
+        return banner.to_string();
+    };
+    let Some(colon) = rest.find(':') else {
+        return banner.to_string();
+    };
+    format!("{PREFIX}{mycall}{}", &rest[colon..])
 }
 
 fn on_off(v: bool) -> &'static str {
@@ -11679,9 +11768,9 @@ fn split_monitor_height(body: f32, lower: f32) -> f32 {
     (body * clamp_split_lower(lower)).clamp(min, body - min)
 }
 
-/// Red air between neighbouring icon faces.
+/// Menu-colour air between neighbouring icon faces.
 const ICON_STRIP_GAP: f32 = 5.0;
-/// Red air above and below the pictures.
+/// Menu-colour air above and below the pictures.
 const ICON_STRIP_VPAD: f32 = 2.0;
 /// Screen pixels per art pixel. 2 keeps a one-pixel stroke an even 2×2 block.
 /// 1 is the file size. Anything between 1 and 2 makes some strokes fatter.

@@ -30,6 +30,8 @@ pub enum RemoteAction {
     ReadAutoBin,
     RoundTrip,
     Run,
+    /// PK-88-style dump of every channel link state (`//CSTATUS`).
+    ChannelStatus,
     Usage,
     Version,
     Write,
@@ -89,6 +91,14 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             3,
             RemoteAction::Catalog,
             "List UserDir files",
+        ),
+        // After CATALOG so //CS / //CST hit CSTATUS, not CAT*. //C stays //C.
+        cmd(
+            "//CSTATUS",
+            &["CSTATUS", "CS"],
+            2,
+            RemoteAction::ChannelStatus,
+            "Status of all channels (PK-88 style)",
         ),
         cmd(
             "//CD",
@@ -174,12 +184,13 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             RemoteAction::News,
             "Send NEWS.GPI",
         ),
+        // "P" alone = Parameters. //PR / //PRO stay Prompt (shorter-key tie-break).
         cmd(
             "//PARameters",
-            &["PARAMETERS", "PARAMETER", "PAR"],
-            3,
+            &["PARAMETERS", "PARAMETER", "PAR", "P"],
+            1,
             RemoteAction::Parameters,
-            "Show TNC/system parameters",
+            "Show TNC timing parameters",
         ),
         cmd(
             "//PRompt",
@@ -349,18 +360,21 @@ fn squeeze_spaces(s: &str) -> String {
 }
 
 fn match_verb(verb_up: &str) -> Option<RemoteAction> {
-    let mut best: Option<(RemoteAction, usize)> = None;
+    // Prefer a longer matched prefix. On a tie (e.g. //PRO → PROMPT vs
+    // PARAMETERS), prefer the shorter key so //PR* stays Prompt.
+    let mut best: Option<(RemoteAction, usize, usize)> = None;
     for entry in catalogue() {
         for key in entry.keys {
             if verb_matches(verb_up, key, entry.min_prefix) {
                 let score = key.len().min(verb_up.len());
-                if best.is_none_or(|(_, s)| score > s) {
-                    best = Some((entry.action, score));
+                if best.is_none_or(|(_, s, klen)| score > s || (score == s && key.len() < klen))
+                {
+                    best = Some((entry.action, score, key.len()));
                 }
             }
         }
     }
-    best.map(|(a, _)| a)
+    best.map(|(a, _, _)| a)
 }
 
 /// Operator typed `verb`; catalogue key is `key`. Accept abbreviations.
@@ -407,6 +421,14 @@ mod tests {
             (RemoteAction::ChangeDir, "..".into())
         );
         assert_eq!(parse_line("//PAR").unwrap().0, RemoteAction::Parameters);
+        assert_eq!(parse_line("//P").unwrap().0, RemoteAction::Parameters);
+        assert_eq!(parse_line("//PR").unwrap().0, RemoteAction::Prompt);
+        assert_eq!(parse_line("//PRO").unwrap().0, RemoteAction::Prompt);
+        assert_eq!(parse_line("//PROMPT ON").unwrap().0, RemoteAction::Prompt);
+        assert_eq!(parse_line("//CSTATUS").unwrap().0, RemoteAction::ChannelStatus);
+        assert_eq!(parse_line("//CS").unwrap().0, RemoteAction::ChannelStatus);
+        assert_eq!(parse_line("//CST").unwrap().0, RemoteAction::ChannelStatus);
+        assert_eq!(parse_line("//C").unwrap().0, RemoteAction::RemoteConnect);
         assert_eq!(
             parse_line("//7+ ON").unwrap(),
             (RemoteAction::SevenPlusAutoSave, "ON".into())

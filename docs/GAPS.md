@@ -260,7 +260,9 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 | `//VERsion`, `//Echo`, `//Bell`, `//MHeard`, `//Name` | **Have** |
 | `//7+`, `//Read`, `//CATalog` / `//DIR` | **Have** | `//7+ ON\|OFF` is the session switch. `//Read file` and `//CAT` / `//DIR` stay inside `data/USER`. A pattern such as `*.txt;*.doc` is a DOS wildcard. The reply says `USER`, not a disk path |
 | `//Help`, `//Language` | **Have** | `//Help` and `//H H` use `data/G.GPH` (English) or the pack selected with `//Language` |
-| `//PRompt`, `//PARameters`, `//Usage` | **Have** | Prompt on/off, a short station parameter list, and channel state or a `NAMES.GP` lookup |
+| `//PRompt`, `//Usage` | **Have** | Prompt on/off, and this channel’s link state or a `NAMES.GP` lookup |
+| `//PARameters` / `//P` | **Have** | TNC timing dump (P-Persistence, Slottime, Frack, T2, T3, TXDelay, MaxUnack). WA8DED re-queries `F` / `@T2` / `@T3` live. KISS applies `T`/`P`/`W` from `init[]` / `WA8DED.INI` as TAPR param frames after bring-up; `//P` reports those (T2/T3 as `?`). TFPCX sends the same lines as hostmode text into the soft-TNC |
+| `//CSTATUS` / `//CS` | **Have** | PK-88-style dump of every channel: connected / disconnected / connect or disconnect in progress, peer call, digi path, `IO` on the asking channel |
 | `//CD` | **Have** | Shows `USER`. Any other directory is refused, so the remote cannot browse the rest of the disk |
 | `//Write`, `//END`, `//DELete` / `//Kill` | **Have** | Text capture into `data/USER` until `//END` or Ctrl-Z. `//DELete` of a named file removes only a file this session stored with `//Write`. Bare `//DEL` / `//Kill` deletes `data/mail/{CALL}.GPM` for the linked station only |
 | `//RUN` | **Have** | Answers `not supported`. It does not start a program and does not send `RUN.GPI` |

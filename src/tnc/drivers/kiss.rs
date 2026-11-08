@@ -4,7 +4,11 @@
 //! DTR pulse, and exit sequence.
 //!
 //! **TCP** (`kiss_transport = "tcp"`): Soundmodem / Direwolf — raw KISS on a
-//! socket; no radio init (peer is already in KISS).
+//! socket; no radio command-mode init (peer is already in KISS).
+//!
+//! After bring-up, timing from `[tnc] init` / `WA8DED.INI` is sent as TAPR
+//! KISS command frames (`FEND | cmd | arg | FEND`): TXDELAY, PERSIST,
+//! SLOTTIME. Frack / T2 / T3 / MaxUnack stay in our AX.25 stack.
 //!
 //! Connected I-frames are paced here: one outstanding N(S), the next part
 //! goes out only after RR or an I-frame whose N(R) acknowledges it. UI frames
@@ -27,6 +31,8 @@ use super::super::kiss_delivery::{KissDelivery, Outgoing, Tick};
 use super::super::kiss_ini::{self, resolve_kiss_ini};
 use super::super::serial::SerialLink;
 use super::super::tcp::TcpKissLink;
+use super::super::timing::{timing_from_tnc_config, TimingParams};
+use super::super::wa8ded_ini;
 use super::super::{send_buffers_if_changed, BufferReport, TncCommand, TncError, TncEvent};
 
 const FEND: u8 = 0xC0;
@@ -135,6 +141,9 @@ pub fn run(
         }
     }
     link.flush_input();
+    // Modem is in KISS now (serial after INI, TCP already). Push CSMA/TXDELAY.
+    let timing = timing_from_tnc_config(&tnc_cfg);
+    apply_kiss_timing(&mut link, 0, &timing, &events);
 
     let status = if link.is_tcp() {
         format!("TCP OPEN {} — KISS listen", link.label())
@@ -142,6 +151,7 @@ pub fn run(
         format!("serial OPEN {} — KISS listen", link.label())
     };
     let _ = events.blocking_send(TncEvent::Status(status));
+    publish_kiss_timing_banner(&tnc_cfg, &timing, &events);
 
     let mut rx_buf = [0u8; 512];
     let mut stream = Vec::<u8>::new();
@@ -316,6 +326,13 @@ fn handle_command(
                     let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
                 }
             }
+            let timing = timing_from_tnc_config(tnc_cfg);
+            apply_kiss_timing(link, 0, &timing, events);
+            publish_kiss_timing_banner(tnc_cfg, &timing, events);
+        }
+        TncCommand::QueryTiming => {
+            let timing = timing_from_tnc_config(tnc_cfg);
+            publish_kiss_timing_banner(tnc_cfg, &timing, events);
         }
         TncCommand::Shutdown => {
             leave_kiss_and_close(link, tnc_cfg, events);
@@ -354,7 +371,7 @@ fn write_kiss_data(
 ) -> Result<(), TncError> {
     let mut frame = Vec::with_capacity(payload.len() * 2 + 4);
     frame.push(FEND);
-    frame.push(port << 4);
+    frame.push(port << 4); // command 0 = data
     for &b in payload {
         match b {
             FEND => {
@@ -375,6 +392,69 @@ fn write_kiss_data(
         frame: payload.to_vec(),
     });
     Ok(())
+}
+
+/// TAPR host→TNC parameter frame: `FEND | (port<<4)|cmd | arg | FEND`.
+fn write_kiss_command(
+    link: &mut KissLink,
+    port: u8,
+    cmd: u8,
+    arg: u8,
+) -> Result<(), TncError> {
+    let type_byte = (port << 4) | (cmd & 0x0F);
+    let frame = [FEND, type_byte, arg, FEND];
+    link.write_all(&frame)?;
+    debug!(port, cmd, arg, "tx kiss param");
+    Ok(())
+}
+
+fn apply_kiss_timing(
+    link: &mut KissLink,
+    port: u8,
+    timing: &TimingParams,
+    events: &mpsc::Sender<TncEvent>,
+) {
+    for (cmd, arg) in timing.kiss_set_commands() {
+        let name = match cmd {
+            1 => "TXDELAY",
+            2 => "PERSIST",
+            3 => "SLOTTIME",
+            _ => "PARAM",
+        };
+        match write_kiss_command(link, port, cmd, arg) {
+            Ok(()) => {
+                let _ = events.blocking_send(TncEvent::Status(format!(
+                    "kiss {name}={arg} (FEND cmd {cmd})"
+                )));
+            }
+            Err(err) => {
+                let _ = events.blocking_send(TncEvent::Warning(format!(
+                    "kiss {name}: {err}"
+                )));
+            }
+        }
+    }
+}
+
+fn publish_kiss_timing_banner(
+    tnc_cfg: &TncConfig,
+    timing: &TimingParams,
+    events: &mpsc::Sender<TncEvent>,
+) {
+    let call = if tnc_cfg.runtime_mycall.is_empty() {
+        "MYCALL"
+    } else {
+        tnc_cfg.runtime_mycall.as_str()
+    };
+    let banner = wa8ded_ini::format_timing_banner(
+        call,
+        &timing.as_status_replies(),
+        &timing.as_open_lines(),
+    );
+    let _ = events.blocking_send(TncEvent::TimingBanner(banner.clone()));
+    for line in banner.split('\r').filter(|l| !l.is_empty()) {
+        let _ = events.blocking_send(TncEvent::Status(format!("*** {line}")));
+    }
 }
 
 /// Max unframed text kept while waiting for a line terminator.
@@ -509,5 +589,16 @@ mod tests {
             TncEvent::HostFrame { payload, .. } => assert_eq!(payload, vec![b'A', FEND]),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn timing_maps_to_tapr_kiss_commands() {
+        let t = TimingParams::from_lines(["T 50", "P 63", "W 10"]);
+        // TXDELAY=1, PERSIST=2, SLOTTIME=3 — each arg is the 10ms / persist byte.
+        assert_eq!(t.kiss_set_commands(), vec![(1, 50), (2, 63), (3, 10)]);
+        // Wire shape: FEND | (port<<4)|cmd | arg | FEND  e.g. C0 01 32 C0 for TXDELAY 50.
+        assert_eq!((0 << 4) | 1, 0x01);
+        assert_eq!((0 << 4) | 2, 0x02);
+        assert_eq!((0 << 4) | 3, 0x03);
     }
 }

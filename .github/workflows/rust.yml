@@ -22,15 +22,15 @@ jobs:
           - os: windows-latest
             name: windows-x64
             target: x86_64-pc-windows-msvc
-            asset: graphic-packet-windows-x64.zip
+            asset: GPNG-windows-x64.zip
           - os: ubuntu-22.04
             name: linux-x64
             target: x86_64-unknown-linux-gnu
-            asset: graphic-packet-linux-x64.zip
+            asset: GPNG-linux-x64.zip
           - os: macos-latest
             name: macos-arm64
             target: aarch64-apple-darwin
-            asset: graphic-packet-macos-arm64.zip
+            asset: GPNG-macos-arm64.zip
 
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p stage/data
-          bin="target/${{ matrix.target }}/release/graphic-packet"
+          bin="target/${{ matrix.target }}/release/GPNG"
           if [ "$RUNNER_OS" = "Windows" ]; then
             bin="${bin}.exe"
           fi

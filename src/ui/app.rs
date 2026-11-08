@@ -153,6 +153,12 @@ impl UiApp {
     pub fn handle_tnc_event(&mut self, ev: TncEvent) {
         match ev {
             TncEvent::Status(msg) => self.status = msg,
+            TncEvent::TimingBanner(banner) => {
+                self.status = "timing parameters".into();
+                for line in banner.split('\r').filter(|l| !l.is_empty()) {
+                    self.pads[0].push(format!("*** {line}"));
+                }
+            }
             TncEvent::Warning(msg) => self.status = format!("! {msg}"),
             TncEvent::LinkDown(msg) => {
                 self.status = format!("link down: {msg}");

@@ -21,6 +21,7 @@ mod monitor_filter;
 mod payload;
 mod serial;
 mod tcp;
+mod timing;
 mod wa8ded_ini;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,6 +42,9 @@ pub use payload::{
     flush_rx_line, normalize_newlines, pack_text_payloads, payload_lines, take_rx_lines,
 };
 pub use serial::{detect_serial_ports, DetectedPort};
+pub use wa8ded_ini::{
+    resolve_wa8ded_ini, section_lines as wa8ded_section_lines, timing_banner_fallback,
+};
 
 // ---------------------------------------------------------------------------
 // Public types (stable UI surface)
@@ -153,6 +157,8 @@ pub enum TncEvent {
     Buffers(BufferReport),
     /// Human-readable status for the terminal pane.
     Status(String),
+    /// WA8DED timing dump (`//PARameters` / open `[status]` banner).
+    TimingBanner(String),
     /// Non-fatal I/O hiccup; the loop may retry.
     Warning(String),
     /// Serial link closed or unrecoverable error.
@@ -178,6 +184,8 @@ pub enum TncCommand {
     TerminalLine(String),
     /// Re-run the configured `TNCINI` sequence.
     Reinitialize,
+    /// WA8DED: re-query `F` / `@T2` / `@T3` and emit [`TncEvent::TimingBanner`].
+    QueryTiming,
     /// Graceful shutdown: deinit (+ leave hostmode when applicable).
     Shutdown,
 }

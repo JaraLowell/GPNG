@@ -9,14 +9,19 @@ readme = "README.md"
 keywords = ["ax25", "packet-radio", "ham-radio", "tnc", "hostmode"]
 categories = ["network-programming", "command-line-utilities"]
 
+# Output `GPNG.exe` without renaming the crate (`graphic_packet` in src/main.rs).
+[[bin]]
+name = "GPNG"
+path = "src/main.rs"
+
 # Windows Explorer → Properties → Details. FileVersion / ProductVersion
 # follow `package.version` (2.1.0 → 2.1.0.0).
 [package.metadata.winresource]
 CompanyName = "NG Mitch and Jara"
 FileDescription = "Graphic Packet NG"
 ProductName = "Graphic Packet NG"
-InternalName = "graphic-packet"
-OriginalFilename = "graphic-packet.exe"
+InternalName = "GPNG"
+OriginalFilename = "GPNG.exe"
 LegalCopyright = "MIT OR Apache-2.0. The original GP binaries and docs remain under their historical licence terms in the parent tree."
 
 [dependencies]

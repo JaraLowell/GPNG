@@ -5,6 +5,10 @@
 //! match the WA8DED path; shutdown uses deinit only (no required `JHOST0`).
 //! Buffer counters are built here from the host queue (TFPCX does not send
 //! the WA8DED `L` / `@B` report).
+//!
+//! Timing (`P` / `W` / `T` / `O` / `F` from `[tnc] init`) is sent as hostmode
+//! text — TFPCX is the soft modem, so CSMA/TXDELAY live in that process, not
+//! as KISS param frames. `//P` reports the configured values (no live `@T2`).
 
 use std::time::{Duration, Instant};
 
@@ -15,6 +19,8 @@ use crate::config::{SerialConfig, TncConfig};
 use super::super::host_delivery::{HostDelivery, HostKind, Tick};
 use super::super::hostmode::{apply_command_list, drain_frames, poll_command, write_host_frame};
 use super::super::serial::SerialLink;
+use super::super::timing::timing_from_tnc_config;
+use super::super::wa8ded_ini;
 use super::super::{send_buffers_if_changed, BufferReport, TncCommand, TncError, TncEvent};
 
 pub fn run(
@@ -34,13 +40,19 @@ pub fn run(
     std::thread::sleep(Duration::from_millis(100));
     let _ = link.write_terminal("JHOST1");
 
-    if let Err(err) = apply_command_list(&mut link, &tnc_cfg.init) {
+    let init_cmds: Vec<String> = tnc_cfg
+        .init
+        .iter()
+        .map(|c| wa8ded_ini::expand_placeholders(c, &tnc_cfg.monitor_mode))
+        .collect();
+    if let Err(err) = apply_command_list(&mut link, &init_cmds) {
         let _ = events.blocking_send(TncEvent::Warning(format!("TNCINI failed: {err}")));
     } else {
         let _ = events.blocking_send(TncEvent::Status(
             "tfpcx hostmode active — TNCINI applied".into(),
         ));
     }
+    publish_tfpcx_timing_banner(&tnc_cfg, &events);
 
     let mut rx_buf = [0u8; 512];
     let mut stream = Vec::<u8>::new();
@@ -147,7 +159,16 @@ fn handle_command(
             }
         }
         TncCommand::Reinitialize => {
-            let _ = apply_command_list(link, &tnc_cfg.init);
+            let cmds: Vec<String> = tnc_cfg
+                .init
+                .iter()
+                .map(|c| wa8ded_ini::expand_placeholders(c, &tnc_cfg.monitor_mode))
+                .collect();
+            let _ = apply_command_list(link, &cmds);
+            publish_tfpcx_timing_banner(tnc_cfg, events);
+        }
+        TncCommand::QueryTiming => {
+            publish_tfpcx_timing_banner(tnc_cfg, events);
         }
         TncCommand::Shutdown => {
             let _ = apply_command_list(link, &tnc_cfg.deinit);
@@ -156,4 +177,22 @@ fn handle_command(
         }
     }
     Ok(false)
+}
+
+fn publish_tfpcx_timing_banner(tnc_cfg: &TncConfig, events: &mpsc::Sender<TncEvent>) {
+    let timing = timing_from_tnc_config(tnc_cfg);
+    let call = if tnc_cfg.runtime_mycall.is_empty() {
+        "MYCALL"
+    } else {
+        tnc_cfg.runtime_mycall.as_str()
+    };
+    let banner = wa8ded_ini::format_timing_banner(
+        call,
+        &timing.as_status_replies(),
+        &timing.as_open_lines(),
+    );
+    let _ = events.blocking_send(TncEvent::TimingBanner(banner.clone()));
+    for line in banner.split('\r').filter(|l| !l.is_empty()) {
+        let _ = events.blocking_send(TncEvent::Status(format!("*** {line}")));
+    }
 }

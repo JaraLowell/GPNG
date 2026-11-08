@@ -162,25 +162,8 @@ fn run_open(
             &tnc_cfg.monitor_mode,
             Some(events),
         )?;
-        // Optional timing queries → banner like the Python debug block.
-        if let Ok(replies) = wa8ded_ini::apply_section(
-            link,
-            &path,
-            "status",
-            tnc_cfg.wa8ded_line_delay_ms,
-            &tnc_cfg.monitor_mode,
-            Some(events),
-        ) {
-            let call = if tnc_cfg.runtime_mycall.is_empty() {
-                "MYCALL"
-            } else {
-                tnc_cfg.runtime_mycall.as_str()
-            };
-            let banner = wa8ded_ini::format_timing_banner(call, &replies, &open_lines);
-            for line in banner.lines() {
-                let _ = events.blocking_send(TncEvent::Status(format!("*** {line}")));
-            }
-        }
+        // Optional timing queries → banner like the Python //P dump.
+        emit_timing_banner(link, tnc_cfg, &path, &open_lines, events);
         Ok(())
     } else {
         info!(?path, "WA8DED.INI missing — using Config.toml init[]");
@@ -240,6 +223,28 @@ fn handle_command(
         TncCommand::Reinitialize => {
             let _ = run_open(link, tnc_cfg, events);
         }
+        TncCommand::QueryTiming => {
+            let path = resolve_wa8ded_ini(&tnc_cfg.wa8ded_ini);
+            let open_lines: Vec<String> = if path.exists() {
+                wa8ded_ini::section_lines(&path, "open")
+                    .into_iter()
+                    .map(|l| wa8ded_ini::expand_placeholders(&l, &tnc_cfg.monitor_mode))
+                    .collect()
+            } else {
+                tnc_cfg
+                    .init
+                    .iter()
+                    .map(|l| wa8ded_ini::expand_placeholders(l, &tnc_cfg.monitor_mode))
+                    .collect()
+            };
+            if path.exists() {
+                emit_timing_banner(link, tnc_cfg, &path, &open_lines, events);
+            } else {
+                let call = timing_call(tnc_cfg);
+                let banner = wa8ded_ini::format_timing_banner(call, &[], &open_lines);
+                publish_timing_banner(events, &banner);
+            }
+        }
         TncCommand::Shutdown => {
             let _ = run_close(link, tnc_cfg, events);
             let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
@@ -247,6 +252,42 @@ fn handle_command(
         }
     }
     Ok(false)
+}
+
+fn timing_call(tnc_cfg: &TncConfig) -> &str {
+    if tnc_cfg.runtime_mycall.is_empty() {
+        "MYCALL"
+    } else {
+        tnc_cfg.runtime_mycall.as_str()
+    }
+}
+
+fn publish_timing_banner(events: &mpsc::Sender<TncEvent>, banner: &str) {
+    let _ = events.blocking_send(TncEvent::TimingBanner(banner.to_string()));
+    for line in banner.split('\r').filter(|l| !l.is_empty()) {
+        let _ = events.blocking_send(TncEvent::Status(format!("*** {line}")));
+    }
+}
+
+fn emit_timing_banner(
+    link: &mut SerialLink,
+    tnc_cfg: &TncConfig,
+    path: &std::path::Path,
+    open_lines: &[String],
+    events: &mpsc::Sender<TncEvent>,
+) {
+    let call = timing_call(tnc_cfg);
+    let replies = wa8ded_ini::apply_section(
+        link,
+        path,
+        "status",
+        tnc_cfg.wa8ded_line_delay_ms,
+        &tnc_cfg.monitor_mode,
+        Some(events),
+    )
+    .unwrap_or_default();
+    let banner = wa8ded_ini::format_timing_banner(call, &replies, open_lines);
+    publish_timing_banner(events, &banner);
 }
 
 fn enter_hostmode(link: &mut SerialLink) -> Result<(), TncError> {
