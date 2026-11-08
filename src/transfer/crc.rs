@@ -1,7 +1,8 @@
-//! CCITT CRC used by the packet-radio `#BIN#` / AutoBin protocol.
+//! 16-bit checks for `#BIN#` / AutoBin.
 //!
-//! Table and `updcrc` macro from DK4NB’s 1994 `#BIN#` bulletin (same CRC
-//! TurboPacket / SP / GP expect).
+//! [`crc_ccitt`] is the DK4NB bulletin CRC (table, init 0).
+//! [`crc_gp`] is the bit loop in Graphic Packet 1.63. DOS compares that
+//! value with the number in `#BIN#len#|crc#`.
 
 /// CRC table (Mark G. Mendel / Forsberg / Satchell lineage).
 pub static CRCTAB: [u16; 256] = [
@@ -39,6 +40,27 @@ pub fn crc_ccitt(data: &[u8]) -> u16 {
     data.iter().fold(0u16, |crc, &b| updcrc(b, crc))
 }
 
+/// File CRC printed and checked by GP 1.63.
+///
+/// Each data bit is shifted in at the low end, high bit first. When the bit
+/// shifted out of the top was set, the register is XORed with `0x1021`.
+/// `DEFS.TFC` (1628 bytes) is 22311. [`crc_ccitt`] of that file is 50093,
+/// which DOS reports as `CRC ERROR!! Verwacht: 50093, Gecalculeerd: 22311`.
+pub fn crc_gp(data: &[u8]) -> u16 {
+    let mut crc = 0u16;
+    for &byte in data {
+        for shift in (0..8).rev() {
+            let old = crc;
+            let bit = ((byte >> shift) & 1) as u16;
+            crc = (crc << 1) | bit;
+            if old & 0x8000 != 0 {
+                crc ^= 0x1021;
+            }
+        }
+    }
+    crc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +76,13 @@ mod tests {
         let c = crc_ccitt(b"Graphic Packet");
         assert_ne!(c, 0);
         assert_eq!(c, crc_ccitt(b"Graphic Packet"));
+    }
+
+    #[test]
+    fn gp_crc_matches_dos_defs() {
+        assert_eq!(crc_gp(b""), 0);
+        assert_eq!(crc_gp(b"abcd"), 6043);
+        assert_eq!(crc_gp(b"A"), 65);
+        assert_ne!(crc_gp(b"abcd"), crc_ccitt(b"abcd"));
     }
 }

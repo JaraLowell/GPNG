@@ -33,17 +33,17 @@ These are the DOS features an operator would notice first.
    **Name** on the channel strip is ALT-N, and `//Name` writes the same file.
    `%N` reads it. MHeard no longer stores names. Still open: a type `B`
    mailbox does not block remotes, and `PORTx` does not switch a multiport TNC.
-3. **AutoBin is not on the air.** The `#BIN#` state machine is tested and
-   unused. **BIN-RX** / **BIN-TX** only flip a flag. The **FILETRANS** icon
-   does nothing. There is no send dialog or resume. The progress grid is
-   **Partial**: DOS GP 1.63 rewrites the magenta status rows (file, bytes,
-   green bar, elapsed, Eff. Baud, estimate). The shots are
-   `docs/screenshots/Transfer30.png` and `Transfer80.png`. See
-   `docs/TRANSFER.md`. The window is not built here yet.
-   **7Plus is wired:** with **7+** on, `go_7+.` … `stop_7+.` parts are saved
-   in `data/USER`, and `//Read` sends a file from that folder. Decoding the
-   parts still needs the external [7plus](https://github.com/hb9xar/7plus)
-   program (this is not 7-Zip).
+3. **7Plus Code-AutoSave is untested.** The sniffer and `//7+` are in the
+   program, and `//Read` sends a file from `data/USER` as plain text. No live
+   DOS part (`go_7+.` … `stop_7+.`) has been captured, so the save into
+   `data/USER` is not confirmed. BIN-TX, `//7+`, and `//Read` do not run the
+   7Plus encoder. **AutoBin is on the air** with DOS GP 1.63 (`#BIN#`, `#OK#`,
+   `#NO#`, `#ABORT#`, the GP 1.63 CRC). Still open there: `//RPrg` / `//WPrg`,
+   resume, and ALT-T.
+   Later, and only GPNG to GPNG: on connect, ask if the other station has 7+
+   support. If it does, send CTEXT and files as `#7+#` plus the data. Our side
+   puts that back together and shows it on the channel. Classic DOS `go_7+.`
+   stays as it is. Not built.
 4. **Most `//` remotes are recognised and then refused.** The parser covers
    the classic set. Only quit, disconnect, version, echo, bell, MHeard,
    `//Name`, and a GPI text file (`INFO`, `NEWS`, `QRT`, `RUN`, other
@@ -147,7 +147,7 @@ These are the DOS features an operator would notice first.
 | ALT-T file send: text, raw binary, AutoBin, editor contents | **Missing** | See `docs/TRANSFER.md` for the protocol we intend to match |
 | Transfer progress (bytes, percent, elapsed, estimate) and resume after quit | **Partial** | Layout is the magenta status grid, not a popup. `Transfer30.png` / `Transfer80.png`: path, `Bytes: sent/total`, green bar with the percent, `Elapsed Time`, `Eff. Baud`, `Estimated Time`, `Status: BIN-TX`, mode title `Information Transfer`. Details in `docs/TRANSFER.md`. The grid is not built yet. Resume after quit is still missing |
 | ALT-S continuous text save, print to LPT1–LPT4, save a marked range, AutoBin receive names `<call>.000`–`.999` | **Missing** | |
-| 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Partial** | Channel RX is saved into `data/USER` when **7+** is on. Names follow 7plus 2.2 (`name.p01`, `name.7pl`, `name.p0a`). `transfer::sevenplus_codec` encodes and joins parts in Rust (not the DOS exe). `.err` / `.cor` repair is not ported. Saving into `data/SAVE`, splitting a send into `data/TEMP`, and waiting for `ok`/`okay` before the next part are not wired to the channel yet |
+| 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Partial** | Untested on the air. No sample part yet. The sniffer would save channel RX into `data/USER` when **7+** is on. `transfer::sevenplus_codec` can encode and join parts in Rust. `.err` / `.cor`, `data/SAVE`, `data/TEMP`, and waiting for `ok`/`okay` are not wired. Later, GPNG to GPNG only: ask on connect, then send CTEXT and files as `#7+#` plus the data and show the rebuilt text on the channel |
 | Mouse-mark QSO lines and Ctrl-Ins / Ctrl-K into the editor | **Missing** | |
 | Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. Esc opens the TNC command box (manual 5.9). A line that starts with `//` is not run as the operator’s own remote (manual 5.5, `ESC //h`). On KISS the box does not send |
 | External programs and GPRI (`ExternalDir`, `//RUN`) | **Missing** | `//RUN` answers `not supported`. It does not start a program |
@@ -224,13 +224,13 @@ A mailbox marked `B` is stored and still does not block remotes. `MultiPort` in 
 | Line break per channel | **Missing**. Input columns are stored and do not wrap the compose box |
 | Packet length for all channels | **Have**. The channel menu sets `packet_payload`, which is the size used when a line is sent |
 | Softscroll | **Partial**. The menu and ALT-R cycle the line step. The session button shows a stair when it is on and `/` when it is off (manual 11.12). Chapter 15’s pixel soft-scroll is **DOS-only** |
-| 7Plus / LCplus Code AutoSave per channel | **Partial**. The channel menu flips the one **7+** switch. It covers every channel and writes parts into `data/USER` |
+| 7Plus / LCplus Code AutoSave per channel | **Partial**. The channel menu flips the one **7+** switch for every channel. Live capture into `data/USER` is untested |
 | Word wrapping, `*.BAK` | **Partial**. `*.BAK` is copied before an editor save when the toggle is on. Word wrapping is stored and the editor does not hard-wrap yet |
 | Insert list from editor, reference channel, file drawer | **Have**. Insert appends DieBox lines from the editor. The reference channel is where the live list is read and where `READ` is sent. The file drawer is the Box-List rubric |
 | Beacon menu (monitor only) | **Partial**. Address, text, and period are saved. Period 0 is off. Manual 11.11: `ALL` is `fm CALL to ALL ctl UI^`, and `ALL DB0FN` is `fm CALL to ALL via DB0FN ctl UI^`. The same path is what a line typed on the monitor uses, so `APMI03 WIDE1-1 WIDE2-2` is `to APMI03 via WIDE1-1,WIDE2-2`. On KISS the period sends that one UI frame. The heard copy with `via DB0FN*` is the digipeater’s repeat, not a second send. On hostmode the values are stored and no TNC beacon command is invented |
 | InsertMonLine | **Partial**. Stored. Monitor blank lines are not inserted |
 | System language | **Have**. Cycles `EN`, `NL`, `DL`, `F`, `PL`, `SLO`, `OK`, `HA` into `remote_language` |
-| Session-bar switches: QRG, CT, umlauts, echo, stair or `/`, bell, 7+, remote, BIN-RX, BIN-TX, Name, ScrLock | **Partial**. The soft-scroll mark is a drawn stair or `/`. Umlauts are also the setup toggle. **7+** saves parts into `data/USER`. **Name** writes `NAMES.GP`. BIN-RX / BIN-TX still only flip a flag. ScrLock does not freeze a TNC poll, and it is not per channel |
+| Session-bar switches: QRG, CT, umlauts, echo, stair or `/`, bell, 7+, remote, BIN-RX, BIN-TX, Name, ScrLock | **Partial**. The soft-scroll mark is a drawn stair or `/`. Umlauts are also the setup toggle. **7+** is the Code-AutoSave switch and is untested on the air. **Name** writes `NAMES.GP`. BIN-RX / BIN-TX run the `#BIN#` transfer. ScrLock does not freeze a TNC poll, and it is not per channel |
 
 ### 12–18 and the appendices
 
@@ -282,7 +282,7 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 - Editor load/save in CP437.
 - Pad logs under `log/` for monitor, channels, spy, BBS, and box.
 - Remote command catalogue and macro expander, ready for the commands that are still stubs.
-- 7Plus autosave on a live channel into `data/USER` (`//Read` sends a file back). AutoBin is still library-only. See `docs/TRANSFER.md`.
+- AutoBin on a live KISS link with DOS GP 1.63 (`#BIN#` / `#OK#` / `#ABORT#`, file in `data/SAVE`). 7Plus Code-AutoSave is implemented and untested. See `docs/TRANSFER.md`.
 - Setup menu (ALT-U / **SETUP**). Rows follow the current window. Colours, the KISS beacon, and the Esc TNC box are live. Settings go to `Config.toml`.
 - DieBox BBS menu and Box list: mark, `READ`, find, sort, and the replace / append / interrupt question. Other mailbox formats are not parsed.
 - Session soft-scroll button: `/` or a stair. The text still steps a whole line.
@@ -291,7 +291,7 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 
 ## Suggested build order
 
-1. Wire 7Plus AutoSave and AutoBin to the channel that has **7+** / **BIN-RX** / **BIN-TX** on, including `//RPrg`, `//WPrg`, `//Read`, `//Write`, `//CUT`.
+1. 7Plus Code-AutoSave stays untested until a real `go_7+.` part is on the link. The later GPNG-only `#7+#` connect handshake is not this item. AutoBin on the channel is in. Still open: `//RPrg`, `//WPrg`, `//CUT`, and resume.
 2. `NAMES.GP` plus autorouter on Connect, then ALT-N. **Done.** Connect uses `data/NAMES.GP`. **Name** is ALT-N. A type `B` mailbox still does not block remotes, and `PORTx` does not change the radio.
 3. BBS-Menu and Box-List parsers (DieBox first), mark, and `READ`. **Done** for DieBox `CHECK` and `LIST` on the setup reference channel. F6FBB, DK5SG, and DB0IE are still ahead.
 4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language. **Done.** Help follows `data/G.GPH` (English) and the other language packs. Catalog, read, write, and delete stay in `data/USER`. `//CD` cannot leave that folder. AutoBin `//RPrg` / `//WPrg` / `//CUT` remain with item 1.

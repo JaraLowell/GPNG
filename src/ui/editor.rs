@@ -49,6 +49,95 @@ pub fn decode_cp437(raw: &[u8]) -> String {
     raw.iter().map(|&b| byte_to_char(b)).collect()
 }
 
+/// Latin-1 bytes Graphic Packet swaps with the CP437 screen set.
+///
+/// Off leaves the keyboard / wire bytes alone (CP437 on the DOS screen).
+/// On stores these seven as Latin-1, and the screen maps them back to
+/// äöüÄÖÜß while the button is lit.
+const UMLAUT_LATIN1: [(u8, char); 7] = [
+    (0xE4, 'ä'),
+    (0xF6, 'ö'),
+    (0xFC, 'ü'),
+    (0xC4, 'Ä'),
+    (0xD6, 'Ö'),
+    (0xDC, 'Ü'),
+    (0xDF, 'ß'),
+];
+
+fn latin1_umlaut(ch: char) -> Option<u8> {
+    UMLAUT_LATIN1
+        .iter()
+        .find(|(_, letter)| *letter == ch)
+        .map(|(byte, _)| *byte)
+}
+
+/// Channel / BBS / Box-List bytes on the air.
+///
+/// Off is CP437 (`ä` → `0x84`). On is the shifted table (`ä` → `0xE4`).
+/// Every other character stays CP437. CR and LF stay CR and LF.
+/// The wire form is [`encode_channel_wire`]: DOS Enter is one `0x0D`.
+pub fn encode_channel(text: &str, umlaut_on: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    for ch in text.chars() {
+        if umlaut_on {
+            if let Some(byte) = latin1_umlaut(ch) {
+                out.push(byte);
+                continue;
+            }
+        }
+        out.push(char_to_byte(ch));
+    }
+    out
+}
+
+/// Bytes for a channel I-frame.
+///
+/// The pad keeps `\n`. DOS GP's Enter is a single CR, so `\n`, `\r`, and
+/// `\r\n` each go out as one `0x0D`.
+pub fn encode_channel_wire(text: &str, umlaut_on: bool) -> Vec<u8> {
+    let raw = encode_channel(text, umlaut_on);
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        match raw[i] {
+            b'\r' | b'\n' => {
+                if raw[i] == b'\r' && raw.get(i + 1) == Some(&b'\n') {
+                    i += 1;
+                }
+                out.push(b'\r');
+            }
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// What a channel pad stores: the wire bytes read with the CP437 font.
+///
+/// Latin-1 `ä` (`0xE4`) is stored as `Σ`. Turning the button on maps that
+/// glyph back to `ä`. A CP437 `ä` (`0x84`) stays `ä` in both positions.
+pub fn channel_store_text(typed: &str, umlaut_on: bool) -> String {
+    decode_cp437(&encode_channel(typed, umlaut_on))
+}
+
+/// Paint a stored channel / list line. On replaces the seven CP437 glyphs
+/// of the Latin-1 umlauts. Off shows the stored CP437 text.
+pub fn show_channel_text(text: &str, umlaut_on: bool) -> String {
+    if !umlaut_on {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let shown = UMLAUT_LATIN1.iter().find_map(|(byte, letter)| {
+            let glyph = byte_to_char(*byte);
+            (glyph == ch && glyph != *letter).then_some(*letter)
+        });
+        out.push(shown.unwrap_or(ch));
+    }
+    out
+}
+
 /// Encode Unicode editor text to CP437 bytes for disk.
 pub fn encode_cp437(text: &str) -> Vec<u8> {
     text.chars().map(char_to_byte).collect()
@@ -214,6 +303,35 @@ mod tests {
         let back = decode_cp437(&bytes);
         assert!(back.contains('ä') || back.contains('?'));
         assert_eq!(decode_cp437(&encode_cp437("ABC\n")), "ABC\n");
+    }
+
+    #[test]
+    fn umlaut_button_shifts_only_the_latin1_set() {
+        let letters = "äöüÄÖÜß";
+        let cp437 = encode_channel(letters, false);
+        assert_eq!(cp437, [0x84, 0x94, 0x81, 0x8E, 0x99, 0x9A, 0xE1]);
+        let latin1 = encode_channel(letters, true);
+        assert_eq!(latin1, [0xE4, 0xF6, 0xFC, 0xC4, 0xD6, 0xDC, 0xDF]);
+
+        let stored_off = decode_cp437(&cp437);
+        assert_eq!(stored_off, letters);
+        assert_eq!(show_channel_text(&stored_off, false), letters);
+        assert_eq!(show_channel_text(&stored_off, true), letters);
+
+        let stored_on = decode_cp437(&latin1);
+        assert_ne!(stored_on, letters);
+        assert_eq!(show_channel_text(&stored_on, false), stored_on);
+        assert_eq!(show_channel_text(&stored_on, true), letters);
+        assert_eq!(channel_store_text(letters, true), stored_on);
+    }
+
+    #[test]
+    fn outgoing_enter_is_one_cr() {
+        assert_eq!(encode_channel_wire("a\nb", false), b"a\rb");
+        assert_eq!(encode_channel_wire("a\r\nb", false), b"a\rb");
+        assert_eq!(encode_channel_wire("a\rb", false), b"a\rb");
+        assert_eq!(encode_channel_wire("\n", false), b"\r");
+        assert_eq!(encode_channel("a\nb", false), b"a\nb");
     }
 
     #[test]

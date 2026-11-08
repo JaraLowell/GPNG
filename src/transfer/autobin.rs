@@ -2,7 +2,7 @@
 //!
 //! See `docs/TRANSFER.md` and DK4NB’s 1994 protocol bulletin.
 
-use super::crc::crc_ccitt;
+use super::crc::{crc_ccitt, crc_gp};
 
 /// Parsed offer from a peer (or something we are about to send).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,12 +65,13 @@ pub enum AutoBinState {
     WaitLocalDecision {
         offer: BinOffer,
     },
-    /// Receiving raw bytes into `sink`.
+    /// Receiving raw bytes. `store` keeps a copy in `sink`.
     Receiving {
         offer: BinOffer,
         got: u64,
         crc: u16,
         sink: Vec<u8>,
+        store: bool,
     },
 }
 
@@ -96,6 +97,23 @@ pub fn format_extended_offer(
     let name = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
     let q = if resumable { "?" } else { "" };
     format!("#BIN#{length}#|{name}#${ftime_hex:08X}{q}#{}\r", file_crc)
+}
+
+/// GP 1.63 offer: `#BIN#len#|crc#$ftime#path`.
+pub fn format_gp_offer(length: u64, crc: u16, ftime: u32, path: &str) -> String {
+    format!("#BIN#{length}#|{crc}#${ftime:08X}#{path}\r")
+}
+
+/// Borland `struct ftime` packed the way GP prints it (`1B4B5BDA`).
+pub fn pack_ftime(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> u32 {
+    let year = (year - 1980).clamp(0, 127) as u32;
+    let tsec = (sec / 2) & 31;
+    tsec
+        | ((min & 63) << 5)
+        | ((hour & 31) << 11)
+        | ((day & 31) << 16)
+        | ((month & 15) << 21)
+        | (year << 25)
 }
 
 pub fn format_ok() -> String {
@@ -192,22 +210,35 @@ fn parse_offer_body(magic: BinMagic, rest: &str) -> Option<BinOffer> {
     let mut resumable = false;
 
     let length = if let Some((len_s, after)) = rest.split_once("#|") {
-        if let Some((name, after_name)) = after.split_once("#$") {
-            filename = Some(name.to_string());
-            let body = after_name;
-            if let Some(qpos) = body.find('?') {
-                let (hex_part, rest2) = body.split_at(qpos);
-                ftime_hex = Some(hex_part.to_string());
-                resumable = true;
-                let rest2 = rest2.trim_start_matches('?');
-                if let Some(c) = rest2.strip_prefix('#') {
-                    crc = c.parse().ok();
+        if let Some((mid, after_dollar)) = after.split_once("#$") {
+            if mid.chars().all(|c| c.is_ascii_digit()) && !mid.is_empty() {
+                // GP 1.63: #BIN#len#|crc#$ftime#path
+                crc = mid.parse().ok();
+                if let Some((hex_part, name)) = after_dollar.split_once('#') {
+                    ftime_hex = Some(hex_part.to_string());
+                    if !name.is_empty() {
+                        filename = Some(name.to_string());
+                    }
+                } else if !after_dollar.is_empty() {
+                    ftime_hex = Some(after_dollar.to_string());
                 }
-            } else if let Some((hex_part, c)) = body.split_once('#') {
-                ftime_hex = Some(hex_part.to_string());
-                crc = c.parse().ok();
             } else {
-                ftime_hex = Some(body.to_string());
+                filename = Some(mid.to_string());
+                let body = after_dollar;
+                if let Some(qpos) = body.find('?') {
+                    let (hex_part, rest2) = body.split_at(qpos);
+                    ftime_hex = Some(hex_part.to_string());
+                    resumable = true;
+                    let rest2 = rest2.trim_start_matches('?');
+                    if let Some(c) = rest2.strip_prefix('#') {
+                        crc = c.parse().ok();
+                    }
+                } else if let Some((hex_part, c)) = body.split_once('#') {
+                    ftime_hex = Some(hex_part.to_string());
+                    crc = c.parse().ok();
+                } else {
+                    ftime_hex = Some(body.to_string());
+                }
             }
         } else {
             filename = Some(after.to_string());
@@ -246,6 +277,7 @@ impl AutoBinState {
                         got: 0,
                         crc: 0,
                         sink: Vec::new(),
+                        store: true,
                     };
                     vec![reply]
                 } else {
@@ -283,36 +315,199 @@ impl AutoBinState {
         }
     }
 
+    /// Offer held until the operator hits SAVE.
+    pub fn pending_offer(&self) -> Option<&BinOffer> {
+        match self {
+            Self::WaitLocalDecision { offer } => Some(offer),
+            _ => None,
+        }
+    }
+
+    /// SAVE accepted the offer. The next bytes are the file, kept in memory.
+    pub fn begin_receive(&mut self) -> bool {
+        self.begin_receive_keeping(true)
+    }
+
+    /// SAVE accepted the offer. Bytes are counted, not kept.
+    /// The caller writes them to a part file and renames it when this finishes.
+    pub fn begin_receive_stream(&mut self) -> bool {
+        self.begin_receive_keeping(false)
+    }
+
+    fn begin_receive_keeping(&mut self, store: bool) -> bool {
+        let Self::WaitLocalDecision { offer } = self else {
+            return false;
+        };
+        let offer = offer.clone();
+        *self = Self::Receiving {
+            offer,
+            got: 0,
+            crc: 0,
+            sink: Vec::new(),
+            store,
+        };
+        true
+    }
+
+    /// Bytes still expected, and the file name from the offer.
+    pub fn recv_progress(&self) -> Option<(u64, u64, String)> {
+        let AutoBinState::Receiving { offer, got, .. } = self else {
+            return None;
+        };
+        let name = offer
+            .filename
+            .clone()
+            .unwrap_or_else(|| "autobin.bin".into());
+        Some((*got, offer.length, name))
+    }
+
     /// Feed raw RX bytes while in [`Receiving`].
-    pub fn on_binary(&mut self, chunk: &[u8]) -> Option<BinReceiveDone> {
+    ///
+    /// Returns how many leading bytes were file data, and the finished file
+    /// when the offer length is reached. Bytes after that belong to the next
+    /// text line.
+    pub fn on_binary(&mut self, chunk: &[u8]) -> (usize, Option<BinReceiveDone>) {
         let AutoBinState::Receiving {
             offer,
             got,
             crc,
             sink,
+            store,
         } = self
         else {
-            return None;
+            return (0, None);
         };
-        for &b in chunk {
+        let mut i = 0;
+        while i < chunk.len() {
+            let b = chunk[i];
             *crc = super::crc::updcrc(b, *crc);
-            sink.push(b);
+            if *store {
+                sink.push(b);
+            }
             *got += 1;
+            i += 1;
             if *got >= offer.length {
                 let expected = offer.crc;
                 let actual = *crc;
                 let filename = offer.filename.clone();
                 let data = std::mem::take(sink);
                 *self = AutoBinState::Idle;
-                return Some(BinReceiveDone {
-                    filename,
-                    data,
-                    crc_ok: expected.map(|e| e == actual).unwrap_or(true),
-                    crc: actual,
-                });
+                return (
+                    i,
+                    Some(BinReceiveDone {
+                        filename,
+                        data,
+                        crc_ok: expected.map(|e| e == actual).unwrap_or(true),
+                        crc: actual,
+                    }),
+                );
             }
         }
-        None
+        (i, None)
+    }
+
+        pub fn tx_active(&self) -> bool {
+        matches!(self, Self::WaitPeerAck { .. } | Self::Sending { .. })
+    }
+
+    pub fn tx_waiting(&self) -> bool {
+        matches!(self, Self::WaitPeerAck { .. })
+    }
+
+    /// Bytes handed to the link, the file length, and the path.
+    /// Waiting for `#OK#` reports zero bytes sent.
+    pub fn tx_progress(&self) -> Option<(u64, u64, String, bool)> {
+        match self {
+            Self::WaitPeerAck { offer, .. } => Some((
+                0,
+                offer.length,
+                offer.filename.clone().unwrap_or_else(|| "file".into()),
+                true,
+            )),
+            Self::Sending { offer, offset, .. } => Some((
+                *offset,
+                offer.length,
+                offer.filename.clone().unwrap_or_else(|| "file".into()),
+                false,
+            )),
+            _ => None,
+        }
+    }
+
+    /// `#OK#` starts the byte send. `#NO#` / `#ABORT#` stops it,
+    /// including an abort that arrives after the file bytes have started.
+    pub fn on_tx_reply(&mut self, line: &str) -> TxReply {
+        if !self.tx_active() {
+            return TxReply::Ignore;
+        }
+        let Some(ctrl) = parse_control_line(line) else {
+            return TxReply::Ignore;
+        };
+        match ctrl {
+            BinControl::Ok { .. } => {
+                if !matches!(self, Self::WaitPeerAck { .. }) {
+                    return TxReply::Ignore;
+                }
+                let Self::WaitPeerAck { offer, sent } = std::mem::replace(self, Self::Idle) else {
+                    return TxReply::Ignore;
+                };
+                *self = Self::Sending {
+                    offer,
+                    offset: 0,
+                    data: sent,
+                };
+                TxReply::Start
+            }
+            BinControl::No(reason) => {
+                *self = Self::Idle;
+                TxReply::Rejected(reason)
+            }
+            BinControl::Abort => {
+                *self = Self::Idle;
+                TxReply::Rejected(String::new())
+            }
+            BinControl::Offer(_) => TxReply::Ignore,
+        }
+    }
+
+    /// Next slice of the file. `None` when every byte has been handed over.
+    pub fn next_chunk(&mut self, max: usize) -> Option<Vec<u8>> {
+        let Self::Sending { offset, data, .. } = self else {
+            return None;
+        };
+        if *offset >= data.len() as u64 {
+            return None;
+        }
+        let start = *offset as usize;
+        let end = (start + max.max(1)).min(data.len());
+        let chunk = data[start..end].to_vec();
+        *offset = end as u64;
+        Some(chunk)
+    }
+
+    pub fn tx_summary(&self) -> Option<(u64, u16)> {
+        let (offer, got) = match self {
+            Self::Sending { offer, offset, .. } => (offer, *offset),
+            Self::WaitPeerAck { offer, .. } => (offer, 0),
+            _ => return None,
+        };
+        Some((got, offer.crc.unwrap_or(0)))
+    }
+
+    /// Start sending `data` with the GP 1.63 header.
+    pub fn begin_gp_send(&mut self, path: &str, data: Vec<u8>, ftime: u32) -> String {
+        let crc = crc_gp(&data);
+        let offer = BinOffer {
+            length: data.len() as u64,
+            filename: Some(path.to_string()),
+            ftime_hex: Some(format!("{ftime:08X}")),
+            crc: Some(crc),
+            resumable: false,
+            magic: BinMagic::Bin,
+        };
+        let header = format_gp_offer(offer.length, crc, ftime, path);
+        *self = AutoBinState::WaitPeerAck { offer, sent: data };
+        header
     }
 
     /// Start sending `data` under an extended header.
@@ -330,6 +525,13 @@ impl AutoBinState {
         *self = AutoBinState::WaitPeerAck { offer, sent: data };
         header
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TxReply {
+    Ignore,
+    Start,
+    Rejected(String),
 }
 
 #[derive(Debug)]
@@ -367,8 +569,81 @@ mod tests {
         let offer_line = format_extended_offer(4, "X.BIN", 0, crc, false);
         let replies = st.on_text_line(offer_line.trim_end_matches('\r'), true);
         assert!(replies[0].starts_with("#OK#"));
-        let done = st.on_binary(data).unwrap();
+        let (n, done) = st.on_binary(data);
+        assert_eq!(n, data.len());
+        let done = done.unwrap();
         assert!(done.crc_ok);
         assert_eq!(done.data, data);
+    }
+
+    #[test]
+    fn save_arms_receive() {
+        let mut st = AutoBinState::Idle;
+        let replies = st.on_text_line("#BIN#4#|9#$00000001#DEFS.TFC", false);
+        assert!(replies.is_empty());
+        assert_eq!(
+            st.pending_offer().and_then(|o| o.filename.clone()).as_deref(),
+            Some("DEFS.TFC")
+        );
+        assert!(st.begin_receive());
+        let (n, done) = st.on_binary(b"abcd");
+        assert_eq!(n, 4);
+        assert_eq!(done.unwrap().data, b"abcd");
+    }
+
+    #[test]
+    fn gp_ftime_matches_dos_header() {
+        assert_eq!(pack_ftime(1993, 10, 11, 11, 30, 52), 0x1B4B_5BDA);
+    }
+
+    #[test]
+    fn gp_send_waits_for_ok_then_chunks() {
+        let mut st = AutoBinState::Idle;
+        let header = st.begin_gp_send("C:\\GP\\DEFS.TFC", b"abcd".to_vec(), 0x1B4B_5BDA);
+        assert!(header.starts_with("#BIN#4#|6043#"));
+        assert!(header.contains("#$1B4B5BDA#C:\\GP\\DEFS.TFC"));
+        assert!(st.tx_waiting());
+        assert_eq!(st.on_tx_reply("#OK#"), TxReply::Start);
+        assert_eq!(st.next_chunk(3).unwrap(), b"abc");
+        assert_eq!(st.next_chunk(3).unwrap(), b"d");
+        assert!(st.next_chunk(3).is_none());
+    }
+
+    #[test]
+    fn peer_abort_stops_a_send_already_under_way() {
+        let mut st = AutoBinState::Idle;
+        st.begin_gp_send("DEFS.TFC", b"abcdef".to_vec(), 0);
+        assert_eq!(st.on_tx_reply("#OK#"), TxReply::Start);
+        assert_eq!(st.next_chunk(3).unwrap(), b"abc");
+        assert_eq!(st.on_tx_reply("#ABORT#"), TxReply::Rejected(String::new()));
+        assert!(!st.tx_active());
+        assert!(st.next_chunk(3).is_none());
+    }
+
+    #[test]
+    fn streamed_receive_keeps_no_body() {
+        let mut st = AutoBinState::Idle;
+        st.on_text_line("#BIN#4#|9#$00000001#DEFS.TFC", false);
+        assert!(st.begin_receive_stream());
+        let (n, done) = st.on_binary(b"abcdEXTRA");
+        assert_eq!(n, 4);
+        let done = done.unwrap();
+        assert!(done.data.is_empty());
+        assert_eq!(done.filename.as_deref(), Some("DEFS.TFC"));
+    }
+
+    #[test]
+    fn gp163_header_crc_then_ftime_then_path() {
+        let line = "#BIN#1628#|22311#$1B4B5BDA#C:\\GP\\DEFS.TFC";
+        let ctrl = parse_control_line(line).unwrap();
+        match ctrl {
+            BinControl::Offer(o) => {
+                assert_eq!(o.length, 1628);
+                assert_eq!(o.crc, Some(22311));
+                assert_eq!(o.ftime_hex.as_deref(), Some("1B4B5BDA"));
+                assert_eq!(o.filename.as_deref(), Some("C:\\GP\\DEFS.TFC"));
+            }
+            _ => panic!("expected offer"),
+        }
     }
 }

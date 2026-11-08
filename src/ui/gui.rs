@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::{Local, Timelike};
+use chrono::{Datelike, Local, Timelike};
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{
     self, Color32, ColorImage, Context, FontData, FontDefinitions, FontFamily, FontId, Frame, Pos2,
@@ -57,11 +57,14 @@ use crate::tnc::{
     ChannelBuffers, DetectedPort, FrameClass, HostCode, MonitorFilter, MonitorInput, RadioLink,
     TncCommand, TncEvent, TNC_RAM,
 };
+use crate::transfer::autobin::{self, AutoBinState, BinReceiveDone, TxReply};
 use crate::transfer::sevenplus::{self, SevenPlusAutosave};
 use crate::version;
 
 use super::ansi::{strip_ansi, AnsiDecoder, AnsiStyle};
-use super::editor::GpEditor;
+use super::editor::{
+    channel_store_text, decode_cp437, encode_channel_wire, show_channel_text, GpEditor,
+};
 use super::icons::{
     icon_file_label, list_icon_files, resolve_icon_path, toolbar_for, toolbar_for_channel,
     IconEdit, IconLibrary, ICON_HEIGHT, ICON_SLOT_LABELS, ICON_WIDTH, VGA16_RGB,
@@ -267,6 +270,10 @@ pub struct GpGuiApp {
     bbs_sort_desc: bool,
     /// New DieBox list waiting for replace / append / interrupt.
     list_offer: Option<ListOffer>,
+    /// AutoBin receive. DOS waits on `#OK#` before the file bytes.
+    autobin: Option<LiveAutoBin>,
+    /// One in-flight file frame after a local `#ABORT#`. Hidden unless it is `<GP>:`.
+    bin_rx_swallow: Option<u8>,
     find_open: bool,
     find_text: String,
     find_last: String,
@@ -641,6 +648,8 @@ impl GpGuiApp {
             box_from: None,
             bbs_sort_desc: false,
             list_offer: None,
+            autobin: None,
+            bin_rx_swallow: None,
             find_open: false,
             find_text: String::new(),
             find_last: String::new(),
@@ -1219,7 +1228,7 @@ impl GpGuiApp {
                                 self.note_rx_calls(channel, &peer, &mine);
                             }
                         }
-                        self.accept_rx_text(channel, &line, kind);
+                        self.accept_rx_text(channel, &decode_cp437(&payload), kind);
                     } else if !hide_monitor && !(skip_monitor_dup && idx == 0) {
                         if idx == 0 && monitor_bytes {
                             if let Some(pad) = self.pads.get_mut(0) {
@@ -1729,9 +1738,11 @@ impl GpGuiApp {
         // Sending window is the same terminal: a newline in the file is a
         // row, and a colour sequence changes the pen. The 128-byte cut does not.
         // One newline.wav for the whole CTEXT, not one per row or packet cut.
+        let wire = encode_channel_wire(&text, self.session.extended_ascii);
+        let stored = decode_cp437(&wire);
         self.begin_newline_coalesce();
         self.seal_term(answer);
-        self.accept_rx_text(answer, &text, PadKind::Own);
+        self.accept_rx_text(answer, &stored, PadKind::Own);
         self.seal_term(answer);
         if !kiss {
             for line in payload_lines(&text) {
@@ -1739,13 +1750,13 @@ impl GpGuiApp {
             }
         }
         self.seal_term(caller);
-        for chunk in pack_text_payloads(&text, max) {
+        for chunk in wire.chunks(max) {
             // Caller rebuilds rows from newlines, not from the 128-byte cut.
-            self.accept_rx_text(caller, &chunk, PadKind::Incoming);
+            self.accept_rx_text(caller, &decode_cp437(chunk), PadKind::Incoming);
             if kiss {
                 let ns = *self.ax25_vs.get(answer as usize).unwrap_or(&0);
                 let nr = *self.ax25_vr.get(answer as usize).unwrap_or(&0);
-                let frame = ax25::build_i(&peer, &my, ns, nr, false, chunk.as_bytes());
+                let frame = ax25::build_i(&peer, &my, ns, nr, false, chunk);
                 if let Some(vs) = self.ax25_vs.get_mut(answer as usize) {
                     *vs = (ns + 1) & 7;
                 }
@@ -1756,7 +1767,7 @@ impl GpGuiApp {
             } else {
                 let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
                     channel: answer,
-                    data: chunk.into_bytes(),
+                    data: chunk.to_vec(),
                 });
             }
         }
@@ -1851,6 +1862,21 @@ impl GpGuiApp {
         self.kiss_clear_disc_timer(channel);
         self.clear_channel_link_state(channel);
         self.drop_mail_for(channel);
+        if self
+            .autobin
+            .as_ref()
+            .is_some_and(|live| live.channel == channel)
+        {
+            if let Some(live) = self.autobin.as_mut() {
+                Self::discard_recv_temp(live);
+            }
+            self.autobin = None;
+            self.session.bin_rx = false;
+            self.session.bin_tx = false;
+        }
+        if self.bin_rx_swallow == Some(channel) {
+            self.bin_rx_swallow = None;
+        }
         if was && play {
             play_wav(&self.disconnect_wav);
         }
@@ -2311,8 +2337,9 @@ impl GpGuiApp {
         // Colour bytes in the typed line paint that row; they are not shown.
         if idx != 0 {
             let ch = idx as u8;
+            let shown = channel_store_text(line, self.session.extended_ascii);
             self.seal_term(ch);
-            self.accept_rx_text(ch, line, PadKind::Own);
+            self.accept_rx_text(ch, &shown, PadKind::Own);
             let wrote = self.rx_row.get(idx).copied().flatten().is_some();
             self.seal_term(ch);
             if !wrote {
@@ -2942,6 +2969,438 @@ impl GpGuiApp {
         }
     }
 
+    fn autobin_pending(&self, channel: u8) -> bool {
+        self.autobin.as_ref().is_some_and(|live| {
+            live.channel == channel && live.state.pending_offer().is_some()
+        })
+    }
+
+    fn autobin_receiving(&self, channel: u8) -> bool {
+        self.autobin.as_ref().is_some_and(|live| {
+            live.channel == channel && live.state.recv_progress().is_some()
+        })
+    }
+
+    /// File bytes stay off the channel. `#BIN#`, `#OK#`, `#NO#`, `#ABORT#`,
+    /// and a `<GP>:` tail still belong there.
+    /// `None` means this frame has nothing left to paint.
+    fn autobin_channel_text(&mut self, channel: u8, info: &[u8]) -> Option<Vec<u8>> {
+        if self.bin_rx_swallow == Some(channel) {
+            self.bin_rx_swallow = None;
+            self.session.bin_rx = false;
+            return gp_notice_from(info);
+        }
+        if self.autobin_receiving(channel) {
+            let (n, done, io_err) = {
+                let live = self.autobin.as_mut().expect("receiving");
+                let (n, done) = live.state.on_binary(info);
+                let io_err = if n > 0 {
+                    live.recv_file
+                        .as_mut()
+                        .and_then(|file| std::io::Write::write_all(file, &info[..n]).err())
+                        .map(|err| err.to_string())
+                } else {
+                    None
+                };
+                (n, done, io_err)
+            };
+            if let Some(err) = io_err {
+                self.cancel_autobin();
+                self.status = format!("BIN-RX: {err}");
+                return None;
+            }
+            if let Some(done) = done {
+                self.commit_autobin_file(done);
+            }
+            let tail = info[n..].to_vec();
+            return if tail.is_empty() { None } else { Some(tail) };
+        }
+        if self.autobin_tx_active(channel) {
+            return self.note_bin_tx_reply(channel, info);
+        }
+        if self.autobin.is_some() {
+            return strip_bin_headers(info);
+        }
+        let text = decode_cp437(info);
+        for line in text.split(['\r', '\n']) {
+            if !line.starts_with("#BIN#") && !line.starts_with("#BIN_V2#") {
+                continue;
+            }
+            let mut state = AutoBinState::Idle;
+            let _ = state.on_text_line(line, false);
+            let Some(label) = state.pending_offer().map(autobin_offer_label) else {
+                self.status = "BIN-RX: could not read the #BIN# header".into();
+                self.show_proto_line(channel, line, PadKind::Incoming);
+                return None;
+            };
+            self.autobin = Some(LiveAutoBin {
+                channel,
+                state,
+                started: Instant::now(),
+                tx_ns: None,
+                recv_file: None,
+                recv_part: None,
+                recv_final: None,
+            });
+            self.session.bin_rx = true;
+            self.active = ActivePane::Channel(channel);
+            self.status = format!("BIN-RX: {label} — SAVE");
+            self.log_event(self.status.clone());
+            self.show_proto_line(channel, line, PadKind::Incoming);
+            return None;
+        }
+        Some(info.to_vec())
+    }
+
+    /// SAVE on the channel that holds the offer. Sends `#OK#` and starts the bar.
+    fn accept_autobin(&mut self, channel: u8) -> bool {
+        let pending = self.autobin.as_ref().is_some_and(|live| {
+            live.channel == channel && live.state.pending_offer().is_some()
+        });
+        if !pending {
+            return false;
+        }
+        let raw_name = self
+            .autobin
+            .as_ref()
+            .and_then(|live| live.state.pending_offer())
+            .and_then(|offer| offer.filename.clone())
+            .unwrap_or_default();
+        let (_safe, final_path, part_path) = self.autobin_paths(&raw_name);
+        if let Some(parent) = part_path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                self.status = format!("BIN-RX: {err}");
+                return true;
+            }
+        }
+        let file = match std::fs::File::create(&part_path) {
+            Ok(file) => file,
+            Err(err) => {
+                self.status = format!("BIN-RX: {err}");
+                return true;
+            }
+        };
+        let live = self.autobin.as_mut().expect("pending");
+        if !live.state.begin_receive_stream() {
+            drop(file);
+            let _ = std::fs::remove_file(&part_path);
+            return false;
+        }
+        live.started = Instant::now();
+        live.recv_file = Some(file);
+        live.recv_part = Some(part_path);
+        live.recv_final = Some(final_path);
+        let my = self.effective_mycall(channel);
+        let ack = autobin::format_ok();
+        if !self.send_kiss_i(channel, &my, ack.as_bytes(), "#OK#") {
+            if let Some(live) = self.autobin.as_mut() {
+                Self::discard_recv_temp(live);
+            }
+            self.autobin = None;
+            self.session.bin_rx = false;
+            self.status = format!("BIN-RX: channel {channel} has no link");
+            return true;
+        }
+        self.show_proto_line(channel, "#OK#", PadKind::Own);
+        self.session.bin_rx = true;
+        self.status = format!("BIN-RX ch{channel}");
+        true
+    }
+
+    fn cancel_autobin(&mut self) {
+        let Some(mut live) = self.autobin.take() else {
+            return;
+        };
+        let receiving = live.state.recv_progress().is_some();
+        let pending = live.state.pending_offer().is_some();
+        if !receiving && !pending {
+            self.autobin = Some(live);
+            return;
+        }
+        Self::discard_recv_temp(&mut live);
+        let channel = live.channel;
+        let my = self.effective_mycall(channel);
+        let wire = if receiving { "#ABORT#\r" } else { "#NO#\r" };
+        let shown = if receiving { "#ABORT#" } else { "#NO#" };
+        let _ = self.send_kiss_i(channel, &my, wire.as_bytes(), shown);
+        self.show_proto_line(channel, shown, PadKind::Own);
+        self.session.bin_rx = false;
+        if receiving {
+            self.bin_rx_swallow = Some(channel);
+        }
+        self.status = if receiving {
+            "BIN-RX aborted".into()
+        } else {
+            "BIN-RX declined".into()
+        };
+    }
+
+    fn autobin_tx_active(&self, channel: u8) -> bool {
+        self.autobin
+            .as_ref()
+            .is_some_and(|live| live.channel == channel && live.state.tx_active())
+    }
+
+    fn note_bin_tx_reply(&mut self, channel: u8, info: &[u8]) -> Option<Vec<u8>> {
+        let text = decode_cp437(info);
+        let mut reply = TxReply::Ignore;
+        let mut shown = String::new();
+        for line in text.split(['\r', '\n']) {
+            if line.is_empty() {
+                continue;
+            }
+            let live = self.autobin.as_mut().expect("tx");
+            reply = live.state.on_tx_reply(line);
+            if !matches!(reply, TxReply::Ignore) {
+                shown = line.to_string();
+                break;
+            }
+        }
+        match reply {
+            TxReply::Start => {
+                if let Some(live) = self.autobin.as_mut() {
+                    live.started = Instant::now();
+                    live.tx_ns = None;
+                }
+                if !shown.is_empty() {
+                    self.show_proto_line(channel, &shown, PadKind::Incoming);
+                }
+                self.pump_bin_tx(channel);
+                None
+            }
+            TxReply::Rejected(reason) => {
+                self.autobin = None;
+                self.session.bin_tx = false;
+                if !shown.is_empty() {
+                    self.show_proto_line(channel, &shown, PadKind::Incoming);
+                }
+                self.status = if shown.contains("#ABORT#") {
+                    "BIN-TX aborted".into()
+                } else if reason.is_empty() {
+                    "BIN-TX declined".into()
+                } else {
+                    format!("BIN-TX declined: {reason}")
+                };
+                None
+            }
+            TxReply::Ignore => Some(info.to_vec()),
+        }
+    }
+
+    fn note_bin_tx_ack(&mut self, channel: u8, nr: u8) {
+        let acked = self.autobin.as_ref().is_some_and(|live| {
+            live.channel == channel
+                && live
+                    .tx_ns
+                    .is_some_and(|ns| nr == (ns.wrapping_add(1) & 7))
+        });
+        if !acked {
+            return;
+        }
+        if let Some(live) = self.autobin.as_mut() {
+            live.tx_ns = None;
+        }
+        self.pump_bin_tx(channel);
+    }
+
+    fn pump_bin_tx(&mut self, channel: u8) {
+        if self
+            .autobin
+            .as_ref()
+            .is_some_and(|live| live.channel == channel && live.tx_ns.is_some())
+        {
+            return;
+        }
+        let max = self.cfg.buffers.packet_payload.max(1) as usize;
+        let chunk = {
+            let Some(live) = self.autobin.as_mut() else {
+                return;
+            };
+            if live.channel != channel {
+                return;
+            }
+            live.state.next_chunk(max)
+        };
+        let Some(chunk) = chunk else {
+            self.finish_bin_tx(channel);
+            return;
+        };
+        let ns = self.ax25_vs.get(channel as usize).copied().unwrap_or(0);
+        let my = self.effective_mycall(channel);
+        if !self.send_kiss_i(channel, &my, &chunk, "") {
+            self.autobin = None;
+            self.session.bin_tx = false;
+            self.status = format!("BIN-TX: channel {channel} has no link");
+            return;
+        }
+        if let Some(live) = self.autobin.as_mut() {
+            live.tx_ns = Some(ns);
+        }
+    }
+
+    fn finish_bin_tx(&mut self, channel: u8) {
+        let Some(live) = self.autobin.take() else {
+            return;
+        };
+        let (got, crc) = live.state.tx_summary().unwrap_or((0, 0));
+        let elapsed = live.started.elapsed();
+        let secs = elapsed.as_secs().max(1);
+        let baud = (got.saturating_mul(8) / secs) as u32;
+        let e = elapsed.as_secs();
+        let tijd = format!("{:02}:{:02}:{:02}", e / 3600, (e / 60) % 60, e % 60);
+        let line1 = format!("<GPNG>: Binare file transfer OK, CRC={crc}");
+        let line2 = format!("      Bytes={got}, Tijd={tijd}, Baud={baud}");
+        self.session.bin_tx = false;
+        let my = self.effective_mycall(channel);
+        let wire = format!("{line1}\r{line2}\r");
+        let _ = self.send_kiss_i(channel, &my, wire.as_bytes(), "");
+        self.accept_rx_text(channel, &format!("{line1}\n{line2}\n"), PadKind::Own);
+        self.status = format!("BIN-TX sent {got} bytes");
+    }
+
+    fn start_bin_tx(&mut self) {
+        let Some(channel) = self.active_channel() else {
+            self.status = "BIN-TX — select a channel".into();
+            return;
+        };
+        if !self.channel_linked(channel) {
+            self.status = "BIN-TX — connect the channel first".into();
+            return;
+        }
+        if self.autobin.is_some() {
+            self.status = "BIN-TX — a transfer is already running".into();
+            return;
+        }
+        let mut dialog = rfd::FileDialog::new().set_title("BIN-TX");
+        dialog = dialog.set_directory(&self.cfg.paths.save_dir);
+        let Some(path) = dialog.pick_file() else {
+            self.status = "BIN-TX cancelled".into();
+            return;
+        };
+        let data = match std::fs::read(&path) {
+            Ok(data) if !data.is_empty() => data,
+            Ok(_) => {
+                self.status = "BIN-TX — file is empty".into();
+                return;
+            }
+            Err(err) => {
+                self.status = format!("BIN-TX: {err}");
+                return;
+            }
+        };
+        let ftime = file_ftime(&path);
+        let mut shown = path.display().to_string().replace('/', "\\");
+        let crc = crate::transfer::crc::crc_gp(&data);
+        let overhead = format!("#BIN#{}#|{crc}#$XXXXXXXX#\r", data.len()).len();
+        if overhead + shown.len() > 240 {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                shown = name.to_string();
+            }
+        }
+        let mut state = AutoBinState::Idle;
+        let header = state.begin_gp_send(&shown, data, ftime);
+        self.autobin = Some(LiveAutoBin {
+            channel,
+            state,
+            started: Instant::now(),
+            tx_ns: None,
+            recv_file: None,
+            recv_part: None,
+            recv_final: None,
+        });
+        self.session.bin_tx = true;
+        let my = self.effective_mycall(channel);
+        if !self.send_kiss_i(channel, &my, header.as_bytes(), "") {
+            self.autobin = None;
+            self.session.bin_tx = false;
+            self.status = format!("BIN-TX: channel {channel} has no link");
+            return;
+        }
+        self.show_proto_line(channel, header.trim_end_matches(['\r', '\n']), PadKind::Own);
+        self.status = format!("BIN-TX: {shown}");
+    }
+
+    fn cancel_bin_tx(&mut self) {
+        let Some(live) = self.autobin.take() else {
+            self.session.bin_tx = false;
+            return;
+        };
+        if !live.state.tx_active() {
+            self.autobin = Some(live);
+            return;
+        }
+        let channel = live.channel;
+        let my = self.effective_mycall(channel);
+        let abort = autobin::format_abort();
+        let _ = self.send_kiss_i(channel, &my, abort.as_bytes(), "");
+        self.show_proto_line(channel, "#ABORT#", PadKind::Own);
+        self.session.bin_tx = false;
+        self.status = "BIN-TX aborted".into();
+    }
+
+    /// The part file is complete. Rename it onto the real name.
+    fn commit_autobin_file(&mut self, done: BinReceiveDone) {
+        let Some(mut live) = self.autobin.take() else {
+            return;
+        };
+        if let Some(mut file) = live.recv_file.take() {
+            let _ = std::io::Write::flush(&mut file);
+        }
+        let part = live.recv_part.take();
+        let dest = live.recv_final.take();
+        self.session.bin_rx = false;
+        self.status = match (part, dest) {
+            (Some(part), Some(dest)) => match replace_part_file(&part, &dest) {
+                Ok(()) => {
+                    let bytes = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                    format!("BIN-RX saved {} ({bytes} bytes)", dest.display())
+                }
+                Err(err) => format!("BIN-RX save: {err}"),
+            },
+            _ => {
+                let safe = autobin_safe_name(done.filename.as_deref().unwrap_or(""));
+                let path = self.cfg.paths.save_dir.join(&safe);
+                match std::fs::create_dir_all(&self.cfg.paths.save_dir)
+                    .and_then(|_| std::fs::write(&path, &done.data))
+                {
+                    Ok(()) => format!(
+                        "BIN-RX saved {} ({} bytes)",
+                        path.display(),
+                        done.data.len()
+                    ),
+                    Err(err) => format!("BIN-RX save: {err}"),
+                }
+            }
+        };
+        self.log_event(self.status.clone());
+    }
+
+    fn autobin_paths(&self, raw: &str) -> (String, PathBuf, PathBuf) {
+        let safe = autobin_safe_name(raw);
+        let dir = &self.cfg.paths.save_dir;
+        let final_path = dir.join(&safe);
+        let part = dir.join(format!(".{safe}.part"));
+        (safe, final_path, part)
+    }
+
+    fn discard_recv_temp(live: &mut LiveAutoBin) {
+        live.recv_file.take();
+        if let Some(path) = live.recv_part.take() {
+            let _ = std::fs::remove_file(path);
+        }
+        live.recv_final.take();
+    }
+
+    /// One protocol line on the channel, closed, the way DOS shows `#BIN#` / `#OK#`.
+    fn show_proto_line(&mut self, channel: u8, line: &str, kind: PadKind) {
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() || channel == 0 {
+            return;
+        }
+        self.seal_term(channel);
+        self.accept_rx_text(channel, &format!("{line}\n"), kind);
+    }
+
     /// Connected-mode I frame on one channel. Returns false when that channel
     /// has no peer.
     fn send_kiss_i(&mut self, n: u8, my: &str, info: &[u8], shown: &str) -> bool {
@@ -2978,7 +3437,7 @@ impl GpGuiApp {
         let shown: &str = if let Some(text) = shown {
             text
         } else {
-            owned = latin1_string(info);
+            owned = decode_cp437(info);
             &owned
         };
         let my = self.mycall_for_active();
@@ -3174,10 +3633,21 @@ impl GpGuiApp {
                     if self.channel_disconnecting(ch) {
                         return;
                     }
-                    let expect = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
+                    let mut expect = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
                     let my = self.effective_mycall(ch);
                     let vias = self.link_vias(ch);
                     let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
+                    // N(S)=0 N(R)=0 is the first I of a new link. A V(R) kept
+                    // from the previous QSO makes REJ illegal; DOS answers FRMR.
+                    if frame.ns != expect && frame.ns == 0 && frame.nr == 0 {
+                        expect = 0;
+                        if let Some(vs) = self.ax25_vs.get_mut(ch as usize) {
+                            *vs = 0;
+                        }
+                        if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
+                            *vr = 0;
+                        }
+                    }
                     if frame.ns != expect {
                         // Out of sequence — ask them to resend from V(R).
                         self.tx_kiss_payload(
@@ -3198,9 +3668,12 @@ impl GpGuiApp {
                     );
                     self.kiss_link_activity(ch, true);
                     self.note_ax25_peer(ch);
-                    self.note_seven_payload(ch, &frame.info);
                     self.note_rx_calls(ch, &frame.src, &frame.dest);
-                    self.accept_rx_text(ch, &info_text, PadKind::Incoming);
+                    if let Some(bytes) = self.autobin_channel_text(ch, &frame.info) {
+                        self.note_seven_payload(ch, &bytes);
+                        self.accept_rx_text(ch, &decode_cp437(&bytes), PadKind::Incoming);
+                    }
+                    self.note_bin_tx_ack(ch, frame.nr);
                 } else if frame.command {
                     self.kiss_dm_if_ours_disconnected(&frame);
                 }
@@ -3246,6 +3719,9 @@ impl GpGuiApp {
                     // Answer with RR Final (ready) even after RNR/REJ —
                     // we are not flow-controlling the peer.
                     self.kiss_reply_rr_final(ch, &frame.src);
+                }
+                if matches!(frame.kind, Ax25FrameType::Rr) {
+                    self.note_bin_tx_ack(ch, frame.nr);
                 }
             }
             Ax25FrameType::Dm => {
@@ -3515,6 +3991,12 @@ impl GpGuiApp {
         self.note_last_call(ch, peer);
         self.kiss_clear_sabm_timer(ch);
         self.kiss_link_activity(ch, true);
+        if let Some(vs) = self.ax25_vs.get_mut(ch as usize) {
+            *vs = 0;
+        }
+        if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
+            *vr = 0;
+        }
         play_wav(&self.connect_wav);
         let moved = !requested.is_empty() && !requested.eq_ignore_ascii_case(peer);
         let line = if moved {
@@ -3848,7 +4330,15 @@ impl GpGuiApp {
         self.push_compose_history(slot, line.clone());
 
         // Channel transcript when Echo is on (before any early return).
-        self.echo_own_line(&line);
+        // BIN-RX paints `#OK#` / `#NO#` itself, so Echo must not add a second copy.
+        let wire_answer = matches!(self.active, ActivePane::Channel(n) if {
+            let t = line.trim();
+            self.autobin_pending(n)
+                && (t.eq_ignore_ascii_case("#OK#") || t.eq_ignore_ascii_case("#NO#"))
+        });
+        if !wire_answer {
+            self.echo_own_line(&line);
+        }
 
         let write_ch = match self.active {
             ActivePane::Channel(n) => n,
@@ -4116,7 +4606,21 @@ impl GpGuiApp {
 
     /// `carriage_return` appends a CR after the text. Enter does. Ctrl-Enter does not.
     fn write_operator_text(&mut self, text: &str, carriage_return: bool) {
+        let line = text.trim().trim_end_matches(['\r', '\n']);
+        if let ActivePane::Channel(n) = self.active {
+            if line.eq_ignore_ascii_case("#OK#") && self.accept_autobin(n) {
+                return;
+            }
+            if line.eq_ignore_ascii_case("#NO#") && self.autobin_pending(n) {
+                self.cancel_autobin();
+                return;
+            }
+        }
         self.note_sysop_command(text);
+        if matches!(self.active, ActivePane::Channel(_)) {
+            self.write_channel_bytes(text, carriage_return);
+            return;
+        }
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
         let mut chunks = pack_text_payloads(text, max);
         if chunks.is_empty() {
@@ -4143,6 +4647,32 @@ impl GpGuiApp {
                 let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
                     channel,
                     data: chunk.into_bytes(),
+                });
+            }
+        }
+    }
+
+    /// Channel bytes. The äöü button selects CP437 or the Latin-1 umlaut table.
+    fn write_channel_bytes(&mut self, text: &str, carriage_return: bool) {
+        let mut raw = encode_channel_wire(text, self.session.extended_ascii);
+        if carriage_return && raw.last() != Some(&b'\r') {
+            raw.push(b'\r');
+        }
+        if raw.is_empty() {
+            return;
+        }
+        let max = self.cfg.buffers.packet_payload.max(1) as usize;
+        let channel = match self.active {
+            ActivePane::Channel(n) => n,
+            _ => 0,
+        };
+        for chunk in raw.chunks(max) {
+            if self.kiss_mode() {
+                self.send_kiss_bytes(chunk, None);
+            } else {
+                let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
+                    channel,
+                    data: chunk.to_vec(),
                 });
             }
         }
@@ -4817,12 +5347,16 @@ impl GpGuiApp {
                     .map(|pad| pad.layout_job_wrapped_plain(columns))
                     .unwrap_or_default()
             }
-            ActivePane::Check => self.bbs_pad.layout_job_wrapped_plain(columns),
-            ActivePane::List => self.box_pad.layout_job_wrapped_plain(columns),
+            ActivePane::Check => self
+                .bbs_pad
+                .layout_job_channel(columns, self.session.extended_ascii),
+            ActivePane::List => self
+                .box_pad
+                .layout_job_channel(columns, self.session.extended_ascii),
             ActivePane::Channel(n) => self
                 .pads
                 .get(n as usize)
-                .map(|pad| pad.layout_job_wrapped_plain(columns))
+                .map(|pad| pad.layout_job_channel(columns, self.session.extended_ascii))
                 .unwrap_or_default(),
             _ => self.monitor_layout_for(columns),
         }
@@ -4849,6 +5383,10 @@ impl GpGuiApp {
             || self.session.show_spy_dialog
             || self.show_name_dialog
             || self.show_mheard_spy_confirm
+            || self
+                .autobin
+                .as_ref()
+                .is_some_and(|live| live.state.pending_offer().is_some())
     }
 
     /// Any titled dialog that should use the session-strip grey chrome.
@@ -6071,6 +6609,43 @@ impl GpGuiApp {
         }
     }
 
+    fn paint_autobin_offer(&mut self, ctx: &Context) {
+        let Some((channel, label)) = self.autobin.as_ref().and_then(|live| {
+            live.state
+                .pending_offer()
+                .map(|offer| (live.channel, autobin_offer_label(offer)))
+        }) else {
+            return;
+        };
+        let mut answer = None;
+        let mut open = true;
+        centered_popup("BIN-RX", egui::Id::new("gp_autobin_rx"), &mut open).show(ctx, |ui| {
+            ui.set_min_width(440.0);
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.label(
+                RichText::new(label)
+                    .color(Color32::BLACK)
+                    .font(menu_font(18.0)),
+            );
+            ui.label(
+                RichText::new("Save this file?")
+                    .color(Color32::BLACK)
+                    .font(menu_font(16.0)),
+            );
+            if retro::choice(ui, "SAVE", menu_font(17.0)) {
+                answer = Some(true);
+            }
+            if retro::choice(ui, "No", menu_font(17.0)) {
+                answer = Some(false);
+            }
+        });
+        if answer == Some(true) {
+            let _ = self.accept_autobin(channel);
+        } else if answer == Some(false) || !open {
+            self.cancel_autobin();
+        }
+    }
+
     fn paint_find(&mut self, ctx: &Context) {
         if !self.find_open {
             return;
@@ -7147,7 +7722,8 @@ impl eframe::App for GpGuiApp {
         let under_badge = 8.0_f32;
         let clock_bottom = 12.0 + radius * 2.0 + 8.0 + badge_h * 2.0 + badge_gap + under_badge;
         let prewrite_h = (clock_bottom - channels_h - status_h).max(80.0);
-        let top_h = prewrite_h + channels_h + status_h;
+        let autobin_h = if self.autobin_row_open() { 36.0 } else { 0.0 };
+        let top_h = prewrite_h + channels_h + status_h + autobin_h;
 
         egui::TopBottomPanel::top("gp_top")
             .exact_height(top_h)
@@ -7160,6 +7736,7 @@ impl eframe::App for GpGuiApp {
                     prewrite_h,
                     channels_h,
                     status_h,
+                    autobin_h,
                     clock_w,
                 );
             });
@@ -7243,6 +7820,7 @@ impl eframe::App for GpGuiApp {
         self.paint_icon_editor(ctx);
         self.paint_tnc_command(ctx);
         self.paint_list_offer(ctx);
+        self.paint_autobin_offer(ctx);
         self.paint_find(ctx);
         self.paint_start_screen(ctx);
         if !matches!(self.active, ActivePane::Channel(_)) {
@@ -7739,9 +8317,10 @@ impl GpGuiApp {
         prewrite_h: f32,
         channels_h: f32,
         status_h: f32,
+        autobin_h: f32,
         clock_w: f32,
     ) {
-        let height = prewrite_h + channels_h + status_h;
+        let height = prewrite_h + channels_h + status_h + autobin_h;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
 
         // Absolute split so the clock column cannot be pushed off-screen by
@@ -7754,11 +8333,19 @@ impl GpGuiApp {
             Pos2::new(rect.left(), rect.top() + prewrite_h),
             Pos2::new(left_r, rect.top() + prewrite_h + channels_h),
         );
+        let status_bottom = rect.top() + prewrite_h + channels_h + status_h;
         let st_r = Rect::from_min_max(
             Pos2::new(rect.left(), rect.top() + prewrite_h + channels_h),
+            Pos2::new(left_r, status_bottom),
+        );
+        let bin_r = Rect::from_min_max(
+            Pos2::new(rect.left(), status_bottom),
             Pos2::new(left_r, rect.bottom()),
         );
-        let clock_rect = Rect::from_min_max(Pos2::new(left_r, rect.top()), rect.right_bottom());
+        let clock_rect = Rect::from_min_max(
+            Pos2::new(left_r, rect.top()),
+            Pos2::new(rect.right(), status_bottom),
+        );
 
         // Channel chrome uses the menu-window background, same as the icon strip.
         // Clock column stays dark green.
@@ -7769,6 +8356,9 @@ impl GpGuiApp {
         self.draw_prewrite(ui, pre_r);
         self.draw_channel_grid(ui, ch_r);
         self.draw_status_grid(ui, st_r);
+        if autobin_h > 0.0 {
+            self.draw_autobin_bar(ui, bin_r);
+        }
         if draw_analog_clock(ui, clock_rect, self.session.hour_gong) {
             self.session.hour_gong = !self.session.hour_gong;
             self.status = format!(
@@ -8098,6 +8688,79 @@ impl GpGuiApp {
         c.hist_cursor = Some(index);
         c.input = line;
         c.compose_caret_end = true;
+    }
+
+    fn autobin_row_open(&self) -> bool {
+        self.autobin.as_ref().is_some_and(|live| {
+            live.state.recv_progress().is_some() || live.state.tx_active()
+        })
+    }
+
+    /// Row under the magenta status, left column only.
+    /// Waiting: the file name and SAVE. Receiving: BIN-RX progress.
+    fn draw_autobin_bar(&self, ui: &mut Ui, rect: Rect) {
+        let Some(live) = self.autobin.as_ref() else {
+            return;
+        };
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, self.state_bg);
+        let (got, total, name, mode, waiting) = if let Some((got, total, name)) =
+            live.state.recv_progress()
+        {
+            (got, total, name, "BIN-RX", false)
+        } else if let Some((got, total, name, waiting)) = live.state.tx_progress() {
+            (got, total, name, "BIN-TX", waiting)
+        } else {
+            return;
+        };
+        if waiting {
+            let label = format!("{name}  Bytes {got}/{total}  {mode}  waiting #OK#");
+            painter.text(
+                Pos2::new(rect.left() + 6.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                &label,
+                FontId::monospace(13.0),
+                self.state_fg,
+            );
+            return;
+        }
+        let pct = if total == 0 {
+            0.0
+        } else {
+            (got as f32 / total as f32).clamp(0.0, 1.0)
+        };
+        let elapsed = live.started.elapsed();
+        let secs = elapsed.as_secs_f32().max(0.05);
+        let baud = ((got as f32) * 8.0 / secs) as u32;
+        let left = total.saturating_sub(got);
+        let eta = if got == 0 {
+            0
+        } else {
+            ((left as f32) * secs / (got as f32)) as u32
+        };
+        let e = elapsed.as_secs();
+        let label = format!(
+            "{name}  Bytes {got}/{total}  {mode}  {:>3.0}%  {:02}:{:02}:{:02}  {baud} Bd  ~{eta}s",
+            pct * 100.0,
+            e / 3600,
+            (e / 60) % 60,
+            e % 60,
+        );
+        painter.text(
+            Pos2::new(rect.left() + 6.0, rect.top() + 2.0),
+            egui::Align2::LEFT_TOP,
+            &label,
+            FontId::monospace(13.0),
+            self.state_fg,
+        );
+        let track = Rect::from_min_max(
+            Pos2::new(rect.left() + 6.0, rect.bottom() - 10.0),
+            Pos2::new(rect.right() - 6.0, rect.bottom() - 3.0),
+        );
+        painter.rect_filled(track, 0.0, Color32::BLACK);
+        let mut fill = track;
+        fill.set_right(track.left() + track.width() * pct);
+        painter.rect_filled(fill, 0.0, self.state_fg);
     }
 
     /// Magenta status: same visual weight as the channel grid, but not clickable.
@@ -8552,10 +9215,11 @@ impl GpGuiApp {
                                 Sense::click(),
                             );
                             ui.painter().rect_filled(row, 0.0, fill);
+                            let shown = show_channel_text(line, self.session.extended_ascii);
                             ui.painter().text(
                                 row.left_center() + Vec2::new(4.0, 0.0),
                                 egui::Align2::LEFT_CENTER,
-                                line,
+                                &shown,
                                 FontId::monospace(14.0),
                                 fg,
                             );
@@ -9363,9 +10027,9 @@ impl GpGuiApp {
             SessionClick::Ascii => {
                 self.session.extended_ascii = !self.session.extended_ascii;
                 self.status = if self.session.extended_ascii {
-                    "ASCII: extended DOS (äöü)".into()
+                    "Umlaut conversion ON".into()
                 } else {
-                    "ASCII: plain".into()
+                    "Umlaut conversion OFF".into()
                 };
                 self.persist_session_chrome();
             }
@@ -9410,12 +10074,26 @@ impl GpGuiApp {
                 self.persist_session_chrome();
             }
             SessionClick::BinRx => {
-                self.session.bin_rx = !self.session.bin_rx;
-                self.status = format!("BIN-RX {}", on_off(self.session.bin_rx));
+                let busy = self.autobin.as_ref().is_some_and(|live| {
+                    live.state.pending_offer().is_some() || live.state.recv_progress().is_some()
+                });
+                if busy {
+                    self.cancel_autobin();
+                } else {
+                    self.session.bin_rx = !self.session.bin_rx;
+                    self.status = format!("BIN-RX {}", on_off(self.session.bin_rx));
+                }
             }
             SessionClick::BinTx => {
-                self.session.bin_tx = !self.session.bin_tx;
-                self.status = format!("BIN-TX {}", on_off(self.session.bin_tx));
+                let sending = self
+                    .autobin
+                    .as_ref()
+                    .is_some_and(|live| live.state.tx_active());
+                if sending {
+                    self.cancel_bin_tx();
+                } else {
+                    self.start_bin_tx();
+                }
             }
             SessionClick::Name => self.open_name_dialog(),
             SessionClick::Lock => {
@@ -10357,7 +11035,11 @@ impl GpGuiApp {
                 "MONITOR" => self.select(ActivePane::Monitor),
                 "EDIT" => self.open_ctext_editor(),
                 "SAVE" => match self.active {
-                    ActivePane::Channel(n) => self.save_channel_transcript(n),
+                    ActivePane::Channel(n) => {
+                        if !self.accept_autobin(n) {
+                            self.save_channel_transcript(n);
+                        }
+                    }
                     _ => {
                         if !matches!(self.active, ActivePane::Editor) {
                             self.open_ctext_editor();
@@ -10405,6 +11087,126 @@ impl GpGuiApp {
             }
         }
     }
+}
+
+fn autobin_safe_name(raw: &str) -> String {
+    let base = raw.rsplit(['\\', '/']).next().unwrap_or("").trim();
+    let safe: String = base
+        .chars()
+        .filter(|c| c.is_ascii() && !matches!(c, '<' | '>' | '"' | '|' | '?' | '*' | ':' | '\\' | '/'))
+        .collect();
+    if safe.is_empty() || safe == "." || safe == ".." {
+        "autobin.bin".to_string()
+    } else {
+        safe
+    }
+}
+
+fn replace_part_file(part: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if dest.exists() {
+        std::fs::remove_file(dest)?;
+    }
+    std::fs::rename(part, dest)
+}
+
+/// `<GP>:` / `<GPNG>:` inside a frame that may still start with file bytes.
+fn gp_notice_from(info: &[u8]) -> Option<Vec<u8>> {
+    let at = info
+        .windows(4)
+        .position(|w| w == b"<GP>")
+        .or_else(|| info.windows(6).position(|w| w == b"<GPNG>"));
+    at.map(|i| info[i..].to_vec())
+}
+
+fn autobin_offer_label(offer: &crate::transfer::autobin::BinOffer) -> String {
+    let name = offer
+        .filename
+        .as_deref()
+        .unwrap_or("file");
+    format!("{name}  {} bytes", offer.length)
+}
+
+/// Drop `#BIN#` lines. `None` when nothing else was in the frame.
+fn strip_bin_headers(info: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut dropped = false;
+    let mut i = 0;
+    while i < info.len() {
+        let start = i;
+        while i < info.len() && info[i] != b'\r' && info[i] != b'\n' {
+            i += 1;
+        }
+        let line = &info[start..i];
+        let offer = line.starts_with(b"#BIN#") || line.starts_with(b"#BIN_V2#");
+        let mut sep = 0;
+        if i < info.len() && info[i] == b'\r' {
+            sep = 1;
+            if i + 1 < info.len() && info[i + 1] == b'\n' {
+                sep = 2;
+            }
+        } else if i < info.len() && info[i] == b'\n' {
+            sep = 1;
+        }
+        if offer {
+            dropped = true;
+        } else {
+            out.extend_from_slice(line);
+            if sep > 0 {
+                out.extend_from_slice(&info[i..i + sep]);
+            }
+        }
+        if sep == 0 {
+            break;
+        }
+        i += sep;
+    }
+    if !dropped {
+        return Some(info.to_vec());
+    }
+    if out.iter().all(|b| matches!(b, b'\r' | b'\n' | b' ' | b'\t')) {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+struct LiveAutoBin {
+    channel: u8,
+    state: AutoBinState,
+    started: Instant,
+    /// N(S) of the file chunk in flight. The next chunk waits for N(R).
+    tx_ns: Option<u8>,
+    /// Part file the receive is streaming into. Renamed when the length is in.
+    recv_file: Option<std::fs::File>,
+    recv_part: Option<PathBuf>,
+    recv_final: Option<PathBuf>,
+}
+
+fn file_ftime(path: &std::path::Path) -> u32 {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return 0;
+    };
+    let Ok(modified) = meta.modified() else {
+        return 0;
+    };
+    let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) else {
+        return 0;
+    };
+    let Some(utc) = chrono::DateTime::from_timestamp(dur.as_secs() as i64, 0) else {
+        return 0;
+    };
+    let local = utc.with_timezone(&Local);
+    autobin::pack_ftime(
+        local.year(),
+        local.month(),
+        local.day(),
+        local.hour(),
+        local.minute(),
+        local.second(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

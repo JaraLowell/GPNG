@@ -3,9 +3,10 @@
 //! Files under `[paths].log_dir`/`PADS/`:
 //! `monitor.txt`, `ch01.txt`…, `spy01.txt`…, `bbs.txt`, `box.txt`.
 //!
-//! Channel rows stay white (own) or green (incoming). The monitor uses
-//! one colour for every `fm … to …` header and light grey for the payload,
-//! send and receive alike. Orange System lines are never written.
+//! Channel, BBS, and Box-List rows: green is what we sent, white is what
+//! we received. The monitor uses one colour for every `fm … to …` header
+//! and light grey for the payload, send and receive alike. Orange System
+//! lines are never written.
 //!
 //! Record format: `W|text` (own) or `G|text` (incoming).
 
@@ -21,11 +22,14 @@ use eframe::egui::{Color32, FontId};
 pub const PAD_FONT_SIZE: f32 = 16.0;
 use tracing::warn;
 
-const PAD_INCOMING: Color32 = Color32::from_rgb(85, 255, 85); // light green
-const PAD_OWN: Color32 = Color32::WHITE;
+const PAD_GREEN: Color32 = Color32::from_rgb(85, 255, 85);
+/// Received text.
+const PAD_INCOMING: Color32 = Color32::WHITE;
+/// Sent text.
+const PAD_OWN: Color32 = PAD_GREEN;
 const PAD_SYSTEM: Color32 = Color32::from_rgb(255, 168, 0); // orange
 /// Monitor `fm … to … ctl …` line. Same green for sent and received frames.
-const MONITOR_FM: Color32 = PAD_INCOMING;
+const MONITOR_FM: Color32 = PAD_GREEN;
 /// Monitor payload under that header. Same grey for sent and received frames.
 const MONITOR_PAYLOAD: Color32 = Color32::from_rgb(170, 170, 170);
 /// `<0x1c>` tokens. Darker than the payload so binary stands out of the text.
@@ -34,9 +38,9 @@ const MONITOR_HEX: Color32 = Color32::from_rgb(112, 112, 120);
 /// Classic GP line roles — colour carries meaning (no `***` needed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PadKind {
-    /// RX / decoded APRS / monitored frames (green) — persisted.
+    /// Received text (white) — persisted.
     Incoming,
-    /// Local TX echo (white) — persisted.
+    /// Local TX echo (green) — persisted.
     Own,
     /// Init, status, warnings (orange) — not logged.
     System,
@@ -234,15 +238,27 @@ impl TextPad {
     /// repeat the three-space indent on every continuation. A wrap prefers a
     /// space. A `<0xNN>` / `<U+NNNN>` token moves as a whole.
     pub fn layout_job_wrapped(&self, columns: usize) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, true)
+        self.layout_job_wrapped_indent(columns, true, false)
     }
 
     /// Channel / spy / mail pads: wrap at `columns` with no continuation indent.
     pub fn layout_job_wrapped_plain(&self, columns: usize) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, false)
+        self.layout_job_wrapped_indent(columns, false, false)
     }
 
-    fn layout_job_wrapped_indent(&self, columns: usize, monitor_indent: bool) -> LayoutJob {
+    /// Channel, BBS-Menu, and Box-List. `umlaut` maps the seven Latin-1
+    /// glyphs back to äöüÄÖÜß. The stored row stays CP437, so turning the
+    /// button off shows the shift again.
+    pub fn layout_job_channel(&self, columns: usize, umlaut: bool) -> LayoutJob {
+        self.layout_job_wrapped_indent(columns, false, umlaut)
+    }
+
+    fn layout_job_wrapped_indent(
+        &self,
+        columns: usize,
+        monitor_indent: bool,
+        umlaut: bool,
+    ) -> LayoutJob {
         let mut job = LayoutJob::default();
         let font = FontId::monospace(PAD_FONT_SIZE);
         let mut first = true;
@@ -252,14 +268,30 @@ impl TextPad {
             } else {
                 0
             };
-            let base = if line.runs.is_empty() {
+            let shifted;
+            let shifted_runs;
+            let (text, runs) = if umlaut {
+                shifted = crate::ui::editor::show_channel_text(&line.text, true);
+                shifted_runs = line
+                    .runs
+                    .iter()
+                    .map(|run| PadRun {
+                        text: crate::ui::editor::show_channel_text(&run.text, true),
+                        color: run.color,
+                    })
+                    .collect::<Vec<_>>();
+                (shifted.as_str(), shifted_runs.as_slice())
+            } else {
+                (line.text.as_str(), line.runs.as_slice())
+            };
+            let base = if runs.is_empty() {
                 line.kind.color()
             } else {
-                monitor_color(&line.text)
+                monitor_color(text)
             };
             let rows = if line.nowrap {
                 // Keep hard `\n` breaks, but still fold each segment to the pane.
-                fixed_rows(&line.text, base)
+                fixed_rows(text, base)
                     .into_iter()
                     .flat_map(|seg| {
                         let text: String = seg.iter().map(|r| r.text.as_str()).collect();
@@ -271,7 +303,7 @@ impl TextPad {
                     })
                     .collect()
             } else {
-                wrap_monitor_rows(&line.text, &line.runs, columns, indent, base)
+                wrap_monitor_rows(text, runs, columns, indent, base)
             };
             for row in rows {
                 if !first {
