@@ -202,8 +202,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1322
-y = 167
-width = 1084
+x = 1320
+y = 312
+width = 1085
 height = 850
 maximized = false

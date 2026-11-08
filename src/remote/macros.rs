@@ -147,12 +147,12 @@ pub fn expand(input: &str, ctx: &MacroContext) -> String {
     out
 }
 
-/// Quick reference map for docs / UI help.
-pub fn catalogue() -> HashMap<&'static str, &'static str> {
-    HashMap::from([
+/// Ordered macro list for the editor help panel — matches `expand()` above.
+pub fn help_entries() -> &'static [(&'static str, &'static str)] {
+    &[
         ("%V", "Software version"),
         ("%C", "Peer callsign"),
-        ("%N", "Peer name, or callsign if none is stored"),
+        ("%N", "Peer name, else callsign"),
         ("%Y", "Own callsign"),
         ("%K", "Channel number"),
         ("%T", "Time HH:MM:SS"),
@@ -161,14 +161,19 @@ pub fn catalogue() -> HashMap<&'static str, &'static str> {
         ("%I", "News available hint"),
         ("%Z", "Timezone"),
         ("%_", "CRLF"),
-        ("%%", "Literal percent"),
+        ("%%", "Literal %"),
         ("%O", "Random ORIGIN.GPI line"),
-        ("%Q", "QRG frequency (MHz)"),
+        ("%Q", "QRG (MHz)"),
         ("%?", "Ask for name if unknown"),
         ("%>", "Enable remote prompt"),
-        ("%DIGI%", "Digipeater path token"),
-        ("%N#20", "Example width-padded name"),
-    ])
+        ("%DIGI%", "Digipeater path"),
+        ("%x#nn", "Pad/truncate any macro to nn"),
+    ]
+}
+
+/// Quick reference map for docs / UI help.
+pub fn catalogue() -> HashMap<&'static str, &'static str> {
+    help_entries().iter().copied().collect()
 }
 
 #[cfg(test)]

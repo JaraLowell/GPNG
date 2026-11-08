@@ -85,6 +85,36 @@ const AX25_SABM_RETRIES: u8 = 3;
 /// Extra DISC sends after the first while waiting for UA, then clear locally.
 const AX25_DISC_RETRIES: u8 = 3;
 const COMPOSE_ROWS: usize = 3;
+/// After `//Q` queues QRT, wait at least this long for TX counters before
+/// treating an idle buffer as "already sent" (avoids DISC wiping the queue).
+const QRT_DISC_ARM: Duration = Duration::from_millis(400);
+
+/// One pre-write buffer: Monitor is slot 0, channel *n* is slot *n*.
+#[derive(Debug, Clone, Default)]
+struct ComposeSlot {
+    input: String,
+    /// Last typed lines, newest at the end. Each entry is a single display line.
+    history: VecDeque<String>,
+    hist_cursor: Option<usize>,
+    hist_stash: String,
+    compose_caret_end: bool,
+}
+/// Hard stop if TX never drains after QRT (N2 / dead peer).
+const QRT_DISC_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// `//Quit`: send QRT first; DISC only when the channel TX queue is empty.
+#[derive(Debug, Clone, Copy)]
+enum QrtDiscState {
+    Idle,
+    /// QRT handed to the modem; wait for a busy TX snapshot (or arm timeout).
+    WaitReport {
+        since: Instant,
+    },
+    /// Outstanding frames seen; disconnect when not_sent/unack return to 0.
+    Drain {
+        since: Instant,
+    },
+}
 
 /// Classic VGA chrome (from GP V1.63 / DOSBox reference).
 const VGA_BLUE: Color32 = Color32::from_rgb(0, 0, 170);
@@ -182,16 +212,8 @@ pub struct GpGuiApp {
     last_error: String,
     /// Ctrl-Y / Ctrl-C line, pasted with Ctrl-P.
     line_clip: String,
-    /// Current compose buffer (shown in a 3-line editor).
-    input: String,
-    /// Last typed lines (pre-write history), newest at the end.
-    typed_history: VecDeque<String>,
-    /// Which history row Up/Down last loaded. `None` is a fresh compose line.
-    hist_cursor: Option<usize>,
-    /// Compose text saved when Up first leaves the fresh line. Down restores it.
-    hist_stash: String,
-    /// Next compose paint puts the caret at the end (after a history recall).
-    compose_caret_end: bool,
+    /// Pre-write compose + history per Monitor (0) and channel (1..=N).
+    compose: Vec<ComposeSlot>,
     pads: Vec<TextPad>,
     /// Spy windows `1..=10` (index 0 = spy 1).
     spy_pads: Vec<TextPad>,
@@ -317,6 +339,8 @@ pub struct GpGuiApp {
     ch_not_sent: Vec<u32>,
     ch_tries: Vec<u32>,
     ch_unack: Vec<u32>,
+    /// Per channel: `//Q` waiting for QRT to leave the TX queue before DISC.
+    qrt_disc: Vec<QrtDiscState>,
     /// Open terminal row on a channel. `None` means the next byte starts a row.
     rx_row: Vec<Option<u64>>,
     /// AX.25 from/to for the text arriving on this channel. The lock uses these,
@@ -555,11 +579,7 @@ impl GpGuiApp {
             last_link_status: String::new(),
             last_error: String::new(),
             line_clip: String::new(),
-            input: String::new(),
-            typed_history: VecDeque::new(),
-            hist_cursor: None,
-            hist_stash: String::new(),
-            compose_caret_end: false,
+            compose: (0..slots).map(|_| ComposeSlot::default()).collect(),
             pads,
             spy_pads,
             bbs_pad,
@@ -640,6 +660,7 @@ impl GpGuiApp {
             ch_not_sent: vec![0; slots],
             ch_tries: vec![0; slots],
             ch_unack: vec![0; slots],
+            qrt_disc: vec![QrtDiscState::Idle; slots],
             rx_row: vec![None; slots],
             rx_calls: vec![None; slots],
             rx_cr: vec![false; slots],
@@ -1867,6 +1888,9 @@ impl GpGuiApp {
         if let Some(wait) = self.channel_down_wait.get_mut(idx) {
             *wait = None;
         }
+        if let Some(q) = self.qrt_disc.get_mut(idx) {
+            *q = QrtDiscState::Idle;
+        }
         if let Some(vs) = self.ax25_vs.get_mut(idx) {
             *vs = 0;
         }
@@ -2062,7 +2086,12 @@ impl GpGuiApp {
                     *slot = false;
                 }
                 self.last_gpw = text.clone();
-                self.input = text;
+                if let Some(slot) = self.compose_slot_idx() {
+                    if let Some(c) = self.compose.get_mut(slot) {
+                        c.input = text;
+                        c.compose_caret_end = true;
+                    }
+                }
                 self.status = format!("sysop reply for {peer}");
                 tracing::info!("sysop reply ready for {peer}");
             }
@@ -3678,26 +3707,92 @@ impl GpGuiApp {
         self.finish_compose(true);
     }
 
+    /// Monitor = 0, channel *n* = *n*. Other panes have no compose slot.
+    fn compose_slot_idx(&self) -> Option<usize> {
+        match self.active {
+            ActivePane::Monitor => Some(0),
+            ActivePane::Channel(n) if (1..=self.channels).contains(&n) => Some(n as usize),
+            _ => None,
+        }
+    }
+
+    fn compose_enabled(&self) -> bool {
+        self.compose_slot_idx().is_some()
+    }
+
+    /// One history/display line — paste must not embed raw newlines.
+    fn sanitize_compose_line(line: &str) -> String {
+        line.replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .split('\n')
+            .map(str::trim_end)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn push_compose_history(&mut self, slot: usize, line: String) {
+        let Some(c) = self.compose.get_mut(slot) else {
+            return;
+        };
+        c.history.push_back(line);
+        while c.history.len() > TYPED_HISTORY {
+            c.history.pop_front();
+        }
+        c.hist_cursor = None;
+        c.hist_stash.clear();
+    }
+
     /// Enter sends the compose line with a trailing CR. Ctrl-Enter leaves the CR off.
     fn finish_compose(&mut self, carriage_return: bool) {
-        let line = std::mem::take(&mut self.input);
-        let line = if carriage_return {
-            line.trim_end().to_string()
-        } else {
-            line.trim_end_matches(['\r', '\n']).to_string()
+        let Some(slot) = self.compose_slot_idx() else {
+            return;
         };
-        if line.is_empty() {
-            self.hist_cursor = None;
-            self.hist_stash.clear();
+        let raw = self
+            .compose
+            .get_mut(slot)
+            .map(|c| std::mem::take(&mut c.input))
+            .unwrap_or_default();
+        // Multi-line paste: fire each complete line, keep a trailing fragment.
+        let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+        if normalized.contains('\n') {
+            let ends_nl = normalized.ends_with('\n');
+            let mut parts: Vec<String> = normalized.lines().map(|s| s.to_string()).collect();
+            let remainder = if ends_nl {
+                String::new()
+            } else {
+                parts.pop().unwrap_or_default()
+            };
+            if let Some(c) = self.compose.get_mut(slot) {
+                c.input = remainder;
+            }
+            for part in parts {
+                let line = Self::sanitize_compose_line(&part);
+                if !line.is_empty() {
+                    self.dispatch_compose_line(slot, line, true);
+                }
+            }
             return;
         }
 
-        self.typed_history.push_back(line.clone());
-        while self.typed_history.len() > TYPED_HISTORY {
-            self.typed_history.pop_front();
+        let line = if carriage_return {
+            normalized.trim_end().to_string()
+        } else {
+            normalized.trim_end_matches(['\r', '\n']).to_string()
+        };
+        let line = Self::sanitize_compose_line(&line);
+        if line.is_empty() {
+            if let Some(c) = self.compose.get_mut(slot) {
+                c.hist_cursor = None;
+                c.hist_stash.clear();
+            }
+            return;
         }
-        self.hist_cursor = None;
-        self.hist_stash.clear();
+        self.dispatch_compose_line(slot, line, carriage_return);
+    }
+
+    fn dispatch_compose_line(&mut self, slot: usize, line: String, carriage_return: bool) {
+        self.push_compose_history(slot, line.clone());
 
         // Channel transcript when Echo is on (before any early return).
         self.echo_own_line(&line);
@@ -4071,20 +4166,28 @@ impl GpGuiApp {
 
         match action {
             RemoteAction::Quit => {
-                // QRT text first, then hostmode disconnect.
+                // QRT first; DISC only after the TX queue drains. Immediate DISC
+                // would clear KISS delivery and drop the rest of the farewell.
                 let ch = self.resolve_disconnect_channel(channel);
-                if let Some(text) = gpi::load_expanded("qrt", &ctx) {
-                    if ch >= 1 {
-                        self.active = ActivePane::Channel(ch);
-                    }
-                    self.send_gpi_text(&text);
-                } else if let Some(stem) = gpi::stem_for_action(action) {
-                    self.status = format!("GPI {stem}.GPI not found");
-                }
-                if ch >= 1 {
-                    self.disconnect_channel(ch);
-                } else {
+                if ch < 1 {
                     self.status = "//Q — select a connected channel".into();
+                    self.close_remote(prev);
+                    return;
+                }
+                self.active = ActivePane::Channel(ch);
+                let ctx = self.macro_ctx();
+                if let Some(text) = gpi::load_expanded("qrt", &ctx) {
+                    if text.trim().is_empty() {
+                        self.disconnect_channel(ch);
+                    } else {
+                        self.send_gpi_text(&text);
+                        self.arm_qrt_disconnect(ch);
+                    }
+                } else {
+                    if let Some(stem) = gpi::stem_for_action(action) {
+                        self.status = format!("GPI {stem}.GPI not found");
+                    }
+                    self.disconnect_channel(ch);
                 }
                 self.close_remote(prev);
                 return;
@@ -5720,9 +5823,10 @@ impl GpGuiApp {
             if eat_key(ctx, alt, egui::Key::X) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            let compose = compose_id();
-            if ctx.memory(|m| m.focused()) == Some(compose) {
-                ctx.memory_mut(|m| m.surrender_focus(compose));
+            if let Some(id) = ctx.memory(|m| m.focused()) {
+                if (0..=10u8).any(|n| id == compose_id_for(n as usize)) {
+                    ctx.memory_mut(|m| m.surrender_focus(id));
+                }
             }
             return;
         }
@@ -5972,16 +6076,29 @@ impl GpGuiApp {
                 return;
             }
         }
-        // DOS pre-write: Up/Down walk the typed lines, Enter sends the one shown.
-        if self.start_screen.is_none() && !matches!(self.active, ActivePane::Editor) {
+        // DOS pre-write: Up/Down walk typed lines, Delete drops a recalled line.
+        if self.start_screen.is_none() && self.compose_enabled() {
             if eat_key(ctx, none, egui::Key::ArrowUp) {
                 self.recall_history(true);
-                ctx.memory_mut(|m| m.request_focus(compose_id()));
+                if let Some(id) = self.compose_focus_id() {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                }
                 return;
             }
             if eat_key(ctx, none, egui::Key::ArrowDown) {
                 self.recall_history(false);
-                ctx.memory_mut(|m| m.request_focus(compose_id()));
+                if let Some(id) = self.compose_focus_id() {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                }
+                return;
+            }
+            let recalling = self
+                .compose_slot_idx()
+                .and_then(|s| self.compose.get(s))
+                .and_then(|c| c.hist_cursor)
+                .is_some();
+            if recalling && eat_key(ctx, none, egui::Key::Delete) {
+                let _ = self.delete_recalled_history_line();
                 return;
             }
             if eat_key(ctx, none, egui::Key::Enter) {
@@ -6085,17 +6202,30 @@ impl GpGuiApp {
             self.editor.append_on_cursor_line(text);
             return;
         }
-        if !self.input.is_empty() && !self.input.ends_with(' ') && !self.input.ends_with('\n') {
-            self.input.push(' ');
+        let Some(slot) = self.compose_slot_idx() else {
+            return;
+        };
+        let Some(c) = self.compose.get_mut(slot) else {
+            return;
+        };
+        if !c.input.is_empty() && !c.input.ends_with(' ') && !c.input.ends_with('\n') {
+            c.input.push(' ');
         }
-        self.input.push_str(text);
+        c.input.push_str(text);
+        // Multi-line clips are absorbed on the next compose paint / submit.
     }
 
     fn cut_edit_line(&mut self) {
         if matches!(self.active, ActivePane::Editor) {
             self.line_clip = self.editor.cut_cursor_line();
+        } else if let Some(slot) = self.compose_slot_idx() {
+            self.line_clip = self
+                .compose
+                .get_mut(slot)
+                .map(|c| std::mem::take(&mut c.input))
+                .unwrap_or_default();
         } else {
-            self.line_clip = std::mem::take(&mut self.input);
+            return;
         }
         self.status = "line cut".into();
     }
@@ -6103,8 +6233,13 @@ impl GpGuiApp {
     fn copy_edit_line(&mut self) {
         self.line_clip = if matches!(self.active, ActivePane::Editor) {
             self.editor.copy_cursor_line()
+        } else if let Some(slot) = self.compose_slot_idx() {
+            self.compose
+                .get(slot)
+                .map(|c| c.input.clone())
+                .unwrap_or_default()
         } else {
-            self.input.clone()
+            return;
         };
         self.status = "line copied".into();
     }
@@ -6117,8 +6252,9 @@ impl GpGuiApp {
         let clip = self.line_clip.clone();
         if matches!(self.active, ActivePane::Editor) {
             self.editor.paste_line(&clip);
-        } else {
+        } else if self.compose_enabled() {
             self.insert_buffer_text(&clip);
+            self.absorb_compose_newlines();
         }
     }
 
@@ -6150,10 +6286,14 @@ impl GpGuiApp {
         if !hit || self.last_gpw.is_empty() {
             return;
         }
-        if !self.input.is_empty() && !self.input.ends_with(' ') && !self.input.ends_with('\n') {
-            self.input.push(' ');
+        if let Some(slot) = self.compose_slot_idx() {
+            if let Some(c) = self.compose.get_mut(slot) {
+                if !c.input.is_empty() && !c.input.ends_with(' ') && !c.input.ends_with('\n') {
+                    c.input.push(' ');
+                }
+                c.input.push_str(&self.last_gpw.clone());
+            }
         }
-        self.input.push_str(&self.last_gpw);
     }
 
     fn toggle_split(&mut self) {
@@ -6530,6 +6670,7 @@ impl eframe::App for GpGuiApp {
         self.track_window(ctx);
         self.drain_tnc();
         self.kiss_link_timers();
+        self.poll_qrt_disconnects();
         self.maybe_hour_gong();
         self.poll_beacon();
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -7118,17 +7259,93 @@ impl GpGuiApp {
         }
     }
 
+    fn compose_focus_id(&self) -> Option<egui::Id> {
+        self.compose_slot_idx().map(compose_id_for)
+    }
+
+    /// Multi-line paste: send each complete line now; leave a trailing fragment.
+    fn absorb_compose_newlines(&mut self) {
+        let Some(slot) = self.compose_slot_idx() else {
+            return;
+        };
+        let raw = self
+            .compose
+            .get(slot)
+            .map(|c| c.input.clone())
+            .unwrap_or_default();
+        if !raw.contains('\n') && !raw.contains('\r') {
+            return;
+        }
+        let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+        let ends_nl = normalized.ends_with('\n');
+        let mut parts: Vec<String> = normalized.lines().map(|s| s.to_string()).collect();
+        let remainder = if ends_nl {
+            String::new()
+        } else {
+            parts.pop().unwrap_or_default()
+        };
+        if let Some(c) = self.compose.get_mut(slot) {
+            c.input = remainder;
+        }
+        for part in parts {
+            let line = Self::sanitize_compose_line(&part);
+            if !line.is_empty() {
+                self.dispatch_compose_line(slot, line, true);
+            }
+        }
+    }
+
+    /// Delete the history row currently recalled into the compose box.
+    fn delete_recalled_history_line(&mut self) -> bool {
+        let Some(slot) = self.compose_slot_idx() else {
+            return false;
+        };
+        let Some(hi) = self.compose.get(slot).and_then(|c| c.hist_cursor) else {
+            return false;
+        };
+        let Some(c) = self.compose.get_mut(slot) else {
+            return false;
+        };
+        if hi >= c.history.len() {
+            return false;
+        }
+        c.history.remove(hi);
+        if c.history.is_empty() {
+            c.hist_cursor = None;
+            c.input = std::mem::take(&mut c.hist_stash);
+            c.compose_caret_end = true;
+            self.status = "history line deleted".into();
+            return true;
+        }
+        let next = hi.min(c.history.len() - 1);
+        let line = c.history[next].clone();
+        c.hist_cursor = Some(next);
+        c.input = line;
+        c.compose_caret_end = true;
+        self.status = "history line deleted".into();
+        true
+    }
+
     fn draw_prewrite(&mut self, ui: &mut Ui, rect: Rect) {
+        let enabled = self.compose_enabled();
+        let slot = self.compose_slot_idx().unwrap_or(0);
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
-            // Purple / magenta input chrome (classic input colours, or state magenta).
-            let fill = if self.input_bg == Color32::BLACK {
+            // Active: classic purple/magenta input. Other panes: dark grey (disabled).
+            let fill = if !enabled {
+                VGA_DARK_GRAY
+            } else if self.input_bg == Color32::BLACK {
                 Color32::from_rgb(85, 0, 85)
             } else {
                 self.input_bg
             };
+            let stroke = if enabled {
+                Color32::from_rgb(170, 0, 170)
+            } else {
+                VGA_GRAY
+            };
             Frame::none()
                 .fill(fill)
-                .stroke(Stroke::new(1.0, Color32::from_rgb(170, 0, 170)))
+                .stroke(Stroke::new(1.0, stroke))
                 .inner_margin(4.0)
                 .show(ui, |ui| {
                     let inner = Vec2::new(
@@ -7137,17 +7354,42 @@ impl GpGuiApp {
                     );
                     ui.set_min_size(inner);
                     ui.set_max_size(inner);
+                    if !enabled {
+                        ui.centered_and_justified(|ui| {
+                            ui.label(
+                                RichText::new("Input — Monitor or channel only")
+                                    .color(Color32::from_rgb(200, 200, 200))
+                                    .font(FontId::monospace(13.0)),
+                            );
+                        });
+                        return;
+                    }
+
+                    // Flush multi-line paste before layout so history stays one row each.
+                    self.absorb_compose_newlines();
+
                     let compose_h = 52.0_f32.min(inner.y * 0.55).max(24.0);
                     let hist_h = (ui.available_height() - compose_h - 2.0).max(8.0);
+                    let hist_cursor = self.compose.get(slot).and_then(|c| c.hist_cursor);
+                    let history: Vec<String> = self
+                        .compose
+                        .get(slot)
+                        .map(|c| {
+                            c.history
+                                .iter()
+                                .map(|l| Self::sanitize_compose_line(l))
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     let mut pick: Option<usize> = None;
                     egui::ScrollArea::vertical()
                         .max_height(hist_h)
-                        .stick_to_bottom(self.hist_cursor.is_none())
-                        .id_salt("typed_history")
+                        .stick_to_bottom(hist_cursor.is_none())
+                        .id_salt(("typed_history", slot))
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
-                            for (i, line) in self.typed_history.iter().enumerate() {
-                                let selected = self.hist_cursor == Some(i);
+                            for (i, line) in history.iter().enumerate() {
+                                let selected = hist_cursor == Some(i);
                                 let color = if selected {
                                     Color32::from_rgb(255, 255, 85)
                                 } else {
@@ -7172,31 +7414,54 @@ impl GpGuiApp {
                     if let Some(i) = pick {
                         self.load_history_line(i);
                     }
+                    let focus_id = compose_id_for(slot);
                     // Any click on the purple field focuses the compose line.
                     let in_purple = ui.input(|i| {
                         i.pointer.any_click()
                             && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))
                     });
                     if in_purple {
-                        ui.memory_mut(|m| m.request_focus(compose_id()));
+                        ui.memory_mut(|m| m.request_focus(focus_id));
                     }
-                    if self.compose_caret_end {
-                        self.compose_caret_end = false;
-                        place_compose_caret(ui.ctx(), self.input.chars().count());
+                    let caret_end = self
+                        .compose
+                        .get_mut(slot)
+                        .map(|c| {
+                            let v = c.compose_caret_end;
+                            c.compose_caret_end = false;
+                            v
+                        })
+                        .unwrap_or(false);
+                    if caret_end {
+                        let len = self
+                            .compose
+                            .get(slot)
+                            .map(|c| c.input.chars().count())
+                            .unwrap_or(0);
+                        place_compose_caret(ui.ctx(), focus_id, len);
                     }
-                    // Frameless compose — sits on the purple field, bottom of the pane.
-                    let edit = ui.add_sized(
-                        Vec2::new(ui.available_width(), compose_h),
-                        egui::TextEdit::multiline(&mut self.input)
-                            .id(compose_id())
-                            .desired_rows(COMPOSE_ROWS)
-                            .desired_width(f32::INFINITY)
-                            .frame(false)
-                            .margin(egui::Margin::ZERO)
-                            .text_color(Color32::WHITE)
-                            .font(FontId::monospace(14.0)),
-                    );
-                    if edit.has_focus()
+                    // Frameless compose — fixed height; soft-wrap only (no raw newlines).
+                    let edit = {
+                        let input_ref = &mut self.compose[slot].input;
+                        ui.add_sized(
+                            Vec2::new(ui.available_width(), compose_h),
+                            egui::TextEdit::multiline(input_ref)
+                                .id(focus_id)
+                                .desired_rows(COMPOSE_ROWS)
+                                .desired_width(f32::INFINITY)
+                                .frame(false)
+                                .margin(egui::Margin::ZERO)
+                                .text_color(Color32::WHITE)
+                                .font(FontId::monospace(14.0)),
+                        )
+                    };
+                    let changed = edit.changed();
+                    let focused = edit.has_focus();
+                    if changed {
+                        // Paste of a document lands as newlines; send lines immediately.
+                        self.absorb_compose_newlines();
+                    }
+                    if focused
                         && !self.show_setup
                         && !self.show_tnc
                         && !self.find_open
@@ -7205,8 +7470,10 @@ impl GpGuiApp {
                     {
                         let mods = ui.input(|i| i.modifiers);
                         if !mods.shift && !mods.ctrl {
-                            if self.input.ends_with('\n') {
-                                self.input.pop();
+                            if let Some(c) = self.compose.get_mut(slot) {
+                                if c.input.ends_with('\n') {
+                                    c.input.pop();
+                                }
                             }
                             self.submit();
                         }
@@ -7217,30 +7484,44 @@ impl GpGuiApp {
 
     /// `older` is Arrow Up (toward earlier lines). Arrow Down walks back.
     fn recall_history(&mut self, older: bool) {
-        match history_step(self.typed_history.len(), self.hist_cursor, older) {
+        let Some(slot) = self.compose_slot_idx() else {
+            return;
+        };
+        let len = self.compose.get(slot).map(|c| c.history.len()).unwrap_or(0);
+        let cursor = self.compose.get(slot).and_then(|c| c.hist_cursor);
+        match history_step(len, cursor, older) {
             HistMove::Stay => {}
             HistMove::Load(i) => self.load_history_line(i),
             HistMove::Restore => {
-                self.hist_cursor = None;
-                let shown = self.typed_history.back().map(String::as_str);
-                if shown == Some(self.input.as_str()) {
-                    self.input = std::mem::take(&mut self.hist_stash);
-                    self.compose_caret_end = true;
+                let Some(c) = self.compose.get_mut(slot) else {
+                    return;
+                };
+                c.hist_cursor = None;
+                let shown = c.history.back().map(String::as_str);
+                if shown == Some(c.input.as_str()) {
+                    c.input = std::mem::take(&mut c.hist_stash);
+                    c.compose_caret_end = true;
                 }
             }
         }
     }
 
     fn load_history_line(&mut self, index: usize) {
-        let Some(line) = self.typed_history.get(index) else {
+        let Some(slot) = self.compose_slot_idx() else {
             return;
         };
-        if self.hist_cursor.is_none() {
-            self.hist_stash = self.input.clone();
+        let Some(c) = self.compose.get_mut(slot) else {
+            return;
+        };
+        let Some(line) = c.history.get(index).cloned() else {
+            return;
+        };
+        if c.hist_cursor.is_none() {
+            c.hist_stash = c.input.clone();
         }
-        self.hist_cursor = Some(index);
-        self.input = line.clone();
-        self.compose_caret_end = true;
+        c.hist_cursor = Some(index);
+        c.input = line;
+        c.compose_caret_end = true;
     }
 
     /// Magenta status: same visual weight as the channel grid, but not clickable.
@@ -7355,6 +7636,64 @@ impl GpGuiApp {
             self.ch_not_sent[idx] = row.not_sent;
             self.ch_tries[idx] = row.tries;
             self.ch_unack[idx] = row.unack;
+        }
+        self.poll_qrt_disconnects();
+    }
+
+    fn channel_tx_busy(&self, channel: u8) -> bool {
+        let idx = channel as usize;
+        let not_sent = self.ch_not_sent.get(idx).copied().unwrap_or(0);
+        let unack = self.ch_unack.get(idx).copied().unwrap_or(0);
+        not_sent + unack > 0
+    }
+
+    /// Queue DISC for after QRT I-frames / hostmode data leave the modem.
+    fn arm_qrt_disconnect(&mut self, channel: u8) {
+        let idx = channel as usize;
+        if let Some(slot) = self.qrt_disc.get_mut(idx) {
+            *slot = QrtDiscState::WaitReport {
+                since: Instant::now(),
+            };
+        }
+        if let Some(pad) = self.pads.get_mut(idx) {
+            pad.push(PadKind::System, "*** QRT — disconnect after send");
+        }
+        self.status = format!("//Q ch{channel} — waiting for TX to finish");
+        self.last_link_status = self.status.clone();
+    }
+
+    /// Fire deferred `//Q` disconnects once not_sent/unack are clear.
+    fn poll_qrt_disconnects(&mut self) {
+        let mut ready = Vec::new();
+        for ch in 1..=self.channels {
+            let idx = ch as usize;
+            let Some(state) = self.qrt_disc.get(idx).copied() else {
+                continue;
+            };
+            match state {
+                QrtDiscState::Idle => {}
+                QrtDiscState::WaitReport { since } => {
+                    if self.channel_tx_busy(ch) {
+                        if let Some(slot) = self.qrt_disc.get_mut(idx) {
+                            *slot = QrtDiscState::Drain { since };
+                        }
+                    } else if since.elapsed() >= QRT_DISC_ARM {
+                        // Still idle after arm — QRT already ACKed, or never queued.
+                        ready.push(ch);
+                    }
+                }
+                QrtDiscState::Drain { since } => {
+                    if !self.channel_tx_busy(ch) || since.elapsed() >= QRT_DISC_TIMEOUT {
+                        ready.push(ch);
+                    }
+                }
+            }
+        }
+        for ch in ready {
+            if let Some(slot) = self.qrt_disc.get_mut(ch as usize) {
+                *slot = QrtDiscState::Idle;
+            }
+            self.disconnect_channel(ch);
         }
     }
 
@@ -7811,39 +8150,126 @@ impl GpGuiApp {
         }
     }
 
-    /// Full-pane monospace editor (CP437 GPI files).
+    /// Full-pane monospace editor (CP437 GPI files) with a macro cheat-sheet.
+    ///
+    /// The text field is fixed at 90 monospace columns; large files scroll via
+    /// an outer `ScrollArea` (TextEdit alone was clipping long buffers).
     fn editor_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
+        const EDITOR_COLS: f32 = 90.0;
         let bg = self.editor_bg;
         let fg = self.editor_fg;
+        // Same idle channel-button fill; white labels on dark grey.
+        let help_bg = VGA_DARK_GRAY;
+        let help_fg = Color32::WHITE;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
-            Frame::none()
-                .fill(bg)
-                .stroke(Stroke::new(1.0, Color32::from_rgb(170, 170, 170)))
-                .inner_margin(4.0)
-                .show(ui, |ui| {
-                    ui.set_min_size(rect.size() - Vec2::splat(2.0));
-                    let avail = ui.available_size();
-                    let rows = ((avail.y / 16.0).floor() as usize).clamp(8, 60);
-                    let before = self.editor.text.clone();
-                    let output = egui::TextEdit::multiline(&mut self.editor.text)
-                        .id_salt("gp_editor")
-                        .font(FontId::monospace(14.0))
-                        .text_color(fg)
-                        .frame(false)
-                        .desired_width(avail.x)
-                        .desired_rows(rows)
-                        .lock_focus(true)
-                        .show(ui);
-                    if output.response.changed() && self.editor.text != before {
-                        self.editor.dirty = true;
-                    }
-                    if let Some(cursor) = output.cursor_range {
-                        let cc = cursor.as_sorted_char_range().start;
-                        let snap = self.editor.text.clone();
-                        self.editor.update_cursor_from_galley(&snap, cc);
-                    }
+            let font = FontId::monospace(14.0);
+            let char_w = ui.fonts(|f| f.glyph_width(&font, 'M'));
+            let row_h = ui.fonts(|f| f.row_height(&font)).max(1.0);
+            let editor_text_w = char_w * EDITOR_COLS;
+            // Frame margin + vertical scrollbar gutter.
+            let editor_col_w = (editor_text_w + 18.0).min(ui.available_width());
+            let pane_h = ui.available_height();
+
+            ui.horizontal(|ui| {
+                ui.allocate_ui(Vec2::new(editor_col_w, pane_h), |ui| {
+                    Frame::none()
+                        .fill(bg)
+                        .stroke(Stroke::new(1.0, VGA_GRAY))
+                        .inner_margin(4.0)
+                        .show(ui, |ui| {
+                            ui.set_min_size(Vec2::new(
+                                (editor_col_w - 2.0).max(40.0),
+                                (pane_h - 2.0).max(40.0),
+                            ));
+                            ui.set_max_size(ui.min_size());
+                            let avail = ui.available_size();
+                            let min_rows = ((avail.y / row_h).floor() as usize).max(8);
+                            let content_rows = self.editor.text.split('\n').count().max(1);
+                            let rows = content_rows.max(min_rows);
+                            let before = self.editor.text.clone();
+                            let mut output = None;
+                            egui::ScrollArea::vertical()
+                                .id_salt("gp_editor_scroll")
+                                .auto_shrink([false, false])
+                                .max_height(avail.y)
+                                .show(ui, |ui| {
+                                    output = Some(
+                                        egui::TextEdit::multiline(&mut self.editor.text)
+                                            .id_salt("gp_editor")
+                                            .font(font.clone())
+                                            .text_color(fg)
+                                            .frame(false)
+                                            .desired_width(editor_text_w)
+                                            .desired_rows(rows)
+                                            .lock_focus(true)
+                                            .show(ui),
+                                    );
+                                });
+                            if let Some(output) = output {
+                                if output.response.changed() && self.editor.text != before {
+                                    self.editor.dirty = true;
+                                }
+                                if let Some(cursor) = output.cursor_range {
+                                    let cc = cursor.as_sorted_char_range().start;
+                                    let snap = self.editor.text.clone();
+                                    self.editor.update_cursor_from_galley(&snap, cc);
+                                }
+                            }
+                        });
                 });
+
+                let help_w = ui.available_width().max(0.0);
+                if help_w > 40.0 {
+                    ui.allocate_ui(Vec2::new(help_w, pane_h), |ui| {
+                        Frame::none()
+                            .fill(help_bg)
+                            .stroke(Stroke::new(1.0, VGA_GRAY))
+                            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                            .show(ui, |ui| {
+                                // Fixed cheat-sheet: no scroll — only the blue editor scrolls.
+                                ui.set_min_size(Vec2::new(
+                                    (help_w - 2.0).max(40.0),
+                                    (pane_h - 2.0).max(40.0),
+                                ));
+                                ui.set_max_size(ui.min_size());
+                                ui.with_layout(
+                                    egui::Layout::top_down(egui::Align::LEFT),
+                                    |ui| {
+                                        ui.label(
+                                            RichText::new("Macros")
+                                                .strong()
+                                                .color(help_fg)
+                                                .size(15.0),
+                                        );
+                                        ui.label(
+                                            RichText::new("*.GPI / CTEXT / mail")
+                                                .color(help_fg)
+                                                .size(12.0),
+                                        );
+                                        ui.add_space(4.0);
+                                        for (token, desc) in macros::help_entries() {
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = 6.0;
+                                                ui.label(
+                                                    RichText::new(*token)
+                                                        .monospace()
+                                                        .color(help_fg)
+                                                        .size(13.0),
+                                                );
+                                                ui.label(
+                                                    RichText::new(*desc)
+                                                        .color(help_fg)
+                                                        .size(12.0),
+                                                );
+                                            });
+                                        }
+                                    },
+                                );
+                            });
+                    });
+                }
+            });
         });
     }
 
@@ -10162,6 +10588,8 @@ struct SoftCrawl {
     seen: bool,
     /// Still walking toward the newest line. A scroll upward clears it.
     follow: bool,
+    /// Last frame's ScrLock-off (`stick`) so unlocking can re-engage follow.
+    stick: bool,
     last_offset: f32,
     last_max: f32,
     /// Fraction of a pixel still owed to the crawl clock.
@@ -10186,10 +10614,12 @@ fn softscroll_status(smooth: bool) -> String {
     format!("Softscroll {}", on_off(smooth))
 }
 
-/// `true` while new lines should move this view.
+/// `true` while new lines should move this view (ScrLock off).
 ///
-/// Scrolling up lets go. Landing on the last line takes hold again.
-/// A shorter pad (Clear) is not a scroll-up.
+/// ScrLock on (`stick == false`) freezes. ScrLock off follows the end: a
+/// scroll-up may pause briefly, but any growth of the pad (new text) takes
+/// hold again. Landing on the last line also resumes. Clear (shorter pad)
+/// is not treated as a scroll-up.
 fn keep_following(
     stick: bool,
     offset: f32,
@@ -10200,6 +10630,10 @@ fn keep_following(
 ) -> bool {
     if !stick {
         return false;
+    }
+    // New text arrived — always jump/crawl to the end while ScrLock is off.
+    if max_off > last_max + 0.5 {
+        return true;
     }
     let shrunk = max_off + 0.5 < last_max;
     if !shrunk && offset < last_offset - 0.75 {
@@ -10290,25 +10724,33 @@ fn paint_text_pane(
                     .unwrap_or_default();
                 let mut state = out.state;
                 let before = state.offset.y;
+                // ScrLock off → follow. Turning it off again must resume even
+                // if a prior lock had cleared `follow` while scrolled up.
+                let unlocked = stick && !crawl.stick;
 
-                if !crawl.seen {
+                if !stick {
+                    crawl.follow = false;
+                    crawl.carry = 0.0;
+                } else if !crawl.seen {
                     crawl.seen = true;
                     crawl.owner = owner;
                     crawl.last_t = now;
-                    if stick {
-                        state.offset.y = max_off;
-                        crawl.follow = true;
-                    }
+                    state.offset.y = max_off;
+                    crawl.follow = true;
+                } else if unlocked {
+                    crawl.owner = owner;
+                    crawl.carry = 0.0;
+                    crawl.last_t = now;
+                    state.offset.y = max_off;
+                    crawl.follow = true;
                 } else if owner != crawl.owner {
                     // Another pad in this same viewport. Show its end at once;
                     // only lines that arrive afterwards crawl.
                     crawl.owner = owner;
                     crawl.carry = 0.0;
                     crawl.last_t = now;
-                    if crawl.follow && stick {
+                    if crawl.follow {
                         state.offset.y = max_off;
-                    } else if !stick {
-                        crawl.follow = false;
                     }
                 } else {
                     let dt = (now - crawl.last_t).clamp(0.0, 0.5) as f32;
@@ -10339,6 +10781,8 @@ fn paint_text_pane(
                     }
                 }
 
+                crawl.stick = stick;
+                crawl.seen = true;
                 crawl.last_offset = state.offset.y;
                 crawl.last_max = max_off;
                 ctx.data_mut(|d| d.insert_temp(out.id, crawl));
@@ -10349,12 +10793,11 @@ fn paint_text_pane(
     });
 }
 
-fn compose_id() -> egui::Id {
-    egui::Id::new("gp_compose")
+fn compose_id_for(slot: usize) -> egui::Id {
+    egui::Id::new(("gp_compose", slot))
 }
 
-fn place_compose_caret(ctx: &Context, char_index: usize) {
-    let id = compose_id();
+fn place_compose_caret(ctx: &Context, id: egui::Id, char_index: usize) {
     let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
     let end = egui::text::CCursor::new(char_index);
     state
@@ -10566,6 +11009,10 @@ mod soft_scroll_tests {
         assert!(!keep_following(false, 200.0, 200.0, 216.0, 200.0, true));
         // Clear shortens the pad; that is not the operator scrolling up.
         assert!(keep_following(true, 0.0, 400.0, 0.0, 400.0, true));
+        // ScrLock off + new text: resume follow even after a scroll-up pause.
+        assert!(keep_following(true, 40.0, 40.0, 220.0, 200.0, false));
+        // ScrLock on: stay frozen when the pad grows.
+        assert!(!keep_following(false, 40.0, 40.0, 220.0, 200.0, false));
     }
 }
 
