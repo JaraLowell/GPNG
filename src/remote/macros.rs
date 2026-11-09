@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use chrono::Local;
+
 /// Runtime values available while expanding a `*.GPI` / `*.GPM` / prompt line.
 #[derive(Debug, Clone, Default)]
 pub struct MacroContext {
@@ -159,7 +161,7 @@ pub fn help_entries() -> &'static [(&'static str, &'static str)] {
         ("%D", "Date"),
         ("%B", "Bell character"),
         ("%I", "News available hint"),
-        ("%Z", "Timezone"),
+        ("%Z", "PC timezone"),
         ("%_", "CRLF"),
         ("%%", "Literal %"),
         ("%O", "Random ORIGIN.GPI line"),
@@ -174,6 +176,133 @@ pub fn help_entries() -> &'static [(&'static str, &'static str)] {
 /// Quick reference map for docs / UI help.
 pub fn catalogue() -> HashMap<&'static str, &'static str> {
     help_entries().iter().copied().collect()
+}
+
+/// Short name for a Windows timezone id. `daylight` picks the summer name.
+///
+/// Holland is `W. Europe Standard Time`: CET in winter, CEST in summer.
+pub fn zone_abbrev(windows_id: &str, daylight: bool) -> Option<&'static str> {
+    let (standard, summer) = match windows_id {
+        "W. Europe Standard Time"
+        | "Central Europe Standard Time"
+        | "Central European Standard Time"
+        | "Romance Standard Time" => ("CET", "CEST"),
+        "GMT Standard Time" => ("GMT", "BST"),
+        "Greenwich Standard Time" => ("GMT", "GMT"),
+        "UTC" => ("UTC", "UTC"),
+        "GTB Standard Time" | "E. Europe Standard Time" | "FLE Standard Time" => ("EET", "EEST"),
+        "Russian Standard Time" => ("MSK", "MSK"),
+        "Turkey Standard Time" => ("TRT", "TRT"),
+        "Israel Standard Time" => ("IST", "IDT"),
+        "South Africa Standard Time" => ("SAST", "SAST"),
+        "W. Central Africa Standard Time" => ("WAT", "WAT"),
+        "Eastern Standard Time" => ("EST", "EDT"),
+        "Central Standard Time" | "Canada Central Standard Time" => ("CST", "CDT"),
+        "Mountain Standard Time" => ("MST", "MDT"),
+        "US Mountain Standard Time" => ("MST", "MST"),
+        "Pacific Standard Time" => ("PST", "PDT"),
+        "Alaskan Standard Time" => ("AKST", "AKDT"),
+        "Hawaiian Standard Time" => ("HST", "HST"),
+        "AUS Eastern Standard Time" => ("AEST", "AEDT"),
+        "Cen. Australia Standard Time" => ("ACST", "ACDT"),
+        "W. Australia Standard Time" => ("AWST", "AWST"),
+        "New Zealand Standard Time" => ("NZST", "NZDT"),
+        "Tokyo Standard Time" => ("JST", "JST"),
+        "China Standard Time" => ("CST", "CST"),
+        "India Standard Time" => ("IST", "IST"),
+        _ => return None,
+    };
+    Some(if daylight { summer } else { standard })
+}
+
+/// Timezone of the PC clock. Known Windows zones use the short name
+/// (`CET` / `CEST`). Anything else is `UTC` or `UTC+1`.
+pub fn local_zone() -> String {
+    if let Some((id, daylight)) = pc_zone() {
+        if let Some(name) = zone_abbrev(&id, daylight) {
+            return name.to_string();
+        }
+    }
+    utc_offset_label(Local::now().offset().local_minus_utc())
+}
+
+fn utc_offset_label(seconds: i32) -> String {
+    if seconds == 0 {
+        return "UTC".into();
+    }
+    let sign = if seconds >= 0 { '+' } else { '-' };
+    let seconds = seconds.unsigned_abs();
+    let hours = seconds / 3600;
+    let mins = (seconds % 3600) / 60;
+    if mins == 0 {
+        format!("UTC{sign}{hours}")
+    } else {
+        format!("UTC{sign}{hours}:{mins:02}")
+    }
+}
+
+/// `(Windows timezone id, daylight in effect)`.
+fn pc_zone() -> Option<(String, bool)> {
+    #[cfg(windows)]
+    {
+        windows_zone()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn windows_zone() -> Option<(String, bool)> {
+    #[repr(C)]
+    struct SystemTime {
+        _year: u16,
+        _month: u16,
+        _dow: u16,
+        _day: u16,
+        _hour: u16,
+        _minute: u16,
+        _second: u16,
+        _millis: u16,
+    }
+    #[repr(C)]
+    struct DynTz {
+        _bias: i32,
+        _standard_name: [u16; 32],
+        _standard_date: SystemTime,
+        _standard_bias: i32,
+        _daylight_name: [u16; 32],
+        _daylight_date: SystemTime,
+        _daylight_bias: i32,
+        key_name: [u16; 128],
+        dynamic_disabled: u8,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDynamicTimeZoneInformation(info: *mut DynTz) -> u32;
+    }
+    const DAYLIGHT: u32 = 2;
+    const INVALID: u32 = u32::MAX;
+    unsafe {
+        let mut info = std::mem::zeroed::<DynTz>();
+        let rc = GetDynamicTimeZoneInformation(&mut info);
+        if rc == INVALID {
+            return None;
+        }
+        let key = wide_z(&info.key_name);
+        if key.is_empty() {
+            return None;
+        }
+        let daylight = rc == DAYLIGHT && info.dynamic_disabled == 0;
+        Some((key, daylight))
+    }
+}
+
+#[cfg(windows)]
+fn wide_z(words: &[u16]) -> String {
+    let end = words.iter().position(|&c| c == 0).unwrap_or(words.len());
+    String::from_utf16_lossy(&words[..end])
 }
 
 #[cfg(test)]
@@ -207,5 +336,28 @@ mod tests {
             ..ctx
         };
         assert_eq!(expand("Hallo %N,", &named), "Hallo Jara,");
+    }
+
+    #[test]
+    fn holland_is_cet_in_winter_and_cest_in_summer() {
+        assert_eq!(zone_abbrev("W. Europe Standard Time", false), Some("CET"));
+        assert_eq!(zone_abbrev("W. Europe Standard Time", true), Some("CEST"));
+        assert_eq!(zone_abbrev("Romance Standard Time", false), Some("CET"));
+        assert_eq!(zone_abbrev("GMT Standard Time", true), Some("BST"));
+    }
+
+    #[test]
+    fn the_pc_clock_zone_is_not_a_hardcoded_utc() {
+        let label = local_zone();
+        assert!(!label.is_empty());
+        #[cfg(windows)]
+        {
+            let (id, daylight) = super::pc_zone().expect("Windows timezone");
+            if let Some(expect) = zone_abbrev(&id, daylight) {
+                assert_eq!(label, expect, "id={id} daylight={daylight}");
+            } else {
+                assert!(label.starts_with("UTC"), "id={id} label={label}");
+            }
+        }
     }
 }

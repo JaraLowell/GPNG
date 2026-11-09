@@ -4,11 +4,12 @@ use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
 use serialport::SerialPort;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::config::SerialConfig;
 
-use super::TncError;
+use super::{TncError, TncEvent};
 
 /// KISS return-to-command-mode sequence (KISSINIT `\k`).
 pub const KISS_EXIT: [u8; 3] = [0xC0, 0xFF, 0xC0];
@@ -18,6 +19,10 @@ pub struct SerialLink {
     port: Box<dyn SerialPort>,
     pub port_name: String,
     pub baud: u32,
+    /// UI lamp. `try_send` so a full queue never stalls the UART thread.
+    activity: Option<mpsc::Sender<TncEvent>>,
+    last_tx_note: Option<Instant>,
+    last_rx_note: Option<Instant>,
 }
 
 impl SerialLink {
@@ -43,7 +48,37 @@ impl SerialLink {
             port,
             port_name: serial.port.clone(),
             baud: serial.baud,
+            activity: None,
+            last_tx_note: None,
+            last_rx_note: None,
         })
+    }
+
+    /// Report raw send/receive to the session-bar lamp.
+    pub fn watch(&mut self, events: mpsc::Sender<TncEvent>) {
+        self.activity = Some(events);
+    }
+
+    /// One note per direction per 40 ms. A file send stays lit without
+    /// filling the UI queue with one event per chunk.
+    fn note_link(&mut self, tx: bool) {
+        let now = Instant::now();
+        let recent = if tx {
+            self.last_tx_note
+        } else {
+            self.last_rx_note
+        };
+        if recent.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(40)) {
+            return;
+        }
+        if tx {
+            self.last_tx_note = Some(now);
+        } else {
+            self.last_rx_note = Some(now);
+        }
+        if let Some(events) = &self.activity {
+            let _ = events.try_send(TncEvent::LinkIo { tx });
+        }
     }
 
     /// Write `buf`, waiting out a full driver buffer instead of failing.
@@ -86,6 +121,9 @@ impl SerialLink {
             }
         }
         self.port.flush()?;
+        if !buf.is_empty() {
+            self.note_link(true);
+        }
         Ok(())
     }
 
@@ -101,7 +139,12 @@ impl SerialLink {
     /// Non-blocking-ish read (port timeout → `Ok(0)`).
     pub fn try_read(&mut self, buf: &mut [u8]) -> Result<usize, TncError> {
         match self.port.read(buf) {
-            Ok(n) => Ok(n),
+            Ok(n) => {
+                if n > 0 {
+                    self.note_link(false);
+                }
+                Ok(n)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(0),
             Err(e) => Err(TncError::Io(e)),
         }

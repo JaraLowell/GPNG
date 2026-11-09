@@ -145,6 +145,9 @@ pub(crate) fn send_buffers_if_changed(
 pub enum TncEvent {
     /// Raw bytes observed on the wire (pre-decoder / debug).
     RawRx(Vec<u8>),
+    /// Bytes moved on the COM port or KISS TCP link, before any decode.
+    /// `tx` is host → modem (send). `false` is modem → host (receive).
+    LinkIo { tx: bool },
     /// A decoded hostmode / KISS frame (channel + payload).
     HostFrame {
         channel: u8,

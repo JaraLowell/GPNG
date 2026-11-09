@@ -167,6 +167,8 @@ pub struct GpEditor {
     pub cursor_line: usize,
     /// Cursor column (1-based).
     pub cursor_col: usize,
+    /// Character index of the caret, so Edit can return to the same place.
+    pub cursor_cc: usize,
 }
 
 impl Default for GpEditor {
@@ -177,6 +179,7 @@ impl Default for GpEditor {
             dirty: false,
             cursor_line: 1,
             cursor_col: 1,
+            cursor_cc: 0,
         }
     }
 }
@@ -207,6 +210,7 @@ impl GpEditor {
         self.dirty = false;
         self.cursor_line = 1;
         self.cursor_col = 1;
+        self.cursor_cc = 0;
         Ok(())
     }
 
@@ -297,6 +301,7 @@ impl GpEditor {
 
     pub fn update_cursor_from_galley(&mut self, text: &str, cursor_cc: usize) {
         let cursor_cc = cursor_cc.min(text.len());
+        self.cursor_cc = cursor_cc;
         let before = &text[..cursor_cc];
         self.cursor_line = before.chars().filter(|&c| c == '\n').count() + 1;
         self.cursor_col = before

@@ -33,8 +33,8 @@ port_detail = "USB-K5G Radio Cable"
 # Legacy: CHANNELS, MAXSPY, buffers, bells, remote, spy, …
 channels = 10
 max_spy = 1
-connect_bell = 1
-rx_click = 2
+connect_bell = 3
+rx_click = 1
 screensave_minutes = 0
 popup_time_seconds = 3
 popup_enable_keyboard = false
@@ -74,8 +74,9 @@ allow_color_ansi = true
 # Session-bar button state (restored on start; rewritten when you toggle).
 icon_file = "ICONS.GP"
 [session.chrome]
-qrg_mhz = 144.800
+qrg_mhz = 149.112
 ctext = "D:\\MyPython\\GPNG\\data\\CTEXT.GPI"
+channel_ctext = []
 extended_ascii = false
 smooth_scroll = false
 echo = true
@@ -83,7 +84,7 @@ bell = true
 seven_plus = true
 remote = true
 scr_lock = false
-hour_gong = false
+hour_gong = true
 [buffers]
 # Legacy line counts (≈80 columns each in classic GP).
 text_buffer = [600, 300]   # TEXTBUFFER: monitor scrollback, then channel scrollback
@@ -97,7 +98,7 @@ input_buffer = 200
 # KISS uses data/KISS.INI [params] PACLEN for this size (0 means 256).
 # Newlines are `\n` and stay inside the packet; they do not each start one.
 # 144Mhz 255 and up
-packet_payload = 128
+packet_payload = 255
 
 [paths]
 # Legacy: USERDIR, EXTERNALDIR, SAVEDIR, LOGDIR, SPYDIR
@@ -199,18 +200,18 @@ spy_invers_attr = "LightCyan"
 
 [beacon]
 address = "CQ"
-source = "text"
+source = "file"
 text = ""
-file = ""
-period_minutes = 0
+file = "D:\\MyPython\\GPNG\\data\\BEACON.GP"
+period_minutes = 15
 [print]
 # Legacy ESC/P printer attribute byte sequences.
 default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1335
-y = 45
+x = 1368
+y = 55
 width = 1160
 height = 889
 maximized = false

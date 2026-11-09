@@ -38,6 +38,8 @@ pub struct Ax25Frame {
     pub dest: String,
     pub src: String,
     pub via: Vec<String>,
+    /// Parallel to [`Self::via`]. True after that digipeater has repeated the frame (H bit).
+    pub repeated: Vec<bool>,
     pub kind: Ax25FrameType,
     /// N(S) for I frames.
     pub ns: u8,
@@ -123,12 +125,33 @@ fn is_hhmm(token: &str) -> bool {
 }
 
 impl Ax25Frame {
+    /// Every digipeater H bit is set, or there is no via list.
+    /// AX.25 delivers the frame to the endpoint only then.
+    pub fn path_complete(&self) -> bool {
+        self.repeated.iter().all(|done| *done)
+    }
+
+    /// Via calls for the monitor. A repeated hop is marked `CALL*`.
+    pub fn via_labels(&self) -> Vec<String> {
+        self.via
+            .iter()
+            .enumerate()
+            .map(|(i, call)| {
+                if self.repeated.get(i).copied().unwrap_or(false) {
+                    format!("{call}*")
+                } else {
+                    call.clone()
+                }
+            })
+            .collect()
+    }
+
     /// Monitor header line for this decoded frame.
     pub fn monitor_line(&self) -> String {
         monitor_ctl_line(
             &self.src,
             &self.dest,
-            &self.via,
+            &self.via_labels(),
             self.kind,
             self.ns,
             self.nr,
@@ -461,8 +484,34 @@ pub fn build_disc_via(dest: &str, src: &str, via: &[&str]) -> Vec<u8> {
 }
 
 /// Digipeater path for a reply: reverse of the path the command arrived on.
+/// The caller sends that list with every H bit clear, so the return trip is repeated.
 pub fn reply_via(incoming: &[String]) -> Vec<String> {
     incoming.iter().rev().cloned().collect()
+}
+
+/// `NL0AS,NL1AS`, `NL0AS via NL1AS`, and `NL0AS V NL1AS` → call list.
+/// The first call is the destination. The rest are digipeaters, in order.
+pub fn split_connect_hops(raw: &str) -> Vec<String> {
+    raw.split(|c: char| c == ',' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| !s.eq_ignore_ascii_case("via") && !s.eq_ignore_ascii_case("v"))
+        .map(|s| s.to_ascii_uppercase())
+        .collect()
+}
+
+/// If our call is the next digipeater that has not repeated, set that H bit
+/// and return the frame to retransmit. Source, destination, and order stay.
+/// `None` when it is not our turn.
+pub fn repeat_if_ours(payload: &[u8], ours: &[String]) -> Option<Vec<u8>> {
+    let mut frame = LibFrame::from_bytes(payload).ok()?;
+    let idx = frame.route.iter().position(|hop| !hop.has_repeated)?;
+    let call = frame.route[idx].repeater.to_string();
+    if !ours.iter().any(|c| c.eq_ignore_ascii_case(&call)) {
+        return None;
+    }
+    frame.route[idx].has_repeated = true;
+    Some(frame.to_bytes())
 }
 
 /// UA response (connect / disconnect ack).
@@ -622,6 +671,7 @@ pub fn parse_frame(payload: &[u8]) -> Option<Ax25Frame> {
         dest: f.destination.to_string(),
         src: f.source.to_string(),
         via: f.route.iter().map(|r| r.repeater.to_string()).collect(),
+        repeated: f.route.iter().map(|r| r.has_repeated).collect(),
         kind,
         ns,
         nr,
@@ -707,6 +757,57 @@ mod tests {
         let dm = parse_frame(&build_dm("A", "B", false)).unwrap();
         assert_eq!(dm.kind, Ax25FrameType::Dm);
         assert!(!dm.poll);
+    }
+
+    #[test]
+    fn connect_path_is_dest_then_digis() {
+        assert_eq!(
+            split_connect_hops("NL0AS,NL1AS"),
+            ["NL0AS", "NL1AS"]
+        );
+        assert_eq!(
+            split_connect_hops("nl0as via nl1as"),
+            ["NL0AS", "NL1AS"]
+        );
+        assert_eq!(
+            split_connect_hops("NL0AS V NL1AS,DB0FN"),
+            ["NL0AS", "NL1AS", "DB0FN"]
+        );
+    }
+
+    #[test]
+    fn sabm_via_starts_unrepeated_and_our_hop_sets_h() {
+        let raw = build_sabm_via("NL0AS", "NL0MSK", &["NL1AS"]);
+        let f = parse_frame(&raw).unwrap();
+        assert_eq!(f.dest, "NL0AS");
+        assert_eq!(f.src, "NL0MSK");
+        assert_eq!(f.via, ["NL1AS"]);
+        assert_eq!(f.repeated, [false]);
+        assert!(!f.path_complete());
+        assert!(repeat_if_ours(&raw, &["NL0MSK".into()]).is_none());
+        let relayed = repeat_if_ours(&raw, &["NL1AS".into()]).unwrap();
+        let g = parse_frame(&relayed).unwrap();
+        assert_eq!(g.repeated, [true]);
+        assert!(g.path_complete());
+        assert!(g.command);
+        assert_eq!(g.monitor_line(), "fm NL0MSK to NL0AS via NL1AS* ctl SABM+");
+        assert!(repeat_if_ours(&relayed, &["NL1AS".into()]).is_none());
+        assert_eq!(reply_via(&g.via), ["NL1AS"]);
+    }
+
+    #[test]
+    fn only_the_next_unrepeated_hop_relays() {
+        let raw = build_sabm_via("NL0AS", "NL0MSK", &["NL1AS", "DB0FN"]);
+        let once = repeat_if_ours(&raw, &["NL1AS".into()]).unwrap();
+        let mid = parse_frame(&once).unwrap();
+        assert_eq!(mid.repeated, [true, false]);
+        assert!(!mid.path_complete());
+        assert!(repeat_if_ours(&once, &["NL1AS".into()]).is_none());
+        let twice = repeat_if_ours(&once, &["DB0FN".into()]).unwrap();
+        assert!(parse_frame(&twice).unwrap().path_complete());
+        let ui = build_ui("CQ", "NL0MSK", &["NL1AS"], b"hi");
+        let out = repeat_if_ours(&ui, &["NL1AS".into()]).unwrap();
+        assert_eq!(parse_frame(&out).unwrap().info, b"hi");
     }
 
     #[test]

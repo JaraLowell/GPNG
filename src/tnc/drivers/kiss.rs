@@ -63,6 +63,13 @@ impl KissLink {
         matches!(self, Self::Tcp(_))
     }
 
+    fn watch(&mut self, events: mpsc::Sender<TncEvent>) {
+        match self {
+            Self::Serial(s) => s.watch(events),
+            Self::Tcp(t) => t.watch(events),
+        }
+    }
+
     fn label(&self) -> String {
         match self {
             Self::Serial(s) => format!("{} @ {}", s.port_name, s.baud),
@@ -134,6 +141,7 @@ pub fn run(
     mut commands: mpsc::Receiver<TncCommand>,
 ) -> Result<(), TncError> {
     let mut link = KissLink::open(&serial, &tnc_cfg)?;
+    link.watch(events.clone());
 
     if !link.is_tcp() {
         // Soft-restart recovery: radio may still be in KISS from last run.

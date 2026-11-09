@@ -7,7 +7,7 @@
 //! ├── magenta status grid (2 rows, non-clickable) ──┤    all three)    │
 //! ├─────────────────────────────────────────────────┴──────────────────┤
 //! │ full-width content (QSO / monitor / editor / …)                     │
-//! │ session strip: QRG CT äöü / Echo ♪ Clear [spy|7+/Remote/BIN] 🔑 ScrLock ▲▼ B │
+//! │ session strip: QRG CT äöü / Echo ♪ Clear [spy|7+/Remote/BIN] 🔑 🖥 ScrLock ▲▼ B │
 //! │ channel splitscreen only: the same monitor pad, under that strip    │
 //! │ icons evenly spaced (set depends on pane)                           │
 //! ```
@@ -77,8 +77,9 @@ use super::mheard::MheardList;
 use super::padlog::{self, PadKind, TextPad};
 use super::retro;
 use super::session::{
-    decode_rx_text, default_bell_wav, default_connect_wav, default_disconnect_wav,
-    default_newline_wav, format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav, play_wav_at,
+    chime_strikes, connect_bell_plays, decode_rx_text, default_bell_wav, default_chime_wav,
+    default_connect_wav, default_disconnect_wav, default_newline_wav, disconnect_plays,
+    format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav, play_wav_times, rx_click_plays,
     Ax25UiFrame, SessionChrome,
 };
 use super::setup::{self, ColorSlot, EditKind, RowId, RowKind, View as SetupView};
@@ -351,6 +352,8 @@ pub struct GpGuiApp {
     icon_tex: Vec<TextureHandle>,
     /// `assets/start.png`, drawn above the radio card until Use this.
     start_screen: Option<TextureHandle>,
+    /// `assets/network.png` — COM send/receive lamp left of ScrLock.
+    link_tex: Option<TextureHandle>,
     /// Startup gate. The serial or TCP link stays closed until Use this.
     show_radio_gate: bool,
     radio: RadioLink,
@@ -431,6 +434,10 @@ pub struct GpGuiApp {
     serial_rx_bytes: u64,
     /// Decoded hostmode/KISS frames since start.
     serial_rx_frames: u64,
+    /// Front monitor (red) stays bright until this instant after a COM send.
+    link_tx_until: Option<Instant>,
+    /// Back monitor (green) stays bright until this instant after a COM receive.
+    link_rx_until: Option<Instant>,
     monitor_bg: Color32,
     #[allow(dead_code)] // per-line PadKind colours replace flat pane fg
     monitor_fg: Color32,
@@ -452,16 +459,24 @@ pub struct GpGuiApp {
     session: SessionChrome,
     /// Internal GPI / text editor (EDIT / CT → session connect-text file).
     editor: GpEditor,
+    /// The editor buffer stays until Load or quit. The first EDIT opens CTEXT.
+    editor_held: bool,
+    /// Put the caret back on the first frame after returning to Edit.
+    editor_resume: bool,
     /// Stations heard (APRS/AX.25 UI) — JSON-backed.
     mheard: MheardList,
     /// Selected row in the MHeard list (`None` = none).
     mheard_selected: Option<usize>,
+    /// Opening the list shows the newest stations, which are the first rows.
+    mheard_scroll_top: bool,
     /// After SPY on MHeard: next list pick opens the confirm dialog.
     mheard_spy_pick: bool,
     /// Confirm dialog: Start Spy for {call}?
     show_mheard_spy_confirm: bool,
     mheard_spy_pending: String,
     bell_wav: PathBuf,
+    /// Hourly clock ♫. `//BELL` keeps `bell_wav`.
+    chime_wav: PathBuf,
     connect_wav: PathBuf,
     disconnect_wav: PathBuf,
     newline_wav: PathBuf,
@@ -581,6 +596,7 @@ impl GpGuiApp {
         install_console_font(&cc.egui_ctx);
         let icon_tex = load_icon_textures(&cc.egui_ctx, &cfg.session.icon_file);
         let start_screen = load_start_screen(&cc.egui_ctx);
+        let link_tex = load_link_lamps(&cc.egui_ctx);
         let status = if icon_tex.is_empty() {
             "data/ICONS.GP not found".into()
         } else {
@@ -611,6 +627,9 @@ impl GpGuiApp {
         let mut session = SessionChrome::from_config(&cfg.session.chrome);
         if !cfg.session.qrg_text.trim().is_empty() {
             session.qrg_log = journal::clip_qrg(&cfg.session.qrg_text);
+            if let Ok(mhz) = session.qrg_log.parse::<f64>() {
+                session.qrg_mhz = mhz;
+            }
         }
         let seven_on = session.seven_plus;
         if let Err(err) = sevenplus::ensure_user_dir(&cfg.paths.user_dir) {
@@ -708,6 +727,7 @@ impl GpGuiApp {
             show_connect_names: false,
             icon_tex,
             start_screen,
+            link_tex,
             show_radio_gate: true,
             radio,
             radio_call,
@@ -756,14 +776,20 @@ impl GpGuiApp {
             serial_open: false,
             serial_rx_bytes: 0,
             serial_rx_frames: 0,
+            link_tx_until: None,
+            link_rx_until: None,
             session,
             editor: GpEditor::default(),
+            editor_held: false,
+            editor_resume: false,
             mheard: MheardList::load_default(),
             mheard_selected: None,
+            mheard_scroll_top: false,
             mheard_spy_pick: false,
             show_mheard_spy_confirm: false,
             mheard_spy_pending: String::new(),
             bell_wav: default_bell_wav(),
+            chime_wav: default_chime_wav(),
             connect_wav: default_connect_wav(),
             disconnect_wav: default_disconnect_wav(),
             newline_wav: default_newline_wav(),
@@ -785,8 +811,14 @@ impl GpGuiApp {
         }
     }
 
-    /// Load `session.ctext_path` into the editor (create empty if missing).
+    /// Load CTEXT the first time. After that, Edit returns to the open file.
     fn open_ctext_editor(&mut self) {
+        if self.editor_held {
+            self.select(ActivePane::Editor);
+            self.editor_resume = true;
+            self.status = format!("EDIT {}", self.editor.display_name());
+            return;
+        }
         self.select(ActivePane::Editor);
         let path = self.resolve_ctext_path();
         match self.editor.load_path(&path) {
@@ -802,16 +834,33 @@ impl GpGuiApp {
                 self.status = e;
             }
         }
+        self.editor_held = true;
     }
 
     /// Prefer the path on the CT button; fall back to classic `CTEXT.GPI`.
     fn resolve_ctext_path(&self) -> PathBuf {
-        let path = &self.session.ctext_path;
+        self.resolve_stored_ctext(&self.session.ctext_path)
+    }
+
+    /// File this channel sends. Its own path when one is set, otherwise global.
+    fn ctext_path_for(&self, channel: u8) -> PathBuf {
+        self.resolve_stored_ctext(self.session.ctext_for(channel))
+    }
+
+    /// `0` is the Monitor (global file). A channel number is that channel's file.
+    fn ctext_slot(&self) -> u8 {
+        match self.active {
+            ActivePane::Channel(n) => n,
+            _ => 0,
+        }
+    }
+
+    fn resolve_stored_ctext(&self, path: &std::path::Path) -> PathBuf {
         if path.as_os_str().is_empty() {
             return gpi::default_ctext_path();
         }
         if path.is_file() {
-            return path.clone();
+            return path.to_path_buf();
         }
         // Relative name from Config → try under data/.
         if path.is_relative() {
@@ -991,6 +1040,8 @@ impl GpGuiApp {
         if let Some(path) = dialog.pick_file() {
             match self.editor.load_path(&path) {
                 Ok(()) => {
+                    self.editor_held = true;
+                    self.editor_resume = false;
                     self.status = format!("loaded {}", self.editor.display_name());
                     self.select(ActivePane::Editor);
                 }
@@ -1014,7 +1065,17 @@ impl GpGuiApp {
             return;
         }
         self.last_gong = Some(key);
-        play_bell_wav(&self.bell_wav);
+        self.play_hour_chime(now.hour());
+    }
+
+    /// One `CHIME.WAV` per hour on a 12-hour clock, 40 ms between strikes.
+    fn play_hour_chime(&self, hour24: u32) {
+        play_wav_times(
+            &self.chime_wav,
+            chime_strikes(hour24),
+            Duration::from_millis(40),
+            1.0,
+        );
     }
 
     fn log_event(&mut self, msg: impl Into<String>) {
@@ -1102,6 +1163,14 @@ impl GpGuiApp {
                 TncEvent::RawRx(bytes) => {
                     self.serial_rx_bytes += bytes.len() as u64;
                 }
+                TncEvent::LinkIo { tx } => {
+                    let until = Instant::now() + LINK_LAMP_HOLD;
+                    if tx {
+                        self.link_tx_until = Some(until);
+                    } else {
+                        self.link_rx_until = Some(until);
+                    }
+                }
                 TncEvent::Buffers(report) => self.apply_buffers(report),
                 TncEvent::KissTx { frame } => {
                     self.note_kiss_tx(&frame);
@@ -1171,8 +1240,8 @@ impl GpGuiApp {
                         HostCode::Data => {
                             // KISS: full AX.25 L2 (UI / SABM / I / …) — not hostmode text.
                             if self.kiss_mode() {
-                                if let Some(frame) = ax25::parse_frame(&payload) {
-                                    self.handle_kiss_ax25(frame);
+                                if ax25::parse_frame(&payload).is_some() {
+                                    self.handle_kiss_ax25(&payload);
                                     continue;
                                 }
                             }
@@ -1251,17 +1320,34 @@ impl GpGuiApp {
                         self.accept_rx_text(channel, &decode_cp437(&payload), kind);
                     } else if !hide_monitor && !(skip_monitor_dup && idx == 0) {
                         if idx == 0 && monitor_bytes {
+                            let heard: Vec<(String, String, Vec<String>)> = monitor_rows
+                                .iter()
+                                .filter_map(|part| heard_from_fm(part))
+                                .collect();
+                            for (src, dest, via) in &heard {
+                                self.note_heard_on_monitor(src, dest, via);
+                            }
                             if let Some(pad) = self.pads.get_mut(0) {
                                 for part in &monitor_rows {
                                     pad.push_monitor(kind, stamp_monitor_fm(part));
                                 }
                             }
-                        } else if let Some(pad) = self.pads.get_mut(idx) {
-                            for part in payload_lines(&line) {
-                                if idx == 0 {
-                                    pad.push_monitor(kind, stamp_monitor_fm(&part));
-                                } else {
-                                    pad.push(kind, part);
+                        } else {
+                            let parts = payload_lines(&line);
+                            if idx == 0 {
+                                for part in &parts {
+                                    if let Some((src, dest, via)) = heard_from_fm(part) {
+                                        self.note_heard_on_monitor(&src, &dest, &via);
+                                    }
+                                }
+                            }
+                            if let Some(pad) = self.pads.get_mut(idx) {
+                                for part in parts {
+                                    if idx == 0 {
+                                        pad.push_monitor(kind, stamp_monitor_fm(&part));
+                                    } else {
+                                        pad.push(kind, part);
+                                    }
                                 }
                             }
                         }
@@ -1280,6 +1366,8 @@ impl GpGuiApp {
         if !matches!(pane, ActivePane::Mh) {
             self.mheard_spy_pick = false;
             self.show_mheard_spy_confirm = false;
+        } else if !matches!(self.active, ActivePane::Mh) {
+            self.mheard_scroll_top = true;
         }
         if let ActivePane::Channel(n) = pane {
             if let Some(flag) = self.channel_unread.get_mut(n as usize) {
@@ -1317,7 +1405,7 @@ impl GpGuiApp {
             || upper.contains("FAILURE WITH")
         {
             if was_linked {
-                play_wav(&self.disconnect_wav);
+                self.play_disconnect_bell();
             }
             self.close_journal(channel);
             self.channel_peer[idx] = None;
@@ -1388,7 +1476,7 @@ impl GpGuiApp {
         // Classic: CTEXT goes out only from the station that was connected to.
         if upper.contains("CONNECTED TO ") || upper.contains("CONNECTED") {
             if !was_linked {
-                play_wav(&self.connect_wav);
+                self.play_connect_bell();
             }
             self.prepare_busy_redirect_identities();
             // Self-connect: answer channel sends CTEXT (white there, green on caller).
@@ -1660,6 +1748,7 @@ impl GpGuiApp {
             Some(gpi::expand_gpi_text(&text, &ctx))
         } else {
             [
+                self.ctext_path_for(channel),
                 self.resolve_ctext_path(),
                 gpi::default_ctext_path(),
                 crate::paths::data_file("CTEXT.GPI"),
@@ -1730,7 +1819,7 @@ impl GpGuiApp {
             }
             self.kiss_link_activity(ch, true);
         }
-        play_wav(&self.connect_wav);
+        self.play_connect_bell();
         self.kiss_clear_sabm_timer(caller);
         self.kiss_clear_sabm_timer(answer);
         self.complete_self_connect_ctext(caller, answer);
@@ -1918,7 +2007,7 @@ impl GpGuiApp {
             self.bin_rx_swallow = None;
         }
         if was && play {
-            play_wav(&self.disconnect_wav);
+            self.play_disconnect_bell();
         }
         if was {
             if let Some(pad) = self.pads.get_mut(channel as usize) {
@@ -2086,14 +2175,14 @@ impl GpGuiApp {
             *p = Some(dest.clone());
         }
         self.note_last_call(channel, &dest);
-        play_wav(&self.connect_wav);
+        self.play_connect_bell();
         self.prepare_busy_redirect_identities();
         // First data while we are still calling — we placed this call.
         self.finish_link_up(channel, false);
     }
 
     fn names_qrg(&self) -> String {
-        format!("{:.3}", self.session.qrg_mhz)
+        self.session.qrg_text()
     }
 
     fn link_vias(&self, channel: u8) -> Vec<String> {
@@ -2116,11 +2205,7 @@ impl GpGuiApp {
     }
 
     fn journal_qrg(&self) -> String {
-        if self.session.qrg_log.trim().is_empty() {
-            journal::clip_qrg(&format!("{:.3}", self.session.qrg_mhz))
-        } else {
-            journal::clip_qrg(&self.session.qrg_log)
-        }
+        journal::clip_qrg(&self.session.qrg_text())
     }
 
     /// Start the journal clock and arm a `.GPW` if this peer has one.
@@ -2541,6 +2626,7 @@ impl GpGuiApp {
         if !self.monitor_lists_frame(frame_kind, src, dest, via) {
             return;
         }
+        self.note_heard_on_monitor(src, dest, via);
         let hdr = stamp_monitor_fm(&ax25::monitor_ctl_line(
             src, dest, via, frame_kind, ns, nr, poll, command,
         ));
@@ -2552,12 +2638,32 @@ impl GpGuiApp {
         }
     }
 
+    /// Every monitor `fm` line updates MHeard from its source call.
+    /// Our own transmissions are not stations we heard.
+    fn note_heard_on_monitor(&mut self, src: &str, dest: &str, via: &[String]) {
+        let src = src.trim();
+        if src.is_empty() || self.our_air_calls().iter().any(|c| c.eq_ignore_ascii_case(src)) {
+            return;
+        }
+        let via = via
+            .iter()
+            .map(|hop| hop.trim_end_matches('*').trim().to_string())
+            .filter(|hop| !hop.is_empty())
+            .collect();
+        self.mheard.hear(&Ax25UiFrame {
+            dest: dest.to_string(),
+            src: src.to_string(),
+            via,
+            info: String::new(),
+        });
+    }
+
     fn push_kiss_mon_frame(&mut self, kind: PadKind, frame: &Ax25Frame, info_text: Option<&str>) {
         self.push_kiss_mon(
             kind,
             &frame.src,
             &frame.dest,
-            &frame.via,
+            &frame.via_labels(),
             frame.kind,
             frame.ns,
             frame.nr,
@@ -2662,7 +2768,7 @@ impl GpGuiApp {
             self.newline_sound_pending = true;
             return;
         }
-        play_wav_at(&self.newline_wav, 0.5);
+        self.play_newline_clicks();
     }
 
     fn begin_newline_coalesce(&mut self) {
@@ -2674,7 +2780,35 @@ impl GpGuiApp {
         self.newline_sound_quiet = false;
         if self.newline_sound_pending {
             self.newline_sound_pending = false;
-            play_wav_at(&self.newline_wav, 0.5);
+            self.play_newline_clicks();
+        }
+    }
+
+    /// `RX-Click` copies of `NEWLINE.WAV`, one second apart. `0` is silent.
+    fn play_newline_clicks(&self) {
+        play_wav_times(
+            &self.newline_wav,
+            rx_click_plays(self.cfg.session.rx_click),
+            Duration::from_secs(1),
+            0.5,
+        );
+    }
+
+    /// `Connect Bell` copies of `CONNECT.WAV`. The next starts when the
+    /// previous one ends, so a replaced file keeps its own length. `0` is silent.
+    fn play_connect_bell(&self) {
+        play_wav_times(
+            &self.connect_wav,
+            connect_bell_plays(self.cfg.session.connect_bell),
+            Duration::ZERO,
+            1.0,
+        );
+    }
+
+    /// One `DISCONECT.WAV` while Connect Bell is on. Off skips it.
+    fn play_disconnect_bell(&self) {
+        if disconnect_plays(self.cfg.session.connect_bell) {
+            play_wav(&self.disconnect_wav);
         }
     }
 
@@ -3610,8 +3744,76 @@ impl GpGuiApp {
         }
     }
 
+    /// Calls this station answers and digipeats (monitor call and each channel).
+    fn our_air_calls(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for n in 0..=self.channels {
+            let call = self.effective_mycall(n);
+            if call.is_empty() || out.iter().any(|c: &String| c.eq_ignore_ascii_case(&call)) {
+                continue;
+            }
+            out.push(call);
+        }
+        out
+    }
+
+    /// Heard frame that is still on its way: list it, do not answer it.
+    fn kiss_show_transit(&mut self, frame: &Ax25Frame) {
+        let info_mon = ax25::bytes_to_monitor_body(&frame.info, self.session.extended_ascii);
+        let info_for_mon = if info_mon.is_empty() {
+            None
+        } else {
+            Some(info_mon.as_str())
+        };
+        if matches!(frame.kind, Ax25FrameType::Ui) {
+            let info_text = decode_rx_text(&frame.info, self.session.extended_ascii);
+            self.mheard.hear(&Ax25UiFrame {
+                dest: frame.dest.clone(),
+                src: frame.src.clone(),
+                via: frame.via.clone(),
+                info: info_text,
+            });
+        }
+        if !self.monitor_lists_frame(frame.kind, &frame.src, &frame.dest, &frame.via) {
+            return;
+        }
+        self.push_kiss_mon_frame(PadKind::Incoming, frame, info_for_mon);
+        if matches!(frame.kind, Ax25FrameType::Ui) {
+            let mon = frame.monitor_line();
+            self.feed_spy_pads(&frame.src, PadKind::Incoming, &mon);
+            if let Some(text) = info_for_mon {
+                if let Some(line) = ax25::monitor_info_line(text) {
+                    self.feed_spy_pads(&frame.src, PadKind::Incoming, &line);
+                }
+            }
+        }
+    }
+
     /// KISS RX: UI → Monitor; SABM/UA/I/DISC → channel link state.
-    fn handle_kiss_ax25(&mut self, frame: Ax25Frame) {
+    ///
+    /// A via path is still in transit until every H bit is set. We answer only
+    /// then, and only when the destination is our call. If the next unrepeated
+    /// hop is our call, that frame is relayed with our H bit set and is not
+    /// treated as a connect.
+    fn handle_kiss_ax25(&mut self, payload: &[u8]) {
+        let Some(heard) = ax25::parse_frame(payload) else {
+            return;
+        };
+        let ours = self.our_air_calls();
+        let relay = ax25::repeat_if_ours(payload, &ours);
+        let accept = if let Some(ref out) = relay {
+            let done = ax25::parse_frame(out)
+                .is_some_and(|f| f.path_complete() && self.is_our_dest(&f.dest));
+            self.tx_kiss_payload(0, out);
+            done
+        } else {
+            heard.path_complete() && self.is_our_dest(&heard.dest)
+        };
+        if !accept {
+            self.kiss_show_transit(&heard);
+            return;
+        }
+        let frame = heard;
         let info_text = decode_rx_text(&frame.info, self.session.extended_ascii);
         let info_mon = ax25::bytes_to_monitor_body(&frame.info, self.session.extended_ascii);
         let info_for_mon = if info_mon.is_empty() {
@@ -3723,7 +3925,7 @@ impl GpGuiApp {
                 self.kiss_clear_sabm_timer(ch);
                 self.kiss_clear_disc_timer(ch);
                 self.kiss_link_activity(ch, true);
-                play_wav(&self.connect_wav);
+                self.play_connect_bell();
                 if let Some(pad) = self.pads.get_mut(ch as usize) {
                     pad.push(PadKind::System, format!("*** CONNECTED to {}", frame.src));
                 }
@@ -4145,7 +4347,7 @@ impl GpGuiApp {
         if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
             *vr = 0;
         }
-        play_wav(&self.connect_wav);
+        self.play_connect_bell();
         let moved = !requested.is_empty() && !requested.eq_ignore_ascii_case(peer);
         let line = if moved {
             format!("*** CONNECTED to {peer} — {requested} in use")
@@ -4220,32 +4422,16 @@ impl GpGuiApp {
         channel_for_connect_ua(self.channels, &self.channel_connecting, &mycalls, src, dest)
     }
 
-    /// Channel whose other end is `src` and whose call is `dest`.
-    /// One matching peer still counts when the dest is not that call.
-    /// Two peers and no dest match: no guess.
+    /// Channel whose other end is `src` and whose call on air is `dest`.
+    /// `NL1AS` disconnecting from `NL0AS` is not the circuit we have with `NL1AS`.
     fn channel_for_pair(&self, src: &str, dest: &str) -> Option<u8> {
-        let mut only = None;
-        let mut many = false;
+        let mut peers = vec![None; self.channels as usize + 1];
+        let mut mine = vec![String::new(); self.channels as usize + 1];
         for n in 1..=self.channels {
-            let Some(other) = self.channel_other_call(n) else {
-                continue;
-            };
-            if !other.eq_ignore_ascii_case(src) {
-                continue;
-            }
-            if self.effective_mycall(n).eq_ignore_ascii_case(dest) {
-                return Some(n);
-            }
-            if only.is_some() {
-                many = true;
-            }
-            only = Some(n);
+            peers[n as usize] = self.channel_other_call(n);
+            mine[n as usize] = self.effective_mycall(n);
         }
-        if many {
-            None
-        } else {
-            only
-        }
+        channel_for_exact_pair(&peers, &mine, src, dest)
     }
 
     /// Repeat SABM for a circuit this peer has not spoken on yet.
@@ -4884,7 +5070,7 @@ impl GpGuiApp {
             channel,
             time: now.format("%H:%M:%S").to_string(),
             date: now.format("%d-%m-%Y").to_string(),
-            zone: "UTC".into(),
+            zone: crate::remote::macros::local_zone(),
             news_hint: if gpi::news_available() {
                 "News available — //NEws".into()
             } else {
@@ -4892,7 +5078,7 @@ impl GpGuiApp {
             },
             origin_line: gpi::random_origin_line(),
             digi: String::new(),
-            qrg: format!("{:.3}", self.session.qrg_mhz),
+            qrg: self.session.qrg_text(),
             name_unknown: false,
         };
         self.apply_channel_peer(&mut ctx, channel);
@@ -6096,7 +6282,8 @@ impl GpGuiApp {
             RowId::Remote => on_off(self.session.remote).into(),
             RowId::Backup => on_off(s.backup).into(),
             RowId::Echo => on_off(self.session.echo).into(),
-            RowId::RxClick => s.rx_click.to_string(),
+            RowId::RxClick => rx_click_plays(s.rx_click).to_string(),
+            RowId::ConnectBell => connect_bell_plays(s.connect_bell).to_string(),
             RowId::Umlaut => on_off(self.session.extended_ascii).into(),
             RowId::InputColumns => s.input_columns.to_string(),
             RowId::InsertMon => on_off(s.insert_mon_line).into(),
@@ -6129,8 +6316,13 @@ impl GpGuiApp {
             RowId::Backup => self.cfg.session.backup = !self.cfg.session.backup,
             RowId::Echo => self.session.echo = !self.session.echo,
             RowId::RxClick => {
-                let n = (self.cfg.session.rx_click as i32 + step).rem_euclid(3);
+                let n = (rx_click_plays(self.cfg.session.rx_click) as i32 + step).rem_euclid(3);
                 self.cfg.session.rx_click = n as u32;
+            }
+            RowId::ConnectBell => {
+                let n =
+                    (connect_bell_plays(self.cfg.session.connect_bell) as i32 + step).rem_euclid(5);
+                self.cfg.session.connect_bell = n as u32;
             }
             RowId::Umlaut => self.session.extended_ascii = !self.session.extended_ascii,
             RowId::InputColumns => {
@@ -8326,7 +8518,11 @@ impl eframe::App for GpGuiApp {
         self.poll_qrt_disconnects();
         self.maybe_hour_gong();
         self.poll_beacon();
-        let repaint = if self.external_run.iter().any(|run| run.occupied()) {
+        let link_hot = self.link_tx_until.is_some_and(|t| t > Instant::now())
+            || self.link_rx_until.is_some_and(|t| t > Instant::now());
+        let repaint = if link_hot {
+            Duration::from_millis(40)
+        } else if self.external_run.iter().any(|run| run.occupied()) {
             Duration::from_millis(50)
         } else {
             Duration::from_millis(200)
@@ -9012,7 +9208,7 @@ impl GpGuiApp {
             );
             self.persist_session_chrome();
             if self.session.hour_gong {
-                play_bell_wav(&self.bell_wav);
+                self.play_hour_chime(Local::now().hour());
             }
         }
     }
@@ -10028,10 +10224,11 @@ impl GpGuiApp {
         let bg = self.mh_bg;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         let show_bar = self.session.scrollbar;
-        let stick = !self.session.scr_lock;
         let nudge = self.session.take_scroll_nudge();
         let pick = self.mheard_spy_pick;
         let selected = self.mheard_selected;
+        let open_at_top = self.mheard_scroll_top;
+        self.mheard_scroll_top = false;
         let lines: Vec<(usize, String)> = self
             .mheard
             .entries
@@ -10061,12 +10258,14 @@ impl GpGuiApp {
                     } else {
                         egui::scroll_area::ScrollBarVisibility::AlwaysHidden
                     };
-                    egui::ScrollArea::both()
+                    let mut list = egui::ScrollArea::both()
                         .id_salt("mheard_list")
-                        .stick_to_bottom(stick)
                         .auto_shrink([false, false])
-                        .scroll_bar_visibility(bar_vis)
-                        .show(ui, |ui| {
+                        .scroll_bar_visibility(bar_vis);
+                    if open_at_top {
+                        list = list.vertical_scroll_offset(0.0);
+                    }
+                    list.show(ui, |ui| {
                             if nudge != 0.0 {
                                 ui.scroll_with_delta(Vec2::new(0.0, nudge));
                             }
@@ -10203,6 +10402,26 @@ impl GpGuiApp {
                                                     .lock_focus(true)
                                                     .show(ui),
                                                 );
+                                                if self.editor_resume {
+                                                    if let Some(shown) = output.as_ref() {
+                                                        let id = shown.response.id;
+                                                        let mut state = egui::TextEdit::load_state(
+                                                            ui.ctx(),
+                                                            id,
+                                                        )
+                                                        .unwrap_or_default();
+                                                        let cc = self.editor.cursor_cc.min(
+                                                            self.editor.text.chars().count(),
+                                                        );
+                                                        let end = egui::text::CCursor::new(cc);
+                                                        state.cursor.set_char_range(Some(
+                                                            egui::text::CCursorRange::one(end),
+                                                        ));
+                                                        state.store(ui.ctx(), id);
+                                                        shown.response.request_focus();
+                                                    }
+                                                    self.editor_resume = false;
+                                                }
                                             },
                                         );
                                     });
@@ -10463,10 +10682,16 @@ impl GpGuiApp {
                 }
             }
             if matches!(action, SessionClick::Ctext) {
-                resp.clone().on_hover_text(format!(
-                    "Connect text: {}\nChoose file",
-                    self.session.ctext_display_name()
-                ));
+                let slot = self.ctext_slot();
+                let name = self.session.ctext_file_name_for(slot);
+                let hint = if slot == 0 {
+                    format!("Connect text (global): {name}\nChoose file")
+                } else if self.session.channel_ctext_path(slot).is_some() {
+                    format!("Connect text channel {slot}: {name}\nChoose file")
+                } else {
+                    format!("Connect text channel {slot} (global): {name}\nChoose file")
+                };
+                resp.clone().on_hover_text(hint);
             }
             if resp.clicked() && (!arrow || arrow_clickable) && !key_off {
                 clicks.push(action);
@@ -10504,13 +10729,17 @@ impl GpGuiApp {
                 CellGlyph::Text,
             ),
         ];
-        let trail_w: f32 = trail.iter().map(|(_, _, _, w, _)| w + gap).sum();
-        let mut tx = rect.right() - trail_w - 2.0;
+        // Square COM lamp sits immediately left of ScrLock on every session bar.
+        let lamp_w = h;
+        let trail_w: f32 =
+            trail.iter().map(|(_, _, _, w, _)| w + gap).sum::<f32>() + lamp_w + gap;
+        let lamp_x = rect.right() - trail_w - 2.0;
+        let mut tx = lamp_x + lamp_w + gap;
         for (label, lit, action, w, glyph) in trail {
             tx += paint_cell(ui, tx, label, lit, action, w, glyph);
         }
 
-        // Monitor: spy slots + COM sit just left of ScrLock (right-justified).
+        // Monitor: spy slots + COM sit just left of the COM lamp (right-justified).
         let com_badge = if self.serial_baud == 0 {
             format!("TCP {}", self.serial_port)
         } else {
@@ -10538,20 +10767,23 @@ impl GpGuiApp {
         let left_limit = (rect.right() - trail_w - right_mid_w - 8.0).max(x + 40.0);
 
         let qrg = self.session.qrg_label();
-        let ct = self.session.ctext_label();
+        let ct_slot = self.ctext_slot();
+        let ct = self.session.ctext_label_for(ct_slot);
+        let ct_own = self.session.channel_ctext_path(ct_slot).is_some();
+        let ct_w = (ct.len() as f32 * 7.5 + 14.0).clamp(70.0, 160.0);
         let lead_owned = [
             (
                 qrg.as_str(),
                 false,
                 SessionClick::Qrg,
-                86.0_f32,
+                104.0_f32,
                 CellGlyph::Text,
             ),
             (
                 ct.as_str(),
-                false,
+                ct_own,
                 SessionClick::Ctext,
-                70.0,
+                ct_w,
                 CellGlyph::Text,
             ),
             (
@@ -10653,6 +10885,19 @@ impl GpGuiApp {
         }
 
         drop(paint_cell);
+
+        let now = Instant::now();
+        paint_link_lamp(
+            ui,
+            &mut controls,
+            lamp_x,
+            y,
+            lamp_w,
+            h,
+            self.link_tex.as_ref(),
+            self.link_tx_until.is_some_and(|t| t > now),
+            self.link_rx_until.is_some_and(|t| t > now),
+        );
 
         if let Some(resp) = split_bar {
             let (hover, down, pressed, origin, delta, abort) = ui.input(|i| {
@@ -10859,25 +11104,39 @@ impl GpGuiApp {
     }
 
     fn pick_ctext_file(&mut self) {
-        let current = self.resolve_ctext_path();
+        let slot = self.ctext_slot();
+        let current = self.ctext_path_for(slot);
         let start = current
             .parent()
             .map(PathBuf::from)
             .filter(|p| p.is_dir())
             .or_else(|| Some(crate::paths::data_dir()));
+        let title = if slot == 0 {
+            "Select Connect text (global)".to_string()
+        } else {
+            format!("Select Connect text — Channel {slot}")
+        };
         let mut dialog = rfd::FileDialog::new()
             .add_filter("Connect text (GPI)", &["gpi", "GPI", "txt"])
-            .set_title("Select Connect text (CTEXT)");
+            .set_title(&title);
         if let Some(dir) = start {
             dialog = dialog.set_directory(dir);
         }
         if let Some(path) = dialog.pick_file() {
-            self.session.set_ctext_path(path);
-            self.status = format!("CT: {}", self.session.ctext_display_name());
-            self.log_event(format!(
-                "Connect text → {}",
-                self.session.ctext_display_name()
-            ));
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("CTEXT.GPI")
+                .to_string();
+            if slot == 0 {
+                self.session.set_ctext_path(path);
+                self.status = format!("CT global: {name}");
+                self.log_event(format!("Connect text → {name}"));
+            } else {
+                self.session.set_channel_ctext(slot, path);
+                self.status = format!("CT channel {slot}: {name}");
+                self.log_event(format!("Connect text channel {slot} → {name}"));
+            }
             self.persist_session_chrome();
         }
     }
@@ -11012,7 +11271,7 @@ impl GpGuiApp {
         raw: &str,
     ) -> Result<(String, Vec<String>, Vec<String>), String> {
         let raw = raw.trim();
-        if raw.contains(',') {
+        if raw.contains(',') || raw.split_whitespace().any(|w| w.eq_ignore_ascii_case("via")) {
             let (dest, vias) = Self::parse_connect_target(raw)?;
             return Ok((dest, vias, Vec::new()));
         }
@@ -11026,17 +11285,13 @@ impl GpGuiApp {
         }
     }
 
-    /// Parse `CALL` or `CALL,VIA[,VIA…]` into dest + digi path.
+    /// Parse `CALL`, `CALL,VIA`, or `CALL via VIA` into dest + digi path.
     fn parse_connect_target(raw: &str) -> Result<(String, Vec<String>), String> {
-        let parts: Vec<&str> = raw
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
+        let parts = ax25::split_connect_hops(raw);
         if parts.is_empty() {
             return Err("connect: empty call".into());
         }
-        let dest = crate::config::normalize_mycall(parts[0])?;
+        let dest = crate::config::normalize_mycall(&parts[0])?;
         let mut vias = Vec::new();
         for p in &parts[1..] {
             vias.push(crate::config::normalize_mycall(p)?);
@@ -11180,7 +11435,12 @@ impl GpGuiApp {
                 }
             } else {
                 self.kiss_arm_sabm_timer(channel);
-                self.status = format!("KISS SABM {src} → {dest}");
+                let via_note = if vias.is_empty() {
+                    String::new()
+                } else {
+                    format!(" via {}", vias.join(","))
+                };
+                self.status = format!("KISS SABM {src} → {dest}{via_note}");
             }
         } else {
             // Hostmode puts the source in the channel MYCALL, not in `C`.
@@ -11346,7 +11606,7 @@ impl GpGuiApp {
             ui.set_min_width(360.0);
             ui.label(RichText::new("Whom to connect to?").font(menu_font(18.0)));
             ui.label(
-                RichText::new("Call, a name from NAMES.GP, or CALL,VIA")
+                RichText::new("Call, a name from NAMES.GP, CALL,VIA, or CALL via DIGI")
                     .color(Color32::BLACK)
                     .font(menu_font(16.0)),
             );
@@ -12017,6 +12277,21 @@ fn call_with_ssid(pool: &str, ssid: u8) -> String {
     }
 }
 
+/// Linked or connecting channel where `src` is the other station and `dest`
+/// is the call this station is using. A frame to any other call is not it.
+fn channel_for_exact_pair(
+    peers: &[Option<String>],
+    mine: &[String],
+    src: &str,
+    dest: &str,
+) -> Option<u8> {
+    peers.iter().enumerate().skip(1).find_map(|(idx, peer)| {
+        let other = peer.as_ref()?;
+        let call = mine.get(idx)?;
+        (other.eq_ignore_ascii_case(src) && call.eq_ignore_ascii_case(dest)).then_some(idx as u8)
+    })
+}
+
 /// Channel whose outstanding SABM this UA answers.
 ///
 /// An exact source match wins (`SABM` to `NL0AS`, `UA` from `NL0AS`).
@@ -12253,6 +12528,45 @@ fn is_hhmm_token(token: &str) -> bool {
         && m.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// `fm [HH:MM] SRC to DEST [via A,B] …` → source, destination, digis.
+fn heard_from_fm(line: &str) -> Option<(String, String, Vec<String>)> {
+    let src = extract_heard_call(line)?;
+    let lower = line.to_ascii_lowercase();
+    let to_at = lower.find(" to ")?;
+    let after = line[to_at + 4..].trim_start();
+    let after_lower = after.to_ascii_lowercase();
+    let via_at = after_lower.find(" via ");
+    let ctl_at = after_lower.find(" ctl ");
+    let dest_end = [via_at, ctl_at]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(after.len());
+    let dest = after[..dest_end]
+        .split_whitespace()
+        .next()?
+        .trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .to_string();
+    if dest.is_empty() {
+        return None;
+    }
+    let via = if let Some(at) = via_at {
+        let via_txt = &after[at + 5..];
+        let via_end = via_txt
+            .to_ascii_lowercase()
+            .find(" ctl ")
+            .unwrap_or(via_txt.len());
+        via_txt[..via_end]
+            .split(',')
+            .map(|hop| hop.trim().trim_end_matches('*').to_string())
+            .filter(|hop| !hop.is_empty())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Some((src, dest, via))
+}
+
 /// Best-effort source call from monitor / APRS-ish text (`fm CALL`, `CALL>`).
 fn extract_heard_call(text: &str) -> Option<String> {
     let lower = text.to_ascii_lowercase();
@@ -12279,6 +12593,63 @@ fn extract_heard_call(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// How long a COM send or receive keeps its monitor glass bright.
+const LINK_LAMP_HOLD: Duration = Duration::from_millis(280);
+
+/// Non-clickable COM lamp. The PNG screens are transparent; red (front,
+/// send) and green (back, receive) are painted behind those holes.
+fn paint_link_lamp(
+    ui: &mut Ui,
+    controls: &mut Vec<Rect>,
+    origin_x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    tex: Option<&TextureHandle>,
+    tx_on: bool,
+    rx_on: bool,
+) {
+    let cell = Rect::from_min_size(Pos2::new(origin_x, y), Vec2::new(w, h));
+    controls.push(cell);
+    let resp = ui.interact(cell, ui.id().with("sess-link-lamp"), Sense::hover());
+    resp.on_hover_text("COM line\nFront screen red: sending\nBack screen green: receiving");
+    let painter = ui.painter();
+    painter.rect_filled(cell, 0.0, VGA_GRAY);
+    paint_bevel(painter, cell, false);
+    let inner = cell.shrink(2.0);
+    let side = inner.width().min(inner.height());
+    let img = Rect::from_center_size(inner.center(), Vec2::splat(side));
+    // Source pixels of the transparent glass. Image is 64×64.
+    // Front PC is the lower-left screen; the back PC is the upper-right one.
+    let hole = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        let s = side / 64.0;
+        Rect::from_min_max(
+            img.min + Vec2::new(x0 * s, y0 * s),
+            img.min + Vec2::new(x1 * s, y1 * s),
+        )
+    };
+    let tx_color = if tx_on {
+        Color32::from_rgb(255, 36, 36)
+    } else {
+        Color32::from_rgb(48, 0, 0)
+    };
+    let rx_color = if rx_on {
+        Color32::from_rgb(36, 255, 64)
+    } else {
+        Color32::from_rgb(0, 42, 0)
+    };
+    painter.rect_filled(hole(12.0, 30.0, 31.0, 48.0), 0.0, tx_color);
+    painter.rect_filled(hole(33.0, 11.0, 52.0, 28.0), 0.0, rx_color);
+    if let Some(tex) = tex {
+        painter.image(
+            tex.id(),
+            img,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
 }
 
 /// Session-strip badge with no click handler (COM open indicator).
@@ -12443,6 +12814,28 @@ fn load_start_screen(ctx: &Context) -> Option<TextureHandle> {
     );
     // Nearest keeps the pixel lettering sharp when the window scales it.
     Some(ctx.load_texture("gp_start", color, TextureOptions::NEAREST))
+}
+
+/// COM lamp artwork. `None` if the PNG cannot be decoded.
+fn load_link_lamps(ctx: &Context) -> Option<TextureHandle> {
+    const BYTES: &[u8] = include_bytes!("../../assets/network.png");
+    let img = match image::load_from_memory_with_format(BYTES, image::ImageFormat::Png) {
+        Ok(img) => img,
+        Err(err) => {
+            tracing::warn!("link lamp: {err}");
+            return None;
+        }
+    };
+    let rgba = img.into_rgba8();
+    let color = ColorImage::from_rgba_unmultiplied(
+        [rgba.width() as usize, rgba.height() as usize],
+        rgba.as_raw(),
+    );
+    Some(ctx.load_texture(
+        "gp_link_lamps",
+        color,
+        TextureOptions::NEAREST,
+    ))
 }
 
 fn paint_icon_grid(ui: &mut Ui, edit: &mut IconEdit) {
@@ -13366,6 +13759,25 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
 }
 
 #[cfg(test)]
+mod heard_fm_tests {
+    use super::heard_from_fm;
+
+    #[test]
+    fn any_fm_line_is_a_heard_station() {
+        let (src, dest, via) = heard_from_fm("fm 16:29 NL1AS to NL0MSK ctl SABM+").unwrap();
+        assert_eq!(src, "NL1AS");
+        assert_eq!(dest, "NL0MSK");
+        assert!(via.is_empty());
+
+        let (src, dest, via) =
+            heard_from_fm("fm NL1AS to NL0AS via NL1WIM* ctl I01+ pid F0").unwrap();
+        assert_eq!(src, "NL1AS");
+        assert_eq!(dest, "NL0AS");
+        assert_eq!(via, vec!["NL1WIM".to_string()]);
+    }
+}
+
+#[cfg(test)]
 mod split_tests {
     use super::{clamp_split_lower, split_drag_step, split_monitor_height};
 
@@ -13479,7 +13891,21 @@ mod soft_scroll_tests {
 
 #[cfg(test)]
 mod connect_ua_tests {
-    use super::channel_for_connect_ua;
+    use super::{channel_for_connect_ua, channel_for_exact_pair};
+
+    #[test]
+    fn disc_addressed_to_someone_else_is_not_our_link() {
+        let peers = vec![None, Some("NL1AS".into())];
+        let mine = vec![String::new(), "NL0MSK".into()];
+        assert_eq!(
+            channel_for_exact_pair(&peers, &mine, "NL1AS", "NL0AS"),
+            None
+        );
+        assert_eq!(
+            channel_for_exact_pair(&peers, &mine, "NL1AS", "NL0MSK"),
+            Some(1)
+        );
+    }
 
     fn calls(n: usize) -> Vec<Option<String>> {
         vec![None; n]

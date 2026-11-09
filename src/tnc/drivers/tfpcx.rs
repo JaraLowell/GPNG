@@ -31,6 +31,7 @@ pub fn run(
 ) -> Result<(), TncError> {
     let poll_ms = serial.poll_interval_ms();
     let mut link = SerialLink::open(&serial)?;
+    link.watch(events.clone());
     let _ = events.blocking_send(TncEvent::Status(format!(
         "tfpcx driver on {} ({} baud, poll {} ms)",
         link.port_name, link.baud, poll_ms

@@ -167,6 +167,7 @@ impl UiApp {
             TncEvent::RawRx(bytes) => {
                 tracing::debug!(len = bytes.len(), "raw RX (ui)");
             }
+            TncEvent::LinkIo { .. } => {}
             TncEvent::Buffers(_) => {}
             TncEvent::KissTx { .. } => {}
             TncEvent::HostFrame {

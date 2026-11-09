@@ -9,6 +9,7 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::config::SessionChromeConfig;
 
@@ -42,9 +43,13 @@ impl LineStep {
 #[derive(Debug, Clone)]
 pub struct SessionChrome {
     pub qrg_mhz: f64,
-    /// Journal QRG, at most 7 characters. Empty means format `qrg_mhz`.
+    /// QRG as written: up to four decimal places, trailing zero removed.
+    /// Empty means format `qrg_mhz`.
     pub qrg_log: String,
     pub ctext_path: PathBuf,
+    /// Connect text for a channel. Empty, or no entry, uses `ctext_path`.
+    /// Index is the channel number (`1..=10`). Index 0 is unused.
+    pub channel_ctext: Vec<PathBuf>,
     /// `false` = plain ASCII monitor; `true` = extended DOS (CP437 / äöü).
     pub extended_ascii: bool,
     pub line_step: LineStep,
@@ -87,6 +92,7 @@ impl Default for SessionChrome {
             qrg_mhz: 27.235,
             qrg_log: String::new(),
             ctext_path: PathBuf::from("CTEXT.GPI"),
+            channel_ctext: Vec::new(),
             extended_ascii: false,
             line_step: LineStep::Hard,
             echo: true, // classic default — show local TX in the RX pane
@@ -119,11 +125,17 @@ impl SessionChrome {
     pub fn from_config(chrome: &SessionChromeConfig) -> Self {
         let mut s = Self::default();
         s.qrg_mhz = chrome.qrg_mhz;
+        s.qrg_log = crate::journal::format_mhz(chrome.qrg_mhz);
         if !chrome.ctext.trim().is_empty() {
             s.ctext_path = PathBuf::from(&chrome.ctext);
         } else {
             s.ctext_path = default_ctext_path();
         }
+        s.channel_ctext = chrome
+            .channel_ctext
+            .iter()
+            .map(PathBuf::from)
+            .collect();
         s.extended_ascii = chrome.extended_ascii;
         s.line_step = if chrome.smooth_scroll {
             LineStep::Smooth
@@ -144,6 +156,11 @@ impl SessionChrome {
         SessionChromeConfig {
             qrg_mhz: self.qrg_mhz,
             ctext: self.ctext_path.to_string_lossy().into_owned(),
+            channel_ctext: self
+                .channel_ctext
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
             extended_ascii: self.extended_ascii,
             smooth_scroll: matches!(self.line_step, LineStep::Smooth),
             echo: self.echo,
@@ -155,33 +172,86 @@ impl SessionChrome {
         }
     }
 
+    pub fn qrg_text(&self) -> String {
+        if self.qrg_log.trim().is_empty() {
+            crate::journal::format_mhz(self.qrg_mhz)
+        } else {
+            self.qrg_log.clone()
+        }
+    }
+
     pub fn qrg_label(&self) -> String {
-        format!("QRG: {:.3}", self.qrg_mhz)
+        format!("QRG: {}", self.qrg_text())
     }
 
     pub fn ctext_label(&self) -> String {
+        self.ctext_label_for(0)
+    }
+
+    /// File this screen sends. A channel with its own path uses that.
+    /// Monitor, and a channel with no path, use the global file.
+    pub fn ctext_for(&self, channel: u8) -> &Path {
+        if let Some(path) = self.channel_ctext_path(channel) {
+            path
+        } else {
+            &self.ctext_path
+        }
+    }
+
+    /// Path stored on this channel, when the channel does not inherit global.
+    pub fn channel_ctext_path(&self, channel: u8) -> Option<&Path> {
+        if channel == 0 {
+            return None;
+        }
+        self.channel_ctext.get(channel as usize).and_then(|path| {
+            if path.as_os_str().is_empty() {
+                None
+            } else {
+                Some(path.as_path())
+            }
+        })
+    }
+
+    pub fn set_channel_ctext(&mut self, channel: u8, path: PathBuf) {
+        if channel == 0 {
+            self.ctext_path = path;
+            return;
+        }
+        let idx = channel as usize;
+        if self.channel_ctext.len() <= idx {
+            self.channel_ctext.resize(idx + 1, PathBuf::new());
+        }
+        self.channel_ctext[idx] = path;
+    }
+
+    pub fn ctext_label_for(&self, channel: u8) -> String {
         let name = self
-            .ctext_path
+            .ctext_for(channel)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("CTEXT");
         format!("CT: {name}")
     }
 
+    pub fn ctext_file_name_for(&self, channel: u8) -> String {
+        self.ctext_for(channel)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("CTEXT.GPI")
+            .to_string()
+    }
+
     pub fn set_qrg_from_edit(&mut self) -> Result<(), String> {
-        let t = self.qrg_edit.trim().replace(',', ".");
-        let v: f64 = t.parse().map_err(|_| format!("invalid QRG '{t}'"))?;
-        if !(0.0..=1000.0).contains(&v) {
-            return Err("QRG out of range".into());
-        }
-        self.qrg_mhz = (v * 1000.0).round() / 1000.0;
-        self.qrg_log = crate::journal::clip_qrg(&format!("{:.3}", self.qrg_mhz));
+        let text = crate::journal::normalize_qrg(&self.qrg_edit)?;
+        self.qrg_mhz = text.parse().unwrap_or(0.0);
+        self.qrg_log = text.clone();
+        self.qrg_edit = text;
         self.show_qrg_dialog = false;
         Ok(())
     }
 
     pub fn open_qrg_dialog(&mut self) {
-        self.qrg_edit = format!("{:.3}", self.qrg_mhz);
+        self.qrg_edit = self.qrg_text();
         self.show_qrg_dialog = true;
     }
 
@@ -236,6 +306,11 @@ pub fn default_bell_wav() -> PathBuf {
     asset_wav("BELL.WAV")
 }
 
+/// Hourly clock chime (`data/CHIME.WAV`). Not the `//BELL` sound.
+pub fn default_chime_wav() -> PathBuf {
+    asset_wav("CHIME.WAV")
+}
+
 pub fn default_connect_wav() -> PathBuf {
     asset_wav("CONNECT.WAV")
 }
@@ -266,6 +341,34 @@ fn asset_wav(name: &str) -> PathBuf {
     in_data
 }
 
+/// Most copies one play may ask for. A 12-hour chime is the longest.
+const WAV_REPEAT_MAX: u32 = 12;
+
+/// Strikes for a 12-hour clock. Midnight and noon are 12. 15:00 is 3.
+pub fn chime_strikes(hour24: u32) -> u32 {
+    match hour24 % 12 {
+        0 => 12,
+        n => n,
+    }
+}
+/// `RXCLICK` plays this many times. `0` is off. Graphic Packet's default is 2.
+pub const RX_CLICK_MAX: u32 = 2;
+/// `CONNECTBELL` plays this many times. `0` is off.
+pub const CONNECT_BELL_MAX: u32 = 4;
+
+pub fn rx_click_plays(n: u32) -> u32 {
+    n.min(RX_CLICK_MAX)
+}
+
+pub fn connect_bell_plays(n: u32) -> u32 {
+    n.min(CONNECT_BELL_MAX)
+}
+
+/// Disconnect follows the connect bell. Off means no `DISCONECT.WAV` either.
+pub fn disconnect_plays(connect_bell: u32) -> bool {
+    connect_bell_plays(connect_bell) > 0
+}
+
 /// Best-effort WAV play on a background thread.
 pub fn play_bell_wav(path: &Path) {
     play_wav(path);
@@ -273,6 +376,28 @@ pub fn play_bell_wav(path: &Path) {
 
 pub fn play_wav(path: &Path) {
     play_wav_at(path, 1.0);
+}
+
+/// Play `times` copies on one background thread. `gap` is the pause after
+/// each copy except the last. `0` plays nothing.
+pub fn play_wav_times(path: &Path, times: u32, gap: Duration, volume: f32) {
+    let times = times.min(WAV_REPEAT_MAX);
+    if times == 0 {
+        return;
+    }
+    let path = path.to_path_buf();
+    let volume = volume.clamp(0.0, 1.0);
+    std::thread::spawn(move || {
+        for n in 0..times {
+            if n > 0 {
+                std::thread::sleep(gap);
+            }
+            if let Err(e) = play_wav_inner(&path, volume) {
+                tracing::debug!("wav {}: {e}", path.display());
+                break;
+            }
+        }
+    });
 }
 
 /// `volume` is 0.0..=1.0 (rodio sink gain).
@@ -415,4 +540,59 @@ pub fn parse_ax25_ui(payload: &[u8]) -> Option<Ax25UiFrame> {
 /// Best-effort AX.25 UI-frame summary for KISS/APRS monitor lines.
 pub fn format_ax25_ui(payload: &[u8]) -> Option<String> {
     parse_ax25_ui(payload).map(|f| f.display_line())
+}
+
+#[cfg(test)]
+mod sound_count_tests {
+    use super::{chime_strikes, connect_bell_plays, disconnect_plays, rx_click_plays};
+
+    #[test]
+    fn rx_click_is_how_many_newline_plays_and_zero_is_off() {
+        assert_eq!(rx_click_plays(0), 0);
+        assert_eq!(rx_click_plays(2), 2);
+        assert_eq!(rx_click_plays(9), 2);
+    }
+
+    #[test]
+    fn chime_follows_a_twelve_hour_clock() {
+        assert_eq!(chime_strikes(3), 3);
+        assert_eq!(chime_strikes(15), 3);
+        assert_eq!(chime_strikes(0), 12);
+        assert_eq!(chime_strikes(12), 12);
+        assert_eq!(chime_strikes(23), 11);
+    }
+
+    #[test]
+    fn connect_bell_stops_at_four_and_off_skips_disconnect() {
+        assert_eq!(connect_bell_plays(0), 0);
+        assert_eq!(connect_bell_plays(1), 1);
+        assert_eq!(connect_bell_plays(4), 4);
+        assert_eq!(connect_bell_plays(8), 4);
+        assert!(!disconnect_plays(0));
+        assert!(disconnect_plays(1));
+        assert!(disconnect_plays(4));
+    }
+}
+
+#[cfg(test)]
+mod ctext_tests {
+    use std::path::PathBuf;
+
+    use super::SessionChrome;
+
+    #[test]
+    fn a_channel_file_stays_on_that_channel_and_monitor_stays_global() {
+        let mut session = SessionChrome::default();
+        session.ctext_path = PathBuf::from("CTEXT.GPI");
+        assert_eq!(session.ctext_for(0).file_name().unwrap(), "CTEXT.GPI");
+        assert_eq!(session.ctext_for(10).file_name().unwrap(), "CTEXT.GPI");
+        session.set_channel_ctext(10, PathBuf::from("NL0AS.GPI"));
+        assert_eq!(session.ctext_for(10).file_name().unwrap(), "NL0AS.GPI");
+        assert_eq!(session.ctext_label_for(10), "CT: NL0AS");
+        assert_eq!(session.ctext_for(1).file_name().unwrap(), "CTEXT.GPI");
+        assert_eq!(session.ctext_for(0).file_name().unwrap(), "CTEXT.GPI");
+        let restored = SessionChrome::from_config(&session.to_config());
+        assert_eq!(restored.ctext_for(10).file_name().unwrap(), "NL0AS.GPI");
+        assert_eq!(restored.ctext_for(0).file_name().unwrap(), "CTEXT.GPI");
+    }
 }

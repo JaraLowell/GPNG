@@ -338,13 +338,13 @@ impl Config {
                     self.session.log = parse_on_off(value);
                 }
                 "QRG" => {
-                    let clipped: String = value.chars().take(7).collect();
-                    self.session.qrg_text = clipped;
-                    let numeric = value.trim().replace(',', ".");
-                    if let Ok(mhz) = numeric.parse::<f64>() {
-                        if (0.0..=1000.0).contains(&mhz) {
+                    if let Ok(text) = crate::journal::normalize_qrg(value) {
+                        if let Ok(mhz) = text.parse::<f64>() {
                             self.session.chrome.qrg_mhz = mhz;
                         }
+                        self.session.qrg_text = text;
+                    } else {
+                        self.session.qrg_text = value.trim().chars().take(7).collect();
                     }
                 }
                 "UTC" => {
@@ -459,9 +459,17 @@ impl Config {
         let path = path.as_ref();
         let c = &self.session.chrome;
         let ctext = toml_string(&c.ctext);
+        let channel_ctext = c
+            .channel_ctext
+            .iter()
+            .map(|path| toml_string(path))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let qrg = crate::journal::format_mhz(c.qrg_mhz);
         let body = format!(
-            "qrg_mhz = {:.3}\n\
+            "qrg_mhz = {qrg}\n\
              ctext = {ctext}\n\
+             channel_ctext = [{channel_ctext}]\n\
              extended_ascii = {}\n\
              smooth_scroll = {}\n\
              echo = {}\n\
@@ -470,7 +478,6 @@ impl Config {
              remote = {}\n\
              scr_lock = {}\n\
              hour_gong = {}\n",
-            c.qrg_mhz,
             c.extended_ascii,
             c.smooth_scroll,
             c.echo,
@@ -521,6 +528,12 @@ impl Config {
             if s.backup { "true" } else { "false" },
         )?;
         put_key(path, "session", "rx_click", &s.rx_click.to_string())?;
+        put_key(
+            path,
+            "session",
+            "connect_bell",
+            &s.connect_bell.to_string(),
+        )?;
         put_key(
             path,
             "session",
@@ -942,7 +955,11 @@ impl SerialConfig {
 pub struct SessionConfig {
     pub channels: u32,
     pub max_spy: u32,
+    /// `CONNECTBELL`. Times `CONNECT.WAV` plays on connect. `0` is off and
+    /// also skips `DISCONECT.WAV`. `2`..=`4` play again as soon as the last ends.
     pub connect_bell: u32,
+    /// `RXCLICK`. Times `NEWLINE.WAV` plays for a channel line. `0` is off.
+    /// `2` is the Graphic Packet default: twice, one second apart.
     pub rx_click: u32,
     pub screensave_minutes: u32,
     pub popup_time_seconds: u32,
@@ -1046,8 +1063,12 @@ impl Default for SessionConfig {
 #[serde(default)]
 pub struct SessionChromeConfig {
     pub qrg_mhz: f64,
-    /// Connect-text path (`CT:` button).
+    /// Connect-text path (`CT:` on the Monitor). Channels with an empty
+    /// entry use this file.
     pub ctext: String,
+    /// Connect text per channel. Index is the channel number. Empty uses `ctext`.
+    #[serde(default)]
+    pub channel_ctext: Vec<String>,
     /// `äöü` extended DOS / CP437 mode.
     pub extended_ascii: bool,
     /// Smooth (stairs) vs hard (`/`) line step.
@@ -1073,6 +1094,7 @@ impl Default for SessionChromeConfig {
         Self {
             qrg_mhz: 27.235,
             ctext: String::new(),
+            channel_ctext: Vec::new(),
             extended_ascii: false,
             smooth_scroll: false,
             echo: true,

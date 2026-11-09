@@ -35,6 +35,7 @@ pub enum RowId {
     Backup,
     Echo,
     RxClick,
+    ConnectBell,
     Umlaut,
     InputColumns,
     InsertMon,
@@ -89,6 +90,7 @@ impl RowId {
             Self::Backup => "Backup text buffers",
             Self::Echo => "Echo",
             Self::RxClick => "RX-Click",
+            Self::ConnectBell => "Connect Bell",
             Self::Umlaut => "Umlaut conversion",
             Self::InputColumns => "Input columns",
             Self::InsertMon => "InsertMonLine",
@@ -172,6 +174,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::Backup, RowKind::Toggle),
             (RowId::Echo, RowKind::Toggle),
             (RowId::RxClick, RowKind::Number),
+            (RowId::ConnectBell, RowKind::Number),
             (RowId::Umlaut, RowKind::Toggle),
             (RowId::InputColumns, RowKind::Number),
             (RowId::Softscroll, RowKind::Toggle),
@@ -267,6 +270,8 @@ mod tests {
         assert!(mon.iter().any(|r| r.id == RowId::Beacon));
         assert!(mon.iter().any(|r| r.id == RowId::InsertMon));
         let ch = rows_for(ActivePane::Channel(1));
+        assert!(ch.iter().any(|r| r.id == RowId::ConnectBell));
+        assert!(!mon.iter().any(|r| r.id == RowId::ConnectBell));
         assert!(ch.iter().any(|r| r.id == RowId::PacketLen));
         assert!(ch.iter().any(|r| r.id == RowId::AutoSave));
         assert!(!ch.iter().any(|r| r.id == RowId::Beacon));

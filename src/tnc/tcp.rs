@@ -5,16 +5,20 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use tokio::sync::mpsc;
 use tracing::info;
 
-use super::TncError;
+use super::{TncError, TncEvent};
 
 /// Blocking TCP client with short read timeouts (matches [`super::serial::SerialLink`]).
 pub struct TcpKissLink {
     stream: TcpStream,
     pub addr: String,
+    activity: Option<mpsc::Sender<TncEvent>>,
+    last_tx_note: Option<Instant>,
+    last_rx_note: Option<Instant>,
 }
 
 impl TcpKissLink {
@@ -27,12 +31,45 @@ impl TcpKissLink {
         stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(Duration::from_millis(50)))?;
         stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-        Ok(Self { stream, addr })
+        Ok(Self {
+            stream,
+            addr,
+            activity: None,
+            last_tx_note: None,
+            last_rx_note: None,
+        })
+    }
+
+    pub fn watch(&mut self, events: mpsc::Sender<TncEvent>) {
+        self.activity = Some(events);
+    }
+
+    fn note_link(&mut self, tx: bool) {
+        let now = Instant::now();
+        let recent = if tx {
+            self.last_tx_note
+        } else {
+            self.last_rx_note
+        };
+        if recent.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(40)) {
+            return;
+        }
+        if tx {
+            self.last_tx_note = Some(now);
+        } else {
+            self.last_rx_note = Some(now);
+        }
+        if let Some(events) = &self.activity {
+            let _ = events.try_send(TncEvent::LinkIo { tx });
+        }
     }
 
     pub fn write_all(&mut self, buf: &[u8]) -> Result<(), TncError> {
         self.stream.write_all(buf)?;
         self.stream.flush()?;
+        if !buf.is_empty() {
+            self.note_link(true);
+        }
         Ok(())
     }
 
@@ -42,7 +79,10 @@ impl TcpKissLink {
                 "KISS TCP peer closed ({})",
                 self.addr
             ))),
-            Ok(n) => Ok(n),
+            Ok(n) => {
+                self.note_link(false);
+                Ok(n)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(0),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(0),
             Err(e) => Err(TncError::Io(e)),
