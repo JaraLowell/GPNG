@@ -163,8 +163,8 @@ pub fn monitor_payload_lines(text: &str) -> Vec<String> {
 
 /// Replace characters that must not hit the text layout.
 ///
-/// Printable text is unchanged. A byte-sized control becomes `<0x1c>`
-/// (two lowercase hex digits). Anything above Latin-1 becomes `<U+2028>`.
+/// Only CP437 / console-font glyphs stay as text. C0 controls (including
+/// CR/LF/TAB), DEL, and any other codepoint become `<0x1c>` or `<U+2028>`.
 pub fn escape_monitor_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -209,8 +209,10 @@ pub fn monitor_display_lines_from_bytes(raw: &[u8], extended: bool) -> Vec<Strin
 
 /// Info field of a KISS frame, before the three-space indent.
 ///
-/// High bytes follow the umlaut switch: Latin-1 when it is on, UTF-8 when
-/// it is off. Bytes that are not printable become `<0xNN>`.
+/// High bytes use the CP437 screen set (what Consolas can draw for GP DOS).
+/// Umlaut-on remaps the seven Latin-1 äöü bytes like the channel pads.
+/// C0 controls, DEL, and anything outside the console glyph set become
+/// `<0xNN>`.
 pub fn bytes_to_monitor_body(raw: &[u8], extended: bool) -> String {
     let mut out = String::new();
     append_monitor_bytes(&mut out, trim_trailing_crlf(raw), extended);
@@ -257,8 +259,9 @@ fn trim_trailing_crlf(raw: &[u8]) -> &[u8] {
     &raw[..end]
 }
 
+/// Console glyph (CP437 / space..~). Everything else is a hex token.
 fn monitor_char_ok(c: char) -> bool {
-    c == ' ' || (!c.is_control() && !c.is_whitespace() && c != '\u{feff}')
+    crate::ui::editor::is_console_glyph(c)
 }
 
 fn monitor_nonprint_token(code: u32) -> String {
@@ -269,35 +272,47 @@ fn monitor_nonprint_token(code: u32) -> String {
     }
 }
 
-fn append_monitor_bytes(out: &mut String, raw: &[u8], extended: bool) {
-    if extended {
-        for &b in raw {
-            if (0x20..=0x7e).contains(&b) || b >= 0xA0 {
-                out.push(char::from_u32(u32::from(b)).unwrap());
-            } else {
-                out.push_str(&monitor_nonprint_token(u32::from(b)));
-            }
-        }
-        return;
+fn push_cp437_byte(out: &mut String, b: u8, umlaut: bool) {
+    let glyph = crate::ui::editor::cp437_char(b);
+    if umlaut {
+        out.push_str(&crate::ui::editor::show_channel_text(&glyph.to_string(), true));
+    } else {
+        out.push(glyph);
     }
+}
+
+fn append_monitor_bytes(out: &mut String, raw: &[u8], extended: bool) {
     let mut i = 0;
     while i < raw.len() {
         let b = raw[i];
-        if (0x20..=0x7e).contains(&b) {
+        // C0 + DEL — never a console text glyph on the monitor.
+        if b < 0x20 || b == 0x7F {
+            out.push_str(&monitor_nonprint_token(u32::from(b)));
+            i += 1;
+            continue;
+        }
+        if b < 0x80 {
             out.push(b as char);
             i += 1;
             continue;
         }
-        if b >= 0x80 {
+        // Umlaut-off: keep UTF-8 only when Consolas/CP437 can draw it.
+        // A valid sequence outside that set becomes hex (not CP437 mojibake).
+        if !extended {
             if let Some((ch, len)) = next_utf8(&raw[i..]) {
                 if monitor_char_ok(ch) {
                     out.push(ch);
-                    i += len;
-                    continue;
+                } else {
+                    for &byte in &raw[i..i + len] {
+                        out.push_str(&monitor_nonprint_token(u32::from(byte)));
+                    }
                 }
+                i += len;
+                continue;
             }
         }
-        out.push_str(&monitor_nonprint_token(u32::from(b)));
+        // Lone high byte → CP437 picture Consolas can draw for GP DOS.
+        push_cp437_byte(out, b, extended);
         i += 1;
     }
 }
@@ -782,9 +797,19 @@ mod tests {
     fn monitor_bytes_keep_text_and_show_binary() {
         assert_eq!(bytes_to_monitor_body(b"hi\r", false), "hi");
         assert_eq!(bytes_to_monitor_body(b"a\x1cb", false), "a<0x1c>b");
+        assert_eq!(bytes_to_monitor_body(b"a\tb\x7fc", false), "a<0x09>b<0x7f>c");
+        // Umlaut-on: Latin-1 ä byte paints as ä. Off: CP437 picture for 0xE4.
         assert_eq!(bytes_to_monitor_body(&[0xE4], true), "ä");
-        assert_eq!(bytes_to_monitor_body(&[0xE4], false), "<0xe4>");
-        assert_eq!(bytes_to_monitor_body("ä".as_bytes(), false), "ä");
-        assert_eq!(bytes_to_monitor_body(&[0xFF, 0x00], false), "<0xff><0x00>");
+        assert_eq!(bytes_to_monitor_body(&[0xE4], false), "Σ");
+        assert_eq!(bytes_to_monitor_body(&[0x84], false), "ä"); // CP437 ä
+        assert_eq!(bytes_to_monitor_body(&[0xA4], false), "ñ"); // CP437, not Latin-1 ¤
+        assert_eq!(bytes_to_monitor_body(&[0x80], true), "Ç");
+        assert_eq!(bytes_to_monitor_body("ä".as_bytes(), false), "ä"); // UTF-8 in set
+        // Euro is not in the CP437 console set → hex the UTF-8 bytes.
+        assert_eq!(
+            bytes_to_monitor_body("€".as_bytes(), false),
+            "<0xe2><0x82><0xac>"
+        );
+        assert_eq!(bytes_to_monitor_body(&[0xFF, 0x00], false), "\u{00a0}<0x00>");
     }
 }

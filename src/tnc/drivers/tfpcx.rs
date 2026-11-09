@@ -153,6 +153,7 @@ fn handle_command(
                 }
             }
         }
+        TncCommand::KissParam { .. } => {}
         TncCommand::TerminalLine(line) => {
             if let Err(err) = link.write_terminal(&line) {
                 let _ = events.blocking_send(TncEvent::Warning(err.to_string()));

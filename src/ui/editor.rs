@@ -31,6 +31,21 @@ fn byte_to_char(b: u8) -> char {
     }
 }
 
+/// One CP437 wire byte as the Unicode glyph Consolas draws for GP DOS.
+pub fn cp437_char(b: u8) -> char {
+    byte_to_char(b)
+}
+
+/// True when the console face (Consolas / CP437 set) has a real glyph.
+///
+/// Space through `~`, plus the 128 DOS high-byte pictures. C0 controls, DEL,
+/// and anything outside that repertoire are not drawn — the monitor shows
+/// `<0xNN>` / `<U+NNNN>` instead of a box.
+pub fn is_console_glyph(c: char) -> bool {
+    let n = c as u32;
+    (0x20..=0x7E).contains(&n) || CP437_HI.contains(&c)
+}
+
 fn char_to_byte(c: char) -> u8 {
     if c.is_ascii() {
         return c as u8;

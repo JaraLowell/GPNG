@@ -6,9 +6,11 @@
 //! **TCP** (`kiss_transport = "tcp"`): Soundmodem / Direwolf — raw KISS on a
 //! socket; no radio command-mode init (peer is already in KISS).
 //!
-//! After bring-up, timing from `[tnc] init` / `WA8DED.INI` is sent as TAPR
-//! KISS command frames (`FEND | cmd | arg | FEND`): TXDELAY, PERSIST,
-//! SLOTTIME. Frack / T2 / T3 / MaxUnack stay in our AX.25 stack.
+//! After bring-up, `KISS.INI` `[params]` is sent as TAPR command frames
+//! (`FEND | cmd | arg | FEND`). Esc `T` / `P` / `W` (the letter on each line)
+//! updates that section and sends the one frame. Frack / T2 / T3 / MaxUnack
+//! stay in our AX.25 stack. A file with no `[params]` still falls back to
+//! `T`/`P`/`W` from `WA8DED.INI` `[open]` or `[tnc] init`.
 //!
 //! Connected I-frames are paced here: one outstanding N(S), the next part
 //! goes out only after RR or an I-frame whose N(R) acknowledges it. UI frames
@@ -22,16 +24,16 @@
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::config::{SerialConfig, TncConfig};
 
 use super::super::hostmode::HostCode;
 use super::super::kiss_delivery::{KissDelivery, Outgoing, Tick};
-use super::super::kiss_ini::{self, resolve_kiss_ini};
+use super::super::kiss_ini::{self, resolve_kiss_ini, KissParam};
 use super::super::serial::SerialLink;
 use super::super::tcp::TcpKissLink;
-use super::super::timing::{timing_from_tnc_config, TimingParams};
+use super::super::timing::timing_from_tnc_config;
 use super::super::wa8ded_ini;
 use super::super::{send_buffers_if_changed, BufferReport, TncCommand, TncError, TncEvent};
 
@@ -141,9 +143,9 @@ pub fn run(
         }
     }
     link.flush_input();
-    // Modem is in KISS now (serial after INI, TCP already). Push CSMA/TXDELAY.
-    let timing = timing_from_tnc_config(&tnc_cfg);
-    apply_kiss_timing(&mut link, 0, &timing, &events);
+    // Modem is in KISS now (serial after INI, TCP already). Push [params].
+    let timing = load_kiss_params(&tnc_cfg);
+    apply_kiss_params(&mut link, 0, &timing, &events);
 
     let status = if link.is_tcp() {
         format!("TCP OPEN {} — KISS listen", link.label())
@@ -263,6 +265,7 @@ fn apply_kiss_ini_serial(
         500,
         &tnc_cfg.monitor_mode,
         None,
+        None,
     )
 }
 
@@ -271,6 +274,7 @@ fn run_kiss_init(link: &mut KissLink, tnc_cfg: &TncConfig) -> Result<(), TncErro
         return Ok(());
     };
     let path = resolve_kiss_ini(&tnc_cfg.kiss_ini);
+    let paclen = kiss_ini::load_paclen(&path);
     kiss_ini::apply_section(
         serial,
         &path,
@@ -280,6 +284,7 @@ fn run_kiss_init(link: &mut KissLink, tnc_cfg: &TncConfig) -> Result<(), TncErro
         tnc_cfg.kiss_exit_delay_ms,
         &tnc_cfg.monitor_mode,
         None,
+        paclen,
     )?;
     Ok(())
 }
@@ -326,12 +331,19 @@ fn handle_command(
                     let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
                 }
             }
-            let timing = timing_from_tnc_config(tnc_cfg);
-            apply_kiss_timing(link, 0, &timing, events);
+            let timing = load_kiss_params(tnc_cfg);
+            apply_kiss_params(link, 0, &timing, events);
             publish_kiss_timing_banner(tnc_cfg, &timing, events);
         }
+        TncCommand::KissParam { cmd, arg } => match write_kiss_command(link, 0, cmd, arg) {
+            Ok(()) => {}
+            Err(err) => {
+                let name = kiss_ini::cmd_label(cmd);
+                let _ = events.blocking_send(TncEvent::Warning(format!("kiss {name}: {err}")));
+            }
+        },
         TncCommand::QueryTiming => {
-            let timing = timing_from_tnc_config(tnc_cfg);
+            let timing = load_kiss_params(tnc_cfg);
             publish_kiss_timing_banner(tnc_cfg, &timing, events);
         }
         TncCommand::Shutdown => {
@@ -408,28 +420,43 @@ fn write_kiss_command(
     Ok(())
 }
 
-fn apply_kiss_timing(
+/// `[params]` when that section exists. Otherwise the old T/P/W lines.
+fn load_kiss_params(tnc_cfg: &TncConfig) -> Vec<KissParam> {
+    let path = resolve_kiss_ini(&tnc_cfg.kiss_ini);
+    match kiss_ini::load_params(&path) {
+        Some(params) => params,
+        None => {
+            warn!(
+                file = %path.display(),
+                "KISS.INI [params] missing — T/P/W from WA8DED.INI or [tnc] init"
+            );
+            timing_from_tnc_config(tnc_cfg)
+                .kiss_set_commands()
+                .into_iter()
+                .filter_map(|(cmd, value)| KissParam::known(cmd, value))
+                .collect()
+        }
+    }
+}
+
+fn apply_kiss_params(
     link: &mut KissLink,
     port: u8,
-    timing: &TimingParams,
+    params: &[KissParam],
     events: &mpsc::Sender<TncEvent>,
 ) {
-    for (cmd, arg) in timing.kiss_set_commands() {
-        let name = match cmd {
-            1 => "TXDELAY",
-            2 => "PERSIST",
-            3 => "SLOTTIME",
-            _ => "PARAM",
-        };
-        match write_kiss_command(link, port, cmd, arg) {
+    for param in params {
+        match write_kiss_command(link, port, param.cmd, param.value) {
             Ok(()) => {
                 let _ = events.blocking_send(TncEvent::Status(format!(
-                    "kiss {name}={arg} (FEND cmd {cmd})"
+                    "kiss {}={} (Esc {}, FEND cmd {})",
+                    param.name, param.value, param.letter, param.cmd
                 )));
             }
             Err(err) => {
                 let _ = events.blocking_send(TncEvent::Warning(format!(
-                    "kiss {name}: {err}"
+                    "kiss {}: {err}",
+                    param.name
                 )));
             }
         }
@@ -438,7 +465,7 @@ fn apply_kiss_timing(
 
 fn publish_kiss_timing_banner(
     tnc_cfg: &TncConfig,
-    timing: &TimingParams,
+    params: &[KissParam],
     events: &mpsc::Sender<TncEvent>,
 ) {
     let call = if tnc_cfg.runtime_mycall.is_empty() {
@@ -446,11 +473,8 @@ fn publish_kiss_timing_banner(
     } else {
         tnc_cfg.runtime_mycall.as_str()
     };
-    let banner = wa8ded_ini::format_timing_banner(
-        call,
-        &timing.as_status_replies(),
-        &timing.as_open_lines(),
-    );
+    let lines = kiss_ini::open_lines(params);
+    let banner = wa8ded_ini::format_timing_banner(call, &[], &lines);
     let _ = events.blocking_send(TncEvent::TimingBanner(banner.clone()));
     for line in banner.split('\r').filter(|l| !l.is_empty()) {
         let _ = events.blocking_send(TncEvent::Status(format!("*** {line}")));
@@ -557,6 +581,7 @@ fn unescape_kiss(raw: &[u8]) -> Option<(u8, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::super::timing::TimingParams;
 
     #[test]
     fn plain_text_lines_become_monitor_frames() {

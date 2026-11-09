@@ -52,9 +52,11 @@ use crate::remote::mail::{self, MailAsk};
 use crate::remote::userdir;
 use crate::tnc::ax25::{self, Ax25Frame, Ax25FrameType};
 use crate::tnc::{
-    detect_serial_ports, normalize_call, pack_text_payloads, parse_heard, payload_lines,
-    resolve_wa8ded_ini, timing_banner_fallback, wa8ded_section_lines, BufferReport,
-    ChannelBuffers, DetectedPort, FrameClass, HostCode, MonitorFilter, MonitorInput, RadioLink,
+    apply_configured_paclen, detect_serial_ports, kiss_param_lines, kiss_payload_len,
+    load_kiss_paclen, load_kiss_params, normalize_call, pack_text_payloads, parse_heard,
+    parse_kiss_esc, payload_lines, resolve_kiss_ini, resolve_wa8ded_ini, store_kiss_paclen,
+    store_kiss_param, timing_banner_fallback, wa8ded_section_lines, BufferReport, ChannelBuffers,
+    DetectedPort, EscKiss, FrameClass, HostCode, MonitorFilter, MonitorInput, RadioLink,
     TncCommand, TncEvent, TNC_RAM,
 };
 use crate::transfer::autobin::{self, AutoBinState, BinReceiveDone, TxReply};
@@ -5034,6 +5036,13 @@ impl GpGuiApp {
     }
 
     fn fallback_timing_banner(&self, mycall: &str) -> String {
+        if self.kiss_mode() {
+            let path = resolve_kiss_ini(&self.cfg.tnc.kiss_ini);
+            if let Some(params) = load_kiss_params(&path) {
+                let lines = kiss_param_lines(&params);
+                return timing_banner_fallback(mycall, &lines, &self.cfg.tnc.monitor_mode);
+            }
+        }
         let path = resolve_wa8ded_ini(&self.cfg.tnc.wa8ded_ini);
         let open = if path.is_file() {
             wa8ded_section_lines(&path, "open")
@@ -5640,6 +5649,19 @@ impl GpGuiApp {
             RowId::PacketLen => {
                 let n = self.cfg.buffers.packet_payload as i32 + step;
                 self.cfg.buffers.packet_payload = n.clamp(16, 256) as u32;
+                if self.kiss_mode() {
+                    let n = self.cfg.buffers.packet_payload;
+                    let path = resolve_kiss_ini(&self.cfg.tnc.kiss_ini);
+                    match store_kiss_paclen(&path, n as u16) {
+                        Ok(()) if self.serial_open && !self.cfg.tnc.kiss_use_tcp() => {
+                            self.status = format!(
+                                "PACLEN {n} — payload {n} bytes (radio command on next KISS enter)"
+                            );
+                        }
+                        Ok(()) => {}
+                        Err(err) => self.status = err,
+                    }
+                }
             }
             RowId::AutoSave => self.set_seven_plus(!self.session.seven_plus),
             RowId::WordWrap => {
@@ -6712,12 +6734,128 @@ impl GpGuiApp {
             }
         }
         if self.kiss_mode() {
-            self.status = format!("KISS has no TNC command channel ({cmd})");
+            self.send_kiss_esc(cmd);
             return;
         }
+        // WA8DED and TFPCX: the line is a hostmode command. The driver applies it.
         self.tx_modem_line(0, cmd);
         self.status = format!("TNC: {cmd}");
         self.last_link_status = self.status.clone();
+    }
+
+    /// Esc `W 30` on KISS: send the TAPR frame for that `[params]` letter and
+    /// store the new arg on the same line. A bare `W` shows the stored value.
+    fn send_kiss_esc(&mut self, cmd: &str) {
+        match parse_kiss_esc(cmd) {
+            EscKiss::Ignore => {
+                let path = resolve_kiss_ini(&self.cfg.tnc.kiss_ini);
+                let letters = load_kiss_params(&path)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|p| format!("{} ({})", p.letter, p.name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.status = if letters.is_empty() {
+                    format!("KISS has no command channel for {cmd}")
+                } else {
+                    format!(
+                        "KISS has no command channel for {cmd}. Esc params: {letters}, PACLEN"
+                    )
+                };
+            }
+            EscKiss::BadValue => {
+                self.status = if cmd.trim().to_ascii_uppercase().starts_with("PACLEN") {
+                    "PACLEN is a number from 0 to 256 (0 means 256 bytes)".into()
+                } else {
+                    "KISS param is a number from 0 to 255".into()
+                };
+            }
+            EscKiss::ShowPaclen => {
+                let path = resolve_kiss_ini(&self.cfg.tnc.kiss_ini);
+                self.status = match load_kiss_paclen(&path) {
+                    Some(n) => format!("PACLEN {n} — payload {} bytes", kiss_payload_len(n)),
+                    None => "KISS.INI [params] has no PACLEN".into(),
+                };
+            }
+            EscKiss::SetPaclen(n) => self.set_kiss_paclen(n),
+            EscKiss::Show(letter) => {
+                let path = resolve_kiss_ini(&self.cfg.tnc.kiss_ini);
+                self.status = match load_kiss_params(&path)
+                    .and_then(|ps| ps.into_iter().find(|p| p.letter == letter))
+                {
+                    Some(p) => format!(
+                        "{} (Esc {}) = {} — Esc {} and a number 0–255",
+                        p.name, p.letter, p.value, p.letter
+                    ),
+                    None => format!("KISS.INI [params] has no Esc {letter}"),
+                };
+            }
+            EscKiss::Set { letter, value } => self.set_kiss_param(letter, value),
+        }
+    }
+
+    fn set_kiss_param(&mut self, letter: char, value: u8) {
+        let path = resolve_kiss_ini(&self.cfg.tnc.kiss_ini);
+        let Some(params) = load_kiss_params(&path) else {
+            self.status = "KISS.INI has no [params] section".into();
+            return;
+        };
+        let Some(def) = params.iter().find(|p| p.letter == letter) else {
+            self.status = format!("KISS.INI [params] has no Esc {letter}");
+            return;
+        };
+        let name = def.name.clone();
+        let kiss_cmd = def.cmd;
+        if let Err(err) = store_kiss_param(&path, letter, value) {
+            self.status = err;
+            return;
+        }
+        let sent = self.serial_open
+            && self
+                .cmd_tx
+                .try_send(TncCommand::KissParam {
+                    cmd: kiss_cmd,
+                    arg: value,
+                })
+                .is_ok();
+        if let Some(params) = load_kiss_params(&path) {
+            let lines = kiss_param_lines(&params);
+            let mycall = self.mycall_for_active();
+            self.timing_banner = Some(timing_banner_fallback(
+                &mycall,
+                &lines,
+                &self.cfg.tnc.monitor_mode,
+            ));
+        }
+        self.status = if sent {
+            format!("kiss {name}={value} (Esc {letter}, cmd {kiss_cmd})")
+        } else {
+            format!("kiss {name}={value} stored — link is not open")
+        };
+        self.last_link_status = self.status.clone();
+        self.log_event(self.status.clone());
+    }
+
+    /// Esc `PACLEN n` stores the command and makes every KISS info field that long.
+    fn set_kiss_paclen(&mut self, paclen: u16) {
+        let path = resolve_kiss_ini(&self.cfg.tnc.kiss_ini);
+        if let Err(err) = store_kiss_paclen(&path, paclen) {
+            self.status = err;
+            return;
+        }
+        let bytes = kiss_payload_len(paclen);
+        self.cfg.buffers.packet_payload = bytes;
+        let saved = self.cfg.persist_setup(&self.config_path);
+        let radio_later = self.serial_open && !self.cfg.tnc.kiss_use_tcp();
+        self.status = match (saved, radio_later) {
+            (Ok(()), false) => format!("PACLEN {paclen} — payload {bytes} bytes"),
+            (Ok(()), true) => format!(
+                "PACLEN {paclen} — payload {bytes} bytes (radio command on next KISS enter)"
+            ),
+            (Err(err), _) => format!("PACLEN {paclen} — payload {bytes} bytes ({err})"),
+        };
+        self.last_link_status = self.status.clone();
+        self.log_event(self.status.clone());
     }
 
     fn poll_beacon(&mut self) {
@@ -8151,6 +8289,7 @@ impl GpGuiApp {
     }
 
     fn open_chosen_radio(&mut self) {
+        apply_configured_paclen(&mut self.cfg);
         if !self.radio.is_open() {
             let (events, cmd_tx) = self
                 .radio

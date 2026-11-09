@@ -94,7 +94,9 @@ spy_buffer = 100
 mh_buffer = 50
 input_buffer = 200
 # Max bytes of typed text or a text file in one packet (classic GP: 128).
+# KISS uses data/KISS.INI [params] PACLEN for this size (0 means 256).
 # Newlines are `\n` and stay inside the packet; they do not each start one.
+# 144Mhz 255 and up
 packet_payload = 128
 
 [paths]
@@ -109,21 +111,21 @@ spy_dir = "data/SPY"
 [tnc]
 # Legacy: TNCINI / TNCDEI / TNCDOS — WA8DED / TFPCX hostmode command strings.
 # "DateTime" is a GP pseudo-command that syncs the TNC clock from the host.
-# Timing lines also feed KISS: after enter-KISS, T/P/W are sent as TAPR
-# command frames (TXDELAY / PERSIST / SLOTTIME). O/F stay host-side on KISS.
+# KISS does not read this list. After enter-KISS it sends data/KISS.INI
+# [params] (Esc T / P / W update that section). O and F stay host-side.
 init = [
     "DateTime",
     "@V0",
     "K 2",
-    "O 3",
-    "P 63",
-    "T 63",
-    "W 9",
+    "O 4",
+    "P 160",
+    "T 50",
+    "W 30",
     "R 1",
     "M %M",
     "C CQ",
     "X 1",
-    "N 6",
+    "N 5",
 ]
 deinit = [
     "MN",
@@ -148,7 +150,7 @@ monitor_mode = "IUSC"
 
 # KISS wire: "serial" = Kenwood etc. via [serial] port/baud + KISS.INI;
 # "tcp" = Soundmodem / Direwolf raw KISS TCP (no KISS.INI).
-kiss_transport = "tcp"
+kiss_transport = "serial"
 kiss_tcp_host = "127.0.0.1"
 kiss_tcp_port = 8200 # UZ7HO Soundmodem KISS TCP; Direwolf often 8001
 
@@ -207,8 +209,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1355
+x = 1368
 y = 24
-width = 1173
+width = 1160
 height = 889
 maximized = false

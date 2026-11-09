@@ -42,6 +42,11 @@ pub use payload::{
     flush_rx_line, normalize_newlines, pack_text_payloads, payload_lines, take_rx_lines,
 };
 pub use serial::{detect_serial_ports, DetectedPort};
+pub use kiss_ini::{
+    apply_configured_paclen, load_paclen as load_kiss_paclen, load_params as load_kiss_params,
+    open_lines as kiss_param_lines, parse_esc as parse_kiss_esc, payload_len as kiss_payload_len,
+    resolve_kiss_ini, store_paclen as store_kiss_paclen, store_param as store_kiss_param, EscKiss,
+};
 pub use wa8ded_ini::{
     resolve_wa8ded_ini, section_lines as wa8ded_section_lines, timing_banner_fallback,
 };
@@ -182,6 +187,9 @@ pub enum TncCommand {
     LocalAck { port: u8, frame: Vec<u8> },
     /// Issue a terminal-mode ASCII line (CR-terminated), e.g. before JHOST1.
     TerminalLine(String),
+    /// One TAPR KISS parameter on port 0: `FEND | cmd | arg | FEND`.
+    /// The UI writes the new arg into `KISS.INI` `[params]` before sending.
+    KissParam { cmd: u8, arg: u8 },
     /// Re-run the configured `TNCINI` sequence.
     Reinitialize,
     /// WA8DED: re-query `F` / `@T2` / `@T3` and emit [`TncEvent::TimingBanner`].
