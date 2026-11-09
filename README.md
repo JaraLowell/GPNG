@@ -10,15 +10,23 @@ This crate targets modern Windows / macOS / Linux hosts talking to USB-to-serial
 
 This project is still under active development, and some features may not work
 as expected. KISS is currently being tested; the WA8DED and TFPCX drivers are
-not yet tested.
+not yet tested on hardware.
 
-The GUI is also still under development. The purpose and behavior of some
-legacy screens, including **BBS-Menu** and **Box-List (DieBox)**, are not yet
-clear because documentation for them has not been found. Remaining work
-includes completing the setup menu and adding a few utilities, such as log
-cleanup.
+Day-to-day settings no longer need a hand-edited config for normal use. On
+startup the **Radio setup** card picks callsign, protocol (KISS / WA8DED /
+TFPCX), serial port and baud, or TCP host and port for Soundmodem / Direwolf.
+**Use this** opens the link and writes those values back. Inside the session,
+**ALT-U** / the **SETUP** icon opens Program parameters for the current
+window (colours, remote, echo, bells, beacon, language, packet length, and
+the other live rows). Session-bar switches and channel MYCALL dialogs also
+persist. `Config.toml` is still the on-disk store, and an optional
+`CONFIG.GP` overlay is merged on load for migration.
 
-Most Functions are working now, connect, disconect, chat, file transfer. To do still is some of the legacy GP plots and plays and the as how they would call mail; wish is more like a leave a note.
+Connect, disconnect, chat, Shift-F macros, MHeard, DieBox BBS-Menu / Box-List,
+`//` remotes, and AutoBin file transfer are in. Still ahead are some legacy GP
+corners (other mailbox list formats, continuous save / file-send ALT keys,
+hostmode TNC-Statistics, and a few transfer resume paths). Mail is closer to
+“leave a note” (`*.GPM`) than a full BBS. See `docs/GAPS.md` for the checklist.
 
 ![Language](https://img.shields.io/badge/language-RUST-dea584.svg) 
 
@@ -26,9 +34,9 @@ Most Functions are working now, connect, disconect, chat, file transfer. To do s
 
 | Path | Role |
 |------|------|
-| `src/config.rs` | Typed `Config` + `Config.toml` loader; maps legacy `CONFIG.GP` keys (`MYCALL`, `SERPORT`, `SERBAUD`, `CHANNELS`, colours, `TNCINI`, …) |
-| `src/tnc/` | Modem drivers — WA8DED / TFPCX / KISS serial or TCP (one loaded from `[tnc] protocol`) |
-| `src/ui/` | Pixel UI (egui). `--tui` is the thinner text UI |
+| `src/config.rs` | Typed `Config` + `Config.toml` persistence; maps legacy `CONFIG.GP` keys. Operators change most values from Radio setup and ALT-U |
+| `src/tnc/` | Modem drivers — WA8DED / TFPCX / KISS serial or TCP (chosen on the startup Radio setup card, stored as `[tnc] protocol`) |
+| `src/ui/` | Pixel UI (egui): startup Radio setup, ALT-U Program parameters, session chrome. `--tui` is the thinner text UI |
 | `docs/LAYOUT.md` | Pane map from V1.63 screenshot + docs |
 | `docs/ICONS.md` | Decoded `ICONS.GP` format (70×40 planar VGA, 17 icons) |
 | `src/ui/icons.rs` | Runtime decoder for the icon library |
@@ -49,28 +57,36 @@ Most Functions are working now, connect, disconect, chat, file transfer. To do s
 | `docs/TRANSFER.md` | AutoBin `#BIN#` + 7Plus Code-AutoSave (≠ 7-Zip) for DOS GP interop |
 | `src/transfer/` | `#BIN#` state machine, CCITT CRC, `go_7+.` / `stop_7+.` sniffer, and `sevenplus_codec` |
 | `src/main.rs` | Tokio entry. Default window is the pixel UI; `--tui` selects the text UI |
-| `Config.toml` | Modern defaults. An optional `CONFIG.GP` beside it overlays recognised keys |
+| `Config.toml` | On-disk defaults and what the menus write back. Optional `CONFIG.GP` beside it overlays recognised keys on load |
 
 ### GUI strategy (no EGAVGA.BGI)
 
 Classic GP used Borland graphics (EGA 640×350 / VGA 640×480). We recreate the
 **documented** operator layout (menu tabs, status, RX/connect, split monitor,
-input, icon strip) on a modern terminal. Prefer docs + `CONFIG.GP` colour
+input, icon strip) in a native window. Prefer docs + `CONFIG.GP` colour
 regions over reverse-engineering `GP2862K.EXE` drawing code.
 
 ## Quick start
 
 ```bash
-# Edit Config.toml — set [station].mycall
-# Serial TNC/Kenwood: [serial].port + baud, [tnc] protocol / kiss_transport
-# Soundmodem lab: protocol = "kiss", kiss_transport = "tcp", kiss_tcp_*
-# Pixel UI loads toolbar bitmaps from data/ICONS.GP
 cargo run
 # Text fallback:
 cargo run -- --tui
 ```
 
-Optional legacy overlay: place a classic `CONFIG.GP` beside `Config.toml`; recognised keys are merged on load.
+1. The splash shows **Radio setup**. Set **Call sign**, **Protocol**, then either
+   serial **Port** / **Baud to TNC**, or (KISS + TCP) **IP address** / **TCP port**.
+2. Click **Use this** — the modem link opens and the choices are saved to
+   `Config.toml`.
+3. Inside the session, **ALT-U** or **SETUP** opens Program parameters for the
+   active window. Colours, remote, echo, bells, beacon (on Monitor), language,
+   packet length, and related rows write back when you leave with **Use these
+   values**.
+
+You do not need to edit `Config.toml` for ordinary station / radio / session
+settings. Hand-editing is still fine for paths, buffer sizes, `TNCINI` lines,
+`KISS.INI` sections, and other keys the menus do not expose. An optional
+classic `CONFIG.GP` beside `Config.toml` merges recognised keys on load.
 
 ```bash
 RUST_LOG=debug cargo run
@@ -79,7 +95,8 @@ cargo test
 
 ## Protocol notes
 
-Only **one** modem driver is constructed at startup (`[tnc] protocol`):
+Only **one** modem driver is constructed when you confirm Radio setup (stored as
+`[tnc] protocol`):
 
 | `protocol` | Driver | Notes |
 |------------|--------|-------|
@@ -89,12 +106,15 @@ Only **one** modem driver is constructed at startup (`[tnc] protocol`):
 
 ### KISS transport
 
+Pick **Connection: Serial** or **TCP** on the Radio setup card (same fields as
+`kiss_transport` / `[serial]` / `kiss_tcp_*` in `Config.toml`):
+
 | `kiss_transport` | Wire | Typical use |
 |------------------|------|-------------|
-| `serial` (default) | `[serial]` COM/tty + baud | Kenwood TM-D710 etc. — applies `KISS.INI` (`kiss_section` / `kiss_close_section`), DTR pulse, exit sequence |
-| `tcp` | `kiss_tcp_host`:`kiss_tcp_port` | Soft TNC already in KISS — **UZ7HO Soundmodem** (often port `8100`), **Direwolf** (often `8001`); no `KISS.INI` |
+| `serial` (default) | COM/tty + baud | Kenwood TM-D710 etc. — applies `KISS.INI` (`kiss_section` / `kiss_close_section`), DTR pulse, exit sequence |
+| `tcp` | host:port | Soft TNC already in KISS — **UZ7HO Soundmodem** (often port `8100`), **Direwolf** (often `8001`); no `KISS.INI` |
 
-Example Soundmodem lab setup in `Config.toml`:
+Equivalent hand-edit for a Soundmodem lab (optional — the startup card writes the same):
 
 ```toml
 [tnc]
@@ -124,7 +144,7 @@ KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` str
 
 **Graphic Packet** was written by Ulf Saran (DH1DAE). This repository is a new implementation of that terminal for current operating systems. It does not include the DOS binary.
 
-**GP Paint** was written be Stefan Pfeiffer (DL1ELY). While we had no access to any sourse material, the concept and visual examples for Icons and how to Edit was a great aid.
+**GP Paint** was written by Stefan Pfeiffer (DL1ELY). While we had no access to any source material, the concept and visual examples for Icons and how to Edit was a great aid.
 
 **7Plus** Code-AutoSave follows the file format of 7PLUS 2.2 by Axel Bauda (DG1BBQ). The part names (`picture.p01`, a single part as `picture.7pl`, part 10 as `picture.p0a`) and the `go_7+.` / `stop_7+.` markers are taken from the C sources maintained by HB9XAR:
 
@@ -132,7 +152,7 @@ KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` str
 
 The C sources are not compiled into this crate. `transfer::sevenplus_codec` is a Rust port of the 7PLUS 2.2 codec so the same parts can be built and joined on Windows, Linux, and macOS. 7PLUS itself is free to circulate and is not for sale or commercial use. That port stays under those terms, not under the MIT / Apache-2.0 licence below. With **7+** on, a live capture is written to `data/USER`. Joined parts are intended for `data/SAVE`, and a file chosen for send is split in `data/TEMP` (`-sb` is the part size, separate from the AX.25 packet length). Those two folders are not wired to the channel yet.
 
-**AX.25** Encode and decode librarie for rust by Thomas Karpiniec (VK7XT)
+**AX.25** encode/decode library for Rust by Thomas Karpiniec (VK7XT)
 
 ## License
 
