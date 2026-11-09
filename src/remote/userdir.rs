@@ -105,7 +105,7 @@ pub fn delete_file(dir: &Path, name: &str) -> Result<(), String> {
 pub fn catalog(dir: &Path, spec: &str) -> String {
     let patterns = patterns(spec);
     if patterns.is_empty() {
-        return "USER only".into();
+        return crate::remote::commands::report("USER only");
     }
     let mut rows: Vec<(String, u64)> = Vec::new();
     if let Ok(rd) = fs::read_dir(dir) {
@@ -125,7 +125,7 @@ pub fn catalog(dir: &Path, spec: &str) -> String {
         }
     }
     rows.sort_by(|a, b| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()));
-    let mut out = String::from("USER");
+    let mut out = crate::remote::commands::report("USER CONTENT");
     for (name, len) in &rows {
         out.push('\r');
         out.push_str(&format!("{len:>8}  {name}"));
@@ -231,12 +231,16 @@ mod tests {
         fs::write(dir.join("skip.doc"), b"no").unwrap();
         fs::write(dir.join("NL0MSK.GPM"), b"secret").unwrap();
         let listed = catalog(&dir, "*");
-        assert!(listed.starts_with("USER\r"), "{listed}");
+        assert!(
+            listed.starts_with("<GPNG>: USER CONTENT\r"),
+            "{listed}"
+        );
         assert!(listed.contains("keep.txt"), "{listed}");
         assert!(listed.contains("skip.doc"), "{listed}");
         assert!(!listed.contains("GPM"), "{listed}");
         let listed = catalog(&dir, "*.txt");
-        assert!(!listed.contains(':'), "{listed}");
+        assert!(!listed.contains(":/"), "{listed}");
+        assert!(!listed.contains(":\\"), "{listed}");
         write_file(&dir, "mine.txt", "one\ntwo").unwrap();
         let body = read_file(&dir, "mine.txt").unwrap();
         assert_eq!(body, b"one\r\ntwo\r\n");

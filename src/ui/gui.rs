@@ -21,7 +21,7 @@
 //! side has Mode/Buffers on row 1 and Packets/Mycall on row 2 (Monitor).
 //! Buffers, Not disp, Not sent, Tries, and Unack come from the modem driver.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::f32::consts::TAU;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,8 +43,11 @@ use crate::config::{
 };
 use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
-use crate::names::{ListedName, NamesFile, Route};
-use crate::remote::commands::{parse_line, typed_runs_locally, RemoteAction, REMOTE_OFF};
+use crate::names::{ListedName, NamesFile, Route, StationKind};
+use crate::remote::commands::{
+    parse_line, report, report_block, slash_verb, split_cross_channel, typed_runs_locally,
+    RemoteAction, NOT_RECOGNIZED, REMOTE_OFF,
+};
 use crate::remote::external;
 use crate::remote::gph;
 use crate::remote::gpi;
@@ -261,6 +264,10 @@ pub struct GpGuiApp {
     pads: Vec<TextPad>,
     /// Spy windows `1..=10` (index 0 = spy 1).
     spy_pads: Vec<TextPad>,
+    /// AutoSpy file number for that slot (`CALL.000` …). `None` = manual `.spy`.
+    spy_auto_nnn: Vec<Option<u16>>,
+    /// Per call, the AutoSpy `.NNN` chosen for this program run (reuse after Kill).
+    spy_auto_run: HashMap<String, u16>,
     /// BBS-Menu pad (`ActivePane::Check`).
     bbs_pad: TextPad,
     /// DieBox-List pad (`ActivePane::List`).
@@ -294,6 +301,10 @@ pub struct GpGuiApp {
     channel_last_call: Vec<Option<String>>,
     /// Channel lock. Typed chat is sealed; a sealed incoming line turns it on.
     channel_lock: Vec<bool>,
+    /// Per channel: `//n` chat-mode target (`None` = not bridging).
+    channel_chat: Vec<Option<u8>>,
+    /// Set while a chat bridge/join notice is on the air — blocks re-relay.
+    chat_bridging: bool,
     /// Incoming text arrived while this channel was not the one on screen.
     channel_unread: Vec<bool>,
     /// Open QSO for `<base call>.GPL`. Index matches `channel_peer`.
@@ -523,6 +534,7 @@ impl GpGuiApp {
         let mut pads = Vec::with_capacity(channels as usize + 1);
         let mut channel_peer = Vec::with_capacity(channels as usize + 1);
         let mut channel_lock = Vec::with_capacity(channels as usize + 1);
+        let mut channel_chat = Vec::with_capacity(channels as usize + 1);
         let mut channel_unread = Vec::with_capacity(channels as usize + 1);
         let mut qso_open = Vec::with_capacity(channels as usize + 1);
         let mut gpw_armed = Vec::with_capacity(channels as usize + 1);
@@ -549,6 +561,7 @@ impl GpGuiApp {
             pads.push(pad);
             channel_peer.push(None);
             channel_lock.push(false);
+            channel_chat.push(None);
             channel_unread.push(false);
             qso_open.push(None);
             gpw_armed.push(false);
@@ -671,6 +684,8 @@ impl GpGuiApp {
             compose: (0..slots).map(|_| ComposeSlot::default()).collect(),
             pads,
             spy_pads,
+            spy_auto_nnn: vec![None; 10],
+            spy_auto_run: HashMap::new(),
             bbs_pad,
             box_pad,
             bbs_rows: Vec::new(),
@@ -697,6 +712,8 @@ impl GpGuiApp {
                 channels as usize + 1,
             ),
             channel_lock,
+            channel_chat,
+            chat_bridging: false,
             channel_unread,
             qso_open,
             gpw_armed,
@@ -954,8 +971,8 @@ impl GpGuiApp {
         }
     }
 
-    /// Append one spy row to `data/SAVE/<call>.spy`. The file stays across restarts.
-    fn append_spy_line(&self, call: &str, line: &str) {
+    /// Append one spy row. AutoSpy uses `SpyDir/CALL.NNN`; manual uses `SAVE/CALL.spy`.
+    fn append_spy_line(&self, call: &str, line: &str, auto_nnn: Option<u16>) {
         let call = transcript_call(call);
         if call.is_empty() {
             return;
@@ -964,12 +981,18 @@ impl GpGuiApp {
         if text.is_empty() {
             return;
         }
-        let dir = &self.cfg.paths.save_dir;
+        let (dir, name) = match auto_nnn {
+            Some(nnn) => (
+                self.cfg.paths.spy_dir.as_path(),
+                format!("{call}.{nnn:03}"),
+            ),
+            None => (self.cfg.paths.save_dir.as_path(), format!("{call}.spy")),
+        };
         if let Err(e) = crate::paths::ensure_dir(dir) {
             tracing::warn!("spy save mkdir: {e}");
             return;
         }
-        let path = dir.join(format!("{call}.spy"));
+        let path = dir.join(name);
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -1096,7 +1119,7 @@ impl GpGuiApp {
                         if ch >= 1 {
                             self.active = ActivePane::Channel(ch);
                         }
-                        self.send_gpi_text(&banner);
+                        self.send_report_block("Parameters", &banner);
                         self.close_remote(prev);
                     }
                 }
@@ -2067,6 +2090,8 @@ impl GpGuiApp {
             self.name_edit.clear();
         }
         let idx = channel as usize;
+        // Leave notices need the peer call — run before the peer slot is cleared.
+        self.drop_chat_on_disconnect(channel);
         if let Some(p) = self.channel_peer.get_mut(idx) {
             *p = None;
         }
@@ -3012,7 +3037,7 @@ impl GpGuiApp {
             .flatten()
             .and_then(|seq| self.pads.get(idx).and_then(|pad| pad.text_if_seq(seq)))
             .unwrap_or_default();
-        if parse_line(&text).is_none() {
+        if slash_verb(&text).is_none() {
             return;
         }
         if let Some(flag) = self.rx_cr.get_mut(idx) {
@@ -3070,8 +3095,8 @@ impl GpGuiApp {
             self.refuse_remote_run(channel);
             return;
         }
-        // A script that is still running owns ordinary text. A second
-        // //RUN is refused. //Quit can still drop the link.
+        // A script that is still running owns ordinary text. A `//` line is
+        // still a command. A second //RUN is refused. //Quit can still drop the link.
         if self.external_busy(channel) {
             if self.another_run(line) {
                 self.warn_running(channel);
@@ -3081,20 +3106,30 @@ impl GpGuiApp {
                 if action == RemoteAction::Bell || self.session.remote {
                     self.handle_remote_on_channel(channel, action, &args);
                 }
-            } else {
-                self.feed_external(channel, line);
+                return;
             }
+            if slash_verb(line).is_some() {
+                if self.session.remote {
+                    self.resolve_file_command(channel, line);
+                }
+                return;
+            }
+            self.feed_external(channel, line);
             return;
         }
         let Some((action, args)) = parse_line(line) else {
             if self.session.remote {
-                self.try_external_line(channel, line);
+                self.resolve_file_command(channel, line);
+            }
+            // Ordinary chat on a channel that is in (or hosting) chat mode.
+            if incoming && !line.trim().is_empty() {
+                self.relay_chat_from(channel, line, true);
             }
             return;
         };
         // //Bell / //B / //Ring is a page, not general remote control.
-        // It runs on the station that received the line. The bell icon
-        // only decides whether that station also plays the sound.
+        // It runs on the station that received the line and always
+        // plays BELL.WAV (the ♪ mute does not silence this page).
         if action == RemoteAction::Bell {
             self.handle_remote_on_channel(channel, action, &args);
             return;
@@ -4739,7 +4774,8 @@ impl GpGuiApp {
                 self.warn_running(write_ch);
                 return;
             }
-            if parse_line(&line).is_none() {
+            // CAT and 7+ are input for the program. //CAT and //7+ are commands.
+            if slash_verb(&line).is_none() {
                 self.feed_external(write_ch, &line);
                 return;
             }
@@ -4773,26 +4809,19 @@ impl GpGuiApp {
                 self.handle_remote(action, &args);
                 return;
             }
-        } else if !linked {
-            // Unregistered `//verb` → serve matching data/*.GPI (not ORIGIN).
-            if let Some(verb) = line
-                .strip_prefix("//")
-                .or_else(|| line.strip_prefix("\\\\"))
-            {
-                let verb = verb.split_whitespace().next().unwrap_or("");
-                if !verb.is_empty() && self.serve_gpi_verb(verb) {
-                    return;
-                }
-            }
-            if self.try_external_line(write_ch, &line) {
-                return;
-            }
+        } else if !linked && slash_verb(&line).is_some() {
+            // Internal missed. GPI in data/, then an EXTERNAL program, then the refusal.
+            self.resolve_file_command(write_ch, &line);
+            return;
         }
 
         if let ActivePane::Channel(n) = self.active {
             if self.channel_lock.get(n as usize).copied().unwrap_or(false) {
                 if let Some(sealed) = self.seal_channel_line(n, &line) {
                     self.write_operator_text(&sealed, carriage_return);
+                    if n >= 1 && self.channel_linked(n) && !line.trim().is_empty() {
+                        self.relay_chat_from(n, &line, false);
+                    }
                 } else {
                     self.status = "Lock needs a linked call".into();
                 }
@@ -4800,6 +4829,11 @@ impl GpGuiApp {
             }
         }
         self.write_operator_text(&line, carriage_return);
+        if let ActivePane::Channel(n) = self.active {
+            if n >= 1 && self.channel_linked(n) && !line.trim().is_empty() {
+                self.relay_chat_from(n, &line, false);
+            }
+        }
     }
 
     fn linked_call(&self, channel: u8) -> Option<String> {
@@ -4899,12 +4933,12 @@ impl GpGuiApp {
                     self.send_user_catalog("");
                 } else {
                     self.status = "no mail".into();
-                    self.send_gpi_text("no mail");
+                    self.send_report("no mail");
                 }
             }
             MailAsk::Foreign => {
                 self.status = "only your own mail".into();
-                self.send_gpi_text("only your own mail");
+                self.send_report("only your own mail");
             }
             MailAsk::NotMail => {
                 if args.trim().is_empty() {
@@ -4919,18 +4953,18 @@ impl GpGuiApp {
     /// `//MAIL` prints this station's mail as text. It does not send a USER file.
     fn reply_station_mail(&mut self, channel: u8) {
         let Some(call) = self.linked_call(channel) else {
-            self.reply_on_channel(channel, "You have no mail");
+            self.reply_report(channel, "You have no mail");
             self.status = "You have no mail".into();
             return;
         };
         let _ = mail::ensure_mail_dir(&mail::mail_dir());
         let Some(text) = mail::read_text(&mail::mail_dir(), &call) else {
-            self.reply_on_channel(channel, "You have no mail");
+            self.reply_report(channel, "You have no mail");
             self.status = "You have no mail".into();
             return;
         };
         if text.trim().is_empty() {
-            self.reply_on_channel(channel, "You have no mail");
+            self.reply_report(channel, "You have no mail");
             self.status = "You have no mail".into();
             return;
         }
@@ -4977,7 +5011,7 @@ impl GpGuiApp {
             }
             Err(err) => {
                 self.status = err.clone();
-                self.send_gpi_text(&err);
+                self.send_report(&err);
             }
         }
     }
@@ -5136,6 +5170,16 @@ impl GpGuiApp {
         true
     }
 
+    /// Internal command status on the air: always `<GPNG>: …`.
+    fn send_report(&mut self, text: &str) {
+        self.send_gpi_text(&report(text));
+    }
+
+    /// Title on the `<GPNG>:` line, body on the lines after it.
+    fn send_report_block(&mut self, title: &str, body: &str) {
+        self.send_gpi_text(&report_block(title, body));
+    }
+
     fn send_gpi_text(&mut self, text: &str) {
         // CTEXT / QRT / mail: many rows on the pad, one newline.wav.
         self.begin_newline_coalesce();
@@ -5203,7 +5247,23 @@ impl GpGuiApp {
                 self.close_remote(prev);
                 return;
             }
+            RemoteAction::CrossChannelText => {
+                self.handle_cross_channel(channel, args);
+                self.close_remote(prev);
+                return;
+            }
             _ => {}
+        }
+
+        if action == RemoteAction::Info {
+            if let Some(text) = gpi::load_info(&ctx) {
+                self.send_gpi_text(&text);
+                self.close_remote(prev);
+                return;
+            }
+            self.status = "GPI <mycall>.GPI / INFO.GPI not found".into();
+            self.close_remote(prev);
+            return;
         }
 
         if let Some(stem) = gpi::stem_for_action(action) {
@@ -5228,11 +5288,11 @@ impl GpGuiApp {
                 match on {
                     Some(v) => {
                         self.set_seven_plus(v);
-                        self.send_gpi_text(&format!("7+ {}", on_off(v)));
+                        self.send_report(&format!("7+ {}", on_off(v)));
                     }
                     None => {
                         self.status = "7+ ON or OFF".into();
-                        self.send_gpi_text("7+ ON or OFF");
+                        self.send_report("7+ ON or OFF");
                     }
                 }
                 self.close_remote(prev);
@@ -5277,15 +5337,21 @@ impl GpGuiApp {
                 if !self.finish_user_write(channel) {
                     let msg = "no //Write in progress";
                     self.status = msg.into();
-                    self.send_gpi_text(msg);
+                    self.send_report(msg);
                 }
                 self.close_remote(prev);
                 return;
             }
             RemoteAction::Help => {
                 let text = gph::help_for(&self.cfg.session.remote_language, args);
-                self.status = format!("//Help {}", args.trim());
-                self.send_gpi_text(&text);
+                let topic = args.trim();
+                let title = if topic.is_empty() {
+                    "Available Help commands".into()
+                } else {
+                    format!("Help {}", topic.to_ascii_uppercase())
+                };
+                self.status = format!("//Help {}", topic);
+                self.send_report_block(&title, &text);
                 self.close_remote(prev);
                 return;
             }
@@ -5310,19 +5376,19 @@ impl GpGuiApp {
                     return;
                 }
                 let text = self.parameters_text();
-                self.send_gpi_text(&text);
+                self.send_report_block("Parameters", &text);
                 self.close_remote(prev);
                 return;
             }
             RemoteAction::ChannelStatus => {
                 let text = self.cstatus_text(channel);
-                self.send_gpi_text(&text);
+                self.send_report_block("Channel status", &text);
                 self.close_remote(prev);
                 return;
             }
             RemoteAction::Usage => {
                 let text = self.usage_text(channel, args);
-                self.send_gpi_text(&text);
+                self.send_report_block("Usage", &text);
                 self.close_remote(prev);
                 return;
             }
@@ -5334,7 +5400,7 @@ impl GpGuiApp {
                     self.transfer_cut = false;
                 } else {
                     self.status = "no file transfer".into();
-                    self.send_gpi_text("no file transfer");
+                    self.send_report("no file transfer");
                 }
                 self.close_remote(prev);
                 return;
@@ -5348,7 +5414,7 @@ impl GpGuiApp {
                         self.send_gpi_text(&text);
                     } else {
                         self.status = "RUN.GPI not found".into();
-                        self.send_gpi_text("RUN.GPI not found");
+                        self.send_report("RUN.GPI not found");
                     }
                     self.close_remote(prev);
                     return;
@@ -5363,33 +5429,32 @@ impl GpGuiApp {
             }
             RemoteAction::Version => {
                 let line = version::startup_credits();
-                self.send_gpi_text(&line);
+                self.send_report_block("Version", &line);
             }
             RemoteAction::Echo => {
                 self.send_gpi_text(args);
             }
             RemoteAction::Bell => {
-                self.status = "Ring the sysop".into();
-                self.send_gpi_text("Ring the sysop\r");
-                if self.session.bell {
-                    play_bell_wav(&self.bell_wav);
-                }
+                // //Bell always plays BELL.WAV. The ♪ mute is only for
+                // connect, disconnect, and newline clicks.
+                self.status = "Waking up the Sysop".into();
+                self.send_report("Waking up the Sysop");
+                play_bell_wav(&self.bell_wav);
             }
             RemoteAction::MHeard => {
                 let lines = self.mheard.remote_lines(args);
-                let body = if lines.is_empty() {
-                    "MHeard: (empty)".into()
+                if lines.is_empty() {
+                    self.send_report("MHeard: (empty)");
                 } else {
-                    lines.join("\r")
-                };
-                self.send_gpi_text(&body);
+                    self.send_report_block("MHeard", &lines.join("\r"));
+                }
             }
             RemoteAction::Name => {
                 self.store_remote_name(channel, args);
             }
             _ => {
                 self.status = format!("remote {action:?} (not implemented)");
-                self.send_gpi_text("not implemented");
+                self.send_report("not implemented");
             }
         }
         self.close_remote(prev);
@@ -5434,7 +5499,7 @@ impl GpGuiApp {
 
     fn warn_running(&mut self, channel: u8) {
         self.status = external::BUSY.into();
-        self.reply_on_channel(channel, external::BUSY);
+        self.reply_report(channel, external::BUSY);
     }
 
     fn refuse_remote_run(&mut self, channel: u8) {
@@ -5482,7 +5547,12 @@ impl GpGuiApp {
         match opened {
             Ok(external::Opened::List(text)) => {
                 self.status = "EXTERNAL".into();
-                self.send_gpi_text(&text);
+                // Catalog text starts with EXTERNAL; the report title already says that.
+                let body = text
+                    .strip_prefix("EXTERNAL")
+                    .unwrap_or(text.as_str())
+                    .trim_start_matches(['\r', '\n']);
+                self.send_report_block("EXTERNAL", body);
                 true
             }
             Ok(external::Opened::Started) => {
@@ -5498,13 +5568,38 @@ impl GpGuiApp {
             }
             Err(err) => {
                 self.status = err.clone();
-                self.send_gpi_text(&err);
+                self.send_report(&err);
                 true
             }
         }
     }
 
+    /// Internal commands are already handled. Next a `data/*.GPI` (sent as
+    /// text), then an EXTERNAL program whose whole name is the command word.
+    /// Anything else is `<GPNG>: Command not recognized`.
+    fn resolve_file_command(&mut self, channel: u8, line: &str) -> bool {
+        let Some(verb) = slash_verb(line) else {
+            return false;
+        };
+        let prev = self.active;
+        if (1..=self.channels).contains(&channel) {
+            self.active = ActivePane::Channel(channel);
+        }
+        if self.serve_gpi_verb(&verb) {
+            self.close_remote(prev);
+            return true;
+        }
+        self.active = prev;
+        if self.try_external_line(channel, line) {
+            return true;
+        }
+        self.status = "Command not recognized".into();
+        self.reply_report(channel, NOT_RECOGNIZED);
+        true
+    }
+
     /// `//FREE` when FREE is a script and not a built-in command.
+    /// The name must be the whole file (`//DOS`), never a shorter prefix (`//D`).
     fn try_external_line(&mut self, channel: u8, line: &str) -> bool {
         let Some(request) = external::slash_request(line) else {
             return false;
@@ -5615,6 +5710,10 @@ impl GpGuiApp {
         self.active = prev;
     }
 
+    fn reply_report(&mut self, channel: u8, text: &str) {
+        self.reply_on_channel(channel, &report(text));
+    }
+
     fn prompt_on_channel(&mut self, channel: u8) {
         let prev = self.active;
         if (1..=self.channels).contains(&channel) {
@@ -5640,7 +5739,7 @@ impl GpGuiApp {
             "USER is the only directory"
         };
         self.status = msg.into();
-        self.send_gpi_text(msg);
+        self.send_report(msg);
     }
 
     fn remote_language(&mut self, args: &str) {
@@ -5648,7 +5747,7 @@ impl GpGuiApp {
         if args.is_empty() {
             let text = gph::language_list();
             self.status = "languages".into();
-            self.send_gpi_text(&text);
+            self.send_report_block("Available languages", &text);
             return;
         }
         match gph::resolve_language(args) {
@@ -5659,12 +5758,12 @@ impl GpGuiApp {
                 } else {
                     self.status = format!("Language {label}");
                 }
-                self.send_gpi_text(&format!("Language {label}"));
+                self.send_report(&format!("Language {label}"));
             }
             None => {
-                let text = format!("Unknown language {args}\r{}", gph::language_list());
+                let text = gph::language_list();
                 self.status = format!("Unknown language {args}");
-                self.send_gpi_text(&text);
+                self.send_report_block(&format!("Unknown language {args}"), &text);
             }
         }
     }
@@ -5681,11 +5780,11 @@ impl GpGuiApp {
                 self.remote_prompt = v;
                 let msg = format!("Prompt {}", on_off(v));
                 self.status = msg.clone();
-                self.send_gpi_text(&msg);
+                self.send_report(&msg);
             }
             None => {
                 self.status = "Prompt ON or OFF".into();
-                self.send_gpi_text("Prompt ON or OFF");
+                self.send_report("Prompt ON or OFF");
             }
         }
     }
@@ -5814,13 +5913,13 @@ impl GpGuiApp {
         if call.is_empty() || words.next().is_some() {
             let msg = "use //SEND and one station call";
             self.status = msg.into();
-            self.send_gpi_text(msg);
+            self.send_report(msg);
             return;
         }
         if mail::filename(call).is_err() {
             let msg = "use a station call";
             self.status = msg.into();
-            self.send_gpi_text(msg);
+            self.send_report(msg);
             return;
         }
         let base = cipher::base_call(call);
@@ -5848,7 +5947,7 @@ impl GpGuiApp {
             self.cancel_mail_send(channel);
             let err = "that line cannot be mail";
             self.status = err.into();
-            self.reply_on_channel(channel, err);
+            self.reply_report(channel, err);
             return true;
         }
         let Some(to) = self
@@ -5865,13 +5964,13 @@ impl GpGuiApp {
             .to_string();
         match mail::append_message(&mail::mail_dir(), &to, &from, &at, msg) {
             Ok(()) => {
-                let reply = format!("GPNG: Mail send to {to}");
+                let reply = report(&format!("Mail send to {to}"));
                 self.status = reply.clone();
                 self.reply_on_channel(channel, &reply);
             }
             Err(err) => {
                 self.status = err.clone();
-                self.reply_on_channel(channel, &err);
+                self.reply_report(channel, &err);
             }
         }
         true
@@ -5886,21 +5985,21 @@ impl GpGuiApp {
         {
             let msg = "already writing — //END first";
             self.status = msg.into();
-            self.send_gpi_text(msg);
+            self.send_report(msg);
             return;
         }
         let name = match userdir::safe_name(args) {
             Ok(name) => name,
             Err(err) => {
                 self.status = err.clone();
-                self.send_gpi_text(&err);
+                self.send_report(&err);
                 return;
             }
         };
         if userdir::is_protected(&name) {
             let msg = "README.txt stays";
             self.status = msg.into();
-            self.send_gpi_text(msg);
+            self.send_report(msg);
             return;
         }
         let dir = self.cfg.paths.user_dir.clone();
@@ -5912,7 +6011,7 @@ impl GpGuiApp {
         if dir.join(&name).is_file() && !owned {
             let msg = format!("{name} is not a //Write file");
             self.status = msg.clone();
-            self.send_gpi_text(&msg);
+            self.send_report(&msg);
             return;
         }
         if let Some(slot) = self.user_write.get_mut(channel as usize) {
@@ -5923,7 +6022,7 @@ impl GpGuiApp {
         }
         let msg = format!("Writing {name} — //END to finish");
         self.status = msg.clone();
-        self.send_gpi_text(&msg);
+        self.send_report(&msg);
     }
 
     fn capture_write_line(&mut self, channel: u8, line: &str) {
@@ -5978,12 +6077,12 @@ impl GpGuiApp {
                 }
                 let msg = format!("Stored {}", cap.name);
                 self.status = msg.clone();
-                self.send_gpi_text(&msg);
+                self.send_report(&msg);
                 true
             }
             Err(err) => {
                 self.status = err.clone();
-                self.send_gpi_text(&err);
+                self.send_report(&err);
                 true
             }
         }
@@ -5995,7 +6094,7 @@ impl GpGuiApp {
             MailAsk::Own => {
                 let Some(call) = self.linked_call(channel) else {
                     self.status = "connect a station first".into();
-                    self.send_gpi_text("connect a station first");
+                    self.send_report("connect a station first");
                     return;
                 };
                 let dir = mail::mail_dir();
@@ -6004,27 +6103,27 @@ impl GpGuiApp {
                     Ok(true) => {
                         let msg = format!("Deleted {call}.GPM");
                         self.status = msg.clone();
-                        self.send_gpi_text(&msg);
+                        self.send_report(&msg);
                     }
                     Ok(false) => {
                         self.status = "no mail".into();
-                        self.send_gpi_text("no mail");
+                        self.send_report("no mail");
                     }
                     Err(err) => {
                         self.status = err.clone();
-                        self.send_gpi_text(&err);
+                        self.send_report(&err);
                     }
                 }
                 return;
             }
             MailAsk::Foreign => {
                 self.status = "only your own mail".into();
-                self.send_gpi_text("only your own mail");
+                self.send_report("only your own mail");
                 return;
             }
             MailAsk::NotMail if args.trim().is_empty() => {
                 self.status = "connect a station first".into();
-                self.send_gpi_text("connect a station first");
+                self.send_report("connect a station first");
                 return;
             }
             MailAsk::NotMail => {}
@@ -6036,7 +6135,7 @@ impl GpGuiApp {
             Ok(name) => name,
             Err(err) => {
                 self.status = err.clone();
-                self.send_gpi_text(&err);
+                self.send_report(&err);
                 return;
             }
         };
@@ -6048,7 +6147,7 @@ impl GpGuiApp {
         {
             let msg = format!("Only a file stored with //Write can be deleted ({name})");
             self.status = msg.clone();
-            self.send_gpi_text(&msg);
+            self.send_report(&msg);
             return;
         }
         let dir = self.cfg.paths.user_dir.clone();
@@ -6057,11 +6156,11 @@ impl GpGuiApp {
                 self.user_written.retain(|n| !n.eq_ignore_ascii_case(&name));
                 let msg = format!("Deleted {name}");
                 self.status = msg.clone();
-                self.send_gpi_text(&msg);
+                self.send_report(&msg);
             }
             Err(err) => {
                 self.status = err.clone();
-                self.send_gpi_text(&err);
+                self.send_report(&err);
             }
         }
     }
@@ -6084,17 +6183,17 @@ impl GpGuiApp {
                 .name_for(&call, &self.names_qrg())
                 .unwrap_or_else(|| call.clone());
             self.status = format!("Name {call}: {shown}");
-            self.send_gpi_text(&format!("Name: {shown}"));
+            self.send_report(&format!("Name: {shown}"));
             return;
         }
         match self.names.set_name(&call, name) {
             Ok(stored) => {
                 self.status = format!("NAMES.GP {call} = {stored}");
-                self.send_gpi_text(&format!("Name stored: {stored}"));
+                self.send_report(&format!("Name stored: {stored}"));
             }
             Err(err) => {
                 self.status = err.clone();
-                self.send_gpi_text(&err);
+                self.send_report(&err);
             }
         }
     }
@@ -6378,6 +6477,8 @@ impl GpGuiApp {
                 }
             }
             RowId::FileDrawer => s.file_drawer.clone(),
+            RowId::AutoSpy => join_csv_phrases(&s.auto_spy),
+            RowId::SpyAutoIgnore => join_csv_phrases(&s.no_auto_spy),
             _ => String::new(),
         }
     }
@@ -6473,6 +6574,20 @@ impl GpGuiApp {
                     self.setup_view = SetupView::Edit {
                         kind: EditKind::FileDrawer,
                         text: self.cfg.session.file_drawer.clone(),
+                        parent_beacon: false,
+                    };
+                }
+                RowId::AutoSpy => {
+                    self.setup_view = SetupView::Edit {
+                        kind: EditKind::AutoSpy,
+                        text: join_csv_phrases(&self.cfg.session.auto_spy),
+                        parent_beacon: false,
+                    };
+                }
+                RowId::SpyAutoIgnore => {
+                    self.setup_view = SetupView::Edit {
+                        kind: EditKind::SpyAutoIgnore,
+                        text: join_csv_phrases(&self.cfg.session.no_auto_spy),
                         parent_beacon: false,
                     };
                 }
@@ -6754,6 +6869,257 @@ impl GpGuiApp {
         }
     }
 
+    /// `//n` / `//n text` / `//0` — cross-channel chat mode.
+    fn handle_cross_channel(&mut self, from: u8, args: &str) {
+        let Some((target, text)) = split_cross_channel(args) else {
+            self.status = "Invalid channel number.".into();
+            self.send_report("Invalid channel number.");
+            return;
+        };
+        if target == 0 {
+            if self.chat_target(from).is_none() {
+                self.status = "not in chat mode".into();
+                self.send_report("not in chat mode");
+                return;
+            }
+            self.leave_chat_mode(from, true);
+            return;
+        }
+        if from < 1 || !(1..=self.channels).contains(&target) || target == from {
+            self.status = "Invalid channel number.".into();
+            self.send_report("Invalid channel number.");
+            return;
+        }
+        if !self.channel_linked(target) {
+            self.status = "Channel not connected.".into();
+            self.send_report("Channel not connected.");
+            return;
+        }
+        if !self.channel_allows_chat(target) {
+            self.status = "Messages are only allowed to TERMs.".into();
+            self.send_report("Messages are only allowed to TERMs.");
+            return;
+        }
+        if self.channel_transfer_busy(from) || self.channel_transfer_busy(target) {
+            self.status = "Transmitting file, message can't be sent.".into();
+            self.send_report("Transmitting file, message can't be sent.");
+            return;
+        }
+
+        if text.is_empty() {
+            self.enter_chat_mode(from, target);
+        } else {
+            let wire = self.chat_line_for(from, text, true);
+            self.chat_bridging = true;
+            self.tx_chat_line(target, &wire);
+            self.chat_bridging = false;
+            self.status = format!("//{target} → ch{target}");
+        }
+    }
+
+    fn enter_chat_mode(&mut self, from: u8, target: u8) {
+        if self.chat_target(from) == Some(target) {
+            self.status = format!("Chat mode set to Channel {target}. Terminate with //0");
+            self.send_report(&format!(
+                "Chat mode set to Channel {target}. Terminate with //0"
+            ));
+            return;
+        }
+        if self.chat_target(from).is_some() {
+            self.leave_chat_mode(from, true);
+        }
+        if let Some(slot) = self.channel_chat.get_mut(from as usize) {
+            *slot = Some(target);
+        }
+        self.status = format!("Chat mode set to Channel {target}. Terminate with //0");
+        self.send_report(&format!(
+            "Chat mode set to Channel {target}. Terminate with //0"
+        ));
+        let label = self.station_label(from);
+        let joined = format!("{label} Joined your channel!");
+        self.announce_chat_room(target, from, &joined);
+    }
+
+    /// Drop chat mode. `notify` tells the joiner and the room.
+    fn leave_chat_mode(&mut self, from: u8, notify: bool) {
+        let Some(target) = self.chat_target(from) else {
+            return;
+        };
+        if let Some(slot) = self.channel_chat.get_mut(from as usize) {
+            *slot = None;
+        }
+        if !notify {
+            return;
+        }
+        let label = self.station_label(from);
+        if self.channel_linked(from) {
+            let prev = self.active;
+            self.active = ActivePane::Channel(from);
+            self.send_report("Chat mode terminated.");
+            self.active = prev;
+        }
+        if self.channel_linked(target) {
+            let left = format!("{label} Left your channel!");
+            self.announce_chat_room(target, from, &left);
+        }
+        self.status = "Chat mode terminated.".into();
+    }
+
+    /// Link drop on `channel`: leave if joining, and kick anyone who joined it.
+    fn drop_chat_on_disconnect(&mut self, channel: u8) {
+        if self.chat_target(channel).is_some() {
+            // Target may still be up — tell the room this station left.
+            self.leave_chat_mode(channel, true);
+        }
+        let joiners: Vec<u8> = (1..=self.channels)
+            .filter(|&ch| self.chat_target(ch) == Some(channel))
+            .collect();
+        for joiner in joiners {
+            if let Some(slot) = self.channel_chat.get_mut(joiner as usize) {
+                *slot = None;
+            }
+            if self.channel_linked(joiner) {
+                let prev = self.active;
+                self.active = ActivePane::Channel(joiner);
+                self.send_report("Chat mode terminated.");
+                self.active = prev;
+            }
+        }
+    }
+
+    /// Tell the room host and every other joiner (not `skip`).
+    fn announce_chat_room(&mut self, room: u8, skip: u8, message: &str) {
+        self.chat_bridging = true;
+        if room != skip && self.channel_linked(room) {
+            let prev = self.active;
+            self.active = ActivePane::Channel(room);
+            self.send_report(message);
+            self.active = prev;
+        }
+        for ch in 1..=self.channels {
+            if ch == skip || ch == room {
+                continue;
+            }
+            if self.chat_target(ch) == Some(room) && self.channel_linked(ch) {
+                let prev = self.active;
+                self.active = ActivePane::Channel(ch);
+                self.send_report(message);
+                self.active = prev;
+            }
+        }
+        self.chat_bridging = false;
+    }
+
+    fn chat_target(&self, channel: u8) -> Option<u8> {
+        self.channel_chat
+            .get(channel as usize)
+            .copied()
+            .flatten()
+    }
+
+    /// CALL, or `CALL (Name)` when NAMES.GP knows them.
+    fn station_label(&self, channel: u8) -> String {
+        let call = self
+            .linked_call(channel)
+            .unwrap_or_else(|| self.effective_mycall(channel));
+        match self.names.name_for(&call, &self.names_qrg()) {
+            Some(name) if !name.is_empty() => format!("{call} ({name})"),
+            _ => call,
+        }
+    }
+
+    fn channel_allows_chat(&self, channel: u8) -> bool {
+        let Some(peer) = self.linked_call(channel) else {
+            return false;
+        };
+        match self.names.kind_of(&peer, &self.names_qrg()) {
+            None | Some(StationKind::Terminal) => true,
+            Some(_) => false,
+        }
+    }
+
+    fn channel_transfer_busy(&self, channel: u8) -> bool {
+        if self.seven_capturing(channel) {
+            return true;
+        }
+        self.autobin.as_ref().is_some_and(|live| {
+            live.channel == channel
+                && (live.state.tx_active()
+                    || live.state.recv_progress().is_some()
+                    || live.state.pending_offer().is_some())
+        })
+    }
+
+    /// `from_peer`: line came from the linked station (Incoming). Else sysop typed it.
+    fn chat_line_for(&self, from: u8, text: &str, from_peer: bool) -> String {
+        let call = if from_peer {
+            self.linked_call(from)
+                .unwrap_or_else(|| self.effective_mycall(from))
+        } else {
+            self.effective_mycall(from)
+        };
+        format!("{call}: {text}")
+    }
+
+    /// Bridge chat both ways: joiner ↔ room, and joiner ↔ other joiners.
+    fn relay_chat_from(&mut self, from: u8, text: &str, from_peer: bool) {
+        if self.chat_bridging || from < 1 {
+            return;
+        }
+        let text = text.trim_end_matches(['\r', '\n']);
+        if text.is_empty() {
+            return;
+        }
+        let mut dests = Vec::new();
+        if let Some(room) = self.chat_target(from) {
+            if room != from {
+                dests.push(room);
+            }
+            for ch in 1..=self.channels {
+                if ch != from && self.chat_target(ch) == Some(room) {
+                    dests.push(ch);
+                }
+            }
+        }
+        for ch in 1..=self.channels {
+            if self.chat_target(ch) == Some(from) {
+                dests.push(ch);
+            }
+        }
+        dests.sort_unstable();
+        dests.dedup();
+        dests.retain(|&ch| ch != from && self.channel_linked(ch));
+        if dests.is_empty() {
+            return;
+        }
+        let wire = self.chat_line_for(from, text, from_peer);
+        self.chat_bridging = true;
+        for ch in dests {
+            self.tx_chat_line(ch, &wire);
+        }
+        self.chat_bridging = false;
+    }
+
+    fn tx_chat_line(&mut self, channel: u8, line: &str) {
+        if !self.channel_linked(channel) {
+            return;
+        }
+        let mut raw = line.to_string();
+        if !raw.ends_with('\r') {
+            raw.push('\r');
+        }
+        if self.kiss_mode() {
+            let my = self.effective_mycall(channel);
+            if self.send_kiss_i(channel, &my, raw.as_bytes(), line) {
+                if let Some(pad) = self.pads.get_mut(channel as usize) {
+                    pad.push(PadKind::Own, line.to_string());
+                }
+            }
+        } else {
+            self.tx_modem_line(channel, line);
+        }
+    }
+
     fn insert_editor_list(&mut self) {
         let list = matches!(self.setup_pane, ActivePane::List);
         let text = self.editor.text.clone();
@@ -6791,6 +7157,12 @@ impl GpGuiApp {
             EditKind::FileDrawer => self.cfg.session.file_drawer = text,
             EditKind::BeaconAddress => self.cfg.beacon.address = text,
             EditKind::BeaconText => self.cfg.beacon.text = text,
+            EditKind::AutoSpy => {
+                self.cfg.session.auto_spy = split_csv_phrases(&text);
+            }
+            EditKind::SpyAutoIgnore => {
+                self.cfg.session.no_auto_spy = split_csv_phrases(&text);
+            }
         }
         self.setup_view = if parent_beacon {
             self.beacon_view()
@@ -6934,6 +7306,8 @@ impl GpGuiApp {
                     EditKind::BeaconAddress => "Beacon address",
                     EditKind::BeaconText => "Beacon text",
                     EditKind::FileDrawer => "File drawer",
+                    EditKind::AutoSpy => "Auto Spy",
+                    EditKind::SpyAutoIgnore => "Spy Auto Ignore",
                 };
                 let mut open = true;
                 let mut applied = false;
@@ -8369,9 +8743,11 @@ impl GpGuiApp {
         if kind == PadKind::System {
             return;
         }
+        self.consider_auto_spy(src, line);
         let src_up = src.to_ascii_uppercase();
         let calls = self.cfg.session.spy_calls.clone();
-        let mut saved: Vec<String> = Vec::new();
+        let nnns = self.spy_auto_nnn.clone();
+        let mut saved: Vec<(String, Option<u16>)> = Vec::new();
         for (i, call) in calls.iter().enumerate() {
             if call.is_empty() || !call.eq_ignore_ascii_case(&src_up) {
                 continue;
@@ -8379,13 +8755,171 @@ impl GpGuiApp {
             if let Some(pad) = self.spy_pads.get_mut(i) {
                 pad.push(kind, line.to_string());
             }
-            if !saved.iter().any(|c| c.eq_ignore_ascii_case(call)) {
-                saved.push(call.clone());
+            let nnn = nnns.get(i).copied().flatten();
+            if !saved
+                .iter()
+                .any(|(c, n)| c.eq_ignore_ascii_case(call) && *n == nnn)
+            {
+                saved.push((call.clone(), nnn));
             }
         }
-        for call in saved {
-            self.append_spy_line(&call, line);
+        for (call, nnn) in saved {
+            self.append_spy_line(&call, line, nnn);
         }
+    }
+
+    /// `AutoSpy=` / `NoAutoSpy=`: case-sensitive substrings of the monitor line.
+    /// When a line matches, open a free spy slot on `src` if one is not watching yet.
+    fn consider_auto_spy(&mut self, src: &str, line: &str) {
+        if !auto_spy_line_matches(
+            line,
+            &self.cfg.session.auto_spy,
+            &self.cfg.session.no_auto_spy,
+        ) {
+            return;
+        }
+        let src = src.trim();
+        if src.is_empty() {
+            return;
+        }
+        self.cfg.normalize_spy_calls();
+        if self
+            .cfg
+            .session
+            .spy_calls
+            .iter()
+            .any(|c| !c.is_empty() && c.eq_ignore_ascii_case(src))
+        {
+            return;
+        }
+        match self.assign_spy_first_empty(src) {
+            Ok(slot) => match self.bind_auto_spy_file(slot, src) {
+                Some(nnn) => {
+                    let base = transcript_call(src);
+                    self.status = format!("AutoSpy ch{slot} → {base}.{nnn:03}");
+                }
+                None => {
+                    self.status = format!("AutoSpy ch{slot} → {src} (no free .NNN)");
+                }
+            },
+            Err(_) => {
+                // All ten slots full — stay quiet; next Kill Spy frees one.
+            }
+        }
+    }
+
+    /// Pick `CALL.NNN` for this AutoSpy slot. Same call reuses the number until
+    /// the program exits; a restart takes the next free file on disk (0…999).
+    fn bind_auto_spy_file(&mut self, slot: u8, call: &str) -> Option<u16> {
+        let base = transcript_call(call);
+        if base.is_empty() {
+            return None;
+        }
+        let idx = slot.saturating_sub(1) as usize;
+        if let Some(nnn) = self.spy_auto_run.get(&base).copied() {
+            if let Some(slot_nnn) = self.spy_auto_nnn.get_mut(idx) {
+                *slot_nnn = Some(nnn);
+            }
+            return Some(nnn);
+        }
+        let dir = self.cfg.paths.spy_dir.clone();
+        if let Err(e) = crate::paths::ensure_dir(&dir) {
+            tracing::warn!("spy dir: {e}");
+            return None;
+        }
+        let Some(nnn) = next_spy_nnn(&dir, &base) else {
+            return None;
+        };
+        self.spy_auto_run.insert(base, nnn);
+        if let Some(slot_nnn) = self.spy_auto_nnn.get_mut(idx) {
+            *slot_nnn = Some(nnn);
+        }
+        Some(nnn)
+    }
+
+    fn clear_spy_auto_slot(&mut self, idx: usize) {
+        if let Some(nnn) = self.spy_auto_nnn.get_mut(idx) {
+            *nnn = None;
+        }
+    }
+}
+
+/// Comma-separated phrases for setup display / edit (`fm DB0SGL, ctl UI`).
+fn join_csv_phrases(parts: &[String]) -> String {
+    parts.join(", ")
+}
+
+fn split_csv_phrases(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// DOS AutoSpy: any `auto` phrase is found in the line, and no `ignore` phrase is.
+fn auto_spy_line_matches(line: &str, auto: &[String], ignore: &[String]) -> bool {
+    if auto.is_empty() {
+        return false;
+    }
+    if !auto.iter().any(|p| !p.is_empty() && line.contains(p.as_str())) {
+        return false;
+    }
+    !ignore
+        .iter()
+        .any(|p| !p.is_empty() && line.contains(p.as_str()))
+}
+
+#[cfg(test)]
+mod auto_spy_filter_tests {
+    use super::{auto_spy_line_matches, join_csv_phrases, next_spy_nnn, split_csv_phrases};
+    use std::fs;
+
+    #[test]
+    fn phrases_keep_internal_spaces() {
+        let parts = split_csv_phrases("fm DB0SGL, fm DB0FN, ctl UI");
+        assert_eq!(parts, vec!["fm DB0SGL", "fm DB0FN", "ctl UI"]);
+        assert_eq!(join_csv_phrases(&parts), "fm DB0SGL, fm DB0FN, ctl UI");
+    }
+
+    #[test]
+    fn match_is_case_sensitive_substring() {
+        let auto = vec!["fm DB0SGL".into()];
+        let ignore = vec!["ctl UI".into()];
+        assert!(auto_spy_line_matches(
+            "fm DB0SGL to DB0FN ctl I",
+            &auto,
+            &ignore
+        ));
+        assert!(!auto_spy_line_matches(
+            "fm DB0SGL to DB0FN ctl UI",
+            &auto,
+            &ignore
+        ));
+        assert!(!auto_spy_line_matches(
+            "FM DB0SGL to DB0FN ctl I",
+            &auto,
+            &ignore
+        ));
+        assert!(!auto_spy_line_matches("fm DB0FN ctl I", &auto, &ignore));
+    }
+
+    #[test]
+    fn next_spy_nnn_skips_files_already_on_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "gpng-spy-nnn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("NL0MSK.000"), b"a").unwrap();
+        fs::write(dir.join("NL0MSK.001"), b"b").unwrap();
+        assert_eq!(next_spy_nnn(&dir, "NL0MSK"), Some(2));
+        assert_eq!(next_spy_nnn(&dir, "NL1AS"), Some(0));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 
@@ -11918,6 +12452,7 @@ impl GpGuiApp {
         if let Some(c) = self.cfg.session.spy_calls.get_mut(idx) {
             c.clear();
         }
+        self.clear_spy_auto_slot(idx);
         if let Err(e) = self.cfg.persist_spy_calls(&self.config_path) {
             self.status = format!("config: {e}");
         } else {
@@ -11927,15 +12462,17 @@ impl GpGuiApp {
 
     fn apply_spy_call_from_edit(&mut self) -> Result<(), String> {
         let slot = self.session.spy_slot.unwrap_or(1).clamp(1, 10);
-        let raw = self.session.spy_edit.trim();
+        let raw = self.session.spy_edit.trim().to_string();
         self.cfg.normalize_spy_calls();
         let idx = slot.saturating_sub(1) as usize;
+        // Manual SPY dialog — always `CALL.spy`, not AutoSpy `.NNN`.
+        self.clear_spy_auto_slot(idx);
         if raw.is_empty() {
             if let Some(c) = self.cfg.session.spy_calls.get_mut(idx) {
                 c.clear();
             }
         } else {
-            let call = crate::config::normalize_mycall(raw)?;
+            let call = crate::config::normalize_mycall(&raw)?;
             if let Some(c) = self.cfg.session.spy_calls.get_mut(idx) {
                 *c = call;
             }
@@ -12527,6 +13064,17 @@ fn next_gpl_path(dir: &std::path::Path, call: &str) -> Result<std::path::PathBuf
         }
     }
     Err(format!("{call}: no free transcript name through 999"))
+}
+
+/// Next free AutoSpy file `CALL.000` … `CALL.999` in `SpyDir`.
+fn next_spy_nnn(dir: &std::path::Path, call: &str) -> Option<u16> {
+    for n in 0u16..=999 {
+        let path = dir.join(format!("{call}.{n:03}"));
+        if !path.exists() {
+            return Some(n);
+        }
+    }
+    None
 }
 
 /// `ch call` lines. Missing file is an empty list.

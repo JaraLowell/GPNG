@@ -60,7 +60,7 @@ security = false
 remote = []
 no_remote = []
 auto_spy = []
-no_auto_spy = []
+no_auto_spy = ["NL0MSK"]
 auto_spy_minimum_save = 512
 # Spy windows 1..10 — empty string = inactive slot.
 spy_calls = ["", "", "", "", "", "", "", "", "", ""]
@@ -74,7 +74,7 @@ allow_color_ansi = true
 # Session-bar button state (restored on start; rewritten when you toggle).
 icon_file = "ICONS.GP"
 [session.chrome]
-qrg_mhz = 149.112
+qrg_mhz = 149.1125
 ctext = "D:\\MyPython\\GPNG\\data\\CTEXT.GPI"
 channel_ctext = ["", "", "", "", "", "", "", "", "", "", ""]
 extended_ascii = false
@@ -82,7 +82,7 @@ smooth_scroll = false
 echo = true
 channel_echo = []
 bell = true
-seven_plus = true
+seven_plus = false
 remote = true
 scr_lock = false
 hour_gong = true
@@ -203,7 +203,7 @@ spy_invers_attr = "LightCyan"
 address = "CQ"
 source = "file"
 text = ""
-file = "D:\\MyPython\\GPNG\\data\\BEACON.GP"
+file = "D:\\MyPython\\GPNG\\data\\BEACON.GPI"
 period_minutes = 15
 [print]
 # Legacy ESC/P printer attribute byte sequences.
@@ -211,8 +211,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1288
-y = 154
+x = 1087
+y = 172
 width = 1160
 height = 818
 maximized = false

@@ -35,7 +35,7 @@ Most Functions are working now, connect, disconect, chat, file transfer. To do s
 | `data/` | Runtime tree beside the exe (or the crate, while developing) |
 | `data/ICONS.GP` | Toolbar icons |
 | `data/NAMES.GP` | Station list for Connect, `%N`, and `//Name` |
-| `data/*.GPI`, `data/*.GPH` | Connect texts and remote help. `G.GPH` is English |
+| `data/*.GPI`, `data/*.GPH` | Connect texts and remote help. `G.GPH` is English. `//Info` prefers `<mycall>.GPI` (your base call); a release ships `INFO.GPI` as the fallback example |
 | `data/*.GPW` | Sysop password. `DB0IZ-9` is `DB0IZ9.GPW` |
 | `data/USER` | `//` catalog, read, write, and delete. 7Plus autosave writes here too. Browsing stays inside this folder |
 | `data/EXTERNAL` | `//RUN` programs: Python, PHP, Perl, Ruby, Node, Lua, or Java. `FREE` reports memory. 300 seconds with no input and no new output closes a run. The command cannot name a file outside this folder |

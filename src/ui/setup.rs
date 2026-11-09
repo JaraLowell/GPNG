@@ -50,6 +50,10 @@ pub enum RowId {
     RefChannel,
     InsertFromEditor,
     FileDrawer,
+    /// Comma list of monitor substrings that start a spy (`AutoSpy=`).
+    AutoSpy,
+    /// Comma list of monitor substrings that block AutoSpy (`NoAutoSpy=`).
+    SpyAutoIgnore,
     Use,
 }
 
@@ -105,6 +109,8 @@ impl RowId {
             Self::RefChannel => "Reference channel",
             Self::InsertFromEditor => "Insert list from editor",
             Self::FileDrawer => "File drawer",
+            Self::AutoSpy => "Auto Spy",
+            Self::SpyAutoIgnore => "Spy Auto Ignore",
             Self::Use => "Use these values",
         }
     }
@@ -126,6 +132,8 @@ pub enum EditKind {
     BeaconAddress,
     BeaconText,
     FileDrawer,
+    AutoSpy,
+    SpyAutoIgnore,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,13 +207,26 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
         ]),
         ActivePane::Check => list_rows(false),
         ActivePane::List => list_rows(true),
-        ActivePane::Mh | ActivePane::Spy(_) => rows(&[
+        ActivePane::Mh => rows(&[
             (RowId::ColorsOutput, RowKind::Submenu),
             (RowId::ColorsState, RowKind::Submenu),
             (RowId::ColorsMenu, RowKind::Submenu),
             (RowId::Backup, RowKind::Toggle),
             (RowId::RxClick, RowKind::Number),
             (RowId::Softscroll, RowKind::Toggle),
+            (RowId::Language, RowKind::Number),
+            (RowId::Icons, RowKind::Submenu),
+            (RowId::Use, RowKind::Exit),
+        ]),
+        ActivePane::Spy(_) => rows(&[
+            (RowId::ColorsOutput, RowKind::Submenu),
+            (RowId::ColorsState, RowKind::Submenu),
+            (RowId::ColorsMenu, RowKind::Submenu),
+            (RowId::Backup, RowKind::Toggle),
+            (RowId::RxClick, RowKind::Number),
+            (RowId::Softscroll, RowKind::Toggle),
+            (RowId::AutoSpy, RowKind::Submenu),
+            (RowId::SpyAutoIgnore, RowKind::Submenu),
             (RowId::Language, RowKind::Number),
             (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
@@ -288,6 +309,16 @@ mod tests {
         assert!(!rows_for(ActivePane::Check)
             .iter()
             .any(|r| r.id == RowId::FileDrawer));
+    }
+
+    #[test]
+    fn spy_setup_has_auto_spy_rows_mheard_does_not() {
+        let spy = rows_for(ActivePane::Spy(1));
+        assert!(spy.iter().any(|r| r.id == RowId::AutoSpy));
+        assert!(spy.iter().any(|r| r.id == RowId::SpyAutoIgnore));
+        let mh = rows_for(ActivePane::Mh);
+        assert!(!mh.iter().any(|r| r.id == RowId::AutoSpy));
+        assert!(!mh.iter().any(|r| r.id == RowId::SpyAutoIgnore));
     }
 
     #[test]

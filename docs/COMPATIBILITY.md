@@ -55,7 +55,7 @@ Minimum significant letters come from `@TAG,N` in `*.GPH` (e.g. `@VERSION,3` →
 
 | Canonical | Min. prefix (typical) | Notes |
 |-----------|----------------------|--------|
-| `//<n> <text>` | digit | Cross-channel chat to port/channel *n* |
+| `//<n> [text]` | digit | Bare `//n` joins chat on channel *n* (leave with `//0`); with text, one-shot to that channel. Relays both ways on the air. Join/leave: `<GPNG>: CALL (Name) Joined/Left your channel!` |
 | `//7+ <ON/OFF>` | `7+` | 7Plus AutoSave |
 | `//Activity` | `AC…` | Last sysop key/mouse activity |
 | `//Bell` | `B` | Ring sysop |
@@ -67,14 +67,14 @@ Minimum significant letters come from `@TAG,N` in `*.GPH` (e.g. `@VERSION,3` →
 | `//Echo <text>` | `E` | Echo; used by `//RTT` |
 | `//END` | `END` | Finish `//Write` capture (or Ctrl-Z) |
 | `//Help [cmd]` | `H` | Serve `*.GPH` |
-| `//Info` | `I` | `<mycall>.GPI` / `INFO.GPI` |
+| `//Info` | `I` | Prefers `<mycall>.GPI` (our station base call, SSID dropped). If that file is missing, falls back to `INFO.GPI`. Releases ship `INFO.GPI` as the example because the operator’s call is unknown at build time; rename/copy to `<call>.GPI` for a personal info text |
 | `//Language <lang>` | `L` | Switch remote `*.GPT` / help language |
 | `//MHeard [n\|call]` | `MH` | MH list or last-heard for call |
 | `//Name <name>` | `N` | Store the linked station's name in `NAMES.GP` (used by `%N`; not shown in the MHeard pane) |
 | `//NEws` | `NE` | `NEWS.GPI` |
 | `//PARameters` | `PAR` | TNC/system parameters (**DL/F** help) |
 | `//PRompt <ON/OFF>` | `PR` | Remote prompt (`PROMPT=` template) |
-| `//Quit` | `Q` | QRT.GPI then disconnect |
+| `//Quit` | `Q`, `BYE` | QRT.GPI then disconnect |
 | `//Read <file>` | `R` | Send text file from UserDir |
 | `//RPrg <file>` | `RP` | AutoBin send |
 | `//RTt <port>` | `RT` | RTT via peer `//Echo` |

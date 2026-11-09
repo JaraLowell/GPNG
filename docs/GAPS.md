@@ -24,10 +24,13 @@ proven against a real TNC.
 
 These are the DOS features an operator would notice first.
 
-1. **Mailbox lists other than DieBox are still missing.** DieBox `CHECK`
+1. **Mailbox lists other than DieBox need live BBS traffic.** DieBox `CHECK`
    fills the BBS menu and DieBox `LIST` fills the Box list, on the setup
-   reference channel. F6FBB 5.15, DK5SG, and DB0IE are not parsed. A CHECK
-   list is not split into rubric sections (manual 6.1).
+   reference channel. F6FBB 5.15, DK5SG, and DB0IE parsers are not written.
+   GP / GPNG are only the client: those list formats come from older mail /
+   BBS servers (DieBox and others), so extra parsers need captured CHECK/LIST
+   dumps from a live box — not something we can exercise from GAPS alone.
+   A CHECK list is not split into rubric sections (manual 6.1).
 2. **`NAMES.GP` is in use.** Connect accepts a call, an ident, or a name from
    `data/NAMES.GP` and builds the path (digipeaters, then node `C` / `C!`).
    **Name** on the channel strip is ALT-N, and `//Name` writes the same file.
@@ -45,12 +48,14 @@ These are the DOS features an operator would notice first.
    puts that back together and shows it on the channel. Classic DOS `go_7+.`
    stays as it is. Not built.
 4. **A few `//` remotes are still stubs.** The parser covers the classic
-   set, and most of it runs (see the `//` table below). Still parsed and
-   then refused: `//Activity`, `//RPrg`, `//RTt`, `//WPrg`, `//C`,
-   cross-channel `//n`, and chat `#`. `REMOTE=` / `NOREMOTE=` are loaded
-   and not enforced; the **Remote** button is the one global switch, and
-   with it off a `//RUN` is answered, not started. A mailbox marked type
-   `B` in `NAMES.GP` still does not block remotes.
+   set, and most of it runs (see the `//` table below). Cross-channel
+   `//n` / `//0` chat mode is in (join/leave notices, both-way relay on
+   the air). `//Quit` also accepts `//Q` and `//BYE`. Still parsed and
+   then refused: `//Activity`, `//RPrg`, `//RTt`, `//WPrg`, `//C`, and
+   chat `#`. `REMOTE=` / `NOREMOTE=` are loaded and not enforced; the
+   **Remote** button is the one global switch, and with it off a `//RUN`
+   is answered, not started. A mailbox marked type `B` in `NAMES.GP`
+   still does not block remotes.
 5. **The journal and the sysop helper are in.** The station journal runs when `LOG=ON`
    (or `log = true`). A disconnect appends one line to
    `data/log/<base call>.GPL`. One file per base call, not per SSID.
@@ -90,7 +95,7 @@ These are the DOS features an operator would notice first.
 |-------------|--------|-------|
 | Install to a directory, `CONFIG.GP` | **Partial** | `Config.toml`, with an optional `CONFIG.GP` overlay for recognised keys |
 | `UserDir`, `ExternalDir`, `SaveDir`, `LogDir`, `SpyDir` | **Partial** | `data/USER` is `//Read` and 7Plus autosave. `data/EXTERNAL` is `//RUN` (Python, PHP, Perl, Ruby, Node, Lua, or Java). Incoming parts are intended for `data/SAVE`. `data/TEMP` is where a send is split. SAVE and TEMP are not wired to the channel yet |
-| Per-call `CTEXT???.GPI`, `<call>.GPC`, `<call>.GPM`, `<mycall>.GPI`, `QRT.GPI` | **Partial** | `{CALL}.GPM` in `data/MAIL` is one file per callsign. A numeric SSID is dropped, so `NL1STK-2` is `NL1STK.GPM`. On connect the station is told `You have mail waiting, to read do //MAIL`, then a blank line, then the greeting. `//MAIL` sends the mail, or `You have no mail`. Bare `//Read` still sends the mail. `//DEL` / `//Kill` with no file name deletes only that mail. `{CALL}.GPC` in `data/` replaces the channel connect text the same way. No `<mycall>.GPI`. `QRT.GPI` still goes out on `//Quit` |
+| Per-call `CTEXT???.GPI`, `<call>.GPC`, `<call>.GPM`, `<mycall>.GPI`, `QRT.GPI` | **Have** | Connect greeting: `{CALL}.GPC` in `data/` for the peer (SSID dropped), else the channel/global CT file (`CTEXT.GPI` …). Mail: `{CALL}.GPM` in `data/MAIL`; connect announces it, then the greeting. `//MAIL` / bare `//Read` send mail; `//DEL` / `//Kill` with no name delete only that mail. `//Info`: `<mycall>.GPI` (our station base call) wins over `INFO.GPI`. A release ships `INFO.GPI` as the example because the callsign is unknown at pack time; operators who want a personal info text add `<call>.GPI`. `QRT.GPI` on `//Quit` / `//Q` / `//BYE` |
 | `GP.EXE` vs `GP286.EXE`, overlay, EMS/XMS | **DOS-only** | One native binary. QSO spy is included (it was the GP286-only extra) |
 
 ### 3 Configuration and data files
@@ -151,7 +156,7 @@ These are the DOS features an operator would notice first.
 | ALT-S continuous text save, print to LPT1–LPT4, save a marked range, AutoBin receive names `<call>.000`–`.999` | **Missing** | |
 | 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Partial** | Untested on the air. No sample part yet. The sniffer would save channel RX into `data/USER` when **7+** is on. `transfer::sevenplus_codec` can encode and join parts in Rust. `.err` / `.cor`, `data/SAVE`, `data/TEMP`, and waiting for `ok`/`okay` are not wired. Later, GPNG to GPNG only: ask on connect, then send CTEXT and files as `#7+#` plus the data and show the rebuilt text on the channel |
 | Mouse-mark QSO lines and Ctrl-Ins / Ctrl-K into the editor | **Missing** | |
-| Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. **Remote** is one global switch: off answers a `//RUN` with `<GPNG>: Remote commands are turned off by the sysop.` and starts nothing; on runs it. Esc opens the TNC command box (manual 5.9). A typed `//` line on an unlinked channel runs here; on a linked channel it goes to the other station. On KISS the box does not send |
+| Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. Cross-channel `//n` / `//0` joins a TERM channel’s QSO and relays both ways; the room hears Joined/Left. **Remote** is one global switch: off answers a `//RUN` with `<GPNG>: Remote commands are turned off by the sysop.` and starts nothing; on runs it. Esc opens the TNC command box (manual 5.9). A typed `//` line on an unlinked channel runs here; on a linked channel it goes to the other station. On KISS the box does not send |
 | External programs (`ExternalDir`, `//RUN`) | **Have** | GPNG addon, below. One text program from `data/EXTERNAL` per channel. Bare `//RUN` sends `RUN.GPI`. Samples: `FREE` (memory, then exits) and `DOS` (MS-DOS 6.20 window, `C:` is `data/USER`). DOS GPRI Pascal programs are not started |
 | Splitscreen while in QSO | **Have** | Channel only. Top pane is the QSO, the session bar is the divider, and the monitor pad is drawn under it. Not on Spy, BBS-Menu, or Box-List. Shot: `docs/screenshots/SplitScreen.png`. ALT-F8, right-click, ▲▼, and dragging the arrows |
 | Scroll-lock per channel | **Partial** | One session-bar switch for the visible pad, not a TNC poll hold, and not per channel in the DOS 1.50+ sense |
@@ -165,7 +170,7 @@ These are the DOS features an operator would notice first.
 
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
-| Recognise DieBox, F6FBB 5.15, DK5SG, DB0IE check/list formats | **Partial** | DieBox `CHECK` (`CALL > BOARD......nr date`) and `LIST` (`nr CALL date time bytes title`) from the DB0HB handbook. F6FBB, DK5SG, and DB0IE are not parsed |
+| Recognise DieBox, F6FBB 5.15, DK5SG, DB0IE check/list formats | **Partial** | DieBox `CHECK` / `LIST` from the DB0HB handbook work as the client. F6FBB, DK5SG, and DB0IE need sample dumps from those BBS servers — GPNG cannot self-test them |
 | BBS-Menu (F11): mark, Enter sends mailbox `READ`, keep list across a timeout on the same channel, replace-or-append prompt | **Have** | One shared buffer. Space marks (manual 4.4). Enter sends `R BOARD nr` on the BBS reference channel for every marked line, or for the bar when nothing is marked. The list stays until that channel is disconnected locally. Rubric sections are not split out |
 | Box-List (F12): one rubric, same mark/read behaviour, DieBox only | **Have** | `R nr`, or `R drawer nr` when the file drawer is set. Same mark and read keys. The reference channel is the Box-List one |
 | ALT-F find, ALT-S sort (BBS menu only) | **Have** | Find (manual 6.3) opens an empty box. The same word continues from the bar; a different word starts at the top. Sort is rubric then number, and only on the BBS menu (manual 4.4). On a channel, ALT-S and ALT-F are still the unwired save and file send |
@@ -196,7 +201,7 @@ These are the DOS features an operator would notice first.
 | Up to 10 spy windows, `SpyBuffer`, `MaxSpy` | **Partial** | Ten slots. `MaxSpy` is stored. The pixel UI always offers ten |
 | Pick a QSO from MHeard (ALT-S / **SPY**), both directions, two colours, show N(S) | **Partial** | A slot watches one callsign and copies matching monitor lines. No pair detection, no “please select QSO”, no sequence number, no save-this-QSO prompt |
 | Kill spy (ALT-K / **KILL SPY**) | **Partial** | Clears the call in the current spy slot. Does not pick a QSO out of MHeard to stop |
-| AutoSpy / NoAutoSpy, files `CALL.000`–`.999` in `SpyDir`, close on DISC/DM/UA, skip `ctl UI` | **Missing** | The filter strings are loaded and never applied |
+| AutoSpy / NoAutoSpy, files `CALL.000`–`.999` in `SpyDir`, close on DISC/DM/UA, skip `ctl UI` | **Partial** | `AutoSpy=` / `NoAutoSpy=` load from config; Spy Setup edits them. Matching lines open a free spy slot and append `data/SPY/CALL.NNN` (next free 000–999 on disk; same call reuses that number until the program exits). Manual SPY still uses `data/SAVE/CALL.spy`. Not yet: auto-close on DISC/DM/UA, or `AutoSpyMinimumSave` |
 | Copy 7Plus parts out of a spy file | **Missing** | Would fall out of Code AutoSave once that is wired |
 
 ### 10 Autorouter
@@ -258,8 +263,8 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 
 | Command | Status |
 |---------|--------|
-| `//Quit`, `//DISConnect` | **Have** |
-| `//Info`, `//NEws`, other `*.GPI` by stem or prefix | **Have** (file must exist under `data/`) |
+| `//Quit` / `//Q` / `//BYE`, `//DISConnect` | **Have** | `//Quit` (and `//Q` / `//BYE`) sends `QRT.GPI`, then disconnects when the TX queue is empty. `//DISC` drops at once |
+| `//Info`, `//NEws`, other `*.GPI` by stem or prefix | **Have** | `//Info` uses `<mycall>.GPI` if present, else the shipped `INFO.GPI`. Other stems need a matching `data/*.GPI` |
 | `//VERsion`, `//Echo`, `//Bell`, `//MHeard`, `//Name` | **Have** |
 | `//7+`, `//Read`, `//CATalog` / `//DIR` | **Have** | `//7+ ON\|OFF` is the session switch. `//Read file` and `//CAT` / `//DIR` stay inside `data/USER`. A pattern such as `*.txt;*.doc` is a DOS wildcard. The reply says `USER`, not a disk path |
 | `//Help`, `//Language` | **Have** | `//Help` and `//H H` use `data/G.GPH` (English) or the pack selected with `//Language` |
@@ -272,7 +277,8 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 | `//Write`, `//END`, `//DELete` / `//Kill` | **Partial** | DOS `//Write` is the 7+ store. This build still captures text into `data/USER` until `//END` or Ctrl-Z. `//DELete` of a named file removes only a file this session stored that way. Bare `//DEL` / `//Kill` deletes `data/MAIL/{CALL}.GPM` for the linked station only |
 | `//RUN` | **Have** | Addon below. Bare `//RUN` sends `RUN.GPI` and starts nothing. `//RUN ?` lists `data/EXTERNAL` and the languages found on this computer. `//RUN FREE` reports memory. `//RUN DOS` opens the MS-DOS window. `//name` starts a program that is not already a command. With **Remote** off, a `//RUN` is answered `<GPNG>: Remote commands are turned off by the sysop.` |
 | `//CUT` | **Have** | Aborts BIN-RX, BIN-TX, or a 7+ capture on that channel. The receiver sends `#ABORT#` (`#NO#` if the BIN file has not started). The sender stops. Chat resumes |
-| `//Activity`, `//RPrg`, `//RTt`, `//WPrg`, `//C`, `//<n> text`, chat `#` | **Missing** | Parsed, then “not implemented” |
+| `//<n> [text]` / `//0` | **Have** | Bare `//n` joins chat on channel *n*; `//0` leaves. One-shot `//n text` sends a line. Traffic is relayed both ways onto the radio. Room hears `<GPNG>: CALL (Name) Joined/Left your channel!` |
+| `//Activity`, `//RPrg`, `//RTt`, `//WPrg`, `//C`, chat `#` | **Missing** | Parsed, then “not implemented” |
 
 `#` as a chat allow-list token in `REMOTE=` is not applied.
 
@@ -305,7 +311,7 @@ This is the stand-in for the DOS GPRI Pascal interface. A DOS program in `EXTERN
 - Manual spy slots that follow a callsign on the monitor.
 - Editor load/save in CP437.
 - Pad logs under `log/` for monitor, channels, spy, BBS, and box.
-- Remote command catalogue and macro expander, ready for the commands that are still stubs.
+- Remote command catalogue and macro expander. Cross-channel `//n` / `//0` chat mode (both-way RF relay, Joined/Left notices). `//Quit` / `//Q` / `//BYE` sends `QRT.GPI`. A few remotes are still stubs (`//Activity`, `//RPrg`, `//RTt`, `//WPrg`, `//C`).
 - `//RUN` addon: one Python, PHP, Perl, Ruby, Node, Lua, or Java program from `data/EXTERNAL` per channel. Shebang on Linux, macOS, and Windows. Java is headless. Input or new output keeps that process; 300 seconds with neither, exit, or disconnect closes it. A linked station is told `closed run program after timeout`. Bare `//RUN` sends `RUN.GPI`. Samples: `FREE` and the `DOS` window on `data/USER`.
 - Sounds and session switches: RX-Click counts `NEWLINE.WAV`, Connect Bell counts `CONNECT.WAV` (off also silences `DISCONECT.WAV`), ♪ silences connect/disconnect/newline everywhere, the clock strikes `CHIME.WAV` on a 12-hour clock, **CT** and **Echo** can be set per channel, and **Remote** is one global switch.
 - AutoBin on a live KISS link with DOS GP 1.63 (`#BIN#` / `#OK#` / `#ABORT#`, file in `data/SAVE`). 7Plus Code-AutoSave is implemented and untested. See `docs/TRANSFER.md`.
@@ -320,8 +326,8 @@ This is the stand-in for the DOS GPRI Pascal interface. A DOS program in `EXTERN
 1. 7Plus Code-AutoSave stays untested until a real `go_7+.` part is on the link. The later GPNG-only `#7+#` connect handshake is not this item. AutoBin on the channel is in. Still open: `//RPrg`, `//WPrg`, and resume. `//CUT` aborts a running BIN or 7+ transfer.
 2. `NAMES.GP` plus autorouter on Connect, then ALT-N. **Done.** Connect uses `data/NAMES.GP`. **Name** is ALT-N. A type `B` mailbox still does not block remotes, and `PORTx` does not change the radio.
 3. BBS-Menu and Box-List parsers (DieBox first), mark, and `READ`. **Done** for DieBox `CHECK` and `LIST` on the setup reference channel. F6FBB, DK5SG, and DB0IE are still ahead.
-4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language. **Done.** Help follows `data/G.GPH` (English) and the other language packs. Catalog, read, write, and delete stay in `data/USER`. `//CD` cannot leave that folder. AutoBin `//RPrg` / `//WPrg` remain with item 1.
+4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language. **Done.** Help follows `data/G.GPH` (English) and the other language packs. Catalog, read, write, and delete stay in `data/USER`. `//CD` cannot leave that folder. Cross-channel `//n` / `//0` chat mode and `//BYE` as a Quit alias are **Done**. AutoBin `//RPrg` / `//WPrg` remain with item 1.
 5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper. **Done** for the journal and for TheNet, BayCom, and FlexNet. Shell and debug lines go to `data/log/gpng.log`. The DieBox 60×27 grid is not calculated.
 6. Setup menu. **Done** for the DOS rows that have a live effect: colours, prompt, remote (one global switch), backup, echo (per channel show/hide, lines always stored), RX-Click (a count of `NEWLINE.WAV`), Connect Bell (a count of `CONNECT.WAV`; off also silences `DISCONECT.WAV`), umlauts, the stair / `/` line step, packet length, Code-AutoSave, language, editor `*.BAK`, insert-from-editor, the reference channel, the file drawer, the KISS beacon (manual 11.11, also the monitor unproto path), and the Esc TNC command box. The ♪ button is the global connect/disconnect/newline mute, **CT** can hold a file per channel, and EDIT keeps its file, text, and caret until another file is loaded. Word wrapping, input columns, and InsertMonLine are stored. Hostmode does not send the beacon. A `//` line in the Esc box is not the operator remote from manual 5.5. Settings go to `Config.toml`, not `CSTAT.GPB`.
 7. Pixel-UI hotkeys that match DOS GP chapter 4. **Done** for the keys that already have an action: F1–F12, ALT-M/E/X/U/O/R/G/Q/C/D/Y/N/T/B, ALT-F1/F2/F4/F6/F7/F8/F9/F10, Shift-F1–F12, Ctrl-D/T/Y/C/P/O/B, Ctrl-Enter, Esc (TNC command, or back to Monitor from BBS/List), and editor ALT-L/S. Still ahead: ALT-S continuous save, ALT-F file send, Insert/overwrite, and Ctrl-K. ALT-Z stays DOS VGA zoom. On the BBS menu ALT-S sorts and ALT-F finds; on the Box list ALT-F finds.
-8. Still ahead, in short: the other mailbox list formats (F6FBB, DK5SG, DB0IE) and rubric sections; a live 7Plus part on the air, `//RPrg` / `//WPrg`, transfer resume and ALT-T; a type `B` mailbox blocking remotes and `PORTx` switching a multiport TNC; the `REMOTE=` allow-list; editor Insert/overwrite, hard word wrap, and Ctrl-K; AutoSpy. The `//RUN` samples (`FREE`, `DOS`), bare `//RUN` → `RUN.GPI`, the global **Remote** answer, and the per-channel **CT** / **Echo** switches are done.
+8. Still ahead, in short: the other mailbox list formats (F6FBB, DK5SG, DB0IE) and rubric sections; a live 7Plus part on the air, `//RPrg` / `//WPrg`, transfer resume and ALT-T / ALT-S / ALT-F; a type `B` mailbox blocking remotes and `PORTx` switching a multiport TNC; the `REMOTE=` allow-list; editor Insert/overwrite, hard word wrap, and Ctrl-K; AutoSpy close on DISC/DM/UA; stub remotes `//Activity`, `//RTt`, `//C`. The `//RUN` samples (`FREE`, `DOS`), bare `//RUN` → `RUN.GPI`, cross-channel `//n` chat, `//BYE`, Auto Spy / Spy Auto Ignore setup with `CALL.NNN` files, the global **Remote** answer, and the per-channel **CT** / **Echo** switches are done.

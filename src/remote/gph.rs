@@ -177,16 +177,31 @@ pub fn help_for(language: &str, topic: &str) -> String {
     let pack = parse(&text);
     let topic = help_topic(topic);
     if topic.is_empty() {
-        if pack.overview.trim().is_empty() {
+        let overview = trim_help_block(&pack.overview);
+        if overview.is_empty() {
             format!("{file} has no overview")
         } else {
-            pack.overview.trim().to_string()
+            overview.to_string()
         }
     } else if let Some(body) = find_section(&pack, topic) {
-        body.trim().to_string()
+        trim_help_block(&body).to_string()
     } else {
-        format!("No help for {topic}\r{}", pack.overview.trim())
+        format!("No help for {topic}\r{}", trim_help_block(&pack.overview))
     }
+}
+
+/// Drop blank lines at the ends only. Keep the two-space indent on help lines.
+fn trim_help_block(s: &str) -> &str {
+    let s = s.trim_end_matches(['\r', '\n']);
+    let mut start = 0;
+    for line in s.split_inclusive(['\n', '\r']) {
+        if line.chars().all(|c| c == '\n' || c == '\r' || c.is_whitespace()) {
+            start += line.len();
+        } else {
+            break;
+        }
+    }
+    &s[start..]
 }
 
 fn file_for(language: &str) -> &'static str {
@@ -334,11 +349,18 @@ mod tests {
     #[test]
     fn english_overview_lists_read_and_help_section() {
         let text = help_for("EN", "");
+        assert!(
+            text.starts_with("  //<n> <Text>"),
+            "overview keeps the two-space indent: {text}"
+        );
         assert!(text.contains("//Read"), "{text}");
         assert!(text.contains("//MAIL"), "{text}");
         assert!(text.contains("//SEND"), "{text}");
         let detail = help_for("EN", "READ");
-        assert!(detail.contains("//Read"), "{detail}");
+        assert!(
+            detail.starts_with("  //Read"),
+            "section keeps the two-space indent: {detail}"
+        );
         assert!(detail.contains("//MAIL"), "{detail}");
         assert!(detail.contains("not this file transfer"), "{detail}");
         let mail = help_for("EN", "MAIL");

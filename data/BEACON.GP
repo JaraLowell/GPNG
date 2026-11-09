@@ -1,1 +1,0 @@
-* %Y Listening on %Q Mhz Local time now %T *

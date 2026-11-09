@@ -154,18 +154,20 @@ pub fn list_servable() -> Vec<GpiStem> {
 
 /// Map a remote verb (`INFO`, `NE`, `Q`, `FREQ`, …) onto a GPI stem.
 ///
-/// Match rules (case-insensitive, no extension):
+/// The verb is uppercased, then compared to the stem with no extension:
 /// - full stem equality, or
-/// - verb is a prefix of the stem (incl. single first letter).
-/// Longest matching stem wins.
+/// - the verb is a prefix of the stem (including a single first letter).
+/// Longest matching stem wins. This does not see EXTERNAL programs, so
+/// `//D` is not `DOS`.
 pub fn match_verb_to_gpi(verb: &str) -> Option<GpiStem> {
-    let v = verb.trim().to_ascii_lowercase();
-    if v.is_empty() || v == "origin" {
+    let v = verb.trim().to_ascii_uppercase();
+    if v.is_empty() || v == "ORIGIN" {
         return None;
     }
     let mut best: Option<GpiStem> = None;
     for g in list_servable() {
-        if g.stem == v || g.stem.starts_with(&v) {
+        let stem = g.stem.to_ascii_uppercase();
+        if stem == v || stem.starts_with(&v) {
             let better = match &best {
                 None => true,
                 Some(b) => g.stem.len() > b.stem.len(),
@@ -199,6 +201,22 @@ pub fn load_expanded(stem: &str, ctx: &MacroContext) -> Option<String> {
         .or_else(|| resolve_named(&format!("{stem}.GPI")))?;
     let text = read_file(&path)?;
     Some(expand_gpi_text(&text, ctx))
+}
+
+/// `//Info`: prefer `<mycall>.GPI` (our station call), else `INFO.GPI`.
+///
+/// Releases ship `INFO.GPI` as the example — the operator’s call is unknown
+/// at pack time. A personal `<call>.GPI` overrides it when present.
+///
+/// This is not connect text. Connect uses `{peer}.GPC` then `CTEXT.GPI`.
+pub fn load_info(ctx: &MacroContext) -> Option<String> {
+    let base = crate::cipher::base_call(&ctx.my_call);
+    if !base.is_empty() && base.chars().all(|c| c.is_ascii_alphanumeric()) {
+        if let Some(text) = resolve_named(&format!("{base}.GPI")).and_then(|p| read_file(&p)) {
+            return Some(expand_gpi_text(&text, ctx));
+        }
+    }
+    load_expanded("info", ctx)
 }
 
 /// Expand macros; resolve `%O` live from ORIGIN.GPI (fresh line per text line).

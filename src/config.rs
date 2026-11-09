@@ -223,7 +223,8 @@ impl Config {
                 "SECURITY" => self.session.security = parse_boolish(value),
                 "REMOTE" => self.session.remote = split_csv(value),
                 "NOREMOTE" => self.session.no_remote = split_csv(value),
-                "AUTOSPY" => self.session.auto_spy = split_csv_words(value),
+                // Comma-separated phrases; spaces inside a phrase matter (`fm DB0SGL`).
+                "AUTOSPY" => self.session.auto_spy = split_csv(value),
                 "NOAUTOSPY" => self.session.no_auto_spy = split_csv(value),
                 "AUTOSPYMINIMUMSAVE" => {
                     self.session.auto_spy_minimum_save = parse_u32(value, "AUTOSPYMINIMUMSAVE")?;
@@ -573,6 +574,18 @@ impl Config {
         put_key(path, "session", "file_drawer", &toml_string(&s.file_drawer))?;
         put_key(
             path,
+            "session",
+            "auto_spy",
+            &toml_string_list(&s.auto_spy),
+        )?;
+        put_key(
+            path,
+            "session",
+            "no_auto_spy",
+            &toml_string_list(&s.no_auto_spy),
+        )?;
+        put_key(
+            path,
             "buffers",
             "packet_payload",
             &self.buffers.packet_payload.to_string(),
@@ -756,6 +769,15 @@ fn toml_string(s: &str) -> String {
         .replace('\r', "\\r")
         .replace('\t', "\\t");
     format!("\"{escaped}\"")
+}
+
+fn toml_string_list(items: &[String]) -> String {
+    let body = items
+        .iter()
+        .map(|s| toml_string(s))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{body}]")
 }
 
 /// Replace or insert `key = value` at file top-level (or under first match of key).
@@ -1620,16 +1642,6 @@ fn split_legacy_kv(line: &str) -> Option<(&str, &str)> {
 fn split_csv(value: &str) -> Vec<String> {
     value
         .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-fn split_csv_words(value: &str) -> Vec<String> {
-    // AUTOSPY = to FBB  → keep as separate tokens or one phrase; store phrase parts.
-    value
-        .split(|c: char| c == ',' || c.is_whitespace())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)

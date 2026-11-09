@@ -1,6 +1,6 @@
 @@
 
-  //<n> <Text>           : Sends a text to channel <n>
+  //<n> [Text]           : Join chat on channel <n>, or send one line; //0 leaves
   //7+ <ON/OFF>          : Switches 7+ AutoSave on or off
   //Activity             : Query sysop activity
   //Bell                 : Calls Sysop by ringing a bell
@@ -256,6 +256,16 @@
       You can use wildcards with this command, e.g. "//CAT *.txt". You
       even can use several wildcards seperated by a semicolon.
       e.g. "//CAT *.txt;*.doc"
+
+@N,1
+
+  //<n> [text]
+      Bare //n joins chat on channel n. Everything you type is sent to that
+      channel, and text from that channel (and other joiners) is sent back
+      to you on the air. The room is told "<GPNG>: CALL (Name) Joined your
+      channel!". //0 leaves and announces Left. With text, //n sends one
+      line only and does not stay in chat mode. Target must be a connected
+      TERM channel.
 
 @BELL,1
 

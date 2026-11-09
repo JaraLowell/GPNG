@@ -1012,6 +1012,9 @@ fn find_script(dir: &Path, name: &str) -> Result<PathBuf, String> {
     if !safe_name(name) {
         return Err("use a program name in EXTERNAL".into());
     }
+    // The command word is uppercased and must be the whole program name.
+    // `//D` does not start `DOS`; `//DOS` does.
+    let want = name.to_ascii_uppercase();
     let dir = dir
         .canonicalize()
         .map_err(|_| "EXTERNAL is not a folder".to_string())?;
@@ -1030,7 +1033,7 @@ fn find_script(dir: &Path, name: &str) -> Result<PathBuf, String> {
         if fname.starts_with('.') {
             continue;
         }
-        if fname.eq_ignore_ascii_case(name) {
+        if fname.to_ascii_uppercase() == want {
             exact = Some(path);
             break;
         }
@@ -1038,7 +1041,7 @@ fn find_script(dir: &Path, name: &str) -> Result<PathBuf, String> {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        if stem.eq_ignore_ascii_case(name) && kind_of(&path).is_some() {
+        if stem.to_ascii_uppercase() == want && kind_of(&path).is_some() {
             stems.push(path);
         }
     }
@@ -1426,6 +1429,22 @@ mod tests {
             &plan.args[script_at + 1..],
             &["-c".to_string(), "os".to_string()]
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_shorter_name_does_not_start_the_program() {
+        let dir = temp_dir();
+        fs::write(dir.join("DOS"), "#!/usr/bin/env python3\nprint(1)\n").unwrap();
+        assert!(!has_program(&dir, "D"));
+        assert!(!has_program(&dir, "DO"));
+        assert!(has_program(&dir, "DOS"));
+        assert!(has_program(&dir, "dos"));
+        assert!(plan(&dir, "D", &host_both()).is_err());
+        let Planned::Run(ready) = plan(&dir, "dos", &host_both()).unwrap() else {
+            panic!("list");
+        };
+        assert!(ready.name.eq_ignore_ascii_case("DOS"));
         let _ = fs::remove_dir_all(&dir);
     }
 

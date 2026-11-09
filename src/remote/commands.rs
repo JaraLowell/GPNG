@@ -64,7 +64,7 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             &[],
             1,
             RemoteAction::CrossChannelText,
-            "Send text to channel/port n",
+            "Chat mode / send text to channel n (//0 leaves)",
         ),
         cmd(
             "//7+",
@@ -85,10 +85,16 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             &["BELL", "B"],
             1,
             RemoteAction::Bell,
-            "Ring the sysop",
+            "Wake the sysop (BELL.WAV)",
         ),
         // "RI" so //R stays //Read. //Ring and //RI still page the sysop.
-        cmd("//RIng", &["RING"], 2, RemoteAction::Bell, "Ring the sysop"),
+        cmd(
+            "//RIng",
+            &["RING"],
+            2,
+            RemoteAction::Bell,
+            "Wake the sysop (BELL.WAV)",
+        ),
         cmd(
             "//CATalog",
             &["CATALOG", "CAT", "DIRECTORY", "DIR"],
@@ -205,7 +211,7 @@ pub fn catalogue() -> Vec<RemoteCommand> {
         ),
         cmd(
             "//Quit",
-            &["QUIT", "Q"],
+            &["QUIT", "Q", "BYE"],
             1,
             RemoteAction::Quit,
             "QRT then disconnect",
@@ -315,18 +321,76 @@ fn cmd(
 
 /// A `//` line typed into a live QSO belongs to the other station.
 /// This station runs it only when the channel is not linked.
-/// `//Bell` is always a page to the other station, never a local ring.
-pub fn typed_runs_locally(linked: bool, action: RemoteAction) -> bool {
-    !linked && action != RemoteAction::Bell
+/// Unlinked `//Bell` still runs here so the operator can test the page.
+pub fn typed_runs_locally(linked: bool, _action: RemoteAction) -> bool {
+    !linked
 }
 
 /// Sent when Remote is off and the other station tries `//RUN`.
 pub const REMOTE_OFF: &str = "<GPNG>: Remote commands are turned off by the sysop.\n";
 
+/// A `//` word matched no internal command, no `data/*.GPI`, and no EXTERNAL program.
+pub const NOT_RECOGNIZED: &str = "<GPNG>: Command not recognized\n";
+
+/// Prefix on every GPNG status reply that goes on the air.
+pub const REPORT_PREFIX: &str = "<GPNG>:";
+
+/// Tag a remote status reply. Text that already starts with `<GPNG>:` is left alone.
+///
+/// GPI files, USER file bodies, mail text, help packs, and EXTERNAL program
+/// output are not status replies and are sent without this tag.
+pub fn report(info: &str) -> String {
+    let info = info.trim_start_matches(['\r', '\n']);
+    if info.starts_with(REPORT_PREFIX) {
+        info.to_string()
+    } else {
+        format!("{REPORT_PREFIX} {info}")
+    }
+}
+
+/// Status title on the first line, body on the lines after it.
+///
+/// `//HELP` → `<GPNG>: Available Help commands` then the list.
+/// `//CSTATUS` → `<GPNG>: Channel status` then each channel line.
+pub fn report_block(title: &str, body: &str) -> String {
+    let title = title.trim();
+    let body = body
+        .trim_start_matches(['\r', '\n'])
+        .trim_end_matches(['\r', '\n']);
+    if body.is_empty() {
+        report(title)
+    } else {
+        format!("{}\r{body}", report(title))
+    }
+}
+
+/// The command word of a `//` line, in uppercase. Arguments are not included.
+///
+/// `None` means the line is chat: `CAT` and `7+` are chat, `//CAT` and `//7+`
+/// are commands. A leading space is prose. `//` with no word is not a command.
+pub fn slash_verb(line: &str) -> Option<String> {
+    let line = line.trim_end_matches(['\r', '\n']).trim_end();
+    if line.is_empty() || line.bytes().next().is_some_and(|b| b.is_ascii_whitespace()) {
+        return None;
+    }
+    let rest = squeeze_spaces(line.strip_prefix("//")?);
+    if rest.is_empty() {
+        return None;
+    }
+    let (verb, _) = split_verb(&rest);
+    if verb.is_empty() {
+        None
+    } else {
+        Some(verb.to_ascii_uppercase())
+    }
+}
+
 /// Parse a line that may be a remote command → `(action, args)`.
 ///
 /// A leading space means plain text (` //Help` in a help file), not a command.
 /// Trailing spaces are ignored. Runs of spaces inside the command collapse to one.
+/// The command word is uppercased before it is compared. A line with no `//`
+/// is chat and returns `None`.
 pub fn parse_line(line: &str) -> Option<(RemoteAction, String)> {
     let line = line.trim_end_matches(['\r', '\n']).trim_end();
     if line.is_empty() {
@@ -351,7 +415,7 @@ pub fn parse_line(line: &str) -> Option<(RemoteAction, String)> {
         return Some((RemoteAction::SevenPlusAutoSave, args));
     }
 
-    // //1 hello  — cross-channel text
+    // //1 hello  — cross-channel text / chat mode; //0 leaves
     if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         return Some((RemoteAction::CrossChannelText, rest));
     }
@@ -360,6 +424,28 @@ pub fn parse_line(line: &str) -> Option<(RemoteAction, String)> {
     let verb_up = verb.to_ascii_uppercase();
     let action = match_verb(&verb_up)?;
     Some((action, args.to_string()))
+}
+
+/// Split `//n` / `//n text` args into `(channel, optional text)`.
+///
+/// Leading digits form the channel. `//0` is leave-chat (`0`, empty text).
+/// `//2 hello` → `(2, "hello")`. `//02` → `(2, "")`.
+pub fn split_cross_channel(args: &str) -> Option<(u8, &str)> {
+    let args = args.trim();
+    if args.is_empty() {
+        return None;
+    }
+    let digit_len = args
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .map(char::len_utf8)
+        .sum::<usize>();
+    if digit_len == 0 {
+        return None;
+    }
+    let n: u8 = args[..digit_len].parse().ok()?;
+    let rest = args[digit_len..].trim_start();
+    Some((n, rest))
 }
 
 /// Collapse runs of whitespace to a single space and trim ends.
@@ -440,9 +526,17 @@ mod tests {
             (RemoteAction::Echo, "hi".into())
         );
         assert_eq!(
-            parse_line("//3 cq").unwrap().0,
-            RemoteAction::CrossChannelText
+            parse_line("//3 cq").unwrap(),
+            (RemoteAction::CrossChannelText, "3 cq".into())
         );
+        assert_eq!(
+            parse_line("//0").unwrap(),
+            (RemoteAction::CrossChannelText, "0".into())
+        );
+        assert_eq!(split_cross_channel("3 cq"), Some((3, "cq")));
+        assert_eq!(split_cross_channel("0"), Some((0, "")));
+        assert_eq!(split_cross_channel("02"), Some((2, "")));
+        assert_eq!(split_cross_channel("2hello"), Some((2, "hello")));
         assert_eq!(parse_line("//DIR *.txt").unwrap().0, RemoteAction::Catalog);
         assert_eq!(parse_line("//KILL").unwrap().0, RemoteAction::Delete);
         assert_eq!(
@@ -471,6 +565,7 @@ mod tests {
         assert_eq!(parse_line("//MA").unwrap().0, RemoteAction::Mail);
         assert_eq!(parse_line("//MH").unwrap().0, RemoteAction::MHeard);
         assert_eq!(parse_line("//Q").unwrap().0, RemoteAction::Quit);
+        assert_eq!(parse_line("//BYE").unwrap().0, RemoteAction::Quit);
         assert_eq!(parse_line("//DISC").unwrap().0, RemoteAction::Disconnect);
         assert_eq!(
             parse_line("//Name Jara").unwrap(),
@@ -493,6 +588,46 @@ mod tests {
     }
 
     #[test]
+    fn a_word_without_slashes_is_chat() {
+        assert!(parse_line("CAT").is_none());
+        assert!(parse_line("cat").is_none());
+        assert!(parse_line("7+").is_none());
+        assert!(parse_line("7+ ON").is_none());
+        assert!(parse_line("DOS").is_none());
+        assert!(slash_verb("CAT").is_none());
+        assert!(slash_verb("7+").is_none());
+        assert_eq!(parse_line("//CAT").unwrap().0, RemoteAction::Catalog);
+        assert_eq!(parse_line("//cat").unwrap().0, RemoteAction::Catalog);
+        assert_eq!(
+            parse_line("//7+").unwrap().0,
+            RemoteAction::SevenPlusAutoSave
+        );
+        assert_eq!(slash_verb("//d"), Some("D".into()));
+        assert_eq!(slash_verb("//D"), Some("D".into()));
+        assert_eq!(slash_verb("//dos extra"), Some("DOS".into()));
+        assert_eq!(slash_verb("//7+ ON"), Some("7+".into()));
+        assert!(parse_line("//D").is_none());
+        assert!(parse_line("//DO").is_none());
+        assert!(slash_verb("//").is_none());
+        assert_eq!(NOT_RECOGNIZED, "<GPNG>: Command not recognized\n");
+        assert_eq!(report("7+ ON"), "<GPNG>: 7+ ON");
+        assert_eq!(report("<GPNG>: USER CONTENT"), "<GPNG>: USER CONTENT");
+        assert_eq!(
+            report("USER CONTENT\r     682  README.txt"),
+            "<GPNG>: USER CONTENT\r     682  README.txt"
+        );
+        assert_eq!(
+            report_block("Channel status", "Ch. 1 - IO DISCONNECTED"),
+            "<GPNG>: Channel status\rCh. 1 - IO DISCONNECTED"
+        );
+        assert_eq!(
+            report_block("Available Help commands", "//Read  : send a file"),
+            "<GPNG>: Available Help commands\r//Read  : send a file"
+        );
+        assert_eq!(report_block("Version", ""), "<GPNG>: Version");
+    }
+
+    #[test]
     fn leading_space_is_not_a_command() {
         assert_eq!(parse_line(" //mh"), None);
         assert_eq!(parse_line("  //Help"), None);
@@ -505,6 +640,6 @@ mod tests {
         assert!(!typed_runs_locally(true, RemoteAction::MHeard));
         assert!(!typed_runs_locally(true, RemoteAction::Bell));
         assert!(typed_runs_locally(false, RemoteAction::MHeard));
-        assert!(!typed_runs_locally(false, RemoteAction::Bell));
+        assert!(typed_runs_locally(false, RemoteAction::Bell));
     }
 }
