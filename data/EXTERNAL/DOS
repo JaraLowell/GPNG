@@ -1,0 +1,753 @@
+#!/usr/bin/env python3
+"""//RUN DOS — an MS-DOS 6.20 window.
+
+Start it from a linked channel with //RUN DOS (Remote must be on).
+Drive C: is the USER folder (the //Read directory). There is no other
+drive. Commands: DIR, CD, ECHO, TYPE, HELP, and EXIT in any letter case.
+DIR takes the DOS switches, also written together, as in DIR/W or
+DIR/AD. TYPE prints a small text file. EXIT closes this program.
+Nothing outside that folder can be reached.
+"""
+
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+
+def configure_stdio():
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace", newline="\n")
+            except (OSError, ValueError):
+                pass
+
+
+def users_root():
+    env = os.environ.get("GPNG_USERDIR", "").strip().strip('"')
+    if env:
+        path = Path(env).expanduser()
+        if path.is_dir():
+            return path.resolve()
+    parent = Path(__file__).resolve().parent.parent
+    for name in ("USERS", "USER"):
+        candidate = parent / name
+        if candidate.is_dir():
+            return candidate.resolve()
+    return None
+
+
+ROOT = None
+CWD = None
+ECHO_ON = True
+
+
+def say(text=""):
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
+        sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def prompt():
+    sys.stdout.write(dos_cwd() + ">")
+    sys.stdout.flush()
+
+
+class Row:
+    def __init__(self, real, short, is_dir, size, mtime, attrs=0):
+        self.real = real
+        self.short = short
+        self.is_dir = is_dir
+        self.size = size
+        self.mtime = mtime
+        self.hidden = real.startswith(".") or bool(attrs & 0x02)
+        self.system = bool(attrs & 0x04)
+        self.readonly = bool(attrs & 0x01)
+        self.archive = bool(attrs & 0x20)
+        if short in (".", "..") or "." not in short:
+            self.base = short
+            self.ext = ""
+        else:
+            self.base, self.ext = short.split(".", 1)
+
+
+def short_name(filename, used):
+    upper = filename.upper().replace(" ", "_")
+    base, dot, ext = upper.rpartition(".")
+    if not dot:
+        base, ext = upper, ""
+    keep = "!#$%&'()-@^_`{}~"
+    base = "".join(ch if ch.isalnum() or ch in keep else "_" for ch in base).strip("._")
+    ext = "".join(ch if ch.isalnum() else "" for ch in ext)[:3]
+    base = base or "FILE"
+    plain = base[:8]
+    candidate = plain if not ext else plain + "." + ext
+    if len(base) <= 8 and "~" not in plain and candidate not in used:
+        used.add(candidate)
+        return candidate
+    stem = (base[:6] or "FILE")
+    n = 1
+    while True:
+        tail = "~" + str(n)
+        short = stem[: 8 - len(tail)] + tail
+        candidate = short if not ext else short + "." + ext
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+        n += 1
+
+
+def list_folder(folder):
+    try:
+        children = list(folder.iterdir())
+    except OSError:
+        return None
+    children.sort(key=lambda path: path.name.upper())
+    used = set()
+    rows = []
+    for child in children:
+        try:
+            is_dir = child.is_dir()
+            stat = child.stat()
+        except OSError:
+            continue
+        attrs = getattr(stat, "st_file_attributes", 0)
+        rows.append(
+            Row(child.name, short_name(child.name, used), is_dir, stat.st_size, stat.st_mtime, attrs)
+        )
+    return rows
+
+
+def find_child(folder, name):
+    wanted = name.upper()
+    rows = list_folder(folder)
+    if rows is None:
+        return None
+    for row in rows:
+        if wanted in (row.short, row.real.upper()):
+            return row
+    return None
+
+
+def inside(path):
+    try:
+        path.resolve().relative_to(ROOT)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def dos_cwd():
+    return dos_folder(CWD)
+
+
+def dos_folder(folder):
+    rel = folder.resolve().relative_to(ROOT)
+    if not rel.parts:
+        return "C:\\"
+    shown = []
+    walk = ROOT
+    for part in rel.parts:
+        row = find_child(walk, part)
+        shown.append(row.short if row is not None else part.upper())
+        walk = walk / part
+    return "C:\\" + "\\".join(shown)
+
+
+def resolve_path(text):
+    """A path inside C:, a file inside C:, or an error string."""
+    text = text.strip().strip('"').replace("/", "\\")
+    if not text:
+        return CWD
+    drive = False
+    if len(text) >= 2 and text[1] == ":":
+        if text[0].upper() != "C":
+            return f"Drive {text[0].upper()} does not excist!"
+        drive = True
+        text = text[2:]
+    if text.startswith("\\"):
+        cur = ROOT
+        text = text[1:]
+    elif drive and not text:
+        return CWD
+    else:
+        cur = CWD
+    for part in [part for part in text.split("\\") if part != ""]:
+        if part == ".":
+            continue
+        if part == "..":
+            if cur.resolve() != ROOT:
+                cur = cur.parent
+            continue
+        row = find_child(cur, part)
+        if row is None:
+            return "missing"
+        nxt = (cur / row.real).resolve()
+        if not inside(nxt):
+            return "missing"
+        cur = nxt
+    return cur
+
+
+def stamp(mtime):
+    when = datetime.fromtimestamp(mtime)
+    hour = when.hour % 12 or 12
+    mark = "p" if when.hour >= 12 else "a"
+    return when.strftime("%m-%d-%y"), f"{hour:2d}:{when.minute:02d}{mark}"
+
+
+def commas(n):
+    return f"{n:,}"
+
+
+def serial_number():
+    total = 0
+    for byte in str(ROOT).upper().encode("utf-8", "replace"):
+        total = (total * 33 + byte) & 0xFFFFFFFF
+    return f"{(total >> 16) & 0xFFFF:04X}-{total & 0xFFFF:04X}"
+
+
+def volume_header(folder):
+    return (
+        " Volume in drive C is USERS\n"
+        f" Volume Serial Number is {serial_number()}\n"
+        f" Directory of {dos_folder(folder)}\n"
+        "\n"
+    )
+
+
+def shown_name(row, lower=False):
+    name = row.base.lower() if lower else row.base
+    ext = row.ext.lower() if lower else row.ext
+    return name, ext
+
+
+def dir_line(row, lower=False):
+    date, time = stamp(row.mtime)
+    base, ext = shown_name(row, lower)
+    field = "<DIR>".rjust(13) if row.is_dir else commas(row.size).rjust(13)
+    return f"{base:<8} {ext:<3} {field} {date}  {time}"
+
+
+def wide_label(row, lower=False):
+    base, ext = shown_name(row, lower)
+    if row.is_dir:
+        label = "[" + base + "]"
+    elif ext:
+        label = base + "." + ext
+    else:
+        label = base
+    return f"{label:<15}"
+
+
+def bare_label(row, lower=False):
+    base, ext = shown_name(row, lower)
+    return base + "." + ext if ext else base
+
+
+def match_row(row, pattern):
+    pattern = pattern.upper()
+    if pattern in ("", "*", "*.*"):
+        return True
+    if "." not in pattern:
+        return glob_match(row.base, pattern) or (row.ext == "" and glob_match(row.base, pattern))
+    base_pat, ext_pat = pattern.split(".", 1)
+    return glob_match(row.base, base_pat) and glob_match(row.ext, ext_pat)
+
+
+def glob_match(text, pattern):
+    return _glob(text, pattern, 0, 0)
+
+
+def _glob(text, pattern, i, j):
+    if j == len(pattern):
+        return i == len(text)
+    if pattern[j] == "*":
+        return any(_glob(text, pattern, k, j + 1) for k in range(i, len(text) + 1))
+    if i < len(text) and pattern[j] in ("?", text[i]):
+        return _glob(text, pattern, i + 1, j + 1)
+    return False
+
+
+def rows_of(folder):
+    rows = list_folder(folder)
+    if rows is None:
+        return None
+    if folder.resolve() != ROOT:
+        try:
+            parent_time = folder.parent.stat().st_mtime
+        except OSError:
+            parent_time = folder.stat().st_mtime
+        rows = [
+            Row(".", ".", True, 0, folder.stat().st_mtime),
+            Row("..", "..", True, 0, parent_time),
+        ] + rows
+    return rows
+
+
+def bytes_free():
+    try:
+        info = os.statvfs(ROOT)
+        return info.f_bavail * info.f_frsize
+    except (AttributeError, OSError):
+        pass
+    try:
+        import shutil
+
+        return shutil.disk_usage(ROOT).free
+    except OSError:
+        return 0
+
+
+def _parse_attr_spec(spec, opts):
+    if spec.startswith(":"):
+        spec = spec[1:]
+    wanted = {}
+    i = 0
+    while i < len(spec):
+        keep = True
+        if spec[i] == "-":
+            keep = False
+            i += 1
+            if i >= len(spec):
+                return False
+        letter = spec[i].upper()
+        if letter not in "DHSRA":
+            return False
+        wanted[letter] = keep
+        i += 1
+    opts["attrs"] = wanted
+    opts["attr_given"] = True
+    return True
+
+
+def _parse_order_spec(spec, opts):
+    if spec.startswith(":"):
+        spec = spec[1:]
+    order = []
+    i = 0
+    while i < len(spec):
+        keep = True
+        if spec[i] == "-":
+            keep = False
+            i += 1
+            if i >= len(spec):
+                return False
+        letter = spec[i].upper()
+        if letter not in "NEDSG":
+            return False
+        order.append((letter, keep))
+        i += 1
+    opts["order"] = order or [("N", True)]
+    return True
+
+
+def _parse_switch(token, opts):
+    i = 0
+    while i < len(token):
+        letter = token[i].upper()
+        if letter in "WPBLS":
+            opts[{"W": "wide", "P": "pause", "B": "bare", "L": "lower", "S": "recurse"}[letter]] = True
+            i += 1
+            continue
+        if letter == "A":
+            return _parse_attr_spec(token[i + 1 :], opts)
+        if letter == "O":
+            return _parse_order_spec(token[i + 1 :], opts)
+        return False
+    return True
+
+
+def parse_dir_args(raw):
+    """Switches may touch the command or the file name: dir/w, dir *.txt/ad."""
+    opts = {
+        "wide": False,
+        "pause": False,
+        "bare": False,
+        "lower": False,
+        "recurse": False,
+        "attrs": {},
+        "attr_given": False,
+        "order": [],
+    }
+    words = []
+    for token in raw.split():
+        slash = token.find("/")
+        if slash < 0:
+            words.append(token)
+            continue
+        if slash > 0:
+            words.append(token[:slash])
+        rest = token[slash:]
+        while rest:
+            if not rest.startswith("/"):
+                break
+            nxt = rest.find("/", 1)
+            switch = rest[1:] if nxt < 0 else rest[1:nxt]
+            if not switch or not _parse_switch(switch, opts):
+                say(f"Invalid switch - /{switch.upper()}")
+                return None, ""
+            rest = "" if nxt < 0 else rest[nxt:]
+    return opts, " ".join(words).strip()
+
+
+def _attr_value(row, letter):
+    return {
+        "D": row.is_dir,
+        "H": row.hidden,
+        "S": row.system,
+        "R": row.readonly,
+        "A": row.archive,
+    }[letter]
+
+
+def prepare_rows(rows, pattern, opts):
+    picked = []
+    for row in rows:
+        if pattern and not match_row(row, pattern):
+            continue
+        if opts["attr_given"]:
+            if any(_attr_value(row, k) != want for k, want in opts["attrs"].items()):
+                continue
+        elif row.short not in (".", "..") and (row.hidden or row.system):
+            continue
+        picked.append(row)
+    head = [row for row in picked if row.short in (".", "..")]
+    tail = [row for row in picked if row.short not in (".", "..")]
+    for letter, forward in reversed(opts["order"]):
+        if letter == "G":
+            tail.sort(key=lambda row: (0 if row.is_dir == forward else 1, row.short))
+        elif letter == "N":
+            tail.sort(key=lambda row: row.short, reverse=not forward)
+        elif letter == "E":
+            tail.sort(key=lambda row: (row.ext, row.base), reverse=not forward)
+        elif letter == "D":
+            tail.sort(key=lambda row: row.mtime, reverse=not forward)
+        elif letter == "S":
+            tail.sort(key=lambda row: row.size, reverse=not forward)
+    return head + tail
+
+
+def show_rows(folder, rows, opts, bare_path=None):
+    if opts["bare"]:
+        for row in rows:
+            if row.short in (".", ".."):
+                continue
+            name = bare_label(row, opts["lower"])
+            if bare_path:
+                joiner = "" if bare_path.endswith("\\") else "\\"
+                say(f"{bare_path}{joiner}{name}")
+            else:
+                say(name)
+        return
+    say(volume_header(folder))
+    if opts["wide"]:
+        line = ""
+        for row in rows:
+            piece = wide_label(row, opts["lower"])
+            if line and len(line) + len(piece) > 78:
+                say(line.rstrip())
+                line = ""
+            line += piece
+        if line:
+            say(line.rstrip())
+    else:
+        for row in rows:
+            say(dir_line(row, opts["lower"]))
+    files = [row for row in rows if not row.is_dir]
+    dirs = [row for row in rows if row.is_dir and row.short not in (".", "..")]
+    say(f"{len(files):9} file(s){commas(sum(row.size for row in files)):>15} bytes")
+    say(f"{len(dirs):9} dir(s){commas(bytes_free()):>16} bytes free")
+
+
+def _subfolders(folder):
+    rows = list_folder(folder)
+    if rows is None:
+        return []
+    out = []
+    for row in rows:
+        if row.is_dir:
+            path = (folder / row.real).resolve()
+            if inside(path):
+                out.append(path)
+    return out
+
+
+def command_dir(raw):
+    opts, spec = parse_dir_args(raw)
+    if opts is None:
+        return
+    if not spec:
+        display_dir(CWD, "", opts)
+        return
+
+    leaf = spec.replace("/", "\\")
+    name = leaf.rstrip("\\").split("\\")[-1] if leaf.rstrip("\\") else ""
+    if any(ch in name for ch in "*?"):
+        parent_text = leaf[: leaf.upper().rfind(name.upper())].rstrip("\\")
+        if not parent_text:
+            parent = ROOT if leaf.startswith("\\") or (len(leaf) > 2 and leaf[1] == ":" and "\\" in leaf) else CWD
+            if len(leaf) >= 2 and leaf[1] == ":" and leaf[0].upper() != "C":
+                say(f"Drive {leaf[0].upper()} does not excist!")
+                return
+        else:
+            parent = resolve_path(parent_text if parent_text != leaf[:2] else parent_text + "\\")
+            if isinstance(parent, str):
+                say(parent)
+                return
+            if not isinstance(parent, Path) or not parent.is_dir():
+                say("File not found")
+                return
+        display_dir(parent, name, opts)
+        return
+
+    found = resolve_path(spec)
+    if isinstance(found, str):
+        say(found)
+        return
+    if not isinstance(found, Path):
+        say("File not found")
+        return
+    if found.is_dir():
+        display_dir(found, "", opts)
+        return
+    rows = rows_of(found.parent)
+    if rows is None:
+        say("Access denied")
+        return
+    one = prepare_rows([row for row in rows if row.real == found.name], "", opts)
+    if not one:
+        say("File not found")
+        return
+    show_rows(found.parent, one, opts)
+
+
+def display_dir(target, pattern, opts):
+    if not opts["recurse"]:
+        rows = rows_of(target)
+        if rows is None:
+            say("Access denied")
+            return
+        picked = prepare_rows(rows, pattern, opts)
+        if pattern and not picked:
+            if not opts["bare"]:
+                say(volume_header(target))
+            say("File not found")
+            return
+        show_rows(target, picked, opts)
+        return
+
+    folders = [target]
+    index = 0
+    while index < len(folders):
+        folders.extend(_subfolders(folders[index]))
+        index += 1
+    total_files = 0
+    total_bytes = 0
+    total_dirs = 0
+    for folder in folders:
+        rows = rows_of(folder)
+        if rows is None:
+            continue
+        picked = prepare_rows(rows, pattern, opts)
+        if pattern and not picked:
+            if not opts["bare"]:
+                say(volume_header(folder))
+                say("File not found")
+            continue
+        bare_path = dos_folder(folder) if opts["bare"] else None
+        show_rows(folder, picked, opts, bare_path)
+        files = [row for row in picked if not row.is_dir]
+        total_files += len(files)
+        total_bytes += sum(row.size for row in files)
+        total_dirs += len(
+            [row for row in picked if row.is_dir and row.short not in (".", "..")]
+        )
+    if not opts["bare"]:
+        say()
+        say("Total files listed:")
+        say(f"{total_files:9} file(s){commas(total_bytes):>15} bytes")
+        say(f"{total_dirs:9} dir(s){commas(bytes_free()):>16} bytes free")
+
+
+def command_cd(args):
+    global CWD
+    if not args:
+        say(dos_cwd())
+        return
+    found = resolve_path(" ".join(args))
+    if isinstance(found, str):
+        say(found)
+        return
+    if not isinstance(found, Path) or not found.is_dir() or not inside(found):
+        say("Invalid directory")
+        return
+    CWD = found
+
+
+def drive_change(line):
+    """`D:` on its own. Only C: is there. Return True when handled."""
+    text = line.strip()
+    if len(text) == 2 and text[0].isalpha() and text[1] == ":":
+        letter = text[0].upper()
+        if letter != "C":
+            say(f"Drive {letter} does not excist!")
+        return True
+    if len(text) == 3 and text[0].isalpha() and text[1] == ":" and text[2] in "\\/":
+        letter = text[0].upper()
+        if letter != "C":
+            say(f"Drive {letter} does not excist!")
+            return True
+    return False
+
+
+def command_help():
+    say("MS-DOS 6.20 on drive C: (the USER folder)")
+    say("  DIR [name] [/W] [/B] [/L] [/S] [/AD] [/A-D] [/O:N]")
+    say("  CD [folder]          show or change the folder")
+    say("  ECHO [text]          print the text")
+    say("  TYPE name            print a text file")
+    say("  EXIT                 close DOS (any letter case)")
+    say("Switches may touch the name: DIR/W and DIR *.TXT/AD work.")
+
+
+def command_echo(raw):
+    global ECHO_ON
+    text = raw.lstrip()
+    if text.startswith("."):
+        say(text[1:])
+        return
+    if not text:
+        say(f"ECHO is {'on' if ECHO_ON else 'off'}.")
+        return
+    upper = text.strip().upper()
+    if upper in ("ON", "OFF"):
+        ECHO_ON = upper == "ON"
+        return
+    say(text.rstrip())
+
+
+def _type_one(path):
+    try:
+        data = path.read_bytes()
+    except OSError:
+        say("Access denied")
+        return
+    text = data.decode("cp437", errors="replace")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if text:
+        sys.stdout.write(text)
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+def command_type(args):
+    if not args:
+        say("Required parameter missing")
+        return
+    spec = args[0]
+    leaf = spec.replace("/", "\\")
+    name = leaf.rstrip("\\").split("\\")[-1] if leaf.rstrip("\\") else ""
+    if any(ch in name for ch in "*?"):
+        parent_text = leaf[: leaf.upper().rfind(name.upper())].rstrip("\\")
+        if not parent_text:
+            if len(leaf) >= 2 and leaf[1] == ":" and leaf[0].upper() != "C":
+                say(f"Drive {leaf[0].upper()} does not excist!")
+                return
+            parent = ROOT if leaf.startswith("\\") else CWD
+        else:
+            parent = resolve_path(parent_text)
+            if isinstance(parent, str):
+                say(parent)
+                return
+            if not isinstance(parent, Path) or not parent.is_dir():
+                say("File not found")
+                return
+        rows = rows_of(parent)
+        if rows is None:
+            say("Access denied")
+            return
+        matched = [
+            row for row in prepare_rows(rows, name, parse_dir_args("")[0]) if not row.is_dir
+        ]
+        if not matched:
+            say("File not found")
+            return
+        for row in matched:
+            _type_one(parent / row.real)
+        return
+
+    found = resolve_path(spec)
+    if isinstance(found, str):
+        say(found)
+        return
+    if not isinstance(found, Path) or not found.exists():
+        say("File not found")
+        return
+    if found.is_dir():
+        say("Access denied")
+        return
+    _type_one(found)
+
+
+def split_command(line):
+    line = line.strip()
+    if not line:
+        return "", ""
+    i = 0
+    while i < len(line) and line[i].isalpha():
+        i += 1
+    return line[:i].upper(), line[i:]
+
+
+def main():
+    global ROOT, CWD
+    configure_stdio()
+    ROOT = users_root()
+    if ROOT is None:
+        say("Invalid drive specification")
+        return 1
+    CWD = ROOT
+    say("MS-DOS Version 6.20")
+    say("             (C)Copyright Microsoft Corp 1981-1993.")
+    say()
+    while True:
+        prompt()
+        line = sys.stdin.readline()
+        if line == "":
+            say()
+            return 0
+        if drive_change(line):
+            continue
+        # EXIT in any letter case ends the program, before anything else runs.
+        if line.strip().upper().split()[:1] == ["EXIT"]:
+            return 0
+        cmd, raw = split_command(line)
+        args = raw.split()
+        if not cmd:
+            continue
+        if cmd == "EXIT":
+            return 0
+        if cmd == "DIR":
+            command_dir(raw)
+        elif cmd in ("CD", "CHDIR"):
+            command_cd(args)
+        elif cmd == "HELP" or raw.strip() == "?":
+            command_help()
+        elif cmd == "ECHO":
+            command_echo(raw)
+        elif cmd == "TYPE":
+            command_type(args)
+        else:
+            say("Bad command or file name")
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except BrokenPipeError:
+        raise SystemExit(0)

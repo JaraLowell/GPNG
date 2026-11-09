@@ -44,7 +44,7 @@ use crate::config::{
 use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
 use crate::names::{ListedName, NamesFile, Route};
-use crate::remote::commands::{parse_line, typed_runs_locally, RemoteAction};
+use crate::remote::commands::{parse_line, typed_runs_locally, RemoteAction, REMOTE_OFF};
 use crate::remote::external;
 use crate::remote::gph;
 use crate::remote::gpi;
@@ -2447,13 +2447,11 @@ impl GpGuiApp {
             })
     }
 
-    /// Local TX echo into the RX pad(s). Channel pads follow the Echo toggle.
-    /// Hostmode also copies the line onto the Monitor. KISS Monitor lines come
-    /// from [`TncEvent::KissTx`] when the frame leaves the modem.
+    /// Local TX echo into the RX pad(s). The line is always stored.
+    /// Echo on a channel only hides or shows those rows. Hostmode also copies
+    /// the line onto the Monitor when Monitor Echo is on. KISS Monitor lines
+    /// come from [`TncEvent::KissTx`] when the frame leaves the modem.
     fn echo_own_line(&mut self, line: &str) {
-        if !self.session.echo {
-            return;
-        }
         let idx = match self.active {
             ActivePane::Channel(n) => n as usize,
             _ => 0,
@@ -2473,7 +2471,7 @@ impl GpGuiApp {
                 }
             }
         }
-        if self.kiss_mode() {
+        if self.kiss_mode() || !self.session.echo {
             return;
         }
         self.pads[0].push_monitor(PadKind::Own, strip_ansi(line));
@@ -2785,7 +2783,11 @@ impl GpGuiApp {
     }
 
     /// `RX-Click` copies of `NEWLINE.WAV`, one second apart. `0` is silent.
+    /// The ♪ button silences this on every channel.
     fn play_newline_clicks(&self) {
+        if !self.session.bell {
+            return;
+        }
         play_wav_times(
             &self.newline_wav,
             rx_click_plays(self.cfg.session.rx_click),
@@ -2796,7 +2798,11 @@ impl GpGuiApp {
 
     /// `Connect Bell` copies of `CONNECT.WAV`. The next starts when the
     /// previous one ends, so a replaced file keeps its own length. `0` is silent.
+    /// The ♪ button silences this on every channel.
     fn play_connect_bell(&self) {
+        if !self.session.bell {
+            return;
+        }
         play_wav_times(
             &self.connect_wav,
             connect_bell_plays(self.cfg.session.connect_bell),
@@ -2806,10 +2812,12 @@ impl GpGuiApp {
     }
 
     /// One `DISCONECT.WAV` while Connect Bell is on. Off skips it.
+    /// The ♪ button silences this on every channel.
     fn play_disconnect_bell(&self) {
-        if disconnect_plays(self.cfg.session.connect_bell) {
-            play_wav(&self.disconnect_wav);
+        if !self.session.bell || !disconnect_plays(self.cfg.session.connect_bell) {
+            return;
         }
+        play_wav(&self.disconnect_wav);
     }
 
     /// Terminal write. Bytes append to the open row. `\n` / `\r` end that row.
@@ -2887,6 +2895,9 @@ impl GpGuiApp {
         // Show the `//` line, close it, then answer. Do not answer before paint.
         if kind == PadKind::Incoming && channel >= 1 {
             self.finish_pending_remote_command(channel);
+            // A running program must see this packet now. Chat still waits
+            // for Enter, because a long line can continue in the next frame.
+            self.finish_program_line(channel);
         }
         // A packet that ends on CR keeps the row open (the next byte may be LF).
         // A sealed line is already complete, so show the plaintext now.
@@ -3013,6 +3024,30 @@ impl GpGuiApp {
         }
     }
 
+    /// The other station's packet is one command for the program that is
+    /// waiting. Do not hold it until their next line arrives.
+    fn finish_program_line(&mut self, channel: u8) {
+        if channel < 1 || !self.external_busy(channel) {
+            return;
+        }
+        let idx = channel as usize;
+        if self.rx_row.get(idx).copied().flatten().is_none() {
+            return;
+        }
+        let ended_cr = self.rx_cr.get(idx).copied().unwrap_or(false);
+        if ended_cr {
+            if let Some(flag) = self.rx_cr.get_mut(idx) {
+                *flag = false;
+            }
+        }
+        self.finish_rx_line(channel, PadKind::Incoming);
+        if ended_cr {
+            if let Some(flag) = self.rx_cr.get_mut(idx) {
+                *flag = true;
+            }
+        }
+    }
+
     fn maybe_remote_line(&mut self, channel: u8, line: &str, incoming: bool) {
         if incoming && self.mail_send_open(channel) && self.take_mail_line(channel, line) {
             return;
@@ -3028,6 +3063,11 @@ impl GpGuiApp {
             return;
         }
         if channel < 1 || !incoming {
+            return;
+        }
+        // Remote is one switch for every channel. Off answers //RUN and does not start it.
+        if !self.session.remote && self.another_run(line) {
+            self.refuse_remote_run(channel);
             return;
         }
         // A script that is still running owns ordinary text. A second
@@ -4663,7 +4703,7 @@ impl GpGuiApp {
     fn dispatch_compose_line(&mut self, slot: usize, line: String, carriage_return: bool) {
         self.push_compose_history(slot, line.clone());
 
-        // Channel transcript when Echo is on (before any early return).
+        // Channel transcript is always stored. Echo only hides our rows.
         // BIN-RX paints `#OK#` / `#NO#` itself, so Echo must not add a second copy.
         let wire_answer = matches!(self.active, ActivePane::Channel(n) if {
             let t = line.trim();
@@ -5300,6 +5340,19 @@ impl GpGuiApp {
                 return;
             }
             RemoteAction::Run => {
+                // Bare //RUN sends RUN.GPI. It does not list which
+                // languages happen to be installed on this computer.
+                if args.trim().is_empty() {
+                    if let Some(text) = gpi::load_expanded("run", &ctx) {
+                        self.status = "RUN.GPI".into();
+                        self.send_gpi_text(&text);
+                    } else {
+                        self.status = "RUN.GPI not found".into();
+                        self.send_gpi_text("RUN.GPI not found");
+                    }
+                    self.close_remote(prev);
+                    return;
+                }
                 let done = self.start_external(channel, args);
                 if done {
                     self.close_remote(prev);
@@ -5384,6 +5437,11 @@ impl GpGuiApp {
         self.reply_on_channel(channel, external::BUSY);
     }
 
+    fn refuse_remote_run(&mut self, channel: u8) {
+        self.status = "Remote commands are turned off by the sysop".into();
+        self.reply_on_channel(channel, REMOTE_OFF);
+    }
+
     fn stop_external(&mut self, channel: u8) {
         if let Some(gate) = self.external_run.get_mut(channel as usize) {
             gate.close();
@@ -5407,6 +5465,14 @@ impl GpGuiApp {
         }
         let dir = self.cfg.paths.external_dir.clone();
         let _ = crate::paths::ensure_dir(&dir);
+        // //RUN DOS shows this folder as C:\. Absolute, so the script's own
+        // working directory (EXTERNAL) does not change where C: points.
+        let users = &self.cfg.paths.user_dir;
+        let users = match users.canonicalize() {
+            Ok(path) => path,
+            Err(_) => users.clone(),
+        };
+        std::env::set_var("GPNG_USERDIR", users);
         let opened = {
             let Some(gate) = self.external_run.get_mut(channel as usize) else {
                 return true;
@@ -6052,7 +6118,13 @@ impl GpGuiApp {
             ActivePane::Channel(n) => self
                 .pads
                 .get(n as usize)
-                .map(|pad| pad.layout_job_channel(columns, self.session.extended_ascii))
+                .map(|pad| {
+                    pad.layout_job_channel_show(
+                        columns,
+                        self.session.extended_ascii,
+                        self.session.echo_for(n),
+                    )
+                })
                 .unwrap_or_default(),
             _ => self.monitor_layout_for(columns),
         }
@@ -6281,7 +6353,7 @@ impl GpGuiApp {
         match id {
             RowId::Remote => on_off(self.session.remote).into(),
             RowId::Backup => on_off(s.backup).into(),
-            RowId::Echo => on_off(self.session.echo).into(),
+            RowId::Echo => on_off(self.session.echo_for(echo_slot(self.setup_pane))).into(),
             RowId::RxClick => rx_click_plays(s.rx_click).to_string(),
             RowId::ConnectBell => connect_bell_plays(s.connect_bell).to_string(),
             RowId::Umlaut => on_off(self.session.extended_ascii).into(),
@@ -6314,7 +6386,9 @@ impl GpGuiApp {
         match id {
             RowId::Remote => self.session.remote = !self.session.remote,
             RowId::Backup => self.cfg.session.backup = !self.cfg.session.backup,
-            RowId::Echo => self.session.echo = !self.session.echo,
+            RowId::Echo => {
+                self.session.toggle_echo(echo_slot(self.setup_pane));
+            }
             RowId::RxClick => {
                 let n = (rx_click_plays(self.cfg.session.rx_click) as i32 + step).rem_euclid(3);
                 self.cfg.session.rx_click = n as u32;
@@ -10693,6 +10767,23 @@ impl GpGuiApp {
                 };
                 resp.clone().on_hover_text(hint);
             }
+            if matches!(action, SessionClick::Echo) {
+                resp.clone().on_hover_text(echo_hint(echo_slot(self.active), self.session.echo_for(echo_slot(self.active))));
+            }
+            if matches!(action, SessionClick::Bell) {
+                let state = on_off(self.session.bell);
+                resp.clone().on_hover_text(format!(
+                    "♪ {state}\nConnect, disconnect and newline sounds"
+                ));
+            }
+            if matches!(action, SessionClick::Remote) {
+                let hint = if self.session.remote {
+                    "Remote ON\n//RUN commands are allowed"
+                } else {
+                    "Remote OFF\n//RUN commands are refused"
+                };
+                resp.clone().on_hover_text(hint);
+            }
             if resp.clicked() && (!arrow || arrow_clickable) && !key_off {
                 clicks.push(action);
             }
@@ -10806,7 +10897,7 @@ impl GpGuiApp {
             ),
             (
                 "Echo",
-                self.session.echo,
+                self.session.echo_for(echo_slot(self.active)),
                 SessionClick::Echo,
                 38.0,
                 CellGlyph::Text,
@@ -11010,16 +11101,18 @@ impl GpGuiApp {
                 self.persist_session_chrome();
             }
             SessionClick::Echo => {
-                self.session.echo = !self.session.echo;
-                self.status = format!("Echo {}", on_off(self.session.echo));
+                let slot = echo_slot(self.active);
+                let on = self.session.toggle_echo(slot);
+                self.status = echo_status(slot, on);
                 self.persist_session_chrome();
             }
             SessionClick::Bell => {
                 self.session.bell = !self.session.bell;
-                self.status = format!("Bell {}", on_off(self.session.bell));
-                if self.session.bell {
-                    play_bell_wav(&self.bell_wav);
-                }
+                self.status = if self.session.bell {
+                    "Sounds ON — connect, disconnect, newline".into()
+                } else {
+                    "Sounds OFF — connect, disconnect, newline".into()
+                };
                 self.persist_session_chrome();
             }
             SessionClick::Clear => self.clear_active_pad(),
@@ -11038,7 +11131,11 @@ impl GpGuiApp {
             }
             SessionClick::Remote => {
                 self.session.remote = !self.session.remote;
-                self.status = format!("Remote {}", on_off(self.session.remote));
+                self.status = if self.session.remote {
+                    "Remote ON — //RUN allowed".into()
+                } else {
+                    "Remote OFF — //RUN refused".into()
+                };
                 self.persist_session_chrome();
             }
             SessionClick::BinRx => {
@@ -12474,6 +12571,39 @@ fn on_off(v: bool) -> &'static str {
         "ON"
     } else {
         "OFF"
+    }
+}
+
+/// `0` is the Monitor Echo. A channel number is that channel's show/hide.
+fn echo_slot(pane: ActivePane) -> u8 {
+    match pane {
+        ActivePane::Channel(n) => n,
+        _ => 0,
+    }
+}
+
+fn echo_status(channel: u8, on: bool) -> String {
+    if channel == 0 {
+        return format!("Echo {}", on_off(on));
+    }
+    if on {
+        format!("Echo channel {channel} ON — your text and the other station")
+    } else {
+        format!("Echo channel {channel} OFF — only the other station")
+    }
+}
+
+fn echo_hint(channel: u8, on: bool) -> String {
+    if channel == 0 {
+        return format!(
+            "Echo {}\nShow or hide your own monitor lines. The lines stay stored.",
+            on_off(on)
+        );
+    }
+    if on {
+        format!("Echo channel {channel}: your text and the other station")
+    } else {
+        format!("Echo channel {channel}: only the other station")
     }
 }
 

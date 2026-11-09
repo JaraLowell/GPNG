@@ -53,9 +53,14 @@ pub struct SessionChrome {
     /// `false` = plain ASCII monitor; `true` = extended DOS (CP437 / äöü).
     pub extended_ascii: bool,
     pub line_step: LineStep,
+    /// Monitor Echo. Channels with no own choice follow this.
     pub echo: bool,
+    /// Per channel. `None` follows `echo`. Index is the channel number.
+    pub channel_echo: Vec<Option<bool>>,
+    /// ♪ — connect, disconnect, and newline sounds. One switch for every channel.
     pub bell: bool,
     pub seven_plus: bool,
+    /// Remote — `//RUN` from the other station. One switch for every channel.
     pub remote: bool,
     pub bin_rx: bool,
     pub bin_tx: bool,
@@ -96,6 +101,7 @@ impl Default for SessionChrome {
             extended_ascii: false,
             line_step: LineStep::Hard,
             echo: true, // classic default — show local TX in the RX pane
+            channel_echo: Vec::new(),
             bell: true,
             seven_plus: false,
             remote: false,
@@ -143,6 +149,15 @@ impl SessionChrome {
             LineStep::Hard
         };
         s.echo = chrome.echo;
+        s.channel_echo = chrome
+            .channel_echo
+            .iter()
+            .map(|code| match code {
+                0 => Some(false),
+                1 => Some(true),
+                _ => None,
+            })
+            .collect();
         s.bell = chrome.bell;
         s.seven_plus = chrome.seven_plus;
         s.remote = chrome.remote;
@@ -164,6 +179,15 @@ impl SessionChrome {
             extended_ascii: self.extended_ascii,
             smooth_scroll: matches!(self.line_step, LineStep::Smooth),
             echo: self.echo,
+            channel_echo: self
+                .channel_echo
+                .iter()
+                .map(|choice| match choice {
+                    Some(false) => 0,
+                    Some(true) => 1,
+                    None => -1,
+                })
+                .collect(),
             bell: self.bell,
             seven_plus: self.seven_plus,
             remote: self.remote,
@@ -228,6 +252,36 @@ impl SessionChrome {
             self.channel_ctext.resize(idx + 1, PathBuf::new());
         }
         self.channel_ctext[idx] = path;
+    }
+
+    /// `0` is the Monitor switch. A channel uses its own choice, or the Monitor one.
+    pub fn echo_for(&self, channel: u8) -> bool {
+        if channel == 0 {
+            return self.echo;
+        }
+        self.channel_echo
+            .get(channel as usize)
+            .and_then(|choice| *choice)
+            .unwrap_or(self.echo)
+    }
+
+    /// Show or hide this channel's own lines. The rows stay in the pad.
+    pub fn set_echo_for(&mut self, channel: u8, on: bool) {
+        if channel == 0 {
+            self.echo = on;
+            return;
+        }
+        let idx = channel as usize;
+        if self.channel_echo.len() <= idx {
+            self.channel_echo.resize(idx + 1, None);
+        }
+        self.channel_echo[idx] = Some(on);
+    }
+
+    pub fn toggle_echo(&mut self, channel: u8) -> bool {
+        let on = !self.echo_for(channel);
+        self.set_echo_for(channel, on);
+        on
     }
 }
 
@@ -612,5 +666,29 @@ mod ctext_tests {
         session.set_channel_ctext(10, PathBuf::from(r"D:\data\CTEXT.GPI"));
         assert!(session.channel_ctext_path(10).is_none());
         assert_eq!(session.ctext_for(10).file_name().unwrap(), "CTEXT.GPI");
+    }
+}
+
+#[cfg(test)]
+mod echo_tests {
+    use super::SessionChrome;
+
+    #[test]
+    fn a_channel_can_hide_its_own_text_without_the_others() {
+        let mut session = SessionChrome::default();
+        assert!(session.echo_for(10));
+        assert!(!session.toggle_echo(10));
+        assert!(!session.echo_for(10));
+        assert!(session.echo_for(2));
+        assert!(session.echo);
+        let restored = SessionChrome::from_config(&session.to_config());
+        assert!(!restored.echo_for(10));
+        assert!(restored.echo_for(2));
+        session.echo = false;
+        assert!(!session.echo_for(2));
+        assert!(!session.echo_for(10));
+        session.set_echo_for(10, true);
+        assert!(session.echo_for(10));
+        assert!(!session.echo_for(2));
     }
 }

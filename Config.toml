@@ -80,6 +80,7 @@ channel_ctext = ["", "", "", "", "", "", "", "", "", "", ""]
 extended_ascii = false
 smooth_scroll = false
 echo = true
+channel_echo = []
 bell = true
 seven_plus = true
 remote = true
@@ -210,8 +211,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 442
-y = 121
+x = 1288
+y = 154
 width = 1160
 height = 818
 maximized = false

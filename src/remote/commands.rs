@@ -320,6 +320,9 @@ pub fn typed_runs_locally(linked: bool, action: RemoteAction) -> bool {
     !linked && action != RemoteAction::Bell
 }
 
+/// Sent when Remote is off and the other station tries `//RUN`.
+pub const REMOTE_OFF: &str = "<GPNG>: Remote commands are turned off by the sysop.\n";
+
 /// Parse a line that may be a remote command → `(action, args)`.
 ///
 /// A leading space means plain text (` //Help` in a help file), not a command.
@@ -420,6 +423,14 @@ fn split_verb(rest: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_off_answer_names_the_sysop() {
+        assert_eq!(
+            REMOTE_OFF,
+            "<GPNG>: Remote commands are turned off by the sysop.\n"
+        );
+    }
 
     #[test]
     fn parses_common_abbreviations() {

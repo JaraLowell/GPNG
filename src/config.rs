@@ -465,6 +465,12 @@ impl Config {
             .map(|path| toml_string(path))
             .collect::<Vec<_>>()
             .join(", ");
+        let channel_echo = c
+            .channel_echo
+            .iter()
+            .map(|code| code.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         let qrg = crate::journal::format_mhz(c.qrg_mhz);
         let body = format!(
             "qrg_mhz = {qrg}\n\
@@ -473,6 +479,7 @@ impl Config {
              extended_ascii = {}\n\
              smooth_scroll = {}\n\
              echo = {}\n\
+             channel_echo = [{channel_echo}]\n\
              bell = {}\n\
              seven_plus = {}\n\
              remote = {}\n\
@@ -1074,6 +1081,10 @@ pub struct SessionChromeConfig {
     /// Smooth (stairs) vs hard (`/`) line step.
     pub smooth_scroll: bool,
     pub echo: bool,
+    /// Per channel: `1` show our text, `0` hide it, `-1` follow `echo`.
+    /// Index is the channel number. Missing entries follow `echo`.
+    #[serde(default)]
+    pub channel_echo: Vec<i8>,
     /// Session-bar bell (♪).
     pub bell: bool,
     pub seven_plus: bool,
@@ -1098,6 +1109,7 @@ impl Default for SessionChromeConfig {
             extended_ascii: false,
             smooth_scroll: false,
             echo: true,
+            channel_echo: Vec::new(),
             bell: true,
             seven_plus: false,
             remote: false,

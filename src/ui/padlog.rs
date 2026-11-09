@@ -238,19 +238,30 @@ impl TextPad {
     /// repeat the three-space indent on every continuation. A wrap prefers a
     /// space. A `<0xNN>` / `<U+NNNN>` token moves as a whole.
     pub fn layout_job_wrapped(&self, columns: usize) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, true, false)
+        self.layout_job_wrapped_indent(columns, true, false, false)
     }
 
     /// Channel / spy / mail pads: wrap at `columns` with no continuation indent.
     pub fn layout_job_wrapped_plain(&self, columns: usize) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, false, false)
+        self.layout_job_wrapped_indent(columns, false, false, false)
     }
 
     /// Channel, BBS-Menu, and Box-List. `umlaut` maps the seven Latin-1
     /// glyphs back to äöüÄÖÜß. The stored row stays CP437, so turning the
     /// button off shows the shift again.
     pub fn layout_job_channel(&self, columns: usize, umlaut: bool) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, false, umlaut)
+        self.layout_job_channel_show(columns, umlaut, true)
+    }
+
+    /// Same as [`layout_job_channel`]. `show_own` false leaves our rows in the
+    /// pad and omits them from the picture.
+    pub fn layout_job_channel_show(
+        &self,
+        columns: usize,
+        umlaut: bool,
+        show_own: bool,
+    ) -> LayoutJob {
+        self.layout_job_wrapped_indent(columns, false, umlaut, !show_own)
     }
 
     fn layout_job_wrapped_indent(
@@ -258,11 +269,15 @@ impl TextPad {
         columns: usize,
         monitor_indent: bool,
         umlaut: bool,
+        hide_own: bool,
     ) -> LayoutJob {
         let mut job = LayoutJob::default();
         let font = FontId::monospace(PAD_FONT_SIZE);
         let mut first = true;
         for line in &self.lines {
+            if hide_own && line.kind == PadKind::Own {
+                continue;
+            }
             let indent = if monitor_indent {
                 monitor_wrap_indent(line)
             } else {
@@ -793,6 +808,20 @@ mod tests {
         assert_eq!(shown[2], "KLMNO");
         assert!(shown.iter().all(|row| row.chars().count() <= 10));
         assert!(shown.iter().all(|row| !row.starts_with("   ")));
+    }
+
+    #[test]
+    fn hiding_our_rows_leaves_them_stored() {
+        let mut pad = TextPad::new(8);
+        pad.push(PadKind::Own, "our line");
+        pad.push(PadKind::Incoming, "their line");
+        let hidden = pad.layout_job_channel_show(40, false, false);
+        assert!(!hidden.text.contains("our line"));
+        assert!(hidden.text.contains("their line"));
+        let shown = pad.layout_job_channel_show(40, false, true);
+        assert!(shown.text.contains("our line"));
+        assert!(shown.text.contains("their line"));
+        assert_eq!(pad.lines.len(), 2);
     }
 
     #[test]

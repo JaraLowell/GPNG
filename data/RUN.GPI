@@ -3,9 +3,6 @@
 | Programs in EXTERNAL
 |
 | FREE       -  Memory total, used, and still free
-| Python, PHP, Perl, Ruby, Node, Lua, Java
-| 300 seconds with no input and no new text closes it
+| DOS        -  MS-DOS 6.20 window on the USER folder
 |
-| //RUN ?              list
-| //RUN FREE           run FREE
-| //FREE               the same program
+| //RUN [PROGRAM] to run a programm

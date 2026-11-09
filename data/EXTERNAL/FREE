@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """//RUN FREE — memory total, used, and still free.
 
+Start it from a linked channel with //RUN FREE, or //FREE (Remote must
+be on). It prints one report, reads no input, and exits. Bare //RUN is
+different: that sends RUN.GPI and starts nothing.
+
 The first line is a shebang. Linux can run that itself. GPNG reads it
 on Linux, macOS, and Windows and starts the installed Python.
 """
