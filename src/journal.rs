@@ -69,9 +69,7 @@ pub fn normalize_qrg(raw: &str) -> Result<String, String> {
     } else {
         format!("{whole}.{frac}")
     };
-    let mhz: f64 = text
-        .parse()
-        .map_err(|_| format!("invalid QRG '{t}'"))?;
+    let mhz: f64 = text.parse().map_err(|_| format!("invalid QRG '{t}'"))?;
     if !(0.0..=1000.0).contains(&mhz) {
         return Err("QRG out of range".into());
     }

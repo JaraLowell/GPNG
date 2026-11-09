@@ -58,9 +58,7 @@ pub fn classify(peer: Option<&str>, args: &str) -> MailAsk {
     let upper = args.to_ascii_uppercase();
     if let Some(own) = own {
         let stem = own.trim_end_matches(".GPM");
-        let asked = upper
-            .strip_suffix(".GPM")
-            .unwrap_or(upper.as_str());
+        let asked = upper.strip_suffix(".GPM").unwrap_or(upper.as_str());
         let asked = crate::cipher::base_call(asked);
         if upper == own || upper == stem || asked == stem {
             return MailAsk::Own;
@@ -115,9 +113,7 @@ pub fn read_text(dir: &Path, call: &str) -> Option<String> {
 pub fn append_message(dir: &Path, to: &str, from: &str, at: &str, msg: &str) -> Result<(), String> {
     ensure_mail_dir(dir).map_err(|e| format!("MAIL: {e}"))?;
     let path = file_path(dir, to)?;
-    let to_name = filename(to)?
-        .trim_end_matches(".GPM")
-        .to_string();
+    let to_name = filename(to)?.trim_end_matches(".GPM").to_string();
     let from_name = crate::cipher::base_call(from);
     if from_name.is_empty() || !from_name.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err("mail needs a from call".into());
@@ -130,8 +126,7 @@ pub fn append_message(dir: &Path, to: &str, from: &str, at: &str, msg: &str) -> 
         .open(&path)
         .map_err(|e| format!("mail: {e}"))?;
     if existed {
-        file.write_all(b"\n\n")
-            .map_err(|e| format!("mail: {e}"))?;
+        file.write_all(b"\n\n").map_err(|e| format!("mail: {e}"))?;
     }
     file.write_all(block.as_bytes())
         .map_err(|e| format!("mail: {e}"))?;

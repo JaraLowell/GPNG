@@ -298,7 +298,10 @@ fn monitor_nonprint_token(code: u32) -> String {
 fn push_cp437_byte(out: &mut String, b: u8, umlaut: bool) {
     let glyph = crate::ui::editor::cp437_char(b);
     if umlaut {
-        out.push_str(&crate::ui::editor::show_channel_text(&glyph.to_string(), true));
+        out.push_str(&crate::ui::editor::show_channel_text(
+            &glyph.to_string(),
+            true,
+        ));
     } else {
         out.push(glyph);
     }
@@ -761,14 +764,8 @@ mod tests {
 
     #[test]
     fn connect_path_is_dest_then_digis() {
-        assert_eq!(
-            split_connect_hops("NL0AS,NL1AS"),
-            ["NL0AS", "NL1AS"]
-        );
-        assert_eq!(
-            split_connect_hops("nl0as via nl1as"),
-            ["NL0AS", "NL1AS"]
-        );
+        assert_eq!(split_connect_hops("NL0AS,NL1AS"), ["NL0AS", "NL1AS"]);
+        assert_eq!(split_connect_hops("nl0as via nl1as"), ["NL0AS", "NL1AS"]);
         assert_eq!(
             split_connect_hops("NL0AS V NL1AS,DB0FN"),
             ["NL0AS", "NL1AS", "DB0FN"]
@@ -898,7 +895,10 @@ mod tests {
     fn monitor_bytes_keep_text_and_show_binary() {
         assert_eq!(bytes_to_monitor_body(b"hi\r", false), "hi");
         assert_eq!(bytes_to_monitor_body(b"a\x1cb", false), "a<0x1c>b");
-        assert_eq!(bytes_to_monitor_body(b"a\tb\x7fc", false), "a<0x09>b<0x7f>c");
+        assert_eq!(
+            bytes_to_monitor_body(b"a\tb\x7fc", false),
+            "a<0x09>b<0x7f>c"
+        );
         // Umlaut-on: Latin-1 ä byte paints as ä. Off: CP437 picture for 0xE4.
         assert_eq!(bytes_to_monitor_body(&[0xE4], true), "ä");
         assert_eq!(bytes_to_monitor_body(&[0xE4], false), "Σ");
@@ -906,11 +906,14 @@ mod tests {
         assert_eq!(bytes_to_monitor_body(&[0xA4], false), "ñ"); // CP437, not Latin-1 ¤
         assert_eq!(bytes_to_monitor_body(&[0x80], true), "Ç");
         assert_eq!(bytes_to_monitor_body("ä".as_bytes(), false), "ä"); // UTF-8 in set
-        // Euro is not in the CP437 console set → hex the UTF-8 bytes.
+                                                                       // Euro is not in the CP437 console set → hex the UTF-8 bytes.
         assert_eq!(
             bytes_to_monitor_body("€".as_bytes(), false),
             "<0xe2><0x82><0xac>"
         );
-        assert_eq!(bytes_to_monitor_body(&[0xFF, 0x00], false), "\u{00a0}<0x00>");
+        assert_eq!(
+            bytes_to_monitor_body(&[0xFF, 0x00], false),
+            "\u{00a0}<0x00>"
+        );
     }
 }

@@ -26,13 +26,19 @@ pub fn normalize_newlines(text: &str) -> String {
 /// do not start a new one. `max_len` is counted in UTF-8 bytes.
 pub fn pack_text_payloads(text: &str, max_len: usize) -> Vec<String> {
     let max_len = max_len.max(1);
-    let normalized = normalize_newlines(text);
-    if normalized.is_empty() {
+    if text.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
-    let mut buf = String::new();
-    for ch in normalized.chars() {
+    let mut buf = String::with_capacity(max_len.min(text.len()));
+    let mut chars = text.chars().peekable();
+    while let Some(mut ch) = chars.next() {
+        if ch == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            ch = '\n';
+        }
         let n = ch.len_utf8();
         if !buf.is_empty() && buf.len() + n > max_len {
             out.push(std::mem::take(&mut buf));
@@ -55,23 +61,30 @@ pub fn pack_text_payloads(text: &str, max_len: usize) -> Vec<String> {
 /// A blank row (two breaks in a row) is kept so column art stays aligned.
 pub fn take_rx_lines(pending: &mut String, chunk: &str) -> Vec<String> {
     pending.push_str(chunk);
+    let bytes = pending.as_bytes();
     let mut lines = Vec::new();
-    loop {
-        let bytes = pending.as_bytes();
-        let Some(pos) = bytes.iter().position(|&b| b == b'\n' || b == b'\r') else {
-            break;
-        };
+    let mut start = 0;
+    let mut consumed = 0;
+    while let Some(relative_pos) = bytes[start..]
+        .iter()
+        .position(|&b| b == b'\n' || b == b'\r')
+    {
+        let pos = start + relative_pos;
         // A CR at the very end may be the first byte of a CRLF in the next packet.
         if bytes[pos] == b'\r' && pos + 1 == bytes.len() {
             break;
         }
-        let line = pending[..pos].to_string();
+        let line = pending[start..pos].to_string();
         let mut next = pos + 1;
         if bytes[pos] == b'\r' && bytes.get(pos + 1) == Some(&b'\n') {
             next += 1;
         }
-        pending.replace_range(..next, "");
+        consumed = next;
+        start = next;
         lines.push(line);
+    }
+    if consumed > 0 {
+        pending.drain(..consumed);
     }
     lines
 }
@@ -162,5 +175,27 @@ mod tests {
                 "Om volledig van de server faciliteiten van dit station gebruik te maken,",
             ]
         );
+    }
+
+    #[test]
+    fn receiver_consumes_many_rows_in_one_pass() {
+        let mut pending = String::new();
+        let rows = take_rx_lines(&mut pending, "one\r\ntwo\nthree\rfour");
+        assert_eq!(rows, ["one", "two", "three"]);
+        assert_eq!(pending, "four");
+    }
+
+    #[test]
+    fn receiver_keeps_a_trailing_cr_until_the_next_chunk() {
+        let mut pending = String::new();
+        assert_eq!(take_rx_lines(&mut pending, "first\nsecond\r"), ["first"]);
+        assert_eq!(pending, "second\r");
+        assert_eq!(take_rx_lines(&mut pending, "\nthird"), ["second"]);
+        assert_eq!(pending, "third");
+    }
+
+    #[test]
+    fn packing_normalizes_newlines_without_splitting_utf8() {
+        assert_eq!(pack_text_payloads("é\r\n🙂x", 4), ["é\n", "🙂", "x"]);
     }
 }

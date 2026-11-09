@@ -237,10 +237,7 @@ impl Running {
         let mut text = self.take_text(false);
         self.note_cap_line(&mut text);
         self.note_exit();
-        if !self.code_known
-            && !self.link_stopped
-            && self.replied.elapsed() >= self.quiet_for
-        {
+        if !self.code_known && !self.link_stopped && self.replied.elapsed() >= self.quiet_for {
             self.silent = true;
             self.report_timeout = link_up;
             let _ = self.stdin.take();
@@ -898,20 +895,14 @@ struct JobExtendedLimit {
 #[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
-    fn CreateJobObjectW(
-        attrs: *mut std::ffi::c_void,
-        name: *const u16,
-    ) -> *mut std::ffi::c_void;
+    fn CreateJobObjectW(attrs: *mut std::ffi::c_void, name: *const u16) -> *mut std::ffi::c_void;
     fn SetInformationJobObject(
         job: *mut std::ffi::c_void,
         class: i32,
         info: *const std::ffi::c_void,
         len: u32,
     ) -> i32;
-    fn AssignProcessToJobObject(
-        job: *mut std::ffi::c_void,
-        process: *mut std::ffi::c_void,
-    ) -> i32;
+    fn AssignProcessToJobObject(job: *mut std::ffi::c_void, process: *mut std::ffi::c_void) -> i32;
     fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
 }
 
@@ -1738,7 +1729,10 @@ mod tests {
                     }
                     thread::sleep(Duration::from_millis(50));
                 }
-                assert!(!gate.is_open(), "the process stays after the script left: {saw}");
+                assert!(
+                    !gate.is_open(),
+                    "the process stays after the script left: {saw}"
+                );
                 assert!(!gate.occupied(), "the handle was not dropped: {saw}");
                 assert!(saw.contains("hi Jara"), "{saw}");
             }

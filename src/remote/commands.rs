@@ -474,8 +474,7 @@ fn match_verb(verb_up: &str) -> Option<RemoteAction> {
         for key in entry.keys {
             if verb_matches(verb_up, key, entry.min_prefix) {
                 let score = key.len().min(verb_up.len());
-                if best.is_none_or(|(_, s, klen)| score > s || (score == s && key.len() < klen))
-                {
+                if best.is_none_or(|(_, s, klen)| score > s || (score == s && key.len() < klen)) {
                     best = Some((entry.action, score, key.len()));
                 }
             }
@@ -548,7 +547,10 @@ mod tests {
         assert_eq!(parse_line("//PR").unwrap().0, RemoteAction::Prompt);
         assert_eq!(parse_line("//PRO").unwrap().0, RemoteAction::Prompt);
         assert_eq!(parse_line("//PROMPT ON").unwrap().0, RemoteAction::Prompt);
-        assert_eq!(parse_line("//CSTATUS").unwrap().0, RemoteAction::ChannelStatus);
+        assert_eq!(
+            parse_line("//CSTATUS").unwrap().0,
+            RemoteAction::ChannelStatus
+        );
         assert_eq!(parse_line("//CS").unwrap().0, RemoteAction::ChannelStatus);
         assert_eq!(parse_line("//CST").unwrap().0, RemoteAction::ChannelStatus);
         assert_eq!(parse_line("//C").unwrap().0, RemoteAction::RemoteConnect);

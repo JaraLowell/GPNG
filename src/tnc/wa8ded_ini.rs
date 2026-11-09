@@ -301,12 +301,7 @@ JHOST0
 
     #[test]
     fn timing_banner_matches_python_layout() {
-        let open = vec![
-            "P 63".into(),
-            "W 9".into(),
-            "T 45".into(),
-            "O 3".into(),
-        ];
+        let open = vec!["P 63".into(), "W 9".into(), "T 45".into(), "O 3".into()];
         let replies = vec![
             ("F".into(), "5".into()),
             ("@T2".into(), "100".into()),

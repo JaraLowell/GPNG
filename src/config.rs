@@ -536,12 +536,7 @@ impl Config {
             if s.backup { "true" } else { "false" },
         )?;
         put_key(path, "session", "rx_click", &s.rx_click.to_string())?;
-        put_key(
-            path,
-            "session",
-            "connect_bell",
-            &s.connect_bell.to_string(),
-        )?;
+        put_key(path, "session", "connect_bell", &s.connect_bell.to_string())?;
         put_key(
             path,
             "session",
@@ -572,12 +567,7 @@ impl Config {
         put_key(path, "session", "bbs_channel", &s.bbs_channel.to_string())?;
         put_key(path, "session", "list_channel", &s.list_channel.to_string())?;
         put_key(path, "session", "file_drawer", &toml_string(&s.file_drawer))?;
-        put_key(
-            path,
-            "session",
-            "auto_spy",
-            &toml_string_list(&s.auto_spy),
-        )?;
+        put_key(path, "session", "auto_spy", &toml_string_list(&s.auto_spy))?;
         put_key(
             path,
             "session",

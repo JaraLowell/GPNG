@@ -137,11 +137,7 @@ impl SessionChrome {
         } else {
             s.ctext_path = default_ctext_path();
         }
-        s.channel_ctext = chrome
-            .channel_ctext
-            .iter()
-            .map(PathBuf::from)
-            .collect();
+        s.channel_ctext = chrome.channel_ctext.iter().map(PathBuf::from).collect();
         s.extended_ascii = chrome.extended_ascii;
         s.line_step = if chrome.smooth_scroll {
             LineStep::Smooth

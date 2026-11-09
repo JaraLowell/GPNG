@@ -108,8 +108,7 @@ pub fn format_gp_offer(length: u64, crc: u16, ftime: u32, path: &str) -> String 
 pub fn pack_ftime(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> u32 {
     let year = (year - 1980).clamp(0, 127) as u32;
     let tsec = (sec / 2) & 31;
-    tsec
-        | ((min & 63) << 5)
+    tsec | ((min & 63) << 5)
         | ((hour & 31) << 11)
         | ((day & 31) << 16)
         | ((month & 15) << 21)
@@ -417,7 +416,7 @@ impl AutoBinState {
         (i, None)
     }
 
-        pub fn tx_active(&self) -> bool {
+    pub fn tx_active(&self) -> bool {
         matches!(self, Self::WaitPeerAck { .. } | Self::Sending { .. })
     }
 
@@ -593,7 +592,9 @@ mod tests {
         let replies = st.on_text_line("#BIN#4#|9#$00000001#DEFS.TFC", false);
         assert!(replies.is_empty());
         assert_eq!(
-            st.pending_offer().and_then(|o| o.filename.clone()).as_deref(),
+            st.pending_offer()
+                .and_then(|o| o.filename.clone())
+                .as_deref(),
             Some("DEFS.TFC")
         );
         assert!(st.begin_receive());

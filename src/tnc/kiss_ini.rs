@@ -536,8 +536,8 @@ pub fn splice_paclen_command(lines: &[String], paclen: Option<u16>) -> Vec<Strin
 }
 
 pub fn store_paclen(path: &Path, value: u16) -> Result<(), String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let updated = rewrite_paclen(&text, value)?;
     std::fs::write(path, updated).map_err(|e| format!("write {}: {e}", path.display()))
 }
@@ -645,8 +645,8 @@ pub fn load_params(path: &Path) -> Option<Vec<KissParam>> {
 /// Replace the stored arg for `letter` inside `[params]`. The rest of the
 /// file, including comments, stays as it was.
 pub fn store_param(path: &Path, letter: char, value: u8) -> Result<(), String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let updated = rewrite_param_value(&text, letter, value)?;
     std::fs::write(path, updated).map_err(|e| format!("write {}: {e}", path.display()))
 }
@@ -881,8 +881,20 @@ W 3 30 SLOTTIME   ; slot
 
     #[test]
     fn esc_line_parses_letter_and_number() {
-        assert_eq!(parse_esc("W 30"), EscKiss::Set { letter: 'W', value: 30 });
-        assert_eq!(parse_esc("p160"), EscKiss::Set { letter: 'P', value: 160 });
+        assert_eq!(
+            parse_esc("W 30"),
+            EscKiss::Set {
+                letter: 'W',
+                value: 30
+            }
+        );
+        assert_eq!(
+            parse_esc("p160"),
+            EscKiss::Set {
+                letter: 'P',
+                value: 160
+            }
+        );
         assert_eq!(parse_esc("T"), EscKiss::Show('T'));
         assert_eq!(parse_esc("W 300"), EscKiss::BadValue);
         assert_eq!(parse_esc("M IUSC"), EscKiss::Ignore);

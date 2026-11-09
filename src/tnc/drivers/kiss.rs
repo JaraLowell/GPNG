@@ -415,12 +415,7 @@ fn write_kiss_data(
 }
 
 /// TAPR host→TNC parameter frame: `FEND | (port<<4)|cmd | arg | FEND`.
-fn write_kiss_command(
-    link: &mut KissLink,
-    port: u8,
-    cmd: u8,
-    arg: u8,
-) -> Result<(), TncError> {
+fn write_kiss_command(link: &mut KissLink, port: u8, cmd: u8, arg: u8) -> Result<(), TncError> {
     let type_byte = (port << 4) | (cmd & 0x0F);
     let frame = [FEND, type_byte, arg, FEND];
     link.write_all(&frame)?;
@@ -462,10 +457,8 @@ fn apply_kiss_params(
                 )));
             }
             Err(err) => {
-                let _ = events.blocking_send(TncEvent::Warning(format!(
-                    "kiss {}: {err}",
-                    param.name
-                )));
+                let _ =
+                    events.blocking_send(TncEvent::Warning(format!("kiss {}: {err}", param.name)));
             }
         }
     }
@@ -588,8 +581,8 @@ fn unescape_kiss(raw: &[u8]) -> Option<(u8, Vec<u8>)> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::timing::TimingParams;
+    use super::*;
 
     #[test]
     fn plain_text_lines_become_monitor_frames() {

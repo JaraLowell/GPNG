@@ -139,6 +139,9 @@ const VGA_DARK_GREEN: Color32 = Color32::from_rgb(0, 85, 0);
 const VGA_GREEN: Color32 = Color32::from_rgb(0, 170, 0);
 const VGA_GRAY: Color32 = Color32::from_rgb(170, 170, 170);
 const VGA_DARK_GRAY: Color32 = Color32::from_rgb(85, 85, 85);
+const VGA_CYAN: Color32 = Color32::from_rgb(0, 170, 170);
+/// CHANNEL1.png scroll column: 16px, same scale as the 1px bevels.
+const DOS_SCROLL_W: f32 = 16.0;
 /// Classic GP text-window colours (Monitor / Channel / Spy pads).
 
 /// Thin 3D rim for the small session cells. Same colours as the menus:
@@ -982,10 +985,7 @@ impl GpGuiApp {
             return;
         }
         let (dir, name) = match auto_nnn {
-            Some(nnn) => (
-                self.cfg.paths.spy_dir.as_path(),
-                format!("{call}.{nnn:03}"),
-            ),
+            Some(nnn) => (self.cfg.paths.spy_dir.as_path(), format!("{call}.{nnn:03}")),
             None => (self.cfg.paths.save_dir.as_path(), format!("{call}.spy")),
         };
         if let Err(e) = crate::paths::ensure_dir(dir) {
@@ -2665,7 +2665,12 @@ impl GpGuiApp {
     /// Our own transmissions are not stations we heard.
     fn note_heard_on_monitor(&mut self, src: &str, dest: &str, via: &[String]) {
         let src = src.trim();
-        if src.is_empty() || self.our_air_calls().iter().any(|c| c.eq_ignore_ascii_case(src)) {
+        if src.is_empty()
+            || self
+                .our_air_calls()
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(src))
+        {
             return;
         }
         let via = via
@@ -3007,8 +3012,8 @@ impl GpGuiApp {
                     text = plain;
                 }
             }
-            let cut = parse_line(&text)
-                .is_some_and(|(action, _)| action == RemoteAction::CutTransfer);
+            let cut =
+                parse_line(&text).is_some_and(|(action, _)| action == RemoteAction::CutTransfer);
             if !self.seven_capturing(channel) || cut {
                 self.maybe_remote_line(channel, &text, kind == PadKind::Incoming);
             }
@@ -3265,9 +3270,10 @@ impl GpGuiApp {
             return gp_notice_from(info);
         }
         if autobin::is_abort_payload(info)
-            && self.autobin.as_ref().is_some_and(|live| {
-                live.channel == channel && live.state.pending_offer().is_some()
-            })
+            && self
+                .autobin
+                .as_ref()
+                .is_some_and(|live| live.channel == channel && live.state.pending_offer().is_some())
         {
             self.autobin = None;
             self.session.bin_rx = false;
@@ -3615,9 +3621,10 @@ impl GpGuiApp {
     /// `//CUT` on this channel. The receiver sends the abort token.
     /// The sender stops the file. Either way the channel is back in chat.
     fn cut_transfer(&mut self, channel: u8) -> bool {
-        let bin_tx = self.autobin.as_ref().is_some_and(|live| {
-            live.channel == channel && live.state.tx_active()
-        });
+        let bin_tx = self
+            .autobin
+            .as_ref()
+            .is_some_and(|live| live.channel == channel && live.state.tx_active());
         if bin_tx {
             self.stop_bin_sender();
             self.transfer_cut = true;
@@ -7011,10 +7018,7 @@ impl GpGuiApp {
     }
 
     fn chat_target(&self, channel: u8) -> Option<u8> {
-        self.channel_chat
-            .get(channel as usize)
-            .copied()
-            .flatten()
+        self.channel_chat.get(channel as usize).copied().flatten()
     }
 
     /// CALL, or `CALL (Name)` when NAMES.GP knows them.
@@ -8862,7 +8866,10 @@ fn auto_spy_line_matches(line: &str, auto: &[String], ignore: &[String]) -> bool
     if auto.is_empty() {
         return false;
     }
-    if !auto.iter().any(|p| !p.is_empty() && line.contains(p.as_str())) {
+    if !auto
+        .iter()
+        .any(|p| !p.is_empty() && line.contains(p.as_str()))
+    {
         return false;
     }
     !ignore
@@ -10846,34 +10853,62 @@ impl GpGuiApp {
             .map(|(i, e)| (i, e.display_line()))
             .collect();
         let mut clicked: Option<usize> = None;
+        let row_font = FontId::monospace(14.0);
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+            let avail = ui.available_size();
+            ui.set_min_size(avail);
+            ui.painter().rect_filled(rect, 0.0, bg);
+            // No stroke: a right/bottom line sits on the monitor blue and shows through.
             Frame::none()
                 .fill(bg)
-                .stroke(Stroke::new(1.0, Color32::from_rgb(85, 85, 85)))
-                .inner_margin(6.0)
+                .inner_margin(0.0)
                 .show(ui, |ui| {
-                    ui.set_min_size(rect.size() - Vec2::splat(2.0));
-                    if pick {
-                        ui.label(
-                            RichText::new("SPY — click a station, then confirm")
-                                .color(Color32::from_rgb(0, 0, 128))
-                                .strong(),
-                        );
-                    }
-                    let bar_vis = if show_bar {
-                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+                    let full = ui.max_rect();
+                    ui.set_min_size(full.size());
+                    let bar_w = if show_bar {
+                        DOS_SCROLL_W.min(full.width() * 0.5)
                     } else {
-                        egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+                        0.0
                     };
-                    let mut list = egui::ScrollArea::both()
-                        .id_salt("mheard_list")
-                        .auto_shrink([false, false])
-                        .scroll_bar_visibility(bar_vis);
-                    if open_at_top {
-                        list = list.vertical_scroll_offset(0.0);
-                    }
-                    list.show(ui, |ui| {
+                    let text_outer = Rect::from_min_max(
+                        full.min,
+                        Pos2::new(full.right() - bar_w, full.bottom()),
+                    );
+                    let text = Rect::from_min_max(
+                        Pos2::new(text_outer.left() + 6.0, text_outer.top() + 4.0),
+                        Pos2::new(
+                            (text_outer.right() - 4.0).max(text_outer.left() + 8.0),
+                            (text_outer.bottom() - 4.0).max(text_outer.top() + 8.0),
+                        ),
+                    );
+                    let bar_rect = Rect::from_min_max(
+                        Pos2::new(text_outer.right(), full.top()),
+                        full.right_bottom(),
+                    );
+                    let row_h = ui.fonts(|f| f.row_height(&row_font)).max(1.0) + 2.0;
+
+                    let mut snap = None;
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text), |ui| {
+                        ui.set_min_size(text.size());
+                        if pick {
+                            ui.label(
+                                RichText::new("SPY — click a station, then confirm")
+                                    .color(Color32::from_rgb(0, 0, 128))
+                                    .strong(),
+                            );
+                        }
+                        // Wide call lines still shift-scroll. The visible bar is the DOS one.
+                        let mut list = egui::ScrollArea::both()
+                            .id_salt("mheard_list")
+                            .auto_shrink([false, false])
+                            .scroll_bar_visibility(
+                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                            );
+                        if open_at_top {
+                            list = list.vertical_scroll_offset(0.0);
+                        }
+                        let out = list.show(ui, |ui| {
                             if nudge != 0.0 {
                                 ui.scroll_with_delta(Vec2::new(0.0, nudge));
                             }
@@ -10883,48 +10918,61 @@ impl GpGuiApp {
                                         "No stations heard yet — APRS/AX.25 UI frames appear here.",
                                     )
                                     .color(Color32::BLACK)
-                                    .font(FontId::monospace(14.0)),
+                                    .font(row_font.clone()),
                                 );
-                                return;
-                            }
-                            for (i, line) in &lines {
-                                let is_sel = selected == Some(*i);
-                                let fill = if is_sel {
-                                    Color32::from_rgb(0, 0, 170)
-                                } else {
-                                    Color32::TRANSPARENT
-                                };
-                                let fg = if is_sel {
-                                    Color32::WHITE
-                                } else {
-                                    Color32::BLACK
-                                };
-                                let resp = egui::Frame::none()
-                                    .fill(fill)
-                                    .inner_margin(egui::Margin::symmetric(4.0, 1.0))
-                                    .show(ui, |ui| {
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(line)
-                                                    .color(fg)
-                                                    .font(FontId::monospace(14.0)),
+                            } else {
+                                for (i, line) in &lines {
+                                    let is_sel = selected == Some(*i);
+                                    let fill = if is_sel {
+                                        Color32::from_rgb(0, 0, 170)
+                                    } else {
+                                        Color32::TRANSPARENT
+                                    };
+                                    let fg = if is_sel {
+                                        Color32::WHITE
+                                    } else {
+                                        Color32::BLACK
+                                    };
+                                    let resp = egui::Frame::none()
+                                        .fill(fill)
+                                        .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                                        .show(ui, |ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(line)
+                                                        .color(fg)
+                                                        .font(row_font.clone()),
+                                                )
+                                                .wrap_mode(TextWrapMode::Extend)
+                                                .sense(Sense::click()),
                                             )
-                                            .wrap_mode(TextWrapMode::Extend)
-                                            .sense(Sense::click()),
-                                        )
-                                    })
-                                    .response;
-                                // Click on frame or label.
-                                let hit = ui.interact(
-                                    resp.rect,
-                                    ui.id().with(("mh_row", *i)),
-                                    Sense::click(),
-                                );
-                                if hit.clicked() || resp.clicked() {
-                                    clicked = Some(*i);
+                                        })
+                                        .response;
+                                    let hit = ui.interact(
+                                        resp.rect,
+                                        ui.id().with(("mh_row", *i)),
+                                        Sense::click(),
+                                    );
+                                    if hit.clicked() || resp.clicked() {
+                                        clicked = Some(*i);
+                                    }
                                 }
                             }
                         });
+                        snap = Some((
+                            out.id,
+                            out.state,
+                            out.content_size.y,
+                            out.inner_rect.height(),
+                        ));
+                    });
+                    if show_bar && bar_rect.width() > 4.0 {
+                        if let Some((sid, mut state, content_h, view_h)) = snap {
+                            drive_dos_bar(
+                                ui, bar_rect, sid, &mut state, content_h, view_h, row_h,
+                            );
+                        }
+                    }
                 });
         });
 
@@ -11018,9 +11066,10 @@ impl GpGuiApp {
                                                             id,
                                                         )
                                                         .unwrap_or_default();
-                                                        let cc = self.editor.cursor_cc.min(
-                                                            self.editor.text.chars().count(),
-                                                        );
+                                                        let cc = self
+                                                            .editor
+                                                            .cursor_cc
+                                                            .min(self.editor.text.chars().count());
                                                         let end = egui::text::CCursor::new(cc);
                                                         state.cursor.set_char_range(Some(
                                                             egui::text::CCursorRange::one(end),
@@ -11302,13 +11351,15 @@ impl GpGuiApp {
                 resp.clone().on_hover_text(hint);
             }
             if matches!(action, SessionClick::Echo) {
-                resp.clone().on_hover_text(echo_hint(echo_slot(self.active), self.session.echo_for(echo_slot(self.active))));
+                resp.clone().on_hover_text(echo_hint(
+                    echo_slot(self.active),
+                    self.session.echo_for(echo_slot(self.active)),
+                ));
             }
             if matches!(action, SessionClick::Bell) {
                 let state = on_off(self.session.bell);
-                resp.clone().on_hover_text(format!(
-                    "♪ {state}\nConnect, disconnect and newline sounds"
-                ));
+                resp.clone()
+                    .on_hover_text(format!("♪ {state}\nConnect, disconnect and newline sounds"));
             }
             if matches!(action, SessionClick::Remote) {
                 let hint = if self.session.remote {
@@ -11356,8 +11407,7 @@ impl GpGuiApp {
         ];
         // Square COM lamp sits immediately left of ScrLock on every session bar.
         let lamp_w = h;
-        let trail_w: f32 =
-            trail.iter().map(|(_, _, _, w, _)| w + gap).sum::<f32>() + lamp_w + gap;
+        let trail_w: f32 = trail.iter().map(|(_, _, _, w, _)| w + gap).sum::<f32>() + lamp_w + gap;
         let lamp_x = rect.right() - trail_w - 2.0;
         let mut tx = lamp_x + lamp_w + gap;
         for (label, lit, action, w, glyph) in trail {
@@ -11907,7 +11957,11 @@ impl GpGuiApp {
         raw: &str,
     ) -> Result<(String, Vec<String>, Vec<String>), String> {
         let raw = raw.trim();
-        if raw.contains(',') || raw.split_whitespace().any(|w| w.eq_ignore_ascii_case("via")) {
+        if raw.contains(',')
+            || raw
+                .split_whitespace()
+                .any(|w| w.eq_ignore_ascii_case("via"))
+        {
             let (dest, vias) = Self::parse_connect_target(raw)?;
             return Ok((dest, vias, Vec::new()));
         }
@@ -13514,11 +13568,7 @@ fn load_link_lamps(ctx: &Context) -> Option<TextureHandle> {
         [rgba.width() as usize, rgba.height() as usize],
         rgba.as_raw(),
     );
-    Some(ctx.load_texture(
-        "gp_link_lamps",
-        color,
-        TextureOptions::NEAREST,
-    ))
+    Some(ctx.load_texture("gp_link_lamps", color, TextureOptions::NEAREST))
 }
 
 fn paint_icon_grid(ui: &mut Ui, edit: &mut IconEdit) {
@@ -14037,9 +14087,9 @@ fn text_columns(ui: &Ui) -> usize {
     let char_w = ui
         .fonts(|fonts| fonts.glyph_width(&FontId::monospace(padlog::PAD_FONT_SIZE), '0'))
         .max(1.0);
-    // Two cells of slack: pixel rounding + room so a vertical bar cannot shove
-    // a wrapped row past the viewport and invent a horizontal scrollbar.
-    let width = (ui.available_width() - 2.0 * char_w).max(char_w);
+    // The DOS bar sits outside this viewport. A few pixels of slack keep
+    // rounding from opening a horizontal bar.
+    let width = (ui.available_width() - 4.0).max(char_w);
     ((width / char_w).floor() as usize).max(8)
 }
 
@@ -14129,12 +14179,339 @@ fn soft_scroll_toward(offset: f32, max_off: f32, carry: f32, dt: f32, smooth: bo
     }
 }
 
+/// Scroll column from CHANNEL1.png: arrow buttons, cyan shaft, gray thumb.
+struct DosBarParts {
+    up: Rect,
+    down: Rect,
+    /// Cyan interior. The thumb travels inside this rect.
+    track: Rect,
+    thumb: Rect,
+}
+
+#[derive(Clone, Copy, Default)]
+struct DosHeld {
+    up: bool,
+    down: bool,
+    thumb: bool,
+}
+
+/// Press that started on an arrow, the shaft, or the thumb.
+#[derive(Clone, Copy, Default)]
+struct DosPress {
+    zone: u8,
+    grab: f32,
+    next: f64,
+    repeats: u8,
+}
+
+fn dos_bar_parts(bar: Rect, offset: f32, max_off: f32, viewport: f32) -> DosBarParts {
+    let arrow = bar
+        .width()
+        .min(bar.height() * 0.45)
+        .min(bar.height() * 0.5)
+        .max(0.0);
+    let up = Rect::from_min_size(bar.min, Vec2::new(bar.width(), arrow));
+    let down = Rect::from_min_size(
+        Pos2::new(bar.left(), (bar.bottom() - arrow).max(bar.top())),
+        Vec2::new(bar.width(), arrow),
+    );
+    // Three pixels of chrome each side: white, gray, black | cyan | white, gray, black.
+    let track = Rect::from_min_max(
+        Pos2::new(bar.left() + 3.0, up.bottom()),
+        Pos2::new(
+            (bar.right() - 3.0).max(bar.left() + 3.0),
+            down.top().max(up.bottom()),
+        ),
+    );
+    let thumb = dos_thumb(track, offset, max_off, viewport);
+    DosBarParts {
+        up,
+        down,
+        track,
+        thumb,
+    }
+}
+
+/// Short thumb at the top when the pad fits (MONITOR.png). Otherwise the
+/// thumb is the viewport's share of the shaft, never shorter than that stub.
+fn dos_thumb(track: Rect, offset: f32, max_off: f32, viewport: f32) -> Rect {
+    if track.height() < 2.0 || track.width() < 2.0 {
+        return Rect::from_min_size(track.min, Vec2::ZERO);
+    }
+    let min_h = 20.0_f32.min(track.height());
+    let thumb_h = if max_off <= 0.5 {
+        min_h
+    } else {
+        let content = (viewport + max_off).max(1.0);
+        let ratio = (viewport / content).clamp(0.0, 1.0);
+        (track.height() * ratio).clamp(min_h, track.height())
+    };
+    let travel = (track.height() - thumb_h).max(0.0);
+    let t = if max_off <= 0.5 {
+        0.0
+    } else {
+        (offset / max_off).clamp(0.0, 1.0)
+    };
+    Rect::from_min_size(
+        Pos2::new(track.left(), track.top() + travel * t),
+        Vec2::new(track.width(), thumb_h),
+    )
+}
+
+fn dos_hit(parts: &DosBarParts, bar: Rect, pos: Pos2) -> u8 {
+    if parts.up.contains(pos) {
+        1
+    } else if parts.down.contains(pos) {
+        2
+    } else if parts.thumb.contains(pos) {
+        5
+    } else if pos.x >= bar.left()
+        && pos.x < bar.right()
+        && pos.y >= parts.up.bottom()
+        && pos.y < parts.thumb.top()
+    {
+        3
+    } else if pos.x >= bar.left()
+        && pos.x < bar.right()
+        && pos.y >= parts.thumb.bottom()
+        && pos.y < parts.down.top()
+    {
+        4
+    } else {
+        0
+    }
+}
+
+/// Arrows step one line. The cyan shaft steps one page. The thumb drags.
+fn dos_bar_input(
+    ui: &Ui,
+    scroll_id: egui::Id,
+    parts: &DosBarParts,
+    bar: Rect,
+    offset: f32,
+    max_off: f32,
+    page: f32,
+    line: f32,
+) -> (f32, bool, DosHeld) {
+    let sense = Sense {
+        click: true,
+        drag: true,
+        focusable: false,
+    };
+    let response = ui.interact(bar, scroll_id.with("dos_bar"), sense);
+    response.on_hover_cursor(egui::CursorIcon::Default);
+
+    let pointer = ui.input(|i| i.pointer.interact_pos());
+    let down = ui.input(|i| i.pointer.primary_down());
+    let pressed = ui.input(|i| i.pointer.primary_pressed());
+    let now = ui.input(|i| i.time);
+    let key = scroll_id.with("dos_press");
+    let ctx = ui.ctx();
+    let mut press = ctx
+        .data(|d| d.get_temp::<DosPress>(key))
+        .filter(|p| p.zone != 0);
+
+    if !down {
+        press = None;
+    } else if pressed {
+        if let Some(pos) = pointer {
+            let zone = dos_hit(parts, bar, pos);
+            if zone != 0 {
+                press = Some(DosPress {
+                    zone,
+                    grab: pos.y - parts.thumb.top(),
+                    next: now,
+                    repeats: 0,
+                });
+            }
+        }
+    }
+
+    let mut offset = offset.clamp(0.0, max_off.max(0.0));
+    let mut moved = false;
+    let mut held = DosHeld::default();
+    if let (Some(pos), Some(mut press)) = (pointer, press) {
+        let on_thumb = press.zone == 5;
+        let still = match press.zone {
+            1 => parts.up.contains(pos),
+            2 => parts.down.contains(pos),
+            3 => pos.y < parts.thumb.top() && pos.y >= parts.up.bottom(),
+            4 => pos.y >= parts.thumb.bottom() && pos.y < parts.down.top(),
+            5 => true,
+            _ => false,
+        };
+        held.up = press.zone == 1 && still;
+        held.down = press.zone == 2 && still;
+        held.thumb = on_thumb;
+        if max_off > 0.5 && on_thumb {
+            let travel = (parts.track.height() - parts.thumb.height()).max(1.0);
+            let top = (pos.y - press.grab).clamp(
+                parts.track.top(),
+                (parts.track.bottom() - parts.thumb.height()).max(parts.track.top()),
+            );
+            let t = ((top - parts.track.top()) / travel).clamp(0.0, 1.0);
+            offset = t * max_off;
+            moved = true;
+        } else if max_off > 0.5 && still && now >= press.next {
+            let step = match press.zone {
+                1 => -line,
+                2 => line,
+                3 => -page,
+                4 => page,
+                _ => 0.0,
+            };
+            if step != 0.0 {
+                offset = (offset + step).clamp(0.0, max_off);
+                moved = true;
+                let delay = if press.repeats == 0 { 0.32 } else { 0.06 };
+                press.repeats = press.repeats.saturating_add(1);
+                press.next = now + delay;
+            }
+        }
+        if down {
+            ctx.request_repaint_after(Duration::from_millis(40));
+        }
+        ctx.data_mut(|d| d.insert_temp(key, press));
+    } else {
+        ctx.data_mut(|d| d.remove_temp::<DosPress>(key));
+    }
+    (offset, moved, held)
+}
+
+/// Paint the CHANNEL1 bar and store a new offset when the user moves it.
+fn drive_dos_bar(
+    ui: &Ui,
+    bar: Rect,
+    scroll_id: egui::Id,
+    state: &mut egui::scroll_area::State,
+    content_h: f32,
+    view_h: f32,
+    row_h: f32,
+) {
+    let max_off = (content_h - view_h).max(0.0);
+    let line = row_h.max(1.0);
+    let page = (view_h - line).max(line);
+    let parts = dos_bar_parts(bar, state.offset.y, max_off, view_h);
+    let (offset, moved, held) = dos_bar_input(
+        ui,
+        scroll_id,
+        &parts,
+        bar,
+        state.offset.y,
+        max_off,
+        page,
+        line,
+    );
+    if moved {
+        state.offset.y = offset;
+        (*state).store(ui.ctx(), scroll_id);
+    }
+    let parts = dos_bar_parts(bar, state.offset.y, max_off, view_h);
+    paint_dos_scrollbar(ui.painter(), bar, &parts, held);
+}
+
+fn paint_dos_scrollbar(painter: &egui::Painter, bar: Rect, parts: &DosBarParts, held: DosHeld) {
+    paint_dos_arrow_button(painter, parts.up, true, held.up);
+    paint_dos_arrow_button(painter, parts.down, false, held.down);
+    let shaft = Rect::from_min_max(
+        Pos2::new(bar.left(), parts.up.bottom()),
+        Pos2::new(bar.right(), parts.down.top().max(parts.up.bottom())),
+    );
+    if shaft.height() < 1.0 {
+        return;
+    }
+    painter.rect_filled(shaft, 0.0, VGA_GRAY);
+    let y = shaft.y_range();
+    painter.vline(shaft.left() + 0.5, y, Stroke::new(1.0, Color32::WHITE));
+    painter.vline(shaft.left() + 2.5, y, Stroke::new(1.0, Color32::BLACK));
+    painter.vline(shaft.right() - 2.5, y, Stroke::new(1.0, Color32::WHITE));
+    painter.vline(shaft.right() - 0.5, y, Stroke::new(1.0, Color32::BLACK));
+    if parts.track.width() > 1.0 && parts.track.height() > 1.0 {
+        painter.rect_filled(parts.track, 0.0, VGA_CYAN);
+    }
+    if parts.thumb.width() > 1.0 && parts.thumb.height() > 1.0 {
+        painter.rect_filled(parts.thumb, 0.0, VGA_GRAY);
+        paint_bevel(painter, parts.thumb, held.thumb);
+    }
+}
+
+fn paint_dos_arrow_button(painter: &egui::Painter, rect: Rect, up: bool, pressed: bool) {
+    if rect.height() < 4.0 || rect.width() < 4.0 {
+        return;
+    }
+    painter.rect_filled(rect, 0.0, VGA_GRAY);
+    paint_bevel(painter, rect, pressed);
+    paint_dos_arrow(painter, rect, up, pressed);
+}
+
+/// Outline triangle, doubled vertically the way the VGA arrow is.
+fn paint_dos_arrow(painter: &egui::Painter, rect: Rect, up: bool, pressed: bool) {
+    let hi = if pressed {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
+    let lo = if pressed {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    };
+    let left = rect.left() + 3.0;
+    let right = rect.right() - 3.0;
+    let top = rect.top() + 3.0;
+    let bottom = rect.bottom() - 3.0;
+    if right - left < 4.0 || bottom - top < 4.0 {
+        return;
+    }
+    // The black right edge reads heavy, so the tip sits right of the shaft.
+    let mid = ((left + right) * 0.5).floor() - 2.0;
+    let span = (right - left).floor();
+    let rows = (((bottom - top) / 2.0).floor() as i32).clamp(3, 7);
+    for i in 0..rows {
+        let t = i as f32 / (rows - 1).max(1) as f32;
+        let half = (span * 0.5 * t).floor();
+        let y = if up {
+            top + i as f32 * 2.0
+        } else {
+            bottom - 2.0 - i as f32 * 2.0
+        };
+        let y = y.floor();
+        let px = |x: f32, w: f32, color: Color32| {
+            painter.rect_filled(
+                Rect::from_min_size(Pos2::new(x, y), Vec2::new(w.max(1.0), 2.0)),
+                0.0,
+                color,
+            );
+        };
+        if i == 0 {
+            px(mid, 1.0, if up { hi } else { lo });
+            continue;
+        }
+        if i + 1 == rows {
+            if up {
+                px(mid - half, 1.0, hi);
+                px(mid - half + 1.0, (half * 2.0).max(1.0), lo);
+            } else {
+                px(mid - half, half * 2.0 + 1.0, hi);
+            }
+            continue;
+        }
+        px(mid - half, 1.0, hi);
+        if half > 0.0 {
+            px(mid + half, 1.0, lo);
+        }
+    }
+}
+
 /// Scrollable text. `id` keeps the Monitor pane and the channel split from
 /// sharing one scrollbar position. The bytes are still the same pad.
 ///
 /// `scroll_x` must stay off for monitor/channel pads: `ScrollArea::both`
 /// makes `available_width` unbounded so word-wrap never fires. Rows are
 /// wrapped to the live viewport width inside the vertical scroll area.
+///
+/// The vertical bar is the DOS one from CHANNEL1.png (cyan shaft, arrows,
+/// gray thumb), not egui's overlay. ALT-B hides it and gives the columns back.
 ///
 /// With ScrLock off, `/` jumps to a new line and the stair crawls there.
 fn paint_text_pane(
@@ -14151,104 +14528,168 @@ fn paint_text_pane(
     make_job: impl FnOnce(&Ui) -> LayoutJob,
 ) {
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+        let avail = ui.available_size();
+        ui.set_min_size(avail);
+        // Cover the central panel. Its fill is monitor blue, and a short frame
+        // leaves that blue on the right and bottom (worst on the grey MHeard).
+        ui.painter().rect_filled(rect, 0.0, bg);
+        // Fill the whole pane. A stroke on the right and bottom leaves a line,
+        // and on MHeard that line is the monitor blue showing through.
         Frame::none()
             .fill(bg)
-            .stroke(Stroke::new(1.0, Color32::from_rgb(170, 170, 170)))
-            .inner_margin(6.0)
+            .inner_margin(0.0)
             .show(ui, |ui| {
-                ui.set_min_size(rect.size() - Vec2::splat(2.0));
-                let bar_vis = if show_bar {
-                    egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+                let full = ui.max_rect();
+                ui.set_min_size(full.size());
+                let bar_w = if show_bar {
+                    DOS_SCROLL_W.min(full.width() * 0.5)
                 } else {
-                    egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+                    0.0
                 };
+                let text_outer =
+                    Rect::from_min_max(full.min, Pos2::new(full.right() - bar_w, full.bottom()));
+                let text = Rect::from_min_max(
+                    Pos2::new(text_outer.left() + 6.0, text_outer.top() + 4.0),
+                    Pos2::new(
+                        (text_outer.right() - 4.0).max(text_outer.left() + 8.0),
+                        (text_outer.bottom() - 4.0).max(text_outer.top() + 8.0),
+                    ),
+                );
+                let bar_rect = Rect::from_min_max(
+                    Pos2::new(text_outer.right(), full.top()),
+                    full.right_bottom(),
+                );
+
                 let area = if scroll_x {
                     egui::ScrollArea::both()
                 } else {
                     egui::ScrollArea::vertical()
                 };
                 // Follow is applied after layout. egui's own stick jumps a whole line.
-                let out = area
-                    .id_salt(id)
-                    .animated(false)
-                    .stick_to_bottom(false)
-                    .auto_shrink([false, false])
-                    .scroll_bar_visibility(bar_vis)
-                    .show(ui, |ui| {
-                        if nudge != 0.0 {
-                            ui.scroll_with_delta(Vec2::new(0.0, nudge));
-                        }
-                        let job = make_job(ui);
-                        ui.add(egui::Label::new(job).wrap_mode(TextWrapMode::Extend));
-                    });
+                // The DOS bar is drawn beside this viewport, so egui's bar stays hidden.
+                let mut snap = None;
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text), |ui| {
+                    ui.set_min_size(text.size());
+                    let out = area
+                        .id_salt(id)
+                        .animated(false)
+                        .stick_to_bottom(false)
+                        .auto_shrink([false, false])
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| {
+                            if nudge != 0.0 {
+                                ui.scroll_with_delta(Vec2::new(0.0, nudge));
+                            }
+                            let job = make_job(ui);
+                            ui.add(egui::Label::new(job).wrap_mode(TextWrapMode::Extend));
+                        });
+                    snap = Some((
+                        out.id,
+                        out.state,
+                        out.content_size.y,
+                        out.inner_rect.height(),
+                    ));
+                });
+                if let Some((sid, mut state, content_h, view_h)) = snap {
+                    let max_off = (content_h - view_h).max(0.0);
+                    let now = ui.input(|i| i.time);
+                    let ctx = ui.ctx().clone();
+                    let mut crawl = ctx
+                        .data(|d| d.get_temp::<SoftCrawl>(sid))
+                        .unwrap_or_default();
+                    let before = state.offset.y;
+                    // ScrLock off → follow. Turning it off again must resume even
+                    // if a prior lock had cleared `follow` while scrolled up.
+                    let unlocked = stick && !crawl.stick;
 
-                let max_off = (out.content_size.y - out.inner_rect.height()).max(0.0);
-                let now = ui.input(|i| i.time);
-                let ctx = ui.ctx().clone();
-                let mut crawl = ctx
-                    .data(|d| d.get_temp::<SoftCrawl>(out.id))
-                    .unwrap_or_default();
-                let mut state = out.state;
-                let before = state.offset.y;
-                // ScrLock off → follow. Turning it off again must resume even
-                // if a prior lock had cleared `follow` while scrolled up.
-                let unlocked = stick && !crawl.stick;
-
-                if !stick {
-                    crawl.follow = false;
-                    crawl.carry = 0.0;
-                } else if !crawl.seen {
-                    crawl.seen = true;
-                    crawl.owner = owner;
-                    crawl.last_t = now;
-                    state.offset.y = max_off;
-                    crawl.follow = true;
-                } else if unlocked {
-                    crawl.owner = owner;
-                    crawl.carry = 0.0;
-                    crawl.last_t = now;
-                    state.offset.y = max_off;
-                    crawl.follow = true;
-                } else if owner != crawl.owner {
-                    // Another pad in this same viewport. Show its end at once;
-                    // only lines that arrive afterwards crawl.
-                    crawl.owner = owner;
-                    crawl.carry = 0.0;
-                    crawl.last_t = now;
-                    if crawl.follow {
+                    if !stick {
+                        crawl.follow = false;
+                        crawl.carry = 0.0;
+                    } else if !crawl.seen {
+                        crawl.seen = true;
+                        crawl.owner = owner;
+                        crawl.last_t = now;
                         state.offset.y = max_off;
-                    }
-                } else {
-                    let dt = (now - crawl.last_t).clamp(0.0, 0.5) as f32;
-                    crawl.last_t = now;
-                    crawl.follow = keep_following(
-                        stick,
-                        state.offset.y,
-                        crawl.last_offset,
-                        max_off,
-                        crawl.last_max,
-                        crawl.follow,
-                    );
-                    if crawl.follow {
-                        let (y, carry) =
-                            soft_scroll_toward(state.offset.y, max_off, crawl.carry, dt, smooth);
-                        state.offset.y = y;
-                        crawl.carry = carry;
-                        if max_off - y > 0.5 {
-                            ctx.request_repaint_after(Duration::from_millis(50));
+                        crawl.follow = true;
+                    } else if unlocked {
+                        crawl.owner = owner;
+                        crawl.carry = 0.0;
+                        crawl.last_t = now;
+                        state.offset.y = max_off;
+                        crawl.follow = true;
+                    } else if owner != crawl.owner {
+                        // Another pad in this same viewport. Show its end at once;
+                        // only lines that arrive afterwards crawl.
+                        crawl.owner = owner;
+                        crawl.carry = 0.0;
+                        crawl.last_t = now;
+                        if crawl.follow {
+                            state.offset.y = max_off;
                         }
                     } else {
-                        crawl.carry = 0.0;
+                        let dt = (now - crawl.last_t).clamp(0.0, 0.5) as f32;
+                        crawl.last_t = now;
+                        crawl.follow = keep_following(
+                            stick,
+                            state.offset.y,
+                            crawl.last_offset,
+                            max_off,
+                            crawl.last_max,
+                            crawl.follow,
+                        );
+                        if crawl.follow {
+                            let (y, carry) = soft_scroll_toward(
+                                state.offset.y,
+                                max_off,
+                                crawl.carry,
+                                dt,
+                                smooth,
+                            );
+                            state.offset.y = y;
+                            crawl.carry = carry;
+                            if max_off - y > 0.5 {
+                                ctx.request_repaint_after(Duration::from_millis(50));
+                            }
+                        } else {
+                            crawl.carry = 0.0;
+                        }
                     }
-                }
 
-                crawl.stick = stick;
-                crawl.seen = true;
-                crawl.last_offset = state.offset.y;
-                crawl.last_max = max_off;
-                ctx.data_mut(|d| d.insert_temp(out.id, crawl));
-                if (state.offset.y - before).abs() > 0.01 {
-                    state.store(&ctx, out.id);
+                    if show_bar && bar_rect.width() > 4.0 {
+                        let row_h = ui
+                            .fonts(|f| f.row_height(&FontId::monospace(padlog::PAD_FONT_SIZE)))
+                            .max(1.0);
+                        let page = (view_h - row_h).max(row_h);
+                        let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
+                        let (offset, moved, held) = dos_bar_input(
+                            ui,
+                            sid,
+                            &parts,
+                            bar_rect,
+                            state.offset.y,
+                            max_off,
+                            page,
+                            row_h,
+                        );
+                        if moved {
+                            state.offset.y = offset;
+                            if max_off - state.offset.y > 1.0 {
+                                crawl.follow = false;
+                                crawl.carry = 0.0;
+                            }
+                        }
+                        let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
+                        paint_dos_scrollbar(ui.painter(), bar_rect, &parts, held);
+                    }
+
+                    crawl.stick = stick;
+                    crawl.seen = true;
+                    crawl.last_offset = state.offset.y;
+                    crawl.last_max = max_off;
+                    ctx.data_mut(|d| d.insert_temp(sid, crawl));
+                    if (state.offset.y - before).abs() > 0.01 {
+                        state.store(&ctx, sid);
+                    }
                 }
             });
     });
@@ -14538,7 +14979,30 @@ mod transcript_tests {
 
 #[cfg(test)]
 mod soft_scroll_tests {
-    use super::{keep_following, soft_scroll_toward};
+    use super::{dos_bar_parts, keep_following, soft_scroll_toward};
+    use eframe::egui::{pos2, vec2, Rect};
+
+    #[test]
+    fn dos_thumb_parks_at_the_top_when_the_pad_fits() {
+        let bar = Rect::from_min_size(pos2(0.0, 0.0), vec2(16.0, 220.0));
+        let parts = dos_bar_parts(bar, 0.0, 0.0, 180.0);
+        assert!(parts.up.bottom() <= parts.track.top() + 0.1);
+        assert!(parts.down.top() + 0.1 >= parts.track.bottom());
+        assert!((parts.thumb.top() - parts.track.top()).abs() < 0.1);
+        assert!(parts.thumb.height() < parts.track.height() * 0.5);
+        assert!(parts.thumb.height() >= 18.0);
+    }
+
+    #[test]
+    fn dos_thumb_tracks_the_ends_of_a_long_pad() {
+        let bar = Rect::from_min_size(pos2(10.0, 20.0), vec2(16.0, 320.0));
+        let top = dos_bar_parts(bar, 0.0, 2000.0, 120.0);
+        let end = dos_bar_parts(bar, 2000.0, 2000.0, 120.0);
+        assert!((top.thumb.top() - top.track.top()).abs() < 0.1);
+        assert!((end.thumb.bottom() - end.track.bottom()).abs() < 0.1);
+        assert!(top.thumb.height() < top.track.height() * 0.25);
+        assert!((top.thumb.height() - end.thumb.height()).abs() < 0.1);
+    }
 
     #[test]
     fn slash_jumps_and_stair_steps_one_pixel() {

@@ -37,16 +37,16 @@ use crate::config::{HostProtocol, SerialConfig, TncConfig};
 
 pub use ax25::{Ax25Frame, Ax25FrameType};
 pub use hostmode::HostCode;
-pub use monitor_filter::{normalize_call, parse_heard, FrameClass, MonitorFilter, MonitorInput};
-pub use payload::{
-    flush_rx_line, normalize_newlines, pack_text_payloads, payload_lines, take_rx_lines,
-};
-pub use serial::{detect_serial_ports, DetectedPort};
 pub use kiss_ini::{
     apply_configured_paclen, load_paclen as load_kiss_paclen, load_params as load_kiss_params,
     open_lines as kiss_param_lines, parse_esc as parse_kiss_esc, payload_len as kiss_payload_len,
     resolve_kiss_ini, store_paclen as store_kiss_paclen, store_param as store_kiss_param, EscKiss,
 };
+pub use monitor_filter::{normalize_call, parse_heard, FrameClass, MonitorFilter, MonitorInput};
+pub use payload::{
+    flush_rx_line, normalize_newlines, pack_text_payloads, payload_lines, take_rx_lines,
+};
+pub use serial::{detect_serial_ports, DetectedPort};
 pub use wa8ded_ini::{
     resolve_wa8ded_ini, section_lines as wa8ded_section_lines, timing_banner_fallback,
 };

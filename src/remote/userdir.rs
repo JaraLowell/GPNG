@@ -231,10 +231,7 @@ mod tests {
         fs::write(dir.join("skip.doc"), b"no").unwrap();
         fs::write(dir.join("NL0MSK.GPM"), b"secret").unwrap();
         let listed = catalog(&dir, "*");
-        assert!(
-            listed.starts_with("<GPNG>: USER CONTENT\r"),
-            "{listed}"
-        );
+        assert!(listed.starts_with("<GPNG>: USER CONTENT\r"), "{listed}");
         assert!(listed.contains("keep.txt"), "{listed}");
         assert!(listed.contains("skip.doc"), "{listed}");
         assert!(!listed.contains("GPM"), "{listed}");

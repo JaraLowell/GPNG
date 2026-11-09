@@ -195,7 +195,10 @@ fn trim_help_block(s: &str) -> &str {
     let s = s.trim_end_matches(['\r', '\n']);
     let mut start = 0;
     for line in s.split_inclusive(['\n', '\r']) {
-        if line.chars().all(|c| c == '\n' || c == '\r' || c.is_whitespace()) {
+        if line
+            .chars()
+            .all(|c| c == '\n' || c == '\r' || c.is_whitespace())
+        {
             start += line.len();
         } else {
             break;
