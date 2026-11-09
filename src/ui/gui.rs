@@ -11134,8 +11134,13 @@ impl GpGuiApp {
                 self.log_event(format!("Connect text → {name}"));
             } else {
                 self.session.set_channel_ctext(slot, path);
-                self.status = format!("CT channel {slot}: {name}");
-                self.log_event(format!("Connect text channel {slot} → {name}"));
+                if self.session.channel_ctext_path(slot).is_none() {
+                    self.status = format!("CT channel {slot}: global");
+                    self.log_event(format!("Connect text channel {slot} → global"));
+                } else {
+                    self.status = format!("CT channel {slot}: {name}");
+                    self.log_event(format!("Connect text channel {slot} → {name}"));
+                }
             }
             self.persist_session_chrome();
         }

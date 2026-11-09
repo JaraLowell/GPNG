@@ -217,13 +217,28 @@ impl SessionChrome {
             self.ctext_path = path;
             return;
         }
+        // The same file as the Monitor choice is global mode again.
+        let path = if same_ctext_file(&path, &self.ctext_path) {
+            PathBuf::new()
+        } else {
+            path
+        };
         let idx = channel as usize;
         if self.channel_ctext.len() <= idx {
             self.channel_ctext.resize(idx + 1, PathBuf::new());
         }
         self.channel_ctext[idx] = path;
     }
+}
 
+fn same_ctext_file(picked: &Path, global: &Path) -> bool {
+    match (picked.file_name(), global.file_name()) {
+        (Some(picked), Some(global)) => picked.eq_ignore_ascii_case(global),
+        _ => false,
+    }
+}
+
+impl SessionChrome {
     pub fn ctext_label_for(&self, channel: u8) -> String {
         let name = self
             .ctext_for(channel)
@@ -594,5 +609,8 @@ mod ctext_tests {
         let restored = SessionChrome::from_config(&session.to_config());
         assert_eq!(restored.ctext_for(10).file_name().unwrap(), "NL0AS.GPI");
         assert_eq!(restored.ctext_for(0).file_name().unwrap(), "CTEXT.GPI");
+        session.set_channel_ctext(10, PathBuf::from(r"D:\data\CTEXT.GPI"));
+        assert!(session.channel_ctext_path(10).is_none());
+        assert_eq!(session.ctext_for(10).file_name().unwrap(), "CTEXT.GPI");
     }
 }

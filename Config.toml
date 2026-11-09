@@ -76,7 +76,7 @@ icon_file = "ICONS.GP"
 [session.chrome]
 qrg_mhz = 149.112
 ctext = "D:\\MyPython\\GPNG\\data\\CTEXT.GPI"
-channel_ctext = []
+channel_ctext = ["", "", "", "", "", "", "", "", "", "", ""]
 extended_ascii = false
 smooth_scroll = false
 echo = true
@@ -210,8 +210,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1368
-y = 55
+x = 442
+y = 121
 width = 1160
-height = 889
+height = 818
 maximized = false
