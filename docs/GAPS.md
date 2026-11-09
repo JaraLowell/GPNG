@@ -46,8 +46,8 @@ These are the DOS features an operator would notice first.
    stays as it is. Not built.
 4. **Most `//` remotes are recognised and then refused.** The parser covers
    the classic set. Only quit, disconnect, version, echo, bell, MHeard,
-   `//Name`, and a GPI text file (`INFO`, `NEWS`, `QRT`, `RUN`, other
-   `*.GPI` stems) actually run. Catalog, read, write, delete, help, run,
+   `//Name`, `//RUN`, and a GPI text file (`INFO`, `NEWS`, `QRT`, other
+   `*.GPI` stems) actually run. Catalog, read, write, delete, help,
    parameters, RTT, AutoBin `//RPrg` / `//WPrg`, cross-channel `//n`, and
    `//C` answer “not implemented”. `REMOTE=` / `NOREMOTE=` are loaded and
    not enforced. A mailbox marked type `B` in `NAMES.GP` is not auto-blocked,
@@ -87,7 +87,7 @@ These are the DOS features an operator would notice first.
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
 | Install to a directory, `CONFIG.GP` | **Partial** | `Config.toml`, with an optional `CONFIG.GP` overlay for recognised keys |
-| `UserDir`, `ExternalDir`, `SaveDir`, `LogDir`, `SpyDir` | **Partial** | `data/USER` is created and used by 7Plus autosave and `//Read`. Incoming parts are intended for `data/SAVE`, joined by `transfer::sevenplus_codec`. `data/TEMP` is where a send is split. Those folders are not wired to the channel yet |
+| `UserDir`, `ExternalDir`, `SaveDir`, `LogDir`, `SpyDir` | **Partial** | `data/USER` is `//Read` and 7Plus autosave. `data/EXTERNAL` is `//RUN` (Python, PHP, Perl, Ruby, Node, Lua, or Java). Incoming parts are intended for `data/SAVE`. `data/TEMP` is where a send is split. SAVE and TEMP are not wired to the channel yet |
 | Per-call `CTEXT???.GPI`, `<call>.GPC`, `<call>.GPM`, `<mycall>.GPI`, `QRT.GPI` | **Partial** | `{CALL}.GPM` lives in `data/mail`. On connect, and on bare `//Read`, that station receives its mail instead of the USER list. `//DEL` / `//Kill` with no file name deletes only that mail. Another station's file is refused, and `//CATalog` does not list the folder. No per-call `.GPC` yet. `QRT.GPI` still goes out on `//Quit` |
 | `GP.EXE` vs `GP286.EXE`, overlay, EMS/XMS | **DOS-only** | One native binary. QSO spy is included (it was the GP286-only extra) |
 
@@ -109,7 +109,7 @@ These are the DOS features an operator would notice first.
 | `Questions`, `PopEnableKeyboard`, `MultiPort` | **Partial** | A new DieBox list asks replace, append, or interrupt. `Questions=OFF` does not suppress that. Popup keyboard dismissal is unused. No DRSI / TFPCX multiport |
 | `<IF>` / `<ELSE>` / `<END>` / `%TFPCX200` in `CONFIG.GP` | **Missing** | Legacy overlay is flat `KEY = value` |
 | `*.GPI` and the fifteen `%` macros | **Have** | `%V %C %N %Y %K %T %D %B %I %Z %_ %% %O %? %>`, plus width `#nn`. `%DIGI%` expands from context but nothing fills a real digi path |
-| `CTEXT???.GPI`, `NEWS.GPI`, `QRT.GPI`, `RUN.GPI`, `ORIGIN.GPI`, `F1.GPI`–`F12.GPI` | **Partial** | Files in `data/` are served by name. Shift-F1…F12 sends `F1.GPI`…`F12.GPI` on a channel. `RUN.GPI` is not sent; `//RUN` answers `not supported` |
+| `CTEXT???.GPI`, `NEWS.GPI`, `QRT.GPI`, `RUN.GPI`, `ORIGIN.GPI`, `F1.GPI`–`F12.GPI` | **Partial** | Files in `data/` are served by name. Shift-F1…F12 sends `F1.GPI`…`F12.GPI` on a channel. `//RUN` starts a script in `data/EXTERNAL` and does not send `RUN.GPI` |
 | `<call>.GPC` / `<call>.GPM` | **Missing** | |
 | `MHEARD.GP` | **Partial** | JSON list, up to 500 UI frames. Names are not stored here. Not the DOS 40-line MH file |
 | `NAMES.GP` | **Have** | `data/NAMES.GP`. Call, ident, and name lookup. `%N`, `//Name`, and the channel **Name** button read and write it |
@@ -150,7 +150,7 @@ These are the DOS features an operator would notice first.
 | 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Partial** | Untested on the air. No sample part yet. The sniffer would save channel RX into `data/USER` when **7+** is on. `transfer::sevenplus_codec` can encode and join parts in Rust. `.err` / `.cor`, `data/SAVE`, `data/TEMP`, and waiting for `ok`/`okay` are not wired. Later, GPNG to GPNG only: ask on connect, then send CTEXT and files as `#7+#` plus the data and show the rebuilt text on the channel |
 | Mouse-mark QSO lines and Ctrl-Ins / Ctrl-K into the editor | **Missing** | |
 | Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. Esc opens the TNC command box (manual 5.9). A line that starts with `//` is not run as the operator’s own remote (manual 5.5, `ESC //h`). On KISS the box does not send |
-| External programs and GPRI (`ExternalDir`, `//RUN`) | **Missing** | `//RUN` answers `not supported`. It does not start a program |
+| External programs (`ExternalDir`, `//RUN`) | **Have** | GPNG addon, below. One text program from `data/EXTERNAL` per channel. DOS GPRI Pascal programs are not started |
 | Splitscreen while in QSO | **Have** | Channel only. Top pane is the QSO, the session bar is the divider, and the monitor pad is drawn under it. Not on Spy, BBS-Menu, or Box-List. Shot: `docs/screenshots/SplitScreen.png`. ALT-F8, right-click, ▲▼, and dragging the arrows |
 | Scroll-lock per channel | **Partial** | One session-bar switch for the visible pad, not a TNC poll hold, and not per channel in the DOS 1.50+ sense |
 | ESC TNC command window | **Partial** | Esc opens the box. Esc again closes it without sending. Enter sends the line on hostmode. KISS has no TNC command channel. ALT-O does not restore `TNCINI` |
@@ -265,10 +265,26 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 | `//CSTATUS` / `//CS` | **Have** | PK-88-style dump of every channel: connected / disconnected / connect or disconnect in progress, peer call, digi path, `IO` on the asking channel |
 | `//CD` | **Have** | Shows `USER`. Any other directory is refused, so the remote cannot browse the rest of the disk |
 | `//Write`, `//END`, `//DELete` / `//Kill` | **Have** | Text capture into `data/USER` until `//END` or Ctrl-Z. `//DELete` of a named file removes only a file this session stored with `//Write`. Bare `//DEL` / `//Kill` deletes `data/mail/{CALL}.GPM` for the linked station only |
-| `//RUN` | **Have** | Answers `not supported`. It does not start a program and does not send `RUN.GPI` |
+| `//RUN` | **Have** | Addon below. `//RUN ?` lists `data/EXTERNAL`. `//RUN FREE` reports memory. `//name` starts a program that is not already a command |
 | `//Activity`, `//CUT`, `//RPrg`, `//RTt`, `//WPrg`, `//C`, `//<n> text`, chat `#` | **Missing** | Parsed, then “not implemented” |
 
 `#` as a chat allow-list token in `REMOTE=` is not applied.
+
+---
+
+## Addons
+
+GPNG additions. An operator can use them. They are not a DOS gap.
+
+### EXTERNAL programs (`//RUN`)
+
+**Have.** `//RUN name` starts one text program from `data/EXTERNAL`. `//name` does the same when that name is not already a command. `//RUN ?` lists the folder and which languages are installed on this computer. `//RUN FREE` (and `//FREE`) reports memory total, used, and free. The sample is `data/EXTERNAL/FREE`.
+
+The languages are Python, PHP, Perl, Ruby, Node, Lua, and Java. The first line may name the program, for example `#! /usr/bin/env python3`, `#! /usr/bin/perl`, `#! /usr/lib/cgi-bin/php7.2`, or `#! /usr/bin/env java --source 11`. GPNG reads that line on Linux, macOS, and Windows and starts the language if it is installed. A Linux path that is not on this computer falls back to the same program on `PATH`. A `.py`, `.php`, `.pl`, `.rb`, `.js`, `.lua`, `.java`, or `.jar` name is enough when there is no such line. Java is started headless, so it cannot open a window. A shell, a batch file, and a Windows program are refused. The command cannot name a file outside `data/EXTERNAL`, and the other station cannot upload the program.
+
+Printed text goes back to the station that started it. If the program reads a line, the next text from that connection is the line, and that same process stays open while it waits. A second `//RUN` on that channel answers `program is running` and does not start another process. When the script exits, the process is closed at once. If it prints nothing for 300 seconds, it is closed. Disconnect closes it too. Ten channels is ten programs at most.
+
+This is the stand-in for the DOS GPRI Pascal interface. A DOS program in `EXTERNAL` is not run. `//RUN` does not send `RUN.GPI`.
 
 ---
 
@@ -282,6 +298,7 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 - Editor load/save in CP437.
 - Pad logs under `log/` for monitor, channels, spy, BBS, and box.
 - Remote command catalogue and macro expander, ready for the commands that are still stubs.
+- `//RUN` addon: one Python, PHP, Perl, Ruby, Node, Lua, or Java program from `data/EXTERNAL` per channel. Shebang on Linux, macOS, and Windows. Java is headless. A question keeps that process; 300 seconds of silence, exit, or disconnect closes it. `//RUN FREE` reports memory.
 - AutoBin on a live KISS link with DOS GP 1.63 (`#BIN#` / `#OK#` / `#ABORT#`, file in `data/SAVE`). 7Plus Code-AutoSave is implemented and untested. See `docs/TRANSFER.md`.
 - Setup menu (ALT-U / **SETUP**). Rows follow the current window. Colours, the KISS beacon, and the Esc TNC box are live. Settings go to `Config.toml`.
 - DieBox BBS menu and Box list: mark, `READ`, find, sort, and the replace / append / interrupt question. Other mailbox formats are not parsed.

@@ -45,6 +45,7 @@ use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
 use crate::names::{ListedName, NamesFile, Route};
 use crate::remote::commands::{parse_line, typed_runs_locally, RemoteAction};
+use crate::remote::external;
 use crate::remote::gph;
 use crate::remote::gpi;
 use crate::remote::macros::{self, MacroContext};
@@ -404,6 +405,10 @@ pub struct GpGuiApp {
     user_write: Vec<Option<UserWrite>>,
     /// Lowercase names this session stored with `//Write`. `//DELete` only removes those.
     user_written: Vec<String>,
+    /// `//RUN` script, one per channel. The link ending drops it.
+    external_run: Vec<external::Gate>,
+    /// What that program has printed, plus lines typed into it. Sysop view only.
+    external_screen: Vec<String>,
     /// `//PRompt ON` — send the prompt template after a remote command.
     remote_prompt: bool,
     /// Last WA8DED timing banner (`//P` / open `[status]`).
@@ -605,6 +610,9 @@ impl GpGuiApp {
         if let Err(err) = sevenplus::ensure_user_dir(&cfg.paths.user_dir) {
             tracing::warn!("USER dir: {err}");
         }
+        if let Err(err) = crate::paths::ensure_dir(&cfg.paths.external_dir) {
+            tracing::warn!("EXTERNAL dir: {err}");
+        }
         Self {
             monitor_bg: egui_color(&colors.monitor_background),
             monitor_fg: egui_color(&colors.monitor_foreground),
@@ -730,6 +738,8 @@ impl GpGuiApp {
                 .collect(),
             user_write: (0..slots).map(|_| None).collect(),
             user_written: Vec::new(),
+            external_run: (0..slots).map(|_| external::Gate::new()).collect(),
+            external_screen: vec![String::new(); slots],
             remote_prompt: false,
             timing_banner: None,
             pending_timing: None,
@@ -1786,6 +1796,7 @@ impl GpGuiApp {
         if !(1..=self.channels).contains(&channel) {
             return;
         }
+        self.stop_external(channel);
         if self.channel_disconnecting(channel) {
             return;
         }
@@ -1860,6 +1871,7 @@ impl GpGuiApp {
 
     /// UA or DM answered our DISC, or T1/N2 gave up.
     fn finish_disconnect(&mut self, channel: u8, play: bool) {
+        self.stop_external(channel);
         let was = self.channel_linked(channel) || self.channel_disconnecting(channel);
         self.kiss_clear_disc_timer(channel);
         self.clear_channel_link_state(channel);
@@ -2850,17 +2862,31 @@ impl GpGuiApp {
             self.capture_write_line(channel, line);
             return;
         }
-        if channel < 1 {
+        if channel < 1 || !incoming {
+            return;
+        }
+        // A script that is still running owns ordinary text. A second
+        // //RUN is refused. //Quit can still drop the link.
+        if self.external_busy(channel) {
+            if self.another_run(line) {
+                self.warn_running(channel);
+                return;
+            }
+            if let Some((action, args)) = parse_line(line) {
+                if action == RemoteAction::Bell || self.session.remote {
+                    self.handle_remote_on_channel(channel, action, &args);
+                }
+            } else {
+                self.feed_external(channel, line);
+            }
             return;
         }
         let Some((action, args)) = parse_line(line) else {
+            if self.session.remote {
+                self.try_external_line(channel, line);
+            }
             return;
         };
-        // Only a line that arrived from the other station is a command.
-        // Text this station typed or echoed is sent on, not run here.
-        if !incoming {
-            return;
-        }
         // //Bell / //B / //Ring is a page, not general remote control.
         // It runs on the station that received the line. The bell icon
         // only decides whether that station also plays the sound.
@@ -2972,15 +2998,15 @@ impl GpGuiApp {
     }
 
     fn autobin_pending(&self, channel: u8) -> bool {
-        self.autobin.as_ref().is_some_and(|live| {
-            live.channel == channel && live.state.pending_offer().is_some()
-        })
+        self.autobin
+            .as_ref()
+            .is_some_and(|live| live.channel == channel && live.state.pending_offer().is_some())
     }
 
     fn autobin_receiving(&self, channel: u8) -> bool {
-        self.autobin.as_ref().is_some_and(|live| {
-            live.channel == channel && live.state.recv_progress().is_some()
-        })
+        self.autobin
+            .as_ref()
+            .is_some_and(|live| live.channel == channel && live.state.recv_progress().is_some())
     }
 
     /// File bytes stay off the channel. `#BIN#`, `#OK#`, `#NO#`, `#ABORT#`,
@@ -3056,9 +3082,10 @@ impl GpGuiApp {
 
     /// SAVE on the channel that holds the offer. Sends `#OK#` and starts the bar.
     fn accept_autobin(&mut self, channel: u8) -> bool {
-        let pending = self.autobin.as_ref().is_some_and(|live| {
-            live.channel == channel && live.state.pending_offer().is_some()
-        });
+        let pending = self
+            .autobin
+            .as_ref()
+            .is_some_and(|live| live.channel == channel && live.state.pending_offer().is_some());
         if !pending {
             return false;
         }
@@ -3191,10 +3218,7 @@ impl GpGuiApp {
 
     fn note_bin_tx_ack(&mut self, channel: u8, nr: u8) {
         let acked = self.autobin.as_ref().is_some_and(|live| {
-            live.channel == channel
-                && live
-                    .tx_ns
-                    .is_some_and(|ns| nr == (ns.wrapping_add(1) & 7))
+            live.channel == channel && live.tx_ns.is_some_and(|ns| nr == (ns.wrapping_add(1) & 7))
         });
         if !acked {
             return;
@@ -4356,6 +4380,20 @@ impl GpGuiApp {
             return;
         }
 
+        let linked = matches!(self.active, ActivePane::Channel(n) if self.channel_linked(n));
+        // Local test of a script: the next typed line is its input.
+        // A second //RUN is refused. A linked channel sends typed text onward.
+        if !linked && self.external_busy(write_ch) {
+            if self.another_run(&line) {
+                self.warn_running(write_ch);
+                return;
+            }
+            if parse_line(&line).is_none() {
+                self.feed_external(write_ch, &line);
+                return;
+            }
+        }
+
         // `M` lists frames on the monitor. KISS and TFPCX keep the packet
         // and only change this filter. WA8DED still sends `M` to the modem.
         if self.take_monitor_command(&line) {
@@ -4379,7 +4417,6 @@ impl GpGuiApp {
         // A linked channel: `//mh` and the rest go to the other station.
         // Running them here as well shows this station's answer (its own
         // heard list) and then the other station's answer on top.
-        let linked = matches!(self.active, ActivePane::Channel(n) if self.channel_linked(n));
         if let Some((action, args)) = parse_line(&line) {
             if typed_runs_locally(linked, action) {
                 self.handle_remote(action, &args);
@@ -4395,6 +4432,9 @@ impl GpGuiApp {
                 if !verb.is_empty() && self.serve_gpi_verb(verb) {
                     return;
                 }
+            }
+            if self.try_external_line(write_ch, &line) {
+                return;
             }
         }
 
@@ -4901,9 +4941,12 @@ impl GpGuiApp {
                 return;
             }
             RemoteAction::Run => {
-                self.status = "not supported".into();
-                self.send_gpi_text("not supported");
-                self.close_remote(prev);
+                let done = self.start_external(channel, args);
+                if done {
+                    self.close_remote(prev);
+                } else {
+                    self.active = prev;
+                }
                 return;
             }
             RemoteAction::Version => {
@@ -4958,6 +5001,202 @@ impl GpGuiApp {
         if !line.is_empty() {
             self.send_gpi_text(&line);
         }
+    }
+
+    fn external_busy(&mut self, channel: u8) -> bool {
+        self.external_run
+            .get_mut(channel as usize)
+            .is_some_and(|gate| gate.is_open())
+    }
+
+    fn another_run(&self, line: &str) -> bool {
+        if parse_line(line).is_some_and(|(action, _)| action == RemoteAction::Run) {
+            return true;
+        }
+        let Some(request) = external::slash_request(line) else {
+            return false;
+        };
+        let name = request.split_whitespace().next().unwrap_or("");
+        !name.is_empty() && external::has_program(&self.cfg.paths.external_dir, name)
+    }
+
+    fn warn_running(&mut self, channel: u8) {
+        self.status = external::BUSY.into();
+        self.reply_on_channel(channel, external::BUSY);
+    }
+
+    fn stop_external(&mut self, channel: u8) {
+        if let Some(gate) = self.external_run.get_mut(channel as usize) {
+            gate.close();
+        }
+        self.clear_external_screen(channel);
+    }
+
+    /// `true` when the command finished (a list, an error, or a refusal).
+    /// `false` while the script is still running, so the prompt waits.
+    fn start_external(&mut self, channel: u8, request: &str) -> bool {
+        let cap = self.channels as usize;
+        let mut others = 0;
+        for (idx, gate) in self.external_run.iter_mut().enumerate() {
+            if idx != channel as usize && gate.is_open() {
+                others += 1;
+            }
+        }
+        if others >= cap {
+            self.warn_running(channel);
+            return true;
+        }
+        let dir = self.cfg.paths.external_dir.clone();
+        let _ = crate::paths::ensure_dir(&dir);
+        let opened = {
+            let Some(gate) = self.external_run.get_mut(channel as usize) else {
+                return true;
+            };
+            gate.open(&dir, request)
+        };
+        match opened {
+            Ok(external::Opened::List(text)) => {
+                self.status = "EXTERNAL".into();
+                self.send_gpi_text(&text);
+                true
+            }
+            Ok(external::Opened::Started) => {
+                let linked = channel >= 1 && self.channel_linked(channel);
+                let name = self.external_run[channel as usize]
+                    .name()
+                    .unwrap_or("")
+                    .to_string();
+                self.external_run[channel as usize].configure(linked);
+                self.clear_external_screen(channel);
+                self.status = format!("EXTERNAL {name}");
+                false
+            }
+            Err(err) => {
+                self.status = err.clone();
+                self.send_gpi_text(&err);
+                true
+            }
+        }
+    }
+
+    /// `//FREE` when FREE is a script and not a built-in command.
+    fn try_external_line(&mut self, channel: u8, line: &str) -> bool {
+        let Some(request) = external::slash_request(line) else {
+            return false;
+        };
+        let name = request.split_whitespace().next().unwrap_or("");
+        if name.is_empty() || !external::has_program(&self.cfg.paths.external_dir, name) {
+            return false;
+        }
+        let prev = self.active;
+        if (1..=self.channels).contains(&channel) {
+            self.active = ActivePane::Channel(channel);
+        }
+        let done = self.start_external(channel, request);
+        if done {
+            self.close_remote(prev);
+        } else {
+            self.active = prev;
+        }
+        true
+    }
+
+    fn feed_external(&mut self, channel: u8, line: &str) {
+        let Some(gate) = self.external_run.get_mut(channel as usize) else {
+            return;
+        };
+        if !gate.is_open() {
+            return;
+        }
+        if let Err(err) = gate.write_line(line) {
+            self.status = err;
+            return;
+        }
+        self.note_external_screen(channel, &format!("> {line}"));
+    }
+
+    fn poll_external(&mut self) {
+        let n = self.external_run.len();
+        for idx in 0..n {
+            if !self.external_run[idx].occupied() {
+                continue;
+            }
+            let channel = idx as u8;
+            let name = self.external_run[idx].name().unwrap_or("").to_string();
+            let link_up = channel >= 1 && self.channel_linked(channel);
+            let Some(tick) = self.external_run[idx].tick(link_up) else {
+                continue;
+            };
+            if !tick.text.is_empty() {
+                self.note_external_screen(channel, &tick.text);
+                self.reply_on_channel(channel, &tick.text);
+            }
+            let Some(fin) = tick.finished else {
+                continue;
+            };
+            if !fin.air.is_empty() {
+                self.note_external_screen(channel, &fin.air);
+                self.reply_on_channel(channel, &fin.air);
+            }
+            self.status = if fin.code == Some(0) {
+                format!("EXTERNAL {name} done")
+            } else {
+                format!("EXTERNAL {name} stopped")
+            };
+            self.prompt_on_channel(channel);
+        }
+    }
+
+    fn clear_external_screen(&mut self, channel: u8) {
+        if let Some(buf) = self.external_screen.get_mut(channel as usize) {
+            buf.clear();
+        }
+    }
+
+    /// Rolling copy of the side terminal. The channel log is separate.
+    fn note_external_screen(&mut self, channel: u8, text: &str) {
+        let Some(buf) = self.external_screen.get_mut(channel as usize) else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        buf.push_str(text);
+        if !buf.ends_with('\n') {
+            buf.push('\n');
+        }
+        const CAP: usize = 4_000;
+        if buf.len() > CAP {
+            let mut cut = buf.len() - CAP;
+            while cut < buf.len() && !buf.is_char_boundary(cut) {
+                cut += 1;
+            }
+            if let Some(nl) = buf[cut..].find('\n') {
+                cut += nl + 1;
+            }
+            buf.drain(..cut);
+        }
+    }
+
+    fn reply_on_channel(&mut self, channel: u8, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let prev = self.active;
+        if (1..=self.channels).contains(&channel) {
+            self.active = ActivePane::Channel(channel);
+        }
+        self.send_gpi_text(text);
+        self.active = prev;
+    }
+
+    fn prompt_on_channel(&mut self, channel: u8) {
+        let prev = self.active;
+        if (1..=self.channels).contains(&channel) {
+            self.active = ActivePane::Channel(channel);
+        }
+        self.maybe_send_prompt();
+        self.active = prev;
     }
 
     fn send_user_catalog(&mut self, spec: &str) {
@@ -6758,9 +6997,7 @@ impl GpGuiApp {
                 self.status = if letters.is_empty() {
                     format!("KISS has no command channel for {cmd}")
                 } else {
-                    format!(
-                        "KISS has no command channel for {cmd}. Esc params: {letters}, PACLEN"
-                    )
+                    format!("KISS has no command channel for {cmd}. Esc params: {letters}, PACLEN")
                 };
             }
             EscKiss::BadValue => {
@@ -7812,6 +8049,7 @@ fn eat_key(ctx: &Context, mods: egui::Modifiers, key: egui::Key) -> bool {
 
 impl eframe::App for GpGuiApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.external_run.clear();
         self.flush_window();
         if self.cfg.session.backup {
             self.save_pad_logs();
@@ -7820,12 +8058,18 @@ impl eframe::App for GpGuiApp {
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.track_window(ctx);
+        self.poll_external();
         self.drain_tnc();
         self.kiss_link_timers();
         self.poll_qrt_disconnects();
         self.maybe_hour_gong();
         self.poll_beacon();
-        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        let repaint = if self.external_run.iter().any(|run| run.occupied()) {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(200)
+        };
+        ctx.request_repaint_after(repaint);
         self.poll_hotkeys(ctx);
 
         // Dialogs share the QRG/session-bar grey; the main chrome paints its own colours.
@@ -7943,9 +8187,9 @@ impl eframe::App for GpGuiApp {
         egui::CentralPanel::default()
             .frame(Frame::none().fill(VGA_BLUE))
             .show(ctx, |ui| {
-                let full_w = ui.available_width();
-                let full_h = ui.available_height();
-                self.rx_pane(ui, full_w, full_h);
+                let panel = ui.max_rect();
+                self.rx_pane(ui, panel.width(), panel.height());
+                self.draw_run_terminal(ui, panel);
                 self.qrg_dialog(ctx);
                 self.mycall_dialog(ctx);
                 self.spy_dialog(ctx);
@@ -8830,9 +9074,9 @@ impl GpGuiApp {
     }
 
     fn autobin_row_open(&self) -> bool {
-        self.autobin.as_ref().is_some_and(|live| {
-            live.state.recv_progress().is_some() || live.state.tx_active()
-        })
+        self.autobin
+            .as_ref()
+            .is_some_and(|live| live.state.recv_progress().is_some() || live.state.tx_active())
     }
 
     /// Row under the magenta status, left column only.
@@ -8843,15 +9087,14 @@ impl GpGuiApp {
         };
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, self.state_bg);
-        let (got, total, name, mode, waiting) = if let Some((got, total, name)) =
-            live.state.recv_progress()
-        {
-            (got, total, name, "BIN-RX", false)
-        } else if let Some((got, total, name, waiting)) = live.state.tx_progress() {
-            (got, total, name, "BIN-TX", waiting)
-        } else {
-            return;
-        };
+        let (got, total, name, mode, waiting) =
+            if let Some((got, total, name)) = live.state.recv_progress() {
+                (got, total, name, "BIN-RX", false)
+            } else if let Some((got, total, name, waiting)) = live.state.tx_progress() {
+                (got, total, name, "BIN-TX", waiting)
+            } else {
+                return;
+            };
         if waiting {
             let label = format!("{name}  Bytes {got}/{total}  {mode}  waiting #OK#");
             painter.text(
@@ -9382,6 +9625,85 @@ impl GpGuiApp {
                 self.read_mail(list);
             }
         }
+    }
+
+    /// Live view of the program on this channel, under the clock.
+    /// At most a quarter of the screen wide, in a small face.
+    fn draw_run_terminal(&self, ui: &mut Ui, panel: Rect) {
+        let ActivePane::Channel(channel) = self.active else {
+            return;
+        };
+        let Some(gate) = self.external_run.get(channel as usize) else {
+            return;
+        };
+        if !gate.occupied() {
+            return;
+        }
+        let name = gate.name().unwrap_or("").to_string();
+        let body = self
+            .external_screen
+            .get(channel as usize)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let width = panel.width() * 0.25;
+        let height = (panel.height() * 0.36).clamp(96.0, 168.0);
+        if width < 48.0 || panel.height() < 48.0 {
+            return;
+        }
+        let rect = Rect::from_min_size(
+            Pos2::new(panel.right() - width, panel.top()),
+            Vec2::new(width, height.min(panel.height())),
+        );
+        let font = FontId::monospace(11.0);
+        let ink = Color32::from_rgb(255, 255, 85);
+        let mut job = LayoutJob::default();
+        let mut first = true;
+        for line in body.lines() {
+            if !first {
+                job.append(
+                    "\n",
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font.clone(),
+                        color: Color32::WHITE,
+                        ..Default::default()
+                    },
+                );
+            }
+            first = false;
+            let typed = line.starts_with("> ");
+            job.append(
+                line,
+                0.0,
+                egui::TextFormat {
+                    font_id: font.clone(),
+                    color: if typed { ink } else { Color32::WHITE },
+                    ..Default::default()
+                },
+            );
+        }
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+            Frame::none()
+                .fill(VGA_DARK_GREEN)
+                .stroke(Stroke::new(1.0, Color32::WHITE))
+                .inner_margin(4.0)
+                .show(ui, |ui| {
+                    ui.set_min_size(rect.size() - Vec2::splat(2.0));
+                    ui.label(RichText::new(name).font(font.clone()).color(ink));
+                    egui::ScrollArea::vertical()
+                        .id_salt(("run_term", channel))
+                        .animated(false)
+                        .stick_to_bottom(true)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if job.is_empty() {
+                                ui.label(RichText::new("…").font(font).color(Color32::WHITE));
+                            } else {
+                                ui.add(egui::Label::new(job).wrap_mode(TextWrapMode::Wrap));
+                            }
+                        });
+                });
+        });
     }
 
     fn rx_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
@@ -11232,7 +11554,9 @@ fn autobin_safe_name(raw: &str) -> String {
     let base = raw.rsplit(['\\', '/']).next().unwrap_or("").trim();
     let safe: String = base
         .chars()
-        .filter(|c| c.is_ascii() && !matches!(c, '<' | '>' | '"' | '|' | '?' | '*' | ':' | '\\' | '/'))
+        .filter(|c| {
+            c.is_ascii() && !matches!(c, '<' | '>' | '"' | '|' | '?' | '*' | ':' | '\\' | '/')
+        })
         .collect();
     if safe.is_empty() || safe == "." || safe == ".." {
         "autobin.bin".to_string()
@@ -11261,10 +11585,7 @@ fn gp_notice_from(info: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn autobin_offer_label(offer: &crate::transfer::autobin::BinOffer) -> String {
-    let name = offer
-        .filename
-        .as_deref()
-        .unwrap_or("file");
+    let name = offer.filename.as_deref().unwrap_or("file");
     format!("{name}  {} bytes", offer.length)
 }
 
@@ -11305,7 +11626,10 @@ fn strip_bin_headers(info: &[u8]) -> Option<Vec<u8>> {
     if !dropped {
         return Some(info.to_vec());
     }
-    if out.iter().all(|b| matches!(b, b'\r' | b'\n' | b' ' | b'\t')) {
+    if out
+        .iter()
+        .all(|b| matches!(b, b'\r' | b'\n' | b' ' | b'\t'))
+    {
         None
     } else {
         Some(out)

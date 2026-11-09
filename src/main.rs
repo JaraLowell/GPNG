@@ -45,6 +45,9 @@ fn main() -> Result<()> {
     if let Err(err) = graphic_packet::transfer::sevenplus::ensure_user_dir(&cfg.paths.user_dir) {
         tracing::warn!("USER dir {}: {err}", cfg.paths.user_dir.display());
     }
+    if let Err(err) = graphic_packet::paths::ensure_dir(&cfg.paths.external_dir) {
+        tracing::warn!("EXTERNAL dir {}: {err}", cfg.paths.external_dir.display());
+    }
     if let Err(err) = graphic_packet::paths::ensure_dir(&cfg.paths.log_dir) {
         tracing::warn!("LOG dir {}: {err}", cfg.paths.log_dir.display());
     }

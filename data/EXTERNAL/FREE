@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""//RUN FREE — memory total, used, and still free.
+
+The first line is a shebang. Linux can run that itself. GPNG reads it
+on Linux, macOS, and Windows and starts the installed Python.
+"""
+
+import subprocess
+import sys
+
+
+def kb(n):
+    return max(int(n), 0) // 1024
+
+
+def read_linux():
+    info = {}
+    with open("/proc/meminfo", encoding="ascii", errors="replace") as fh:
+        for line in fh:
+            key, _, rest = line.partition(":")
+            parts = rest.split()
+            if parts and parts[0].isdigit():
+                info[key] = int(parts[0]) * 1024
+    total = info.get("MemTotal")
+    if total is None:
+        raise OSError("MemTotal missing")
+    free = info.get("MemAvailable")
+    if free is None:
+        free = info.get("MemFree", 0) + info.get("Buffers", 0) + info.get("Cached", 0)
+    return total, min(free, total)
+
+
+def _out(cmd):
+    return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+
+
+def read_mac():
+    total = None
+    for cmd in (
+        ["sysctl", "-n", "hw.memsize"],
+        ["/usr/sbin/sysctl", "-n", "hw.memsize"],
+    ):
+        try:
+            total = int(_out(cmd).strip())
+            break
+        except (OSError, ValueError, subprocess.CalledProcessError):
+            continue
+    if total is None:
+        raise OSError("sysctl hw.memsize")
+    vm = None
+    for cmd in (["vm_stat"], ["/usr/bin/vm_stat"]):
+        try:
+            vm = _out(cmd)
+            break
+        except (OSError, subprocess.CalledProcessError):
+            continue
+    if vm is None:
+        raise OSError("vm_stat")
+    page = 4096
+    for line in vm.splitlines():
+        if "page size of" not in line:
+            continue
+        for token in line.replace("(", " ").replace(")", " ").split():
+            if token.isdigit() and int(token) >= 256:
+                page = int(token)
+                break
+    pages = {}
+    for line in vm.splitlines():
+        if ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if digits:
+            pages[key.strip()] = int(digits)
+    free_pages = (
+        pages.get("Pages free", 0)
+        + pages.get("Pages speculative", 0)
+        + pages.get("Pages inactive", 0)
+    )
+    free = min(free_pages * page, total)
+    return total, free
+
+
+def read_windows():
+    import ctypes
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    stat = MEMORYSTATUSEX()
+    stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+        raise OSError("GlobalMemoryStatusEx")
+    total = int(stat.ullTotalPhys)
+    free = min(int(stat.ullAvailPhys), total)
+    return total, free
+
+
+def memory():
+    if sys.platform.startswith("linux"):
+        return read_linux()
+    if sys.platform == "darwin":
+        return read_mac()
+    if sys.platform == "win32":
+        return read_windows()
+    raise OSError("this operating system is not supported")
+
+
+def main():
+    try:
+        total, free = memory()
+    except OSError as err:
+        print(f"FREE: {err}")
+        return 1
+    used = max(total - free, 0)
+    print("FREE")
+    print(f"Total {kb(total)} KB")
+    print(f"Used {kb(used)} KB")
+    print(f"Free {kb(free)} KB")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -5,6 +5,7 @@
 //! `docs/COMPATIBILITY.md`.
 
 pub mod commands;
+pub mod external;
 pub mod gph;
 pub mod gpi;
 pub mod macros;

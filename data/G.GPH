@@ -93,31 +93,27 @@
 @RUN,3
 
   //RUN <program>
-      This function runs an external program and sends the output to the TNC.
-      All external programs must use the DOS standard output handle or it
-      won't work with GP.
-      The parameter "?" will send back a list of all available programs.
+      Runs a program from the EXTERNAL folder and sends what it prints
+      back on this link. //RUN ? lists the programs. //<program> is the
+      same when that name is not already a command.
 
-      There can be run two types of remote programs:
+      A program is a text script the sysop placed in EXTERNAL: Python,
+      PHP, Perl, Ruby, Node, Lua, or Java. Java cannot open a window.
+      The first line may name the program, for example
+      #! /usr/bin/env python3, #! /usr/bin/perl, or
+      #! /usr/lib/cgi-bin/php7.2.
+      That line is read on Linux, macOS, and Windows. The language must
+      be installed on the sysop computer. Words after the name are
+      arguments, not a path.
 
-      a) Standard remote programs
-        The call of these programs consists of five steps:
-             1.: Open a temporary file on disk.
-             2.: Redirect the DOS device CON into this file.
-             3.: Run the program. The screen output will now be written into
-                 the file.
-             4.: Read the temporary file ans send it to the TNC.
-             5.: Delete the temporary file.
-        These programs may be programmed of any user of GP in any program
-        language. The only thing you must consider is to use the DOS Handle 1
-        (standard output device) for your screen outputs.
+      //RUN FREE
+          Memory total, used, and still free.
 
-      b) GPRI programs
-        Since version 1.50 GP includes a special program interface called
-        GPRI (Graphic Packet Remote Interface). This interface allows an
-        interactive communication between the remote program and the
-        remote user. GPRI-programs run in a kind of "multitasking", so
-        several connected users can run these programs at the same time.
+      If the script reads a line, the next text from this connection is
+      that line, and the program stays open while it waits. A second
+      //RUN answers "program is running". When the script exits, it is
+      closed. If it prints nothing for 300 seconds, it is closed.
+      One program per channel. It also stops when the link drops.
 
 @RPRG,2
 

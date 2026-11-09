@@ -38,13 +38,14 @@ Most Functions are working now, connect, disconect, chat, file transfer. To do s
 | `data/*.GPI`, `data/*.GPH` | Connect texts and remote help. `G.GPH` is English |
 | `data/*.GPW` | Sysop password. `DB0IZ-9` is `DB0IZ9.GPW` |
 | `data/USER` | `//` catalog, read, write, and delete. 7Plus autosave writes here too. Browsing stays inside this folder |
+| `data/EXTERNAL` | `//RUN` programs: Python, PHP, Perl, Ruby, Node, Lua, or Java. `FREE` reports memory. 300 seconds of silence closes a run. The command cannot name a file outside this folder |
 | `data/mail` | `{CALL}.GPM` for the linked station. Not listed by `//` catalog |
 | `data/log/gpng.log` | Shell and debug log. A release build has no console |
 | `data/log/<CALL>.GPL` | Station journal when `log = true` or `LOG=ON`. One file per base call, not per SSID |
 | `data/log/pads/` | Saved monitor, channel, spy, BBS, and box pads |
 | `data/SAVE`, `data/TEMP` | Intended 7Plus join and split folders. Not wired to the channel yet |
 | `docs/COMPATIBILITY.md` | `//` remotes + `%` macros recovered from `*.GPH` / docs / EXE strings |
-| `src/remote/` | Abbreviation-aware command parser, GPI macros, USER jail, and mail |
+| `src/remote/` | Abbreviation-aware command parser, GPI macros, USER jail, EXTERNAL programs, and mail |
 | `docs/TRANSFER.md` | AutoBin `#BIN#` + 7Plus Code-AutoSave (≠ 7-Zip) for DOS GP interop |
 | `src/transfer/` | `#BIN#` state machine, CCITT CRC, `go_7+.` / `stop_7+.` sniffer, and `sevenplus_codec` |
 | `src/main.rs` | Tokio entry. Default window is the pixel UI; `--tui` selects the text UI |

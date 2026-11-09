@@ -1,12 +1,11 @@
  .ooO  %Y Run Ooo
 |
-| External programs running under GP
+| Programs in EXTERNAL
 |
-| NAME          INFO
+| FREE       -  Memory total, used, and still free
+| Python, PHP, Perl, Ruby, Node, Lua, Java
+| No reply for 300 seconds closes the program
 |
-| NEWS       -  Displays the latest news (updated every 3 hours)
-| FREE       -  Provides information about the SYSOP computer's memory.
-| BELL       -  Rings the SYSOP bell
-|
-| Run the programs with: //NAME [options]
-
+| //RUN ?              list
+| //RUN FREE           run FREE
+| //FREE               the same program

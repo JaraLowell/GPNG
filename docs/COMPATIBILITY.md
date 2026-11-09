@@ -78,7 +78,7 @@ Minimum significant letters come from `@TAG,N` in `*.GPH` (e.g. `@VERSION,3` →
 | `//Read <file>` | `R` | Send text file from UserDir |
 | `//RPrg <file>` | `RP` | AutoBin send |
 | `//RTt <port>` | `RT` | RTT via peer `//Echo` |
-| `//RUN <prog>` / `//<prog>` | `RUN` | EXTERNAL / GPRI; `//RUN ?` lists |
+| `//RUN <prog>` / `//<prog>` | `RUN` | Python, PHP, Perl, Ruby, Node, Lua, or Java in EXTERNAL; shebang read on Linux, macOS, and Windows; Java is headless; 300s of silence closes it; `//RUN ?` lists; `//RUN FREE` is memory |
 | `//Usage [call]` | `U` | Connected stations / call info |
 | `//VERsion` | `VER` | Version string |
 | `//Write <file>` | `W` | Capture following text to UserDir |
