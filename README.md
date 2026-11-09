@@ -1,4 +1,4 @@
-# Graphic Packet (modern)
+# Graphic Packet (New Generation)
 
 Asynchronous Rust foundation for a cross-platform rewrite of **Graphic Packet (GP)**, the classic 1990s MS-DOS AX.25 HAM Packet Radio terminal by Ulf Saran (DH1DAE).
 
@@ -18,10 +18,7 @@ clear because documentation for them has not been found. Remaining work
 includes completing the setup menu and adding a few utilities, such as log
 cleanup.
 
-File transfer is still open. 7Plus is the packet-radio text coding (not
-7-Zip). Encoding a file into parts, and joining those parts back to the
-original name, is a Rust port in `transfer::sevenplus_codec`. The MS-DOS
-`7PLUS.EXE` is not used.
+Most Functions are working now, connect, disconect, chat, file transfer. To do still is some of the legacy GP plots and plays and the as how they would call mail; wish is more like a leave a note.
 
 ![Language](https://img.shields.io/badge/language-RUST-dea584.svg) 
 
@@ -124,9 +121,9 @@ KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` str
 
 ## Credits
 
-**Graphic Packet** was written by Ulf Saran (DH1DAE). This crate is a new implementation of that terminal for current operating systems. It does not include the DOS binary.
+**Graphic Packet** was written by Ulf Saran (DH1DAE). This repository is a new implementation of that terminal for current operating systems. It does not include the DOS binary.
 
-**GP Paint** was writteb be Stefan Pfeiffer (DL1ELY). While we had no access to any sourse material, the concept and visual examples for Icons and how to Edit was a great aid.
+**GP Paint** was written be Stefan Pfeiffer (DL1ELY). While we had no access to any sourse material, the concept and visual examples for Icons and how to Edit was a great aid.
 
 **7Plus** Code-AutoSave follows the file format of 7PLUS 2.2 by Axel Bauda (DG1BBQ). The part names (`picture.p01`, a single part as `picture.7pl`, part 10 as `picture.p0a`) and the `go_7+.` / `stop_7+.` markers are taken from the C sources maintained by HB9XAR:
 
