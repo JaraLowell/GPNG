@@ -71,6 +71,34 @@ pub fn news_available() -> bool {
     resolve_named("NEWS.GPI").is_some()
 }
 
+/// `data/NL1STK.GPC` for `NL1STK` or `NL1STK-2`. The numeric SSID is dropped.
+///
+/// `None` when that file is not in `data/`. The caller then uses the connect
+/// text selected on the channel.
+pub fn personal_connect_text(call: &str) -> Option<String> {
+    let base = crate::cipher::base_call(call);
+    if base.is_empty() || !base.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let name = format!("{base}.GPC");
+    for dir in crate::paths::data_dirs() {
+        if let Some(path) = crate::paths::find_named_file(&dir, &name) {
+            return read_file(&path);
+        }
+    }
+    None
+}
+
+/// Read `<call>.GPC` from one folder. Tests use this; the program searches `data/`.
+pub fn read_personal_connect(dir: &Path, call: &str) -> Option<String> {
+    let base = crate::cipher::base_call(call);
+    if base.is_empty() || !base.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let path = crate::paths::find_named_file(dir, &format!("{base}.GPC"))?;
+    read_file(&path)
+}
+
 /// Default connect-text path (`CTEXT.GPI`). Classic GP uses **C**onnect text.
 ///
 /// Falls back to a leftover `GTEXT.GPI` so older data folders still work.
@@ -214,5 +242,25 @@ mod tests {
             match_verb_to_gpi("i").map(|g| g.stem) == Some("info".into())
                 || match_verb_to_gpi("info").is_some()
         );
+    }
+
+    #[test]
+    fn a_call_file_drops_the_ssid_and_skips_a_missing_one() {
+        let dir = std::env::temp_dir().join(format!(
+            "gpng-gpc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("NL1STK.GPC"), "hello %C\n").unwrap();
+        let text = read_personal_connect(&dir, "nl1stk-2").unwrap();
+        assert!(text.contains("hello"), "{text}");
+        assert!(read_personal_connect(&dir, "DL1ABC").is_none());
+        assert!(read_personal_connect(&dir, "../NL1STK").is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

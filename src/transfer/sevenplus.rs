@@ -93,6 +93,11 @@ impl SevenPlusAutosave {
         self.active.is_some()
     }
 
+    /// Drop the open part. The 7+ switch stays as it was.
+    pub fn abort_capture(&mut self) -> bool {
+        self.active.take().is_some()
+    }
+
     /// Feed one RX text line (no requirement that autosave be mid-capture).
     /// Returns a finished part when a stop marker closes a capture.
     pub fn on_line(&mut self, line: &str) -> Option<SavedPart> {
@@ -387,6 +392,18 @@ fn guess_name(body: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abort_drops_the_open_part() {
+        let mut auto = SevenPlusAutosave::new(true);
+        auto.on_line(" go_7+. 001 of 001 README.TXT 00000012 0040 0001 (7PLUS v2.2)");
+        auto.on_line("data line");
+        assert!(auto.is_capturing());
+        assert!(auto.abort_capture());
+        assert!(!auto.is_capturing());
+        assert!(auto.on_line("more").is_none());
+        assert!(!auto.abort_capture());
+    }
 
     #[test]
     fn captures_between_markers() {

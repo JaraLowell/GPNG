@@ -61,7 +61,7 @@ Minimum significant letters come from `@TAG,N` in `*.GPH` (e.g. `@VERSION,3` →
 | `//Bell` | `B` | Ring sysop |
 | `//CATalog` / `//DIRectory` | `CAT` / `DIR` | UserDir listing; wildcards; `a:b` multi-filter |
 | `//CD <dir>` | `CD` | **DL/SLO help** — change/show UserDir (missing from some EN lists) |
-| `//CUT` | `CUT` | Abort `//Read` transfer |
+| `//CUT` | `CUT` | Abort BIN-RX/TX or a 7+ capture. Receiver sends `#ABORT#` or `#NO#`. Sender stops |
 | `//DELete` / `//Kill` | `DEL` / `KILL` | Delete own `//Write` file; bare `//DEL`/`//Kill` clears `.GPM` mail |
 | `//DISConnect` | `DISC` | Drop without QRT text |
 | `//Echo <text>` | `E` | Echo; used by `//RTT` |
@@ -78,7 +78,9 @@ Minimum significant letters come from `@TAG,N` in `*.GPH` (e.g. `@VERSION,3` →
 | `//Read <file>` | `R` | Send text file from UserDir |
 | `//RPrg <file>` | `RP` | AutoBin send |
 | `//RTt <port>` | `RT` | RTT via peer `//Echo` |
-| `//RUN <prog>` / `//<prog>` | `RUN` | Python, PHP, Perl, Ruby, Node, Lua, or Java in EXTERNAL; shebang read on Linux, macOS, and Windows; Java is headless; 300s of silence closes it; `//RUN ?` lists; `//RUN FREE` is memory |
+| `//RUN <prog>` / `//<prog>` | `RUN` | Python, PHP, Perl, Ruby, Node, Lua, or Java in EXTERNAL; shebang read on Linux, macOS, and Windows; Java is headless; 300s with no input and no new output closes it and a linked station is told; `//RUN ?` lists; `//RUN FREE` is memory |
+| `//MAIL` | `MA` | Print this station's mail as text, not a `//Read` file transfer. No file: `You have no mail` |
+| `//SEND <call>` | `SEND` | Next line is mail for that call (`data/MAIL/{CALL}.GPM`, numeric SSID dropped). Reply: `GPNG: Mail send to CALL` |
 | `//Usage [call]` | `U` | Connected stations / call info |
 | `//VERsion` | `VER` | Version string |
 | `//Write <file>` | `W` | Capture following text to UserDir |

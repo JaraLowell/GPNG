@@ -30,6 +30,10 @@ pub enum RemoteAction {
     ReadAutoBin,
     RoundTrip,
     Run,
+    /// `//SEND <call>` then the next line is mail for that station.
+    Send,
+    /// `//MAIL` sends this station's mail, or says there is none.
+    Mail,
     /// PK-88-style dump of every channel link state (`//CSTATUS`).
     ChannelStatus,
     Usage,
@@ -112,7 +116,7 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             &["CUT"],
             3,
             RemoteAction::CutTransfer,
-            "Abort //Read transfer",
+            "Abort BIN or 7+ transfer",
         ),
         cmd(
             "//DELete",
@@ -233,6 +237,20 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             3,
             RemoteAction::Run,
             "EXTERNAL / GPRI program",
+        ),
+        cmd(
+            "//SEND",
+            &["SEND"],
+            4,
+            RemoteAction::Send,
+            "Leave mail for a station",
+        ),
+        cmd(
+            "//MAIL",
+            &["MAIL", "MA"],
+            2,
+            RemoteAction::Mail,
+            "Send this station's mail",
         ),
         cmd(
             "//Usage",
@@ -433,6 +451,14 @@ mod tests {
             parse_line("//7+ ON").unwrap(),
             (RemoteAction::SevenPlusAutoSave, "ON".into())
         );
+        assert_eq!(
+            parse_line("//SEND NL1STK-2").unwrap(),
+            (RemoteAction::Send, "NL1STK-2".into())
+        );
+        assert!(parse_line("//SEN NL1STK").is_none());
+        assert_eq!(parse_line("//MAIL").unwrap().0, RemoteAction::Mail);
+        assert_eq!(parse_line("//MA").unwrap().0, RemoteAction::Mail);
+        assert_eq!(parse_line("//MH").unwrap().0, RemoteAction::MHeard);
         assert_eq!(parse_line("//Q").unwrap().0, RemoteAction::Quit);
         assert_eq!(parse_line("//DISC").unwrap().0, RemoteAction::Disconnect);
         assert_eq!(

@@ -4,7 +4,7 @@
 |
 | FREE       -  Memory total, used, and still free
 | Python, PHP, Perl, Ruby, Node, Lua, Java
-| No reply for 300 seconds closes the program
+| 300 seconds with no input and no new text closes it
 |
 | //RUN ?              list
 | //RUN FREE           run FREE

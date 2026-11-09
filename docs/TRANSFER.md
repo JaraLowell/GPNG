@@ -72,7 +72,7 @@ CRC is the classic CCITT table/`updcrc` macro from the DK4NB bulletin
 - Without extended header, saved name is `<peercall>.NNN` (`000`…`999`).
 - DieBox titles may show `(BIN)` for AutoBin mail.
 - Remotes: `//RPrg <file>` (send AutoBin), `//WPrg <file>` (receive/store AutoBin).
-- `//CUT` / `//END` do **not** abort AutoBin (help text); use `#ABORT#` / BIN toggle.
+- `//CUT` aborts AutoBin on that channel. The receiver sends `#ABORT#` (or `#NO#` before the file starts). The sender stops, and sends `#ABORT#` once file bytes are already moving, so both sides return to chat.
 
 `#BIN_V2#` appears in GP 1.63 — treat as a variant magic to detect; prefer
 emitting classic `#BIN#` + extended fields for maximum peer compatibility

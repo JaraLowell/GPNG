@@ -38,7 +38,7 @@ Most Functions are working now, connect, disconect, chat, file transfer. To do s
 | `data/*.GPI`, `data/*.GPH` | Connect texts and remote help. `G.GPH` is English |
 | `data/*.GPW` | Sysop password. `DB0IZ-9` is `DB0IZ9.GPW` |
 | `data/USER` | `//` catalog, read, write, and delete. 7Plus autosave writes here too. Browsing stays inside this folder |
-| `data/EXTERNAL` | `//RUN` programs: Python, PHP, Perl, Ruby, Node, Lua, or Java. `FREE` reports memory. 300 seconds of silence closes a run. The command cannot name a file outside this folder |
+| `data/EXTERNAL` | `//RUN` programs: Python, PHP, Perl, Ruby, Node, Lua, or Java. `FREE` reports memory. 300 seconds with no input and no new output closes a run. The command cannot name a file outside this folder |
 | `data/mail` | `{CALL}.GPM` for the linked station. Not listed by `//` catalog |
 | `data/log/gpng.log` | Shell and debug log. A release build has no console |
 | `data/log/<CALL>.GPL` | Station journal when `log = true` or `LOG=ON`. One file per base call, not per SSID |

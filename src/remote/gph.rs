@@ -335,8 +335,17 @@ mod tests {
     fn english_overview_lists_read_and_help_section() {
         let text = help_for("EN", "");
         assert!(text.contains("//Read"), "{text}");
+        assert!(text.contains("//MAIL"), "{text}");
+        assert!(text.contains("//SEND"), "{text}");
         let detail = help_for("EN", "READ");
         assert!(detail.contains("//Read"), "{detail}");
+        assert!(detail.contains("//MAIL"), "{detail}");
+        assert!(detail.contains("not this file transfer"), "{detail}");
+        let mail = help_for("EN", "MAIL");
+        assert!(mail.contains("You have no mail"), "{mail}");
+        assert!(mail.contains("not a file transfer"), "{mail}");
+        let send = help_for("EN", "SEND");
+        assert!(send.contains("GPNG: Mail send to"), "{send}");
         assert!(!detail.contains("//CATalog [wildcard]"));
         let about = help_for("G", "h");
         assert!(about.contains("All commands must begin"), "{about}");

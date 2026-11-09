@@ -24,8 +24,10 @@ const MAX_OUT: usize = 12_000;
 const PROMPT_WAIT: Duration = Duration::from_millis(250);
 /// Once the script has exited, collect the last printed bytes, then drop it.
 const EXIT_DRAIN: Duration = Duration::from_millis(40);
-/// No printed text for this long means the process is closed.
+/// No typed line and no new printed text for this long closes the process.
 const QUIET: Duration = Duration::from_secs(300);
+/// Told to a station that is still linked when that idle limit closes the run.
+const TIMED_OUT: &str = "closed run program after timeout";
 const TEXT_ONLY: &str = "python, php, perl, ruby, node, lua, or java only";
 
 /// What a second `//RUN` on a channel that already has a program is told.
@@ -153,11 +155,13 @@ pub struct Running {
     code_known: bool,
     capped: bool,
     cap_noted: bool,
-    /// Last time the process printed something. Spawn counts as the start.
+    /// Last input or new output. Spawn counts as the start.
     replied: Instant,
     quiet_for: Duration,
     silent: bool,
     silent_noted: bool,
+    /// The station was still linked when the idle limit closed the run.
+    report_timeout: bool,
     while_linked: bool,
     link_stopped: bool,
     name: String,
@@ -219,6 +223,7 @@ impl Running {
         stdin
             .flush()
             .map_err(|_| "program is not waiting".to_string())?;
+        self.replied = Instant::now();
         Ok(())
     }
 
@@ -232,8 +237,12 @@ impl Running {
         let mut text = self.take_text(false);
         self.note_cap_line(&mut text);
         self.note_exit();
-        if !self.code_known && self.replied.elapsed() >= self.quiet_for {
+        if !self.code_known
+            && !self.link_stopped
+            && self.replied.elapsed() >= self.quiet_for
+        {
             self.silent = true;
+            self.report_timeout = link_up;
             let _ = self.stdin.take();
             let _ = self.child.kill();
             self.note_exit();
@@ -277,12 +286,12 @@ impl Running {
     }
 
     fn note_silent_line(&mut self, text: &mut String) {
-        if self.silent && !self.silent_noted {
+        if self.report_timeout && !self.silent_noted {
             self.silent_noted = true;
             if !text.is_empty() {
                 text.push('\n');
             }
-            text.push_str("(no reply)");
+            text.push_str(TIMED_OUT);
         }
     }
 
@@ -453,6 +462,7 @@ impl Running {
             quiet_for: QUIET,
             silent: false,
             silent_noted: false,
+            report_timeout: false,
             while_linked: false,
             link_stopped: false,
             name: plan.name,
@@ -1516,8 +1526,115 @@ mod tests {
                     thread::sleep(Duration::from_millis(50));
                 }
                 assert!(done, "still open: {saw}");
-                assert!(saw.contains("(no reply)"), "{saw}");
+                assert!(saw.contains(TIMED_OUT), "{saw}");
                 assert!(!run.still_open(), "{saw}");
+            }
+            Ok(Begin::List(text)) => panic!("listed instead of running: {text}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_game_stays_open_while_it_prints_or_is_typed_to() {
+        let dir = temp_dir();
+        fs::write(
+            dir.join("play.py"),
+            "import time\nfor _ in range(6):\n    print('tick', flush=True)\n    time.sleep(0.08)\nprint('done')\n",
+        )
+        .unwrap();
+        match begin(&dir, "play") {
+            Err(err) => assert!(
+                err.contains("not installed"),
+                "expected a missing interpreter, got {err}"
+            ),
+            Ok(Begin::Started(mut run)) => {
+                run.set_quiet_limit(Duration::from_millis(250));
+                let mut saw = String::new();
+                let mut fin = None;
+                for _ in 0..80 {
+                    let tick = run.tick(true);
+                    push_piece(&mut saw, &tick.text);
+                    if tick.finished.is_some() {
+                        fin = tick.finished;
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(40));
+                }
+                let fin = fin.expect(&format!("still open: {saw}"));
+                assert_eq!(fin.code, Some(0), "{saw}");
+                assert!(saw.contains("done"), "{saw}");
+                assert!(!saw.contains(TIMED_OUT), "{saw}");
+            }
+            Ok(Begin::List(text)) => panic!("listed instead of running: {text}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn typing_a_line_keeps_a_waiting_program_open() {
+        let dir = temp_dir();
+        fs::write(
+            dir.join("turn.py"),
+            "print('move?', flush=True)\nprint('got ' + input(), flush=True)\n",
+        )
+        .unwrap();
+        match begin(&dir, "turn") {
+            Err(err) => assert!(
+                err.contains("not installed"),
+                "expected a missing interpreter, got {err}"
+            ),
+            Ok(Begin::Started(mut run)) => {
+                run.set_quiet_limit(Duration::from_millis(350));
+                let mut saw = String::new();
+                let mut fed = false;
+                let mut fin = None;
+                for _ in 0..40 {
+                    let tick = run.tick(true);
+                    push_piece(&mut saw, &tick.text);
+                    if !fed && saw.contains("move?") {
+                        thread::sleep(Duration::from_millis(200));
+                        run.write_line("north").unwrap();
+                        fed = true;
+                    }
+                    if tick.finished.is_some() {
+                        fin = tick.finished;
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(40));
+                }
+                assert!(fed, "prompt never arrived: {saw}");
+                let fin = fin.expect(&format!("still open: {saw}"));
+                assert_eq!(fin.code, Some(0), "{saw}");
+                assert!(saw.contains("got north"), "{saw}");
+                assert!(!saw.contains(TIMED_OUT), "{saw}");
+            }
+            Ok(Begin::List(text)) => panic!("listed instead of running: {text}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_idle_run_on_a_dropped_link_closes_without_the_timeout_line() {
+        let dir = temp_dir();
+        fs::write(dir.join("wait.py"), "import time\ntime.sleep(30)\n").unwrap();
+        match begin(&dir, "wait") {
+            Err(err) => assert!(err.contains("not installed"), "{err}"),
+            Ok(Begin::Started(mut run)) => {
+                run.set_while_linked(true);
+                run.set_quiet_limit(Duration::from_millis(80));
+                let mut saw = String::new();
+                let mut done = false;
+                for _ in 0..30 {
+                    let tick = run.tick(false);
+                    push_piece(&mut saw, &tick.text);
+                    if tick.finished.is_some() {
+                        done = true;
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(40));
+                }
+                assert!(done, "still open: {saw}");
+                assert!(!saw.contains(TIMED_OUT), "{saw}");
             }
             Ok(Begin::List(text)) => panic!("listed instead of running: {text}"),
         }

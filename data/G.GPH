@@ -15,6 +15,7 @@
   //Help [command]       : This message or more details on "command"
   //Info                 : Sends an info about this station
   //Language <language>  : Changes the language of the messages
+  //MAIL                 : Sends your mail, or says you have none
   //MHeard [number]      : Shows a list of heard stations
   //MHeard <call>        : Shows at which time <call> was finally heard
   //Name <name>          : Stores your name if not yet known
@@ -26,6 +27,7 @@
   //RPrg <filename>      : Sends the file "filename" in the AutoBin mode
   //RTt <portnr>         : Shows the round trip time
   //RUN <program>        : Runs an external program
+  //SEND <call>          : Send mail to <call>, The next line is mail content
   //Usage [call]         : This channel state or a short info about "call"
   //VERsion              : Shows the version number of this software
   //Write <filename>     : Stores the following text into the file "filename"
@@ -54,6 +56,24 @@
       The AutoBin mode is a simple transfer protocol which contains a CRC
       check. Unfortunately it doesnt't correct errors.
       This AutoBin mode is compatible to THP and SP.
+
+@MAIL,2
+
+  //MAIL
+      Prints the mail waiting for your callsign. This is not a file transfer.
+      //Read sends a file. A numeric SSID is the same mailbox, so
+      NL1STK-2 reads NL1STK. If there is no mail the answer is:
+      You have no mail
+
+@SEND,4
+
+  //SEND <call>
+      The next line is a mail message for that station. A numeric SSID
+      is ignored, so NL1STK-2 is NL1STK. The line is stored as that
+      call's mail. If mail is already there, two blank lines are
+      written and the new message is added:
+      <from> to <call> at <date> <time>, then the message.
+      The answer is: GPNG: Mail send to <call>
 
 @WRITE,1
 
@@ -112,7 +132,9 @@
       If the script reads a line, the next text from this connection is
       that line, and the program stays open while it waits. A second
       //RUN answers "program is running". When the script exits, it is
-      closed. If it prints nothing for 300 seconds, it is closed.
+      closed. It also closes after 300 seconds with no typed line
+      and no new text. A station still connected is told
+      "closed run program after timeout".
       One program per channel. It also stops when the link drops.
 
 @RPRG,2
@@ -128,6 +150,7 @@
   //Read <filename>
       This command sends you a text file. You can get a list of all readable
       files by sending the command "//CATalog".
+      Mail is //MAIL, not this file transfer.
 
 @QUIT,1
 
@@ -219,8 +242,10 @@
 @CUT,3
 
   //CUT
-      If you have started a file transfer with //Read, you are able to
-      abort it with this command.
+      Aborts the file transfer on this channel and returns to chat.
+      BIN-RX, or a 7+ capture, sends #ABORT# (#NO# if the BIN file has
+      not started). BIN-TX stops. A sender that has already sent file
+      bytes also sends #ABORT# so the receiver leaves the file.
 
 @CATALOG,3
 

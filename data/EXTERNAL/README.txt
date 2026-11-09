@@ -42,9 +42,11 @@ Linux, macOS, and Windows
     that connection is the line, and that same program stays
     open while it waits. A second //RUN on that channel answers
     "program is running" and does not start another one.
-    When the script exits, the process is closed. If it prints
-    nothing for 300 seconds, it is closed too, so a stuck
-    program cannot sit on the computer. Disconnect closes it
+    When the script exits, the process is closed. A game that
+    is still printing, or still being typed to, stays open.
+    If 300 seconds pass with no typed line and no new text,
+    it is closed. A station that is still connected is told
+    "closed run program after timeout". Disconnect closes it
     as well. One program per channel, so ten channels is ten
     programs at most.
 

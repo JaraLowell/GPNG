@@ -228,6 +228,8 @@ struct UserWrite {
     body: String,
 }
 
+/// `//SEND <call>` is waiting for the next line, which is the mail.
+
 pub struct GpGuiApp {
     cfg: Config,
     /// Path used to persist MYCALL (and later settings) into Config.toml.
@@ -277,6 +279,8 @@ pub struct GpGuiApp {
     autobin: Option<LiveAutoBin>,
     /// One in-flight file frame after a local `#ABORT#`. Hidden unless it is `<GP>:`.
     bin_rx_swallow: Option<u8>,
+    /// `//CUT` already stopped the transfer while this line was sniffed.
+    transfer_cut: bool,
     find_open: bool,
     find_text: String,
     find_last: String,
@@ -403,6 +407,8 @@ pub struct GpGuiApp {
     seven: Vec<SevenPlusAutosave>,
     /// `//Write` capture, one slot per channel (0 = local compose).
     user_write: Vec<Option<UserWrite>>,
+    /// Call waiting for the next line after `//SEND`.
+    mail_send: Vec<Option<String>>,
     /// Lowercase names this session stored with `//Write`. `//DELete` only removes those.
     user_written: Vec<String>,
     /// `//RUN` script, one per channel. The link ending drops it.
@@ -660,6 +666,7 @@ impl GpGuiApp {
             list_offer: None,
             autobin: None,
             bin_rx_swallow: None,
+            transfer_cut: false,
             find_open: false,
             find_text: String::new(),
             find_last: String::new(),
@@ -737,6 +744,7 @@ impl GpGuiApp {
                 .map(|_| SevenPlusAutosave::new(seven_on))
                 .collect(),
             user_write: (0..slots).map(|_| None).collect(),
+            mail_send: vec![None; slots],
             user_written: Vec::new(),
             external_run: (0..slots).map(|_| external::Gate::new()).collect(),
             external_screen: vec![String::new(); slots],
@@ -1644,21 +1652,37 @@ impl GpGuiApp {
     fn load_connect_text(&self, channel: u8) -> Option<String> {
         let mut ctx = self.macro_ctx();
         self.apply_channel_peer(&mut ctx, channel);
-        if let Some(text) = self.linked_call(channel).and_then(|call| {
+        let greeting = if let Some(text) = self
+            .linked_call(channel)
+            .as_deref()
+            .and_then(gpi::personal_connect_text)
+        {
+            Some(gpi::expand_gpi_text(&text, &ctx))
+        } else {
+            [
+                self.resolve_ctext_path(),
+                gpi::default_ctext_path(),
+                crate::paths::data_file("CTEXT.GPI"),
+                crate::paths::data_file("GTEXT.GPI"),
+            ]
+            .into_iter()
+            .find_map(|p| gpi::read_file(&p))
+            .map(|raw| gpi::expand_gpi_text(&raw, &ctx))
+        };
+        let waiting = self.linked_call(channel).is_some_and(|call| {
             let _ = mail::ensure_mail_dir(&mail::mail_dir());
-            mail::read_text(&mail::mail_dir(), &call)
-        }) {
-            return Some(gpi::expand_gpi_text(&text, &ctx));
+            mail::waiting(&mail::mail_dir(), &call)
+        });
+        let Some(greeting) = greeting else {
+            return waiting.then(|| "You have mail waiting, to read do //MAIL\n".into());
+        };
+        if waiting {
+            Some(format!(
+                "You have mail waiting, to read do //MAIL\n\n{greeting}"
+            ))
+        } else {
+            Some(greeting)
         }
-        let raw = [
-            self.resolve_ctext_path(),
-            gpi::default_ctext_path(),
-            crate::paths::data_file("CTEXT.GPI"),
-            crate::paths::data_file("GTEXT.GPI"),
-        ]
-        .into_iter()
-        .find_map(|p| gpi::read_file(&p))?;
-        Some(gpi::expand_gpi_text(&raw, &ctx))
     }
 
     /// Fill `%C` / `%N` / `%Y` / `%K` for one channel.
@@ -1797,6 +1821,7 @@ impl GpGuiApp {
             return;
         }
         self.stop_external(channel);
+        self.cancel_mail_send(channel);
         if self.channel_disconnecting(channel) {
             return;
         }
@@ -1872,6 +1897,7 @@ impl GpGuiApp {
     /// UA or DM answered our DISC, or T1/N2 gave up.
     fn finish_disconnect(&mut self, channel: u8, play: bool) {
         self.stop_external(channel);
+        self.cancel_mail_send(channel);
         let was = self.channel_linked(channel) || self.channel_disconnecting(channel);
         self.kiss_clear_disc_timer(channel);
         self.clear_channel_link_state(channel);
@@ -2811,7 +2837,9 @@ impl GpGuiApp {
                     text = plain;
                 }
             }
-            if !self.seven_capturing(channel) {
+            let cut = parse_line(&text)
+                .is_some_and(|(action, _)| action == RemoteAction::CutTransfer);
+            if !self.seven_capturing(channel) || cut {
                 self.maybe_remote_line(channel, &text, kind == PadKind::Incoming);
             }
             if kind == PadKind::Incoming && channel >= 1 && !text.is_empty() {
@@ -2852,6 +2880,9 @@ impl GpGuiApp {
     }
 
     fn maybe_remote_line(&mut self, channel: u8, line: &str, incoming: bool) {
+        if incoming && self.mail_send_open(channel) && self.take_mail_line(channel, line) {
+            return;
+        }
         if channel >= 1
             && self
                 .user_write
@@ -2958,6 +2989,12 @@ impl GpGuiApp {
         if channel == 0 {
             return;
         }
+        if parse_line(line).is_some_and(|(action, _)| action == RemoteAction::CutTransfer)
+            && self.seven_capturing(channel)
+        {
+            self.cut_transfer(channel);
+            return;
+        }
         if !self.session.seven_plus {
             if sevenplus::is_opening_line(line) {
                 self.status = "7+ part seen — switch is OFF".into();
@@ -3017,6 +3054,26 @@ impl GpGuiApp {
             self.bin_rx_swallow = None;
             self.session.bin_rx = false;
             return gp_notice_from(info);
+        }
+        if autobin::is_abort_payload(info)
+            && self.autobin.as_ref().is_some_and(|live| {
+                live.channel == channel && live.state.pending_offer().is_some()
+            })
+        {
+            self.autobin = None;
+            self.session.bin_rx = false;
+            self.show_proto_line(channel, "#ABORT#", PadKind::Incoming);
+            self.status = "BIN-RX aborted".into();
+            return None;
+        }
+        if self.autobin_receiving(channel) && autobin::is_abort_payload(info) {
+            if let Some(mut live) = self.autobin.take() {
+                Self::discard_recv_temp(&mut live);
+            }
+            self.session.bin_rx = false;
+            self.show_proto_line(channel, "#ABORT#", PadKind::Incoming);
+            self.status = "BIN-RX aborted".into();
+            return None;
         }
         if self.autobin_receiving(channel) {
             let (n, done, io_err) = {
@@ -3344,6 +3401,71 @@ impl GpGuiApp {
         }
         self.show_proto_line(channel, header.trim_end_matches(['\r', '\n']), PadKind::Own);
         self.status = format!("BIN-TX: {shown}");
+    }
+
+    /// `//CUT` on this channel. The receiver sends the abort token.
+    /// The sender stops the file. Either way the channel is back in chat.
+    fn cut_transfer(&mut self, channel: u8) -> bool {
+        let bin_tx = self.autobin.as_ref().is_some_and(|live| {
+            live.channel == channel && live.state.tx_active()
+        });
+        if bin_tx {
+            self.stop_bin_sender();
+            self.transfer_cut = true;
+            return true;
+        }
+        let bin_rx = self.autobin.as_ref().is_some_and(|live| {
+            live.channel == channel
+                && (live.state.recv_progress().is_some() || live.state.pending_offer().is_some())
+        });
+        if bin_rx {
+            self.cancel_autobin();
+            self.transfer_cut = true;
+            return true;
+        }
+        if self.seven_capturing(channel) {
+            self.cut_seven(channel);
+            self.transfer_cut = true;
+            return true;
+        }
+        false
+    }
+
+    /// BIN-TX: stop handing out file bytes. Once bytes are on the air, tell
+    /// the receiver with `#ABORT#` so the next line is chat.
+    fn stop_bin_sender(&mut self) {
+        let Some(live) = self.autobin.take() else {
+            self.session.bin_tx = false;
+            return;
+        };
+        if !live.state.tx_active() {
+            self.autobin = Some(live);
+            return;
+        }
+        let channel = live.channel;
+        self.session.bin_tx = false;
+        // The offer is already on the other station. `#ABORT#` lets that
+        // side leave the file. We send no further file bytes.
+        let my = self.effective_mycall(channel);
+        let abort = autobin::format_abort();
+        let _ = self.send_kiss_i(channel, &my, abort.as_bytes(), "");
+        self.show_proto_line(channel, "#ABORT#", PadKind::Own);
+        self.status = "BIN-TX stopped".into();
+    }
+
+    /// 7+ capture: drop the part and tell the sender to stop.
+    fn cut_seven(&mut self, channel: u8) {
+        let dropped = self
+            .seven
+            .get_mut(channel as usize)
+            .is_some_and(|sniff| sniff.abort_capture());
+        if !dropped {
+            return;
+        }
+        let my = self.effective_mycall(channel);
+        let _ = self.send_kiss_i(channel, &my, b"#ABORT#\r", "#ABORT#");
+        self.show_proto_line(channel, "#ABORT#", PadKind::Own);
+        self.status = "7+ aborted".into();
     }
 
     fn cancel_bin_tx(&mut self) {
@@ -4381,6 +4503,9 @@ impl GpGuiApp {
         }
 
         let linked = matches!(self.active, ActivePane::Channel(n) if self.channel_linked(n));
+        if !linked && self.mail_send_open(write_ch) && self.take_mail_line(write_ch, &line) {
+            return;
+        }
         // Local test of a script: the next typed line is its input.
         // A second //RUN is refused. A linked channel sends typed text onward.
         if !linked && self.external_busy(write_ch) {
@@ -4563,6 +4688,31 @@ impl GpGuiApp {
                 }
             }
         }
+    }
+
+    /// `//MAIL` prints this station's mail as text. It does not send a USER file.
+    fn reply_station_mail(&mut self, channel: u8) {
+        let Some(call) = self.linked_call(channel) else {
+            self.reply_on_channel(channel, "You have no mail");
+            self.status = "You have no mail".into();
+            return;
+        };
+        let _ = mail::ensure_mail_dir(&mail::mail_dir());
+        let Some(text) = mail::read_text(&mail::mail_dir(), &call) else {
+            self.reply_on_channel(channel, "You have no mail");
+            self.status = "You have no mail".into();
+            return;
+        };
+        if text.trim().is_empty() {
+            self.reply_on_channel(channel, "You have no mail");
+            self.status = "You have no mail".into();
+            return;
+        }
+        let mut ctx = self.macro_ctx();
+        self.apply_channel_peer(&mut ctx, channel);
+        let text = gpi::expand_gpi_text(&text, &ctx);
+        self.status = format!("Mail {call}");
+        self.reply_on_channel(channel, &text);
     }
 
     /// Send `{CALL}.GPM` when it exists. Returns false when there is no mail.
@@ -4887,6 +5037,16 @@ impl GpGuiApp {
                 self.close_remote(prev);
                 return;
             }
+            RemoteAction::Send => {
+                self.begin_mail_send(channel, args);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::Mail => {
+                self.reply_station_mail(channel);
+                self.close_remote(prev);
+                return;
+            }
             RemoteAction::EndWrite => {
                 if !self.finish_user_write(channel) {
                     let msg = "no //Write in progress";
@@ -4937,6 +5097,19 @@ impl GpGuiApp {
             RemoteAction::Usage => {
                 let text = self.usage_text(channel, args);
                 self.send_gpi_text(&text);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::CutTransfer => {
+                let already = self.transfer_cut;
+                if self.cut_transfer(channel) {
+                    self.transfer_cut = false;
+                } else if already {
+                    self.transfer_cut = false;
+                } else {
+                    self.status = "no file transfer".into();
+                    self.send_gpi_text("no file transfer");
+                }
                 self.close_remote(prev);
                 return;
             }
@@ -5361,6 +5534,95 @@ impl GpGuiApp {
             Ok(None) => format!("{args} — not in NAMES.GP"),
             Err(err) => err,
         }
+    }
+
+    fn mail_send_open(&self, channel: u8) -> bool {
+        self.mail_send
+            .get(channel as usize)
+            .and_then(|call| call.as_ref())
+            .is_some()
+    }
+
+    fn cancel_mail_send(&mut self, channel: u8) {
+        if let Some(slot) = self.mail_send.get_mut(channel as usize) {
+            *slot = None;
+        }
+    }
+
+    fn mail_from(&self, channel: u8) -> String {
+        let raw = self
+            .linked_call(channel)
+            .unwrap_or_else(|| self.effective_mycall(channel));
+        cipher::base_call(&raw)
+    }
+
+    fn begin_mail_send(&mut self, channel: u8, args: &str) {
+        let mut words = args.split_whitespace();
+        let call = words.next().unwrap_or("");
+        if call.is_empty() || words.next().is_some() {
+            let msg = "use //SEND and one station call";
+            self.status = msg.into();
+            self.send_gpi_text(msg);
+            return;
+        }
+        if mail::filename(call).is_err() {
+            let msg = "use a station call";
+            self.status = msg.into();
+            self.send_gpi_text(msg);
+            return;
+        }
+        let base = cipher::base_call(call);
+        if let Some(slot) = self.mail_send.get_mut(channel as usize) {
+            *slot = Some(base.clone());
+        }
+        self.status = format!("mail to {base}");
+    }
+
+    /// `true` when this line was the mail message (or a blank line still waiting).
+    /// `//Quit` and `//DISConnect` cancel the send and are handled as commands.
+    fn take_mail_line(&mut self, channel: u8, line: &str) -> bool {
+        let line = line.trim_end_matches(['\r', '\n']);
+        if parse_line(line).is_some_and(|(action, _)| {
+            action == RemoteAction::Quit || action == RemoteAction::Disconnect
+        }) {
+            self.cancel_mail_send(channel);
+            return false;
+        }
+        let msg = line.trim();
+        if msg.is_empty() {
+            return true;
+        }
+        if msg.chars().count() > 240 || msg.chars().any(|c| c != '\t' && c.is_control()) {
+            self.cancel_mail_send(channel);
+            let err = "that line cannot be mail";
+            self.status = err.into();
+            self.reply_on_channel(channel, err);
+            return true;
+        }
+        let Some(to) = self
+            .mail_send
+            .get(channel as usize)
+            .and_then(|call| call.clone())
+        else {
+            return false;
+        };
+        self.cancel_mail_send(channel);
+        let from = self.mail_from(channel);
+        let at = journal::clock(self.cfg.session.utc_offset_min)
+            .format("%d-%m-%Y %H:%M:%S")
+            .to_string();
+        match mail::append_message(&mail::mail_dir(), &to, &from, &at, msg) {
+            Ok(()) => {
+                let reply = format!("GPNG: Mail send to {to}");
+                self.status = reply.clone();
+                self.reply_on_channel(channel, &reply);
+            }
+            Err(err) => {
+                self.status = err.clone();
+                self.reply_on_channel(channel, &err);
+            }
+        }
+        true
     }
 
     fn begin_user_write(&mut self, channel: u8, args: &str) {

@@ -136,6 +136,17 @@ pub fn format_abort() -> String {
     "\r#ABORT#\r".into()
 }
 
+/// An I-frame that is only the abort, not a piece of the file.
+pub fn is_abort_payload(info: &[u8]) -> bool {
+    let line: Vec<u8> = info
+        .iter()
+        .skip_while(|b| matches!(b, b'\r' | b'\n' | b' '))
+        .take_while(|b| !matches!(b, b'\r' | b'\n'))
+        .copied()
+        .collect();
+    line == b"#ABORT#"
+}
+
 /// Try to parse a single control line (without requiring trailing `\r`).
 pub fn parse_control_line(line: &str) -> Option<BinControl> {
     let line = line.trim_end_matches(['\r', '\n']);
@@ -607,6 +618,13 @@ mod tests {
         assert_eq!(st.next_chunk(3).unwrap(), b"abc");
         assert_eq!(st.next_chunk(3).unwrap(), b"d");
         assert!(st.next_chunk(3).is_none());
+    }
+
+    #[test]
+    fn abort_frame_is_not_file_bytes() {
+        assert!(is_abort_payload(b"\r#ABORT#\r"));
+        assert!(is_abort_payload(b"#ABORT#\r"));
+        assert!(!is_abort_payload(b"abcd#ABORT#"));
     }
 
     #[test]
