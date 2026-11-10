@@ -41,6 +41,7 @@ popup_enable_keyboard = false
 insert_mon_line = false
 questions = false
 backup = true
+# DOS Zoom. 1 = off (JetBrains Mono Regular), 2 = on (Bold). Setup menu and ALT-Z.
 zoom = 1
 prompt = "%c to %y>"
 noname = "%c"
@@ -205,15 +206,15 @@ address = "CQ"
 source = "file"
 text = ""
 file = "D:\\MyPython\\GPNG\\data\\BEACON.GPI"
-period_minutes = 0
+period_minutes = 72
 [print]
 # Legacy ESC/P printer attribute byte sequences.
 default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1330
+x = 1335
 y = 59
-width = 1160
+width = 1155
 height = 818
 maximized = false

@@ -409,6 +409,7 @@ fn write_kiss_data(
     link.write_all(&frame)?;
     debug!(port, len = payload.len(), "tx kiss frame");
     let _ = events.blocking_send(TncEvent::KissTx {
+        port,
         frame: payload.to_vec(),
     });
     Ok(())

@@ -45,6 +45,8 @@ pub enum RowId {
     Softscroll,
     Beacon,
     Language,
+    /// DOS `Zoom`. Off is JetBrains Mono Regular, on is Bold.
+    Zoom,
     Icons,
     PacketLen,
     AutoSave,
@@ -109,6 +111,7 @@ impl RowId {
             Self::Softscroll => "Softscroll",
             Self::Beacon => "Beacon parameters",
             Self::Language => "System language",
+            Self::Zoom => "Zoom",
             Self::Icons => "System Icons",
             Self::PacketLen => "Packet length",
             Self::AutoSave => "Code-AutoSave",
@@ -201,6 +204,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::PacketLen, RowKind::Number),
             (RowId::AutoSave, RowKind::Toggle),
             (RowId::Language, RowKind::Number),
+            (RowId::Zoom, RowKind::Toggle),
             (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
@@ -214,6 +218,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::EditorBak, RowKind::Toggle),
             (RowId::WordWrap, RowKind::Number),
             (RowId::Language, RowKind::Number),
+            (RowId::Zoom, RowKind::Toggle),
             (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
@@ -227,6 +232,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::RxClick, RowKind::Number),
             (RowId::Softscroll, RowKind::Toggle),
             (RowId::Language, RowKind::Number),
+            (RowId::Zoom, RowKind::Toggle),
             (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
@@ -241,6 +247,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::AutoSpy, RowKind::Submenu),
             (RowId::SpyAutoIgnore, RowKind::Submenu),
             (RowId::Language, RowKind::Number),
+            (RowId::Zoom, RowKind::Toggle),
             (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
@@ -259,6 +266,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::Softscroll, RowKind::Toggle),
             (RowId::Beacon, RowKind::Submenu),
             (RowId::Language, RowKind::Number),
+            (RowId::Zoom, RowKind::Toggle),
             (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
@@ -280,6 +288,7 @@ fn list_rows(file_drawer: bool) -> Vec<Row> {
     }
     items.push((RowId::InsertFromEditor, RowKind::Action));
     items.push((RowId::Language, RowKind::Number));
+    items.push((RowId::Zoom, RowKind::Toggle));
     items.push((RowId::Icons, RowKind::Submenu));
     items.push((RowId::Use, RowKind::Exit));
     rows(&items)
@@ -301,7 +310,22 @@ mod tests {
     fn monitor_has_beacon_and_channel_has_packet_length() {
         let mon = rows_for(ActivePane::Monitor);
         let lang = mon.iter().position(|r| r.id == RowId::Language).unwrap();
-        assert_eq!(mon[lang + 1].id, RowId::Icons);
+        assert_eq!(mon[lang + 1].id, RowId::Zoom);
+        assert_eq!(mon[lang + 1].kind, RowKind::Toggle);
+        assert_eq!(mon[lang + 2].id, RowId::Icons);
+        for pane in [
+            ActivePane::Monitor,
+            ActivePane::Channel(1),
+            ActivePane::Editor,
+            ActivePane::Check,
+            ActivePane::List,
+            ActivePane::Mh,
+            ActivePane::Spy(1),
+        ] {
+            let rows = rows_for(pane);
+            let lang = rows.iter().position(|r| r.id == RowId::Language).unwrap();
+            assert_eq!(rows[lang + 1].id, RowId::Zoom, "{pane:?}");
+        }
         assert!(mon.iter().any(|r| r.id == RowId::ColorsClock));
         assert!(!rows_for(ActivePane::Channel(1))
             .iter()

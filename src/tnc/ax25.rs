@@ -97,21 +97,57 @@ pub fn monitor_ctl_line(
     format!("fm {src} to {dest}{via} ctl {ctl}")
 }
 
-/// `fm SRC …` → `fm HH:MM SRC …` (24-hour, already-stamped lines left as-is).
-pub fn insert_monitor_time(line: &str, hhmm: &str) -> String {
+/// `fm CALL…` or `fm2 CALL…`. The head includes the trailing space.
+///
+/// Digits glued to `fm` are the KISS port. A space and then `HH:MM` is the
+/// clock, so port 0 stays `fm` and is not read as a port number.
+pub fn split_monitor_fm(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim_start();
-    let lead = &line[..line.len() - rest.len()];
-    let (head, tail) = if let Some(tail) = rest.strip_prefix("fm ") {
-        ("fm ", tail)
-    } else if let Some(tail) = rest.strip_prefix("FM ") {
-        ("FM ", tail)
-    } else {
+    let b = rest.as_bytes();
+    if b.len() < 3 || !b[..2].eq_ignore_ascii_case(b"fm") {
+        return None;
+    }
+    let mut i = 2;
+    if b[2].is_ascii_digit() {
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    if b.get(i) != Some(&b' ') {
+        return None;
+    }
+    let head_end = line.len() - rest.len() + i + 1;
+    Some((&line[..head_end], &line[head_end..]))
+}
+
+/// Port 0 leaves `fm CALL`. Any other KISS port becomes `fm2 CALL`.
+pub fn tag_kiss_port(line: &str, port: u8) -> String {
+    if port == 0 {
+        return line.to_string();
+    }
+    let Some((head, tail)) = split_monitor_fm(line) else {
+        return line.to_string();
+    };
+    let word = head.trim();
+    if word.len() != 2 {
+        return line.to_string();
+    }
+    let lead_len = head.len() - head.trim_start().len();
+    let lead = &head[..lead_len];
+    let fm = &head[lead_len..lead_len + 2];
+    format!("{lead}{fm}{port} {tail}")
+}
+
+/// `fm SRC …` → `fm HH:MM SRC …` (24-hour, already-stamped lines left as-is).
+/// A non-zero KISS port stays glued to `fm`: `fm2 HH:MM SRC …`.
+pub fn insert_monitor_time(line: &str, hhmm: &str) -> String {
+    let Some((head, tail)) = split_monitor_fm(line) else {
         return line.to_string();
     };
     if tail.split_whitespace().next().is_some_and(is_hhmm) {
         return line.to_string();
     }
-    format!("{lead}{head}{hhmm} {tail}")
+    format!("{head}{hhmm} {tail}")
 }
 
 fn is_hhmm(token: &str) -> bool {
@@ -859,6 +895,24 @@ mod tests {
             "fm 03:22 NL0MSK-2 to NL0MSK ctl I07^ pid F0"
         );
         assert_eq!(insert_monitor_time("   payload", "03:22"), "   payload");
+        let tagged = tag_kiss_port(
+            "fm NL0MSK to CQ ctl UI^ pid F0",
+            2,
+        );
+        assert_eq!(tagged, "fm2 NL0MSK to CQ ctl UI^ pid F0");
+        assert_eq!(
+            tag_kiss_port("fm NL0MSK to CQ ctl UI^ pid F0", 0),
+            "fm NL0MSK to CQ ctl UI^ pid F0"
+        );
+        assert_eq!(
+            insert_monitor_time(&tagged, "03:22"),
+            "fm2 03:22 NL0MSK to CQ ctl UI^ pid F0"
+        );
+        assert_eq!(
+            insert_monitor_time("fm2 03:22 NL0MSK to CQ ctl UI^ pid F0", "04:01"),
+            "fm2 03:22 NL0MSK to CQ ctl UI^ pid F0"
+        );
+        assert_eq!(tag_kiss_port(&tagged, 3), tagged);
     }
 
     #[test]

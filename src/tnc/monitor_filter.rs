@@ -337,10 +337,7 @@ pub fn normalize_call(raw: &str) -> Option<String> {
 }
 
 fn parse_fm(line: &str) -> Option<Heard> {
-    let rest = line.trim_start();
-    let rest = rest
-        .strip_prefix("fm ")
-        .or_else(|| rest.strip_prefix("FM "))?;
+    let (_, rest) = super::ax25::split_monitor_fm(line)?;
     let mut tokens = rest.split_whitespace();
     let mut src = tokens.next()?;
     if is_hhmm(src) {
@@ -521,6 +518,9 @@ mod tests {
         assert_eq!(i.calls, vec!["NL0MSK", "NL0MSK-2"]);
         let sabm = parse_heard("fm NL0MSK to NL0MSK ctl SABM+").unwrap();
         assert_eq!(sabm.class, Some(FrameClass::Supervisory));
+        let port = parse_heard("fm2 03:22 NL0MSK to CQ ctl UI^ pid F0").unwrap();
+        assert_eq!(port.class, Some(FrameClass::Ui));
+        assert_eq!(port.calls, vec!["NL0MSK", "CQ"]);
         let tnc2 = parse_heard("DB0ET>U3RTS5,WIDE1-1:hello").unwrap();
         assert_eq!(tnc2.class, Some(FrameClass::Ui));
         assert_eq!(tnc2.calls, vec!["DB0ET", "U3RTS5", "WIDE1-1"]);

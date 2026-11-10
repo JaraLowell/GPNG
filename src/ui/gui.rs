@@ -516,6 +516,8 @@ pub struct GpGuiApp {
     /// Prevents double-fire within the same hour.
     last_gong: Option<(chrono::NaiveDate, u32)>,
     show_setup: bool,
+    /// Face last given to egui. `true` is JetBrains Mono Bold (`Zoom` on).
+    console_bold: bool,
     setup_pane: ActivePane,
     setup_cursor: usize,
     setup_view: SetupView,
@@ -627,7 +629,8 @@ impl GpGuiApp {
         box_pad.load_log(&padlog::box_path(&log_dir));
 
         let slots = channels as usize + 1;
-        install_console_font(&cc.egui_ctx);
+        let console_bold = zoom_bold(cfg.session.zoom);
+        install_console_font(&cc.egui_ctx, console_bold);
         let icon_tex = load_icon_textures(&cc.egui_ctx, &cfg.session.icon_file);
         let start_screen = load_start_screen(&cc.egui_ctx);
         let link_tex = load_link_lamps(&cc.egui_ctx);
@@ -846,6 +849,7 @@ impl GpGuiApp {
             newline_sound_pending: false,
             last_gong: None,
             show_setup: false,
+            console_bold,
             setup_pane: ActivePane::Monitor,
             setup_cursor: 0,
             setup_view: SetupView::Main,
@@ -1225,8 +1229,8 @@ impl GpGuiApp {
                     }
                 }
                 TncEvent::Buffers(report) => self.apply_buffers(report),
-                TncEvent::KissTx { frame } => {
-                    self.note_kiss_tx(&frame);
+                TncEvent::KissTx { port, frame } => {
+                    self.note_kiss_tx(port, &frame);
                 }
                 TncEvent::HostFrame {
                     channel,
@@ -1294,7 +1298,7 @@ impl GpGuiApp {
                             // KISS: full AX.25 L2 (UI / SABM / I / …) — not hostmode text.
                             if self.kiss_mode() {
                                 if ax25::parse_frame(&payload).is_some() {
-                                    self.handle_kiss_ax25(&payload);
+                                    self.handle_kiss_ax25(&payload, channel);
                                     continue;
                                 }
                             }
@@ -2469,7 +2473,7 @@ impl GpGuiApp {
         } else if let Some(call) = self.channel_connecting.get(idx).and_then(|p| p.as_ref()) {
             format!("{n}: {call}")
         } else {
-            format!("{n}: · · · · · ·")
+            format!("{n}: · · · · ·")
         }
     }
 
@@ -2536,7 +2540,7 @@ impl GpGuiApp {
     }
 
     /// Monitor listing for a KISS frame that was just written to the modem.
-    fn note_kiss_tx(&mut self, raw: &[u8]) {
+    fn note_kiss_tx(&mut self, port: u8, raw: &[u8]) {
         let Some(frame) = ax25::parse_frame(raw) else {
             return;
         };
@@ -2550,7 +2554,7 @@ impl GpGuiApp {
         } else {
             None
         };
-        self.push_kiss_mon_frame(PadKind::Own, &frame, info.as_deref());
+        self.push_kiss_mon_frame(PadKind::Own, &frame, info.as_deref(), port);
     }
 
     fn kiss_mode(&self) -> bool {
@@ -2678,13 +2682,15 @@ impl GpGuiApp {
         poll: bool,
         command: bool,
         info_text: Option<&str>,
+        port: u8,
     ) {
         if !self.monitor_lists_frame(frame_kind, src, dest, via) {
             return;
         }
         self.note_heard_on_monitor(src, dest, via);
-        let hdr = stamp_monitor_fm(&ax25::monitor_ctl_line(
-            src, dest, via, frame_kind, ns, nr, poll, command,
+        let hdr = stamp_monitor_fm(&ax25::tag_kiss_port(
+            &ax25::monitor_ctl_line(src, dest, via, frame_kind, ns, nr, poll, command),
+            port,
         ));
         self.pads[0].push_monitor(kind, hdr);
         if let Some(text) = info_text {
@@ -2719,7 +2725,13 @@ impl GpGuiApp {
         });
     }
 
-    fn push_kiss_mon_frame(&mut self, kind: PadKind, frame: &Ax25Frame, info_text: Option<&str>) {
+    fn push_kiss_mon_frame(
+        &mut self,
+        kind: PadKind,
+        frame: &Ax25Frame,
+        info_text: Option<&str>,
+        port: u8,
+    ) {
         self.push_kiss_mon(
             kind,
             &frame.src,
@@ -2731,6 +2743,7 @@ impl GpGuiApp {
             frame.poll,
             frame.command,
             info_text,
+            port,
         );
     }
 
@@ -4022,7 +4035,7 @@ impl GpGuiApp {
     }
 
     /// Heard frame that is still on its way: list it, do not answer it.
-    fn kiss_show_transit(&mut self, frame: &Ax25Frame) {
+    fn kiss_show_transit(&mut self, frame: &Ax25Frame, port: u8) {
         let info_mon = ax25::bytes_to_monitor_body(&frame.info, self.session.extended_ascii);
         let info_for_mon = if info_mon.is_empty() {
             None
@@ -4041,9 +4054,9 @@ impl GpGuiApp {
         if !self.monitor_lists_frame(frame.kind, &frame.src, &frame.dest, &frame.via) {
             return;
         }
-        self.push_kiss_mon_frame(PadKind::Incoming, frame, info_for_mon);
+        self.push_kiss_mon_frame(PadKind::Incoming, frame, info_for_mon, port);
         if matches!(frame.kind, Ax25FrameType::Ui) {
-            let mon = frame.monitor_line();
+            let mon = ax25::tag_kiss_port(&frame.monitor_line(), port);
             self.feed_spy_pads(&frame.src, PadKind::Incoming, &mon);
             if let Some(text) = info_for_mon {
                 if let Some(line) = ax25::monitor_info_line(text) {
@@ -4059,7 +4072,7 @@ impl GpGuiApp {
     /// then, and only when the destination is our call. If the next unrepeated
     /// hop is our call, that frame is relayed with our H bit set and is not
     /// treated as a connect.
-    fn handle_kiss_ax25(&mut self, payload: &[u8]) {
+    fn handle_kiss_ax25(&mut self, payload: &[u8], port: u8) {
         let Some(heard) = ax25::parse_frame(payload) else {
             return;
         };
@@ -4074,7 +4087,7 @@ impl GpGuiApp {
             heard.path_complete() && self.is_our_dest(&heard.dest)
         };
         if !accept {
-            self.kiss_show_transit(&heard);
+            self.kiss_show_transit(&heard, port);
             return;
         }
         let frame = heard;
@@ -4096,8 +4109,8 @@ impl GpGuiApp {
                 self.mheard.hear(&ui);
                 if self.monitor_lists_frame(Ax25FrameType::Ui, &frame.src, &frame.dest, &frame.via)
                 {
-                    self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon);
-                    let mon = frame.monitor_line();
+                    self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon, port);
+                    let mon = ax25::tag_kiss_port(&frame.monitor_line(), port);
                     self.feed_spy_pads(&frame.src, PadKind::Incoming, &mon);
                     if let Some(line) = ax25::monitor_info_line(&info_mon) {
                         self.feed_spy_pads(&frame.src, PadKind::Incoming, &line);
@@ -4136,7 +4149,7 @@ impl GpGuiApp {
                 // UA). Once the link has carried their traffic, a new SABM
                 // from them is another connect and is not swallowed here.
                 if let Some(ch) = self.sabm_retry_channel(&frame.src, &frame.dest) {
-                    self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                    self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
                     let my = self.effective_mycall(ch);
                     let via = Self::reply_path(&frame);
                     self.kiss_send_ua_via(&frame.src, &my, &via);
@@ -4157,7 +4170,7 @@ impl GpGuiApp {
                 let (ch, my) = match slot {
                     SlotAnswer::Foreign => return,
                     SlotAnswer::Busy { call } => {
-                        self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                        self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
                         self.kiss_send_dm_via(&frame.src, &call, &via);
                         return;
                     }
@@ -4167,7 +4180,7 @@ impl GpGuiApp {
                     }
                 };
                 // Heard SABM (even if we refuse).
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
                 // SABM → UA (we answer connect requests).
                 self.kiss_send_ua_via(&frame.src, &my, &via);
                 if let Some(slot) = self.channel_via.get_mut(ch as usize) {
@@ -4199,7 +4212,7 @@ impl GpGuiApp {
                 self.last_link_status = self.status.clone();
             }
             Ax25FrameType::Ua => {
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
                 if let Some(ch) = self.channel_for_pair(&frame.src, &frame.dest) {
                     if self.channel_disconnecting(ch) {
                         self.finish_disconnect(ch, true);
@@ -4242,7 +4255,7 @@ impl GpGuiApp {
                 } else {
                     0
                 };
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon);
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon, port);
                 if ch >= 1 {
                     if self.channel_disconnecting(ch) {
                         return;
@@ -4293,7 +4306,7 @@ impl GpGuiApp {
                 }
             }
             Ax25FrameType::Disc => {
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
                 let via = Self::reply_path(&frame);
                 if let Some(ch) = self.channel_for_pair(&frame.src, &frame.dest) {
                     let my = self.effective_mycall(ch);
@@ -4305,7 +4318,7 @@ impl GpGuiApp {
                 }
             }
             Ax25FrameType::Rr | Ax25FrameType::Rnr | Ax25FrameType::Rej => {
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
                 // P=1 on a command asks for an answer. F=1 on a response is
                 // that answer — it must not be polled again or the two
                 // stations RR each other without a pause.
@@ -4339,7 +4352,7 @@ impl GpGuiApp {
                 }
             }
             Ax25FrameType::Dm => {
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
                 let ch = self.channel_for_pair(&frame.src, &frame.dest);
                 if let Some(ch) = ch {
                     if self.channel_disconnecting(ch) {
@@ -4357,7 +4370,7 @@ impl GpGuiApp {
                 }
             }
             Ax25FrameType::Frmr => {
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None);
+                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
                 if let Some(ch) = self.channel_for_pair(&frame.src, &frame.dest) {
                     if let Some(pad) = self.pads.get_mut(ch as usize) {
                         pad.push(
@@ -6603,6 +6616,27 @@ impl GpGuiApp {
         }
     }
 
+    /// DOS `Zoom`: `1` is off, `2` is on. Off keeps the regular console face.
+    fn toggle_zoom(&mut self) {
+        self.cfg.session.zoom = if zoom_bold(self.cfg.session.zoom) {
+            1
+        } else {
+            2
+        };
+    }
+
+    /// Swap the embedded JetBrains Mono face when Zoom changes.
+    /// Menu text stays the system UI font.
+    fn sync_console_font(&mut self, ctx: &Context) {
+        let bold = zoom_bold(self.cfg.session.zoom);
+        if bold == self.console_bold {
+            return;
+        }
+        self.console_bold = bold;
+        install_console_font(ctx, bold);
+        ctx.request_repaint();
+    }
+
     fn open_setup(&mut self) {
         self.show_setup = true;
         self.setup_pane = self.active;
@@ -6816,6 +6850,7 @@ impl GpGuiApp {
             ))
             .into(),
             RowId::Language => s.remote_language.clone(),
+            RowId::Zoom => on_off(zoom_bold(s.zoom)).into(),
             RowId::Icons => icon_file_label(&s.icon_file),
             RowId::PacketLen => self.cfg.buffers.packet_payload.to_string(),
             RowId::AutoSave => on_off(self.session.seven_plus).into(),
@@ -6867,6 +6902,7 @@ impl GpGuiApp {
                 self.cfg.session.remote_language =
                     setup::next_name(setup::LANGUAGES, &self.cfg.session.remote_language, step);
             }
+            RowId::Zoom => self.toggle_zoom(),
             RowId::PacketLen => {
                 let n = self.cfg.buffers.packet_payload as i32 + step;
                 self.cfg.buffers.packet_payload = n.clamp(16, 256) as u32;
@@ -8667,7 +8703,12 @@ impl GpGuiApp {
             return;
         }
         if eat_key(ctx, alt, egui::Key::Z) {
-            self.status = "Zoom is a DOS VGA function".into();
+            self.toggle_zoom();
+            let on = zoom_bold(self.cfg.session.zoom);
+            self.status = format!("Zoom {}", on_off(on));
+            if let Err(e) = self.cfg.persist_setup(&self.config_path) {
+                self.status = format!("Zoom: {e}");
+            }
             return;
         }
         if eat_key(ctx, alt, egui::Key::G) {
@@ -9603,6 +9644,7 @@ impl eframe::App for GpGuiApp {
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        self.sync_console_font(ctx);
         self.track_window(ctx);
         self.poll_external();
         self.drain_tnc();
@@ -9779,6 +9821,8 @@ impl eframe::App for GpGuiApp {
             ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
             ctx.request_repaint();
         }
+        // A Zoom click or ALT-Z lands during this frame, after the opening sync.
+        self.sync_console_font(ctx);
     }
 }
 
@@ -11349,11 +11393,13 @@ impl GpGuiApp {
                     selected || resp.is_pointer_button_down_on(),
                     retro::TOP_ROUND,
                 );
-                let font = FontId::proportional(16.0);
+                // Same JetBrains Mono as the pads. Zoom swaps Regular and Bold.
+                let font = FontId::monospace(16.0);
                 let anchor = egui::Align2::CENTER_CENTER;
                 let at = cell.center();
+                let label_painter = painter.with_clip_rect(cell);
                 if connected {
-                    painter.text(
+                    label_painter.text(
                         at + Vec2::new(0.7, 0.0),
                         anchor,
                         &label,
@@ -11361,7 +11407,7 @@ impl GpGuiApp {
                         text_color,
                     );
                 }
-                painter.text(at, anchor, &label, font, text_color);
+                label_painter.text(at, anchor, &label, font, text_color);
                 if resp.clicked() {
                     if let Some(pane) = action {
                         self.select(pane);
@@ -14073,8 +14119,7 @@ fn latin1_string(bytes: &[u8]) -> String {
 
 /// Local 24-hour `hh:mm` with leading zeros, inserted after `fm`.
 fn is_fm_header(line: &str) -> bool {
-    let line = line.trim_start();
-    line.len() >= 3 && line[..3].eq_ignore_ascii_case("fm ")
+    ax25::split_monitor_fm(line).is_some()
 }
 
 fn frame_calls(src: &str, dest: &str, via: &[String]) -> Vec<String> {
@@ -14149,17 +14194,15 @@ fn heard_from_fm(line: &str) -> Option<(String, String, Vec<String>)> {
 
 /// Best-effort source call from monitor / APRS-ish text (`fm CALL`, `CALL>`).
 fn extract_heard_call(text: &str) -> Option<String> {
+    if let Some((_, tail)) = ax25::split_monitor_fm(text) {
+        if let Some(call) = call_after_fm(tail) {
+            return Some(call);
+        }
+    }
     let lower = text.to_ascii_lowercase();
     if let Some(pos) = lower.find("fm ") {
-        let after = text[pos + 3..].trim_start();
-        let mut tokens = after.split_whitespace();
-        let mut token = tokens.next()?;
-        if is_hhmm_token(token) {
-            token = tokens.next()?;
-        }
-        let token = token.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
-        if !token.is_empty() {
-            return Some(token.to_ascii_uppercase());
+        if let Some(call) = call_after_fm(&text[pos + 3..]) {
+            return Some(call);
         }
     }
     if let Some((src, _)) = text.split_once('>') {
@@ -14173,6 +14216,20 @@ fn extract_heard_call(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn call_after_fm(after: &str) -> Option<String> {
+    let mut tokens = after.split_whitespace();
+    let mut token = tokens.next()?;
+    if is_hhmm_token(token) {
+        token = tokens.next()?;
+    }
+    let token = token.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_ascii_uppercase())
+    }
 }
 
 /// How long a COM send or receive keeps its monitor glass bright.
@@ -14714,27 +14771,43 @@ fn read_first_font(candidates: &[&str]) -> Option<(String, Vec<u8>)> {
     None
 }
 
-/// JetBrains Mono, no-ligature regular. SIL OFL 1.1 — see `assets/fonts/OFL.txt`.
+/// JetBrains Mono, no-ligature. SIL OFL 1.1 — see `assets/fonts/OFL.txt`.
 /// `include_bytes` compiles the TTF into the exe, so pads look the same on every OS.
+/// Zoom off uses Regular. Zoom on uses Bold. Only the monospace family.
 const JETBRAINS_MONO: &[u8] =
     include_bytes!("../../assets/fonts/ttf/JetBrainsMonoNL-Regular.ttf");
+const JETBRAINS_MONO_BOLD: &[u8] =
+    include_bytes!("../../assets/fonts/ttf/JetBrainsMonoNL-Bold.ttf");
+
+/// DOS `Zoom`. `1` (and anything below `2`) is the regular face.
+fn zoom_bold(zoom: u32) -> bool {
+    zoom >= 2
+}
 
 /// JetBrains Mono for the RX pads and the input line. Segoe UI for grey dialogs.
 ///
 /// The built-in proportional face is Ubuntu Light. On a grey panel its stems
 /// are about one pixel, so black text looks jagged. Segoe UI is a regular
 /// weight and keeps a solid edge at dialog sizes.
-fn install_console_font(ctx: &Context) {
+fn install_console_font(ctx: &Context, bold: bool) {
     let mut fonts = FontDefinitions::default();
+    let face: &[u8] = if bold {
+        JETBRAINS_MONO_BOLD
+    } else {
+        JETBRAINS_MONO
+    };
     fonts
         .font_data
-        .insert("gp_console".into(), FontData::from_static(JETBRAINS_MONO));
+        .insert("gp_console".into(), FontData::from_static(face));
     fonts
         .families
         .entry(FontFamily::Monospace)
         .or_default()
         .insert(0, "gp_console".into());
-    tracing::info!("console font: JetBrains Mono (embedded)");
+    tracing::info!(
+        "console font: JetBrains Mono {} (embedded)",
+        if bold { "Bold" } else { "Regular" }
+    );
 
     let proportional = fonts
         .families

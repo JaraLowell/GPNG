@@ -559,6 +559,7 @@ impl Config {
             "remote_language",
             &toml_string(&s.remote_language),
         )?;
+        put_key(path, "session", "zoom", &s.zoom.to_string())?;
         put_key(path, "session", "icon_file", &toml_string(&s.icon_file))?;
         put_key(
             path,
@@ -998,6 +999,7 @@ pub struct SessionConfig {
     pub insert_mon_line: bool,
     pub questions: bool,
     pub backup: bool,
+    /// DOS `Zoom`. `1` is off (JetBrains Mono Regular). `2` is on (Bold).
     pub zoom: u32,
     pub prompt: String,
     pub noname: String,

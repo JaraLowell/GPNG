@@ -528,9 +528,9 @@ fn dim_payload(color: Color32) -> Color32 {
     Color32::from_rgb(scale(color.r()), scale(color.g()), scale(color.b()))
 }
 
-/// `fm CALL to CALL ctl …`, including the `fm HH:MM` stamp.
+/// `fm CALL to CALL ctl …`, including `fm2` (KISS port) and the `fm HH:MM` stamp.
 fn monitor_color(line: &str) -> Color32 {
-    if line.starts_with("fm ") || line.starts_with("FM ") {
+    if crate::tnc::ax25::split_monitor_fm(line).is_some() {
         MONITOR_FM
     } else {
         MONITOR_PAYLOAD
@@ -585,7 +585,7 @@ fn monitor_wrap_indent(line: &PadLine) -> usize {
     if line.kind == PadKind::System {
         return 0;
     }
-    if line.text.starts_with("fm ") || line.text.starts_with("FM ") {
+    if crate::tnc::ax25::split_monitor_fm(&line.text).is_some() {
         0
     } else {
         3
@@ -813,6 +813,7 @@ mod tests {
     fn monitor_layout_uses_foreground_and_inverse() {
         let mut pad = TextPad::new(8);
         pad.push_monitor(PadKind::Own, "fm NL0MSK to NL0MSK ctl UI^");
+        pad.push_monitor(PadKind::Incoming, "fm2 DB0ABC to CQ ctl UI^");
         pad.push_monitor(PadKind::Incoming, "   hallo\u{1c}");
         pad.push_monitor(PadKind::System, "*** CONNECTED");
         let header = Color32::from_rgb(1, 2, 3);
@@ -820,6 +821,7 @@ mod tests {
         let info = Color32::from_rgb(9, 8, 7);
         let job = pad.layout_job_monitor(80, header, payload, info);
         assert_eq!(section_color(&job, "fm "), header);
+        assert_eq!(section_color(&job, "fm2 "), header);
         assert_eq!(section_color(&job, "hallo"), payload);
         assert_eq!(section_color(&job, "<0x1c>"), dim_payload(payload));
         assert_eq!(section_color(&job, "CONNECTED"), info);

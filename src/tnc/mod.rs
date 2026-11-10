@@ -159,6 +159,8 @@ pub enum TncEvent {
     /// Queued I-frames raise this only when they leave the radio, so a file
     /// send is listed next to the peer's RR instead of in one burst up front.
     KissTx {
+        /// KISS port nibble this frame was written on. 0 is the first radio.
+        port: u8,
         /// Unescaped AX.25 frame bytes (not KISS-wrapped).
         frame: Vec<u8>,
     },
