@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{Color32, FontId};
 
-/// Monitor and channel text. Column wrap uses this size.
-pub const PAD_FONT_SIZE: f32 = 16.0;
+/// Monitor, channel, spy, BBS, and Box-List pads. Column wrap uses this size.
+pub const PAD_FONT_SIZE: f32 = 14.0;
 use tracing::warn;
 
 const PAD_GREEN: Color32 = Color32::from_rgb(85, 255, 85);

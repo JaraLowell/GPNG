@@ -11478,7 +11478,7 @@ impl GpGuiApp {
                     retro::TOP_ROUND,
                 );
                 // Same JetBrains Mono as the pads. Zoom swaps Regular and Bold.
-                let font = FontId::monospace(16.0);
+                let font = FontId::monospace(14.0);
                 let anchor = egui::Align2::CENTER_CENTER;
                 let at = cell.center();
                 let label_painter = painter.with_clip_rect(cell);
@@ -11536,7 +11536,7 @@ impl GpGuiApp {
                                 Color32::WHITE
                             };
                             let (row, resp) = ui.allocate_exact_size(
-                                Vec2::new(ui.available_width().max(20.0), 16.0),
+                                Vec2::new(ui.available_width().max(20.0), 14.0),
                                 Sense::click(),
                             );
                             ui.painter().rect_filled(row, 0.0, fill);
@@ -11545,7 +11545,7 @@ impl GpGuiApp {
                                 row.left_center() + Vec2::new(4.0, 0.0),
                                 egui::Align2::LEFT_CENTER,
                                 &shown,
-                                FontId::monospace(14.0),
+                                FontId::monospace(12.0),
                                 fg,
                             );
                             if resp.double_clicked() {

@@ -351,8 +351,8 @@ impl SessionChrome {
     }
 
     pub fn nudge_lines(&mut self, lines: i32) {
-        // ~16 px monospace row in the RX pane.
-        self.scroll_nudge += lines as f32 * -16.0;
+        // One monospace row in the RX pane (`padlog::PAD_FONT_SIZE`).
+        self.scroll_nudge += lines as f32 * -14.0;
     }
 
     pub fn take_scroll_nudge(&mut self) -> f32 {
