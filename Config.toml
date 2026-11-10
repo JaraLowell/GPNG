@@ -63,6 +63,9 @@ no_remote = []
 auto_spy = []
 no_auto_spy = ["NL0MSK"]
 auto_spy_minimum_save = 512
+# MHeard Auto Clean. Stations last heard more than this many days ago are
+# removed about once an hour. 0 disables. Maximum 365.
+mheard_clean_days = 14
 # Spy windows 1..10 — empty string = inactive slot.
 spy_calls = ["", "", "", "", "", "", "", "", "", ""]
 
@@ -86,7 +89,7 @@ bell = true
 seven_plus = false
 remote = true
 scr_lock = false
-hour_gong = true
+hour_gong = false
 [buffers]
 # Legacy line counts (≈80 columns each in classic GP).
 text_buffer = [600, 300]   # TEXTBUFFER: monitor scrollback, then channel scrollback
@@ -213,8 +216,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1335
-y = 59
+x = 606
+y = 303
 width = 1155
 height = 818
 maximized = false

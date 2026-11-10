@@ -586,6 +586,12 @@ impl Config {
         )?;
         put_key(
             path,
+            "session",
+            "mheard_clean_days",
+            &s.mheard_clean_days.clamp(0, 365).to_string(),
+        )?;
+        put_key(
+            path,
             "buffers",
             "packet_payload",
             &self.buffers.packet_payload.to_string(),
@@ -1032,6 +1038,10 @@ pub struct SessionConfig {
     pub auto_spy: Vec<String>,
     pub no_auto_spy: Vec<String>,
     pub auto_spy_minimum_save: u32,
+    /// MHeard Auto Clean. Stations last heard more than this many days ago
+    /// are removed about once an hour. `0` disables. Maximum 365.
+    #[serde(default)]
+    pub mheard_clean_days: u32,
     /// Channel window: apply ESC `[0m` / `[1m` / `[30m`–`[37m` in a payload.
     /// Background codes are always removed. `false` strips every colour sequence.
     #[serde(default = "default_allow_color_ansi")]
@@ -1084,6 +1094,7 @@ impl Default for SessionConfig {
             auto_spy: Vec::new(),
             no_auto_spy: Vec::new(),
             auto_spy_minimum_save: 512,
+            mheard_clean_days: 0,
             allow_color_ansi: default_allow_color_ansi(),
             chrome: SessionChromeConfig::default(),
             spy_calls: default_spy_calls(),

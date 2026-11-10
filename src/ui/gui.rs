@@ -504,6 +504,10 @@ pub struct GpGuiApp {
     /// Confirm dialog: Start Spy for {call}?
     show_mheard_spy_confirm: bool,
     mheard_spy_pending: String,
+    /// Last Auto Clean pass. `None` runs on the next tick when the day count is set.
+    mheard_clean_at: Option<Instant>,
+    /// Day count when Setup opened. A new count is applied only when Setup closes.
+    mheard_clean_opened: u32,
     bell_wav: PathBuf,
     /// Hourly clock ♫. `//BELL` keeps `bell_wav`.
     chime_wav: PathBuf,
@@ -840,6 +844,8 @@ impl GpGuiApp {
             mheard_spy_pick: false,
             show_mheard_spy_confirm: false,
             mheard_spy_pending: String::new(),
+            mheard_clean_at: None,
+            mheard_clean_opened: 0,
             bell_wav: default_bell_wav(),
             chime_wav: default_chime_wav(),
             connect_wav: default_connect_wav(),
@@ -6643,6 +6649,7 @@ impl GpGuiApp {
         self.setup_cursor = 0;
         self.setup_view = SetupView::Main;
         self.show_tnc = false;
+        self.mheard_clean_opened = self.cfg.session.mheard_clean_days;
     }
 
     fn open_icon_editor(&mut self) {
@@ -6672,6 +6679,17 @@ impl GpGuiApp {
             self.status = "setup saved".into();
         }
         self.persist_session_chrome();
+        // The day count is only a draft while the menu is open. Apply it once,
+        // after Apply or the window closes, so stepping 0 → 14 does not purge
+        // the list at 1, then 2, and so on.
+        let days = self.cfg.session.mheard_clean_days;
+        if days != self.mheard_clean_opened {
+            self.mheard_clean_opened = days;
+            self.mheard_clean_at = Some(Instant::now());
+            if days > 0 {
+                self.apply_mheard_clean(days);
+            }
+        }
     }
 
     fn apply_palette(&mut self) {
@@ -6867,6 +6885,8 @@ impl GpGuiApp {
             RowId::AutoSpy => join_csv_phrases(&s.auto_spy),
             RowId::SpyAutoIgnore => join_csv_phrases(&s.no_auto_spy),
             RowId::MaxSpy => self.spy_limit().to_string(),
+            RowId::MheardClean => self.cfg.session.mheard_clean_days.to_string(),
+            RowId::MheardClear => String::new(),
             _ => String::new(),
         }
     }
@@ -6952,6 +6972,11 @@ impl GpGuiApp {
                     self.session.spy_slot = None;
                 }
             }
+            RowId::MheardClean => {
+                let n = self.cfg.session.mheard_clean_days as i32 + step;
+                self.cfg.session.mheard_clean_days =
+                    n.clamp(0, super::mheard::CLEAN_DAYS_MAX as i32) as u32;
+            }
             _ => {}
         }
     }
@@ -7015,7 +7040,10 @@ impl GpGuiApp {
             },
             RowKind::Toggle => self.nudge_setup(row.id, 1),
             RowKind::Number => self.nudge_setup(row.id, 1),
-            RowKind::Action => self.insert_editor_list(),
+            RowKind::Action => match row.id {
+                RowId::MheardClear => self.clear_mheard_list(),
+                _ => self.insert_editor_list(),
+            },
             RowKind::Exit => self.close_setup(),
         }
     }
@@ -7556,6 +7584,61 @@ impl GpGuiApp {
         } as u8;
         self.append_mail(list, found, channel);
         self.status = format!("appended {n} list lines");
+    }
+
+    /// Wipe the MHeard list and the file it is stored in.
+    fn clear_mheard_list(&mut self) {
+        let n = self.mheard.listed_len();
+        if n == 0 {
+            self.status = "MHeard list is empty".into();
+            return;
+        }
+        self.mheard_selected = None;
+        self.mheard_spy_pick = false;
+        self.show_mheard_spy_confirm = false;
+        self.mheard_spy_pending.clear();
+        match self.mheard.clear() {
+            Ok(()) => self.status = format!("MHeard list cleared ({n})"),
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// Auto Clean runs about once an hour, and only while a day count is set.
+    /// Setup can show a day count that is not committed yet, so this waits.
+    fn maybe_clean_mheard(&mut self) {
+        if self.show_setup {
+            return;
+        }
+        let days = self.cfg.session.mheard_clean_days;
+        if days == 0 {
+            return;
+        }
+        let due = self
+            .mheard_clean_at
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(60 * 60));
+        if !due {
+            return;
+        }
+        self.mheard_clean_at = Some(Instant::now());
+        self.apply_mheard_clean(days);
+    }
+
+    fn apply_mheard_clean(&mut self, days: u32) {
+        let kept = self
+            .mheard_selected
+            .and_then(|i| self.mheard.entries.get(i).map(|e| e.call.clone()));
+        let now_ms = Local::now().timestamp_millis();
+        let removed = self.mheard.drop_older_than(days, now_ms);
+        if removed == 0 {
+            return;
+        }
+        self.mheard_selected = kept.and_then(|call| {
+            self.mheard
+                .entries
+                .iter()
+                .position(|e| e.call.eq_ignore_ascii_case(&call))
+        });
+        self.status = format!("MHeard auto clean removed {removed}");
     }
 
     fn commit_setup_edit(&mut self, kind: EditKind, text: String, parent_beacon: bool) {
@@ -9651,6 +9734,7 @@ impl eframe::App for GpGuiApp {
         self.kiss_link_timers();
         self.poll_qrt_disconnects();
         self.maybe_hour_gong();
+        self.maybe_clean_mheard();
         self.poll_beacon();
         let link_hot = self.link_tx_until.is_some_and(|t| t > Instant::now())
             || self.link_rx_until.is_some_and(|t| t > Instant::now());
@@ -10781,7 +10865,7 @@ impl GpGuiApp {
             let title_cell = Rect::from_min_max(rect.left_top(), Pos2::new(title_x, rect.bottom()));
             let pos = Pos2::new(
                 title_cell.center().x - galley.size().x * 0.5,
-                title_cell.center().y - galley.size().y * 0.5,
+                title_cell.center().y - galley.size().y * 0.5 - 3.0,
             );
             painter.galley(pos, galley, fg);
         }
@@ -10801,7 +10885,7 @@ impl GpGuiApp {
                 let galley = painter.layout_no_wrap((*text).clone(), font.clone(), fg);
                 let pos = Pos2::new(
                     cell.left() + 8.0,
-                    cell.center().y - galley.size().y * 0.5 + 2.0,
+                    cell.center().y - galley.size().y * 0.5 - 1.0,
                 );
                 painter.galley(pos, galley, fg);
             }
@@ -11697,6 +11781,10 @@ impl GpGuiApp {
                             list = list.vertical_scroll_offset(0.0);
                         }
                         let out = list.show(ui, |ui| {
+                            // Setup (and every other dialog) widens the global
+                            // widget gap. This list must keep the normal 3px
+                            // pitch, or the station rows spread when it opens.
+                            ui.spacing_mut().item_spacing.y = 3.0;
                             if nudge != 0.0 {
                                 ui.scroll_with_delta(Vec2::new(0.0, nudge));
                             }
@@ -12049,7 +12137,7 @@ impl GpGuiApp {
             match glyph {
                 CellGlyph::Text => {
                     painter.text(
-                        cell.center(),
+                        cell.center() - Vec2::new(0.0, 1.0),
                         egui::Align2::CENTER_CENTER,
                         label,
                         FontId::proportional(11.0),
@@ -13698,7 +13786,7 @@ fn paint_status_cell(
     let galley = painter.layout_no_wrap(text.to_string(), font.clone(), fg);
     let pos = Pos2::new(
         cell.left() + 6.0,
-        cell.center().y - galley.size().y * 0.5 + 1.0,
+        cell.center().y - galley.size().y * 0.5 - 2.0,
     );
     painter.galley(pos, galley, fg);
 }
@@ -14307,7 +14395,7 @@ fn paint_static_cell(
     painter.rect_filled(cell, 0.0, fill);
     paint_bevel(painter, cell, lit);
     painter.text(
-        cell.center(),
+        cell.center() - Vec2::new(0.0, 1.0),
         egui::Align2::CENTER_CENTER,
         label,
         FontId::proportional(11.0),

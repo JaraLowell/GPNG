@@ -61,6 +61,10 @@ pub enum RowId {
     SpyAutoIgnore,
     /// `MAXSPY`, 1..=8. Default 1.
     MaxSpy,
+    /// MHeard only. Days before a station is dropped. `0` is off, `365` is a year.
+    MheardClean,
+    /// MHeard only. Drop every station on the list.
+    MheardClear,
     Use,
 }
 
@@ -123,6 +127,8 @@ impl RowId {
             Self::AutoSpy => "Auto Spy",
             Self::SpyAutoIgnore => "Spy Auto Ignore",
             Self::MaxSpy => "Number of spies",
+            Self::MheardClean => "Auto Clean",
+            Self::MheardClear => "Clear MHeard List",
             Self::Use => "Use these values",
         }
     }
@@ -234,6 +240,8 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::Language, RowKind::Number),
             (RowId::Zoom, RowKind::Toggle),
             (RowId::Icons, RowKind::Submenu),
+            (RowId::MheardClean, RowKind::Number),
+            (RowId::MheardClear, RowKind::Action),
             (RowId::Use, RowKind::Exit),
         ]),
         ActivePane::Spy(_) => rows(&[
@@ -365,6 +373,22 @@ mod tests {
         let mh = rows_for(ActivePane::Mh);
         assert!(!mh.iter().any(|r| r.id == RowId::AutoSpy));
         assert!(!mh.iter().any(|r| r.id == RowId::SpyAutoIgnore));
+    }
+
+    #[test]
+    fn mheard_setup_ends_with_clean_and_clear() {
+        let mh = rows_for(ActivePane::Mh);
+        let use_at = mh.iter().position(|r| r.id == RowId::Use).unwrap();
+        assert_eq!(mh[use_at - 2].id, RowId::MheardClean);
+        assert_eq!(mh[use_at - 2].kind, RowKind::Number);
+        assert_eq!(mh[use_at - 1].id, RowId::MheardClear);
+        assert_eq!(mh[use_at - 1].kind, RowKind::Action);
+        assert!(!rows_for(ActivePane::Monitor)
+            .iter()
+            .any(|r| r.id == RowId::MheardClean || r.id == RowId::MheardClear));
+        assert!(!rows_for(ActivePane::Spy(1))
+            .iter()
+            .any(|r| r.id == RowId::MheardClean || r.id == RowId::MheardClear));
     }
 
     #[test]

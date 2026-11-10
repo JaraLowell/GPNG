@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use super::session::Ax25UiFrame;
 
 const MAX_ENTRIES: usize = 500;
+/// Auto Clean stops at one year.
+pub const CLEAN_DAYS_MAX: u32 = 365;
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// Classic DOS GP: bare `//MHeard` sends this many newest rows.
 const DEFAULT_REMOTE_LINES: usize = 10;
 
@@ -140,6 +143,31 @@ impl MheardList {
         let _ = self.save();
     }
 
+    /// Drop every station and rewrite the file.
+    pub fn clear(&mut self) -> Result<(), String> {
+        self.entries.clear();
+        self.dirty = true;
+        self.save()
+    }
+
+    /// Remove stations last heard more than `days` ago.
+    /// `0` does nothing. Returns how many rows were removed.
+    pub fn drop_older_than(&mut self, days: u32, now_ms: i64) -> usize {
+        if days == 0 || self.entries.is_empty() {
+            return 0;
+        }
+        let days = days.min(CLEAN_DAYS_MAX) as i64;
+        let cutoff = now_ms.saturating_sub(days.saturating_mul(DAY_MS));
+        let before = self.entries.len();
+        self.entries.retain(|e| e.heard_ms >= cutoff);
+        let removed = before - self.entries.len();
+        if removed > 0 {
+            self.dirty = true;
+            let _ = self.save();
+        }
+        removed
+    }
+
     pub fn save(&mut self) -> Result<(), String> {
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
@@ -249,6 +277,40 @@ mod tests {
         let one = list.remote_lines("N19CALL");
         assert_eq!(one.len(), 1);
         assert!(one[0].contains("N19CALL"));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn clear_empties_the_file() {
+        let path = scratch("clear");
+        let mut list = MheardList::load_from(path.clone());
+        list.hear(&ui("NL0MSK"));
+        list.clear().unwrap();
+        assert_eq!(list.listed_len(), 0);
+        let again = MheardList::load_from(path.clone());
+        assert_eq!(again.listed_len(), 0);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn auto_clean_drops_stations_older_than_the_limit() {
+        let path = scratch("clean");
+        let mut list = MheardList::load_from(path.clone());
+        list.hear(&ui("OLD1"));
+        list.hear(&ui("NEW1"));
+        let now = list.entries[0].heard_ms;
+        let old = list
+            .entries
+            .iter_mut()
+            .find(|e| e.call == "OLD1")
+            .unwrap();
+        old.heard_ms = now - 10 * DAY_MS;
+        assert_eq!(list.drop_older_than(0, now), 0);
+        assert_eq!(list.listed_len(), 2);
+        assert_eq!(list.drop_older_than(7, now), 1);
+        assert_eq!(list.listed_len(), 1);
+        assert!(list.lines()[0].contains("NEW1"));
+        assert_eq!(list.drop_older_than(7, now), 0);
         let _ = fs::remove_file(&path);
     }
 }
