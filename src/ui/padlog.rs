@@ -4,8 +4,10 @@
 //! `monitor.txt`, `ch01.txt`…, `spy01.txt`…, `bbs.txt`, `box.txt`.
 //!
 //! Channel, BBS, and Box-List rows: green is what we sent, white is what
-//! we received. The monitor uses one colour for every `fm … to …` header
-//! and light grey for the payload, send and receive alike. Orange System
+//! we received. The monitor paints every `fm … to …` header in the output
+//! window's foreground and the payload in its inverse colour, send and
+//! receive alike. Those two colours are applied when the pad is drawn, so
+//! a setup change recolours the lines already on screen. Orange System
 //! lines are never written.
 //!
 //! Record format: `W|text` (own) or `G|text` (incoming).
@@ -28,11 +30,11 @@ const PAD_INCOMING: Color32 = Color32::WHITE;
 /// Sent text.
 const PAD_OWN: Color32 = PAD_GREEN;
 const PAD_SYSTEM: Color32 = Color32::from_rgb(255, 168, 0); // orange
-/// Monitor `fm … to … ctl …` line. Same green for sent and received frames.
+/// Stored role for an `fm … to … ctl …` line. Drawn as the output foreground.
 const MONITOR_FM: Color32 = PAD_GREEN;
-/// Monitor payload under that header. Same grey for sent and received frames.
+/// Stored role for the payload under that header. Drawn as the inverse colour.
 const MONITOR_PAYLOAD: Color32 = Color32::from_rgb(170, 170, 170);
-/// `<0x1c>` tokens. Darker than the payload so binary stands out of the text.
+/// `<0x1c>` tokens. Drawn darker than the payload so binary stands out.
 const MONITOR_HEX: Color32 = Color32::from_rgb(112, 112, 120);
 
 /// Classic GP line roles — colour carries meaning (no `***` needed).
@@ -99,10 +101,10 @@ impl TextPad {
         self.push_line(kind, line.into(), true);
     }
 
-    /// Monitor row. `fm …` is green; the payload under it is light grey.
-    /// Non-printables are already `<0xNN>` or get rewritten to that here, in
-    /// a darker grey, so they cannot open a new line. System stays orange
-    /// and is not written to the log.
+    /// Monitor row. `fm …` and the payload keep role colours here; the output
+    /// window's foreground and inverse replace them when the pad is drawn.
+    /// Non-printables are already `<0xNN>` or get rewritten to that here, so
+    /// they cannot open a new line. System stays orange and is not logged.
     pub fn push_monitor(&mut self, kind: PadKind, line: impl Into<String>) {
         let line = line.into();
         if kind == PadKind::System {
@@ -237,31 +239,67 @@ impl TextPad {
     /// Payload rows (anything that is not an `fm` header or a system line)
     /// repeat the three-space indent on every continuation. A wrap prefers a
     /// space. A `<0xNN>` / `<U+NNNN>` token moves as a whole.
+    /// Header and payload keep their stored role colours.
     pub fn layout_job_wrapped(&self, columns: usize) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, true, false, false)
+        self.layout_job_wrapped_indent(columns, true, false, false, None, None, None)
+    }
+
+    /// Monitor pad drawn with the output-window colours.
+    /// `header` is Foreground (`fm … to …`). `payload` is Inverse.
+    /// `info` is Info / Error (TNC, COM, warnings, "Local call set to").
+    pub fn layout_job_monitor(
+        &self,
+        columns: usize,
+        header: Color32,
+        payload: Color32,
+        info: Color32,
+    ) -> LayoutJob {
+        self.layout_job_wrapped_indent(
+            columns,
+            true,
+            false,
+            false,
+            Some((header, payload)),
+            Some(info),
+            None,
+        )
+    }
+
+    /// Spy pad. Heard lines use `fg`; the other side uses `inverse`.
+    pub fn layout_job_spy(&self, columns: usize, fg: Color32, inverse: Color32) -> LayoutJob {
+        self.layout_job_wrapped_indent(
+            columns,
+            false,
+            false,
+            false,
+            None,
+            None,
+            Some((fg, inverse)),
+        )
     }
 
     /// Channel / spy / mail pads: wrap at `columns` with no continuation indent.
     pub fn layout_job_wrapped_plain(&self, columns: usize) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, false, false, false)
+        self.layout_job_wrapped_indent(columns, false, false, false, None, None, None)
     }
 
     /// Channel, BBS-Menu, and Box-List. `umlaut` maps the seven Latin-1
     /// glyphs back to äöüÄÖÜß. The stored row stays CP437, so turning the
     /// button off shows the shift again.
     pub fn layout_job_channel(&self, columns: usize, umlaut: bool) -> LayoutJob {
-        self.layout_job_channel_show(columns, umlaut, true)
+        self.layout_job_channel_show(columns, umlaut, true, None)
     }
 
     /// Same as [`layout_job_channel`]. `show_own` false leaves our rows in the
-    /// pad and omits them from the picture.
+    /// pad and omits them from the picture. `system` recolours warning lines.
     pub fn layout_job_channel_show(
         &self,
         columns: usize,
         umlaut: bool,
         show_own: bool,
+        system: Option<Color32>,
     ) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, false, umlaut, !show_own)
+        self.layout_job_wrapped_indent(columns, false, umlaut, !show_own, None, system, None)
     }
 
     fn layout_job_wrapped_indent(
@@ -270,6 +308,9 @@ impl TextPad {
         monitor_indent: bool,
         umlaut: bool,
         hide_own: bool,
+        monitor_colors: Option<(Color32, Color32)>,
+        system_color: Option<Color32>,
+        spy_colors: Option<(Color32, Color32)>,
     ) -> LayoutJob {
         let mut job = LayoutJob::default();
         let font = FontId::monospace(PAD_FONT_SIZE);
@@ -337,12 +378,28 @@ impl TextPad {
                     continue;
                 }
                 for run in row {
+                    let mut color = match monitor_colors {
+                        Some((header, payload)) => monitor_paint_color(run.color, header, payload),
+                        None => run.color,
+                    };
+                    if run.color == PAD_SYSTEM {
+                        if let Some(info) = system_color {
+                            color = info;
+                        }
+                    }
+                    if let Some((fg, inverse)) = spy_colors {
+                        if run.color == PAD_INCOMING {
+                            color = fg;
+                        } else if run.color == PAD_OWN {
+                            color = inverse;
+                        }
+                    }
                     job.append(
                         &run.text,
                         0.0,
                         TextFormat {
                             font_id: font.clone(),
-                            color: run.color,
+                            color,
                             ..Default::default()
                         },
                     );
@@ -356,7 +413,8 @@ impl TextPad {
         self.load_log_colored(path, false);
     }
 
-    /// Monitor log: `fm` headers come back green, payload lines light grey.
+    /// Monitor log: rows come back with header and payload roles. The live
+    /// foreground and inverse colours are applied when the pad is drawn.
     pub fn load_monitor_log(&mut self, path: &Path) {
         self.load_log_colored(path, true);
     }
@@ -448,6 +506,26 @@ pub fn bbs_path(log_dir: &Path) -> PathBuf {
 
 pub fn box_path(log_dir: &Path) -> PathBuf {
     pads_dir(log_dir).join("box.txt")
+}
+
+/// Role colour stored on the row. Foreground and inverse replace these at draw time.
+fn monitor_paint_color(stored: Color32, header: Color32, payload: Color32) -> Color32 {
+    if stored == MONITOR_FM {
+        header
+    } else if stored == MONITOR_PAYLOAD {
+        payload
+    } else if stored == MONITOR_HEX {
+        dim_payload(payload)
+    } else {
+        stored
+    }
+}
+
+/// `<0xNN>` stays about 112/170 of the payload, which is the old dark grey
+/// when the payload is light grey.
+fn dim_payload(color: Color32) -> Color32 {
+    let scale = |v: u8| ((u16::from(v) * 112) / 170) as u8;
+    Color32::from_rgb(scale(color.r()), scale(color.g()), scale(color.b()))
 }
 
 /// `fm CALL to CALL ctl …`, including the `fm HH:MM` stamp.
@@ -732,6 +810,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn monitor_layout_uses_foreground_and_inverse() {
+        let mut pad = TextPad::new(8);
+        pad.push_monitor(PadKind::Own, "fm NL0MSK to NL0MSK ctl UI^");
+        pad.push_monitor(PadKind::Incoming, "   hallo\u{1c}");
+        pad.push_monitor(PadKind::System, "*** CONNECTED");
+        let header = Color32::from_rgb(1, 2, 3);
+        let payload = Color32::from_rgb(40, 50, 60);
+        let info = Color32::from_rgb(9, 8, 7);
+        let job = pad.layout_job_monitor(80, header, payload, info);
+        assert_eq!(section_color(&job, "fm "), header);
+        assert_eq!(section_color(&job, "hallo"), payload);
+        assert_eq!(section_color(&job, "<0x1c>"), dim_payload(payload));
+        assert_eq!(section_color(&job, "CONNECTED"), info);
+    }
+
+    #[test]
+    fn spy_uses_foreground_and_inverse() {
+        let mut pad = TextPad::new(4);
+        pad.push(PadKind::Incoming, "from them");
+        pad.push(PadKind::Own, "from us");
+        let fg = Color32::from_rgb(1, 2, 3);
+        let inverse = Color32::from_rgb(4, 5, 6);
+        let job = pad.layout_job_spy(40, fg, inverse);
+        assert_eq!(section_color(&job, "from them"), fg);
+        assert_eq!(section_color(&job, "from us"), inverse);
+    }
+
+    #[test]
+    fn channel_warning_uses_info_colour() {
+        let mut pad = TextPad::new(4);
+        pad.push(PadKind::System, "*** DISCONNECTED");
+        pad.push(PadKind::Incoming, "hello");
+        let info = Color32::from_rgb(9, 8, 7);
+        let job = pad.layout_job_channel_show(40, false, true, Some(info));
+        assert_eq!(section_color(&job, "DISCONNECTED"), info);
+        assert_eq!(section_color(&job, "hello"), PadKind::Incoming.color());
+    }
+
+    fn section_color(job: &LayoutJob, needle: &str) -> Color32 {
+        job.sections
+            .iter()
+            .find(|section| job.text[section.byte_range.clone()].contains(needle))
+            .map(|section| section.format.color)
+            .unwrap_or(Color32::TRANSPARENT)
+    }
+
+    #[test]
     fn monitor_fm_is_green_and_payload_is_grey() {
         let mut pad = TextPad::new(8);
         pad.push_monitor(PadKind::Own, "fm 21:14 NL0MSK to NL0MSK-2 ctl I00^");
@@ -815,10 +940,10 @@ mod tests {
         let mut pad = TextPad::new(8);
         pad.push(PadKind::Own, "our line");
         pad.push(PadKind::Incoming, "their line");
-        let hidden = pad.layout_job_channel_show(40, false, false);
+        let hidden = pad.layout_job_channel_show(40, false, false, None);
         assert!(!hidden.text.contains("our line"));
         assert!(hidden.text.contains("their line"));
-        let shown = pad.layout_job_channel_show(40, false, true);
+        let shown = pad.layout_job_channel_show(40, false, true, None);
         assert!(shown.text.contains("our line"));
         assert!(shown.text.contains("their line"));
         assert_eq!(pad.lines.len(), 2);

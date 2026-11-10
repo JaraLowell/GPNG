@@ -459,20 +459,30 @@ pub struct GpGuiApp {
     /// Back monitor (green) stays bright until this instant after a COM receive.
     link_rx_until: Option<Instant>,
     monitor_bg: Color32,
-    #[allow(dead_code)] // per-line PadKind colours replace flat pane fg
+    /// Output-window foreground: `fm … to …` header text.
     monitor_fg: Color32,
+    /// Output-window inverse: payload under that header.
+    monitor_inv: Color32,
+    /// Output-window Info / Error: TNC, COM, warnings, "Local call set to".
+    monitor_info: Color32,
+    /// Clock column (`clock_background`).
+    clock_bg: Color32,
     state_bg: Color32,
     state_fg: Color32,
     input_bg: Color32,
-    #[allow(dead_code)]
     input_fg: Color32,
     menu_bg: Color32,
+    menu_fg: Color32,
     editor_bg: Color32,
     editor_fg: Color32,
     check_bg: Color32,
     list_bg: Color32,
     mh_bg: Color32,
+    mh_fg: Color32,
+    mh_inv: Color32,
     spy_bg: Color32,
+    spy_fg: Color32,
+    spy_inv: Color32,
     connect_bg: Color32,
     #[allow(dead_code)]
     connect_fg: Color32,
@@ -665,17 +675,25 @@ impl GpGuiApp {
         Self {
             monitor_bg: egui_color(&colors.monitor_background),
             monitor_fg: egui_color(&colors.monitor_foreground),
+            monitor_inv: egui_color(&colors.monitor_invers_attr),
+            monitor_info: egui_color(&colors.monitor_infoerror),
+            clock_bg: egui_color(&colors.clock_background),
             state_bg: egui_color(&colors.state_background),
             state_fg: egui_color(&colors.state_foreground),
             input_bg: egui_color(&colors.input_background),
             input_fg: egui_color(&colors.input_foreground),
             menu_bg: egui_color(&colors.menu_background),
+            menu_fg: egui_color(&colors.menu_foreground),
             editor_bg: egui_color(&colors.editor_background),
             editor_fg: egui_color(&colors.editor_foreground),
             check_bg: egui_color(&colors.check_background),
             list_bg: egui_color(&colors.list_background),
             mh_bg: egui_color(&colors.mh_background),
+            mh_fg: egui_color(&colors.mh_foreground),
+            mh_inv: egui_color(&colors.mh_invers_attr),
             spy_bg: egui_color(&colors.spy_background),
+            spy_fg: egui_color(&colors.spy_foreground),
+            spy_inv: egui_color(&colors.spy_invers_attr),
             connect_bg: egui_color(&colors.connect_background),
             connect_fg: egui_color(&colors.connect_foreground),
             cfg,
@@ -6513,7 +6531,7 @@ impl GpGuiApp {
                 let idx = n.saturating_sub(1) as usize;
                 self.spy_pads
                     .get(idx)
-                    .map(|pad| pad.layout_job_wrapped_plain(columns))
+                    .map(|pad| pad.layout_job_spy(columns, self.spy_fg, self.spy_inv))
                     .unwrap_or_default()
             }
             ActivePane::Check => self
@@ -6530,6 +6548,7 @@ impl GpGuiApp {
                         columns,
                         self.session.extended_ascii,
                         self.session.echo_for(n),
+                        Some(self.monitor_info),
                     )
                 })
                 .unwrap_or_default(),
@@ -6543,7 +6562,9 @@ impl GpGuiApp {
     fn monitor_layout_for(&self, columns: usize) -> LayoutJob {
         self.pads
             .first()
-            .map(|pad| pad.layout_job_wrapped(columns))
+            .map(|pad| {
+                pad.layout_job_monitor(columns, self.monitor_fg, self.monitor_inv, self.monitor_info)
+            })
             .unwrap_or_default()
     }
 
@@ -6623,17 +6644,25 @@ impl GpGuiApp {
         let c = &self.cfg.colors;
         self.monitor_bg = egui_color(&c.monitor_background);
         self.monitor_fg = egui_color(&c.monitor_foreground);
+        self.monitor_inv = egui_color(&c.monitor_invers_attr);
+        self.monitor_info = egui_color(&c.monitor_infoerror);
+        self.clock_bg = egui_color(&c.clock_background);
         self.state_bg = egui_color(&c.state_background);
         self.state_fg = egui_color(&c.state_foreground);
         self.input_bg = egui_color(&c.input_background);
         self.input_fg = egui_color(&c.input_foreground);
         self.menu_bg = egui_color(&c.menu_background);
+        self.menu_fg = egui_color(&c.menu_foreground);
         self.editor_bg = egui_color(&c.editor_background);
         self.editor_fg = egui_color(&c.editor_foreground);
         self.check_bg = egui_color(&c.check_background);
         self.list_bg = egui_color(&c.list_background);
         self.mh_bg = egui_color(&c.mh_background);
+        self.mh_fg = egui_color(&c.mh_foreground);
+        self.mh_inv = egui_color(&c.mh_invers_attr);
         self.spy_bg = egui_color(&c.spy_background);
+        self.spy_fg = egui_color(&c.spy_foreground);
+        self.spy_inv = egui_color(&c.spy_invers_attr);
         self.connect_bg = egui_color(&c.connect_background);
         self.connect_fg = egui_color(&c.connect_foreground);
     }
@@ -6655,6 +6684,11 @@ impl GpGuiApp {
                 c.menu_background.clone(),
                 c.menu_foreground.clone(),
                 c.menu_invers_attr.clone(),
+            ],
+            ColorSlot::Clock => [
+                c.clock_background.clone(),
+                String::new(),
+                String::new(),
             ],
             ColorSlot::Output => match self.setup_pane {
                 ActivePane::Channel(_) => [
@@ -6714,6 +6748,9 @@ impl GpGuiApp {
                 c.menu_foreground = v[1].clone();
                 c.menu_invers_attr = v[2].clone();
             }
+            ColorSlot::Clock => {
+                c.clock_background = v[0].clone();
+            }
             ColorSlot::Output => match self.setup_pane {
                 ActivePane::Channel(_) => {
                     c.connect_background = v[0].clone();
@@ -6755,6 +6792,13 @@ impl GpGuiApp {
         self.apply_palette();
     }
 
+    fn apply_color_choice(&mut self, slot: ColorSlot, draft: [String; 3], info: Option<String>) {
+        if let Some(name) = info {
+            self.cfg.colors.monitor_infoerror = name;
+        }
+        self.set_color_triple(slot, draft);
+    }
+
     fn setup_value(&self, id: RowId) -> String {
         let s = &self.cfg.session;
         match id {
@@ -6787,6 +6831,7 @@ impl GpGuiApp {
             RowId::FileDrawer => s.file_drawer.clone(),
             RowId::AutoSpy => join_csv_phrases(&s.auto_spy),
             RowId::SpyAutoIgnore => join_csv_phrases(&s.no_auto_spy),
+            RowId::MaxSpy => self.spy_limit().to_string(),
             _ => String::new(),
         }
     }
@@ -6858,6 +6903,19 @@ impl GpGuiApp {
                 let n = self.cfg.beacon.period_minutes as i32 + step;
                 self.cfg.beacon.period_minutes = n.clamp(0, BEACON_MINUTES_MAX as i32) as u32;
             }
+            RowId::MaxSpy => {
+                let n = self.cfg.session.max_spy as i32 + step;
+                self.cfg.session.max_spy = n.clamp(1, 8) as u32;
+                let limit = self.spy_limit();
+                if let ActivePane::Spy(slot) = self.active {
+                    if slot > limit {
+                        self.select(ActivePane::Monitor);
+                    }
+                }
+                if self.session.spy_slot.is_some_and(|slot| slot > limit) {
+                    self.session.spy_slot = None;
+                }
+            }
             _ => {}
         }
     }
@@ -6902,11 +6960,19 @@ impl GpGuiApp {
                 id => {
                     if let Some(slot) = id.color_slot() {
                         let saved = self.color_triple(slot);
+                        let info = if matches!(slot, ColorSlot::Output)
+                            && matches!(self.setup_pane, ActivePane::Monitor)
+                        {
+                            Some(self.cfg.colors.monitor_infoerror.clone())
+                        } else {
+                            None
+                        };
                         self.setup_view = SetupView::Colors {
                             slot,
                             cursor: 0,
                             draft: saved.clone(),
                             saved,
+                            info,
                         };
                     }
                 }
@@ -7544,8 +7610,10 @@ impl GpGuiApp {
 
     fn step_setup_cursor(&mut self, step: i32, len: usize) {
         match &mut self.setup_view {
-            SetupView::Colors { cursor, .. } => {
-                let len = 4usize;
+            SetupView::Colors {
+                cursor, slot, info, ..
+            } => {
+                let len = color_choice_count(*slot, info.is_some()) + 1;
                 *cursor = (*cursor as i32 + step).rem_euclid(len as i32) as usize;
             }
             SetupView::Beacon { cursor, .. } => {
@@ -7561,8 +7629,19 @@ impl GpGuiApp {
 
     fn nudge_open_value(&mut self, step: i32) {
         match &mut self.setup_view {
-            SetupView::Colors { cursor, draft, .. } if *cursor < 3 => {
+            SetupView::Colors {
+                cursor,
+                draft,
+                slot,
+                info,
+                ..
+            } if *cursor < 3 && *cursor < color_choice_count(*slot, info.is_some()) => {
                 draft[*cursor] = setup::next_name(setup::VGA_NAMES, &draft[*cursor], step);
+            }
+            SetupView::Colors { cursor, info, .. } if *cursor == 3 => {
+                if let Some(name) = info {
+                    *name = setup::next_name(setup::VGA_NAMES, name, step);
+                }
             }
             SetupView::Main => {
                 let rows = setup::rows_for(self.setup_pane);
@@ -7583,10 +7662,12 @@ impl GpGuiApp {
                 slot,
                 cursor,
                 draft,
+                info,
                 ..
             } => {
-                if cursor >= 3 {
-                    self.set_color_triple(slot, draft);
+                let apply_at = color_choice_count(slot, info.is_some());
+                if cursor >= apply_at {
+                    self.apply_color_choice(slot, draft, info);
                     self.setup_view = SetupView::Main;
                 }
             }
@@ -7641,15 +7722,23 @@ impl GpGuiApp {
                 slot,
                 cursor,
                 draft,
+                info,
                 ..
             } => {
                 let title = match slot {
                     ColorSlot::Input => "Colours of input window",
-                    ColorSlot::Output => "Colours of output window",
+                    ColorSlot::Output => output_color_title(self.setup_pane),
                     ColorSlot::State => "Colours of state window",
                     ColorSlot::Menu => "Colours of menu window",
+                    ColorSlot::Clock => "Colours of Clock",
                 };
                 let labels = ["Background", "Foreground", "Inverse"];
+                let shown = if matches!(slot, ColorSlot::Clock) {
+                    1
+                } else {
+                    3
+                };
+                let apply_at = color_choice_count(slot, info.is_some());
                 let mut open = true;
                 let mut applied = false;
                 centered_popup(title, egui::Id::new("gp_setup_colors"), &mut open).show(
@@ -7660,7 +7749,7 @@ impl GpGuiApp {
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing.y = 4.0;
-                                for (i, label) in labels.iter().enumerate() {
+                                for (i, label) in labels.iter().take(shown).enumerate() {
                                     let value = draft[i].to_ascii_uppercase();
                                     let resp = retro::entry(
                                         ui,
@@ -7685,22 +7774,55 @@ impl GpGuiApp {
                                         };
                                     }
                                 }
+                                if let Some(name) = &info {
+                                    let value = name.to_ascii_uppercase();
+                                    let resp = retro::entry(
+                                        ui,
+                                        "Info / Error",
+                                        &value,
+                                        retro::TAB_OPEN,
+                                        cursor == 3,
+                                        300.0,
+                                        menu_font(17.0),
+                                    );
+                                    if resp.clicked() && !resp.double_clicked() {
+                                        if let SetupView::Colors { cursor, .. } =
+                                            &mut self.setup_view
+                                        {
+                                            *cursor = 3;
+                                        }
+                                        self.setup_color_pick = if self.setup_color_pick == Some(3)
+                                        {
+                                            None
+                                        } else {
+                                            Some(3)
+                                        };
+                                    }
+                                }
                             });
                             let bg = egui_color(&draft[0]);
                             let fg = egui_color(&draft[1]);
                             let inv = egui_color(&draft[2]);
                             ui.vertical(|ui| {
-                                color_sample(ui, "Normal text", fg, bg);
-                                color_sample(ui, "Inverted text", bg, inv);
+                                if matches!(slot, ColorSlot::Clock) {
+                                    color_sample(ui, "Clock", Color32::WHITE, bg);
+                                } else if let Some(name) = &info {
+                                    color_sample(ui, "fm SRC to DEST", fg, bg);
+                                    color_sample(ui, "payload", inv, bg);
+                                    color_sample(ui, "Info / Error", egui_color(name), bg);
+                                } else {
+                                    color_sample(ui, "Normal text", fg, bg);
+                                    color_sample(ui, "Inverted text", bg, inv);
+                                }
                             });
                         });
-                        if retro::apply(ui, cursor == 3, menu_font(20.0)) {
+                        if retro::apply(ui, cursor == apply_at, menu_font(20.0)) {
                             applied = true;
                         }
                     },
                 );
                 if applied {
-                    self.set_color_triple(slot, draft);
+                    self.apply_color_choice(slot, draft, info);
                     self.setup_color_pick = None;
                     self.setup_view = SetupView::Main;
                 } else if !open {
@@ -7832,7 +7954,7 @@ impl GpGuiApp {
                         };
                         let resp = retro::entry(
                             ui,
-                            row.id.label(),
+                            setup_row_label(row.id, self.setup_pane),
                             &value,
                             tab,
                             i == cursor,
@@ -7968,13 +8090,17 @@ impl GpGuiApp {
         let Some(which) = self.setup_color_pick else {
             return;
         };
-        let SetupView::Colors { draft, .. } = &self.setup_view else {
+        let SetupView::Colors { draft, info, .. } = &self.setup_view else {
             self.setup_color_pick = None;
             return;
         };
-        let titles = ["Background", "Foreground", "Inverse"];
+        let titles = ["Background", "Foreground", "Inverse", "Info / Error"];
         let title = titles.get(which).copied().unwrap_or("Colour");
-        let current = draft.get(which).cloned().unwrap_or_default();
+        let current = if which < 3 {
+            draft.get(which).cloned().unwrap_or_default()
+        } else {
+            info.clone().unwrap_or_default()
+        };
         let mut open = true;
         let mut chosen: Option<usize> = None;
         centered_popup(title, egui::Id::new("gp_setup_color_name"), &mut open)
@@ -8006,10 +8132,21 @@ impl GpGuiApp {
             });
         if let Some(i) = chosen {
             let name = setup::VGA_NAMES.get(i).map(|s| (*s).to_string());
-            if let (Some(name), SetupView::Colors { draft, cursor, .. }) =
-                (name, &mut self.setup_view)
+            if let (
+                Some(name),
+                SetupView::Colors {
+                    draft,
+                    info,
+                    cursor,
+                    ..
+                },
+            ) = (name, &mut self.setup_view)
             {
-                if let Some(slot) = draft.get_mut(which) {
+                if which < 3 {
+                    if let Some(slot) = draft.get_mut(which) {
+                        *slot = name;
+                    }
+                } else if let Some(slot) = info {
                     *slot = name;
                 }
                 *cursor = which;
@@ -9064,7 +9201,8 @@ impl GpGuiApp {
         let calls = self.cfg.session.spy_calls.clone();
         let nnns = self.spy_auto_nnn.clone();
         let mut saved: Vec<(String, Option<u16>)> = Vec::new();
-        for (i, call) in calls.iter().enumerate() {
+        let limit = self.spy_limit() as usize;
+        for (i, call) in calls.iter().enumerate().take(limit) {
             if call.is_empty() || !call.eq_ignore_ascii_case(&src_up) {
                 continue;
             }
@@ -9099,11 +9237,13 @@ impl GpGuiApp {
             return;
         }
         self.cfg.normalize_spy_calls();
+        let limit = self.spy_limit() as usize;
         if self
             .cfg
             .session
             .spy_calls
             .iter()
+            .take(limit)
             .any(|c| !c.is_empty() && c.eq_ignore_ascii_case(src))
         {
             return;
@@ -9395,6 +9535,31 @@ fn centered_popup<'a>(
             .order(egui::Order::Foreground)
             .frame(popup_frame())
             .open(open),
+    }
+}
+
+/// Colour rows in the dialog, not counting Apply.
+fn color_choice_count(slot: ColorSlot, info: bool) -> usize {
+    match slot {
+        ColorSlot::Clock => 1,
+        _ if info => 4,
+        _ => 3,
+    }
+}
+
+fn output_color_title(pane: ActivePane) -> &'static str {
+    match pane {
+        ActivePane::Mh => "Colours of MHeard window",
+        ActivePane::Spy(_) => "Colours of Spy window",
+        _ => "Colours of output window",
+    }
+}
+
+fn setup_row_label(id: RowId, pane: ActivePane) -> &'static str {
+    match (id, pane) {
+        (RowId::ColorsOutput, ActivePane::Mh) => "Colours of MHeard window",
+        (RowId::ColorsOutput, ActivePane::Spy(_)) => "Colours of Spy window",
+        _ => id.label(),
     }
 }
 
@@ -10145,7 +10310,7 @@ impl GpGuiApp {
         // Clock column stays dark green and does not grow with the transfer strip.
         ui.painter_at(left).rect_filled(left, 0.0, self.menu_bg);
         ui.painter_at(clock_rect)
-            .rect_filled(clock_rect, 0.0, VGA_DARK_GREEN);
+            .rect_filled(clock_rect, 0.0, self.clock_bg);
 
         self.draw_prewrite(ui, pre_r);
         self.draw_channel_grid(ui, ch_r);
@@ -10155,7 +10320,7 @@ impl GpGuiApp {
         } else {
             self.draw_status_grid(ui, st_r);
         }
-        if draw_analog_clock(ui, clock_rect, self.session.hour_gong) {
+        if draw_analog_clock(ui, clock_rect, self.session.hour_gong, self.clock_bg) {
             self.session.hour_gong = !self.session.hour_gong;
             self.status = format!(
                 "Hourly gong {}",
@@ -10239,22 +10404,16 @@ impl GpGuiApp {
         let enabled = self.compose_enabled();
         let slot = self.compose_slot_idx().unwrap_or(0);
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
-            // Active: classic purple/magenta input. Other panes: dark grey (disabled).
-            let fill = if !enabled {
-                VGA_DARK_GRAY
-            } else if self.input_bg == Color32::BLACK {
-                Color32::from_rgb(85, 0, 85)
+            // Typing is only on Monitor and a channel: input-window colours.
+            // Every other pane uses the menu-window colours and does not take text.
+            let (fill, ink) = if enabled {
+                (self.input_bg, self.input_fg)
             } else {
-                self.input_bg
-            };
-            let stroke = if enabled {
-                Color32::from_rgb(170, 0, 170)
-            } else {
-                VGA_GRAY
+                (self.menu_bg, self.menu_fg)
             };
             Frame::none()
                 .fill(fill)
-                .stroke(Stroke::new(1.0, stroke))
+                .stroke(Stroke::new(1.0, ink))
                 // Thin bottom margin so the compose strip can sit on the purple floor.
                 .inner_margin(egui::Margin {
                     left: 4.0,
@@ -10272,7 +10431,7 @@ impl GpGuiApp {
                         ui.centered_and_justified(|ui| {
                             ui.label(
                                 RichText::new("Input — Monitor or channel only")
-                                    .color(Color32::from_rgb(200, 200, 200))
+                                    .color(ink)
                                     .font(FontId::monospace(15.0)),
                             );
                         });
@@ -10332,7 +10491,7 @@ impl GpGuiApp {
                                     let color = if selected {
                                         Color32::from_rgb(255, 255, 85)
                                     } else {
-                                        Color32::WHITE
+                                        ink
                                     };
                                     let resp = ui.add(
                                         egui::Label::new(
@@ -10398,7 +10557,7 @@ impl GpGuiApp {
                                     .desired_width(w)
                                     .frame(false)
                                     .margin(egui::Margin::ZERO)
-                                    .text_color(Color32::WHITE)
+                                    .text_color(ink)
                                     .font(compose_font)
                                     .show(ui)
                             },
@@ -10416,6 +10575,7 @@ impl GpGuiApp {
                                 &range.primary,
                                 row_h,
                                 char_w,
+                                ink,
                             );
                         }
                     }
@@ -11417,6 +11577,8 @@ impl GpGuiApp {
     /// Clickable MHeard list (row select → SPY confirm).
     fn mheard_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
         let bg = self.mh_bg;
+        let text_fg = self.mh_fg;
+        let text_inv = self.mh_inv;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         let show_bar = self.session.scrollbar;
         let nudge = self.session.take_scroll_nudge();
@@ -11474,7 +11636,7 @@ impl GpGuiApp {
                         if pick {
                             ui.label(
                                 RichText::new("SPY — click a station, then confirm")
-                                    .color(Color32::from_rgb(0, 0, 128))
+                                    .color(text_fg)
                                     .strong(),
                             );
                         }
@@ -11497,22 +11659,14 @@ impl GpGuiApp {
                                     RichText::new(
                                         "No stations heard yet — APRS/AX.25 UI frames appear here.",
                                     )
-                                    .color(Color32::BLACK)
+                                    .color(text_fg)
                                     .font(row_font.clone()),
                                 );
                             } else {
                                 for (i, line) in &lines {
                                     let is_sel = selected == Some(*i);
-                                    let fill = if is_sel {
-                                        Color32::from_rgb(0, 0, 170)
-                                    } else {
-                                        Color32::TRANSPARENT
-                                    };
-                                    let fg = if is_sel {
-                                        Color32::WHITE
-                                    } else {
-                                        Color32::BLACK
-                                    };
+                                    let fill = if is_sel { text_inv } else { Color32::TRANSPARENT };
+                                    let fg = if is_sel { bg } else { text_fg };
                                     let resp = egui::Frame::none()
                                         .fill(fill)
                                         .inner_margin(egui::Margin::symmetric(4.0, 1.0))
@@ -11678,6 +11832,7 @@ impl GpGuiApp {
                                                 &cursor.primary,
                                                 row_h,
                                                 underscore_w,
+                                                self.editor_fg,
                                             );
                                         }
                                     }
@@ -12004,7 +12159,7 @@ impl GpGuiApp {
         let lock_w = 26.0_f32;
         let on_channel = matches!(self.active, ActivePane::Channel(_));
         let spy_n = if matches!(self.active, ActivePane::Monitor | ActivePane::Spy(_)) {
-            self.channels.min(10)
+            self.spy_limit()
         } else {
             0
         };
@@ -12281,6 +12436,9 @@ impl GpGuiApp {
             }
             SessionClick::Clear => self.clear_active_pad(),
             SessionClick::Spy(n) => {
+                if n > self.spy_limit() {
+                    return;
+                }
                 self.session.spy_slot = Some(n);
                 self.active = ActivePane::Spy(n);
                 let call = self.spy_call(n);
@@ -12492,7 +12650,7 @@ impl GpGuiApp {
             ActivePane::Spy(n) => n,
             _ => self.session.spy_slot.unwrap_or(1),
         };
-        let slot = slot.clamp(1, 10);
+        let slot = slot.clamp(1, self.spy_limit());
         self.active = ActivePane::Spy(slot);
         self.session.spy_slot = Some(slot);
         let current = self.spy_call(slot).to_string();
@@ -12516,11 +12674,18 @@ impl GpGuiApp {
         self.show_mheard_spy_confirm = true;
     }
 
+    /// GP DOS `MAXSPY`: 1..=8 spy windows. Default is 1.
+    fn spy_limit(&self) -> u8 {
+        self.cfg.session.max_spy.clamp(1, 8) as u8
+    }
+
     fn first_empty_spy_slot(&self) -> Option<u8> {
+        let limit = self.spy_limit() as usize;
         self.cfg
             .session
             .spy_calls
             .iter()
+            .take(limit)
             .enumerate()
             .find(|(_, c)| c.is_empty())
             .map(|(i, _)| (i as u8) + 1)
@@ -13095,7 +13260,7 @@ impl GpGuiApp {
     }
 
     fn apply_spy_call_from_edit(&mut self) -> Result<(), String> {
-        let slot = self.session.spy_slot.unwrap_or(1).clamp(1, 10);
+        let slot = self.session.spy_slot.unwrap_or(1).clamp(1, self.spy_limit());
         let raw = self.session.spy_edit.trim().to_string();
         self.cfg.normalize_spy_calls();
         let idx = slot.saturating_sub(1) as usize;
@@ -14549,31 +14714,27 @@ fn read_first_font(candidates: &[&str]) -> Option<(String, Vec<u8>)> {
     None
 }
 
-/// Consolas for the RX pads. Segoe UI for grey dialogs.
+/// JetBrains Mono, no-ligature regular. SIL OFL 1.1 — see `assets/fonts/OFL.txt`.
+/// `include_bytes` compiles the TTF into the exe, so pads look the same on every OS.
+const JETBRAINS_MONO: &[u8] =
+    include_bytes!("../../assets/fonts/ttf/JetBrainsMonoNL-Regular.ttf");
+
+/// JetBrains Mono for the RX pads and the input line. Segoe UI for grey dialogs.
 ///
 /// The built-in proportional face is Ubuntu Light. On a grey panel its stems
 /// are about one pixel, so black text looks jagged. Segoe UI is a regular
 /// weight and keeps a solid edge at dialog sizes.
 fn install_console_font(ctx: &Context) {
     let mut fonts = FontDefinitions::default();
-    if let Some((path, bytes)) = read_first_font(&[
-        r"C:\Windows\Fonts\consola.ttf",      // Consolas
-        r"C:\Windows\Fonts\CascadiaMono.ttf", // Cascadia Mono
-        r"C:\Windows\Fonts\lucon.ttf",        // Lucida Console
-        r"C:\Windows\Fonts\cour.ttf",         // Courier New
-    ]) {
-        fonts
-            .font_data
-            .insert("gp_console".into(), FontData::from_owned(bytes));
-        fonts
-            .families
-            .entry(FontFamily::Monospace)
-            .or_default()
-            .insert(0, "gp_console".into());
-        tracing::info!("console font: {path}");
-    } else {
-        tracing::warn!("no system console TTF found; keeping egui default monospace");
-    }
+    fonts
+        .font_data
+        .insert("gp_console".into(), FontData::from_static(JETBRAINS_MONO));
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, "gp_console".into());
+    tracing::info!("console font: JetBrains Mono (embedded)");
 
     let proportional = fonts
         .families
@@ -14604,10 +14765,9 @@ fn install_console_font(ctx: &Context) {
 }
 
 /// Draw the tall clock column. Returns `true` when the ♫ gong button was clicked.
-fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool) -> bool {
+fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool, column: Color32) -> bool {
     let painter = ui.painter_at(rect);
-    // DOSBox / V1.63: clock column is dark green, not monitor blue.
-    painter.rect_filled(rect, 0.0, VGA_DARK_GREEN);
+    painter.rect_filled(rect, 0.0, column);
 
     let now = Local::now();
     // Dial fills most of the slim column; badges sit centered under it.
@@ -15394,6 +15554,7 @@ fn paint_dos_caret(
     cursor: &egui::epaint::text::cursor::Cursor,
     row_h: f32,
     char_w: f32,
+    color: Color32,
 ) {
     let rect =
         egui::text_selection::text_cursor_state::cursor_rect(galley_pos, galley, cursor, row_h);
@@ -15423,7 +15584,7 @@ fn paint_dos_caret(
     let x1 = x0 + char_w;
     ui.painter().line_segment(
         [Pos2::new(x0, y), Pos2::new(x1, y)],
-        Stroke::new(2.0, Color32::WHITE),
+        Stroke::new(2.0, color),
     );
 }
 

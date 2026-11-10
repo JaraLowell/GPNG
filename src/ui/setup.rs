@@ -7,9 +7,11 @@ pub const VGA_NAMES: &[&str] = &[
     "Black",
     "Blue",
     "Green",
+    "DarkGreen",
     "Cyan",
     "Red",
     "Magenta",
+    "Orange",
     "Brown",
     "LightGray",
     "DarkGray",
@@ -30,6 +32,7 @@ pub enum RowId {
     ColorsOutput,
     ColorsState,
     ColorsMenu,
+    ColorsClock,
     Prompt,
     Remote,
     Backup,
@@ -54,6 +57,8 @@ pub enum RowId {
     AutoSpy,
     /// Comma list of monitor substrings that block AutoSpy (`NoAutoSpy=`).
     SpyAutoIgnore,
+    /// `MAXSPY`, 1..=8. Default 1.
+    MaxSpy,
     Use,
 }
 
@@ -80,6 +85,8 @@ pub enum ColorSlot {
     Output,
     State,
     Menu,
+    /// Monitor clock column. Background only (`clock_background`).
+    Clock,
 }
 
 impl RowId {
@@ -89,6 +96,7 @@ impl RowId {
             Self::ColorsOutput => "Colours of output window",
             Self::ColorsState => "Colours of state window",
             Self::ColorsMenu => "Colours of menu window",
+            Self::ColorsClock => "Colours of Clock",
             Self::Prompt => "Remote control prompt",
             Self::Remote => "Remote control",
             Self::Backup => "Backup text buffers",
@@ -111,6 +119,7 @@ impl RowId {
             Self::FileDrawer => "File drawer",
             Self::AutoSpy => "Auto Spy",
             Self::SpyAutoIgnore => "Spy Auto Ignore",
+            Self::MaxSpy => "Number of spies",
             Self::Use => "Use these values",
         }
     }
@@ -121,6 +130,7 @@ impl RowId {
             Self::ColorsOutput => Some(ColorSlot::Output),
             Self::ColorsState => Some(ColorSlot::State),
             Self::ColorsMenu => Some(ColorSlot::Menu),
+            Self::ColorsClock => Some(ColorSlot::Clock),
             _ => None,
         }
     }
@@ -144,6 +154,8 @@ pub enum View {
         cursor: usize,
         draft: [String; 3],
         saved: [String; 3],
+        /// Monitor output only. Info / Error (`monitor_infoerror`).
+        info: Option<String>,
     },
     Beacon {
         cursor: usize,
@@ -225,6 +237,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::Backup, RowKind::Toggle),
             (RowId::RxClick, RowKind::Number),
             (RowId::Softscroll, RowKind::Toggle),
+            (RowId::MaxSpy, RowKind::Number),
             (RowId::AutoSpy, RowKind::Submenu),
             (RowId::SpyAutoIgnore, RowKind::Submenu),
             (RowId::Language, RowKind::Number),
@@ -236,6 +249,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::ColorsOutput, RowKind::Submenu),
             (RowId::ColorsState, RowKind::Submenu),
             (RowId::ColorsMenu, RowKind::Submenu),
+            (RowId::ColorsClock, RowKind::Submenu),
             (RowId::Backup, RowKind::Toggle),
             (RowId::Echo, RowKind::Toggle),
             (RowId::RxClick, RowKind::Number),
@@ -288,6 +302,10 @@ mod tests {
         let mon = rows_for(ActivePane::Monitor);
         let lang = mon.iter().position(|r| r.id == RowId::Language).unwrap();
         assert_eq!(mon[lang + 1].id, RowId::Icons);
+        assert!(mon.iter().any(|r| r.id == RowId::ColorsClock));
+        assert!(!rows_for(ActivePane::Channel(1))
+            .iter()
+            .any(|r| r.id == RowId::ColorsClock));
         assert!(mon.iter().any(|r| r.id == RowId::Beacon));
         assert!(mon.iter().any(|r| r.id == RowId::InsertMon));
         let ch = rows_for(ActivePane::Channel(1));
@@ -314,6 +332,10 @@ mod tests {
     #[test]
     fn spy_setup_has_auto_spy_rows_mheard_does_not() {
         let spy = rows_for(ActivePane::Spy(1));
+        assert!(spy.iter().any(|r| r.id == RowId::MaxSpy));
+        assert!(!rows_for(ActivePane::Monitor)
+            .iter()
+            .any(|r| r.id == RowId::MaxSpy));
         assert!(spy.iter().any(|r| r.id == RowId::AutoSpy));
         assert!(spy.iter().any(|r| r.id == RowId::SpyAutoIgnore));
         let mh = rows_for(ActivePane::Mh);

@@ -94,7 +94,9 @@ pub fn vga(name: &str) -> Color {
         "cyan" | "turquoise" | "tuerkis" | "türkis" => Color::Cyan,
         "red" => Color::Red,
         "magenta" | "magentarot" => Color::Magenta,
-        "orange" | "brown" => Color::Rgb(255, 165, 0),
+        "orange" => Color::Rgb(255, 165, 0),
+        "brown" | "dunkelbraun" => Color::Rgb(170, 85, 0),
+        "darkgreen" | "dunkelgruen" | "dunkelgrün" => Color::Rgb(0, 85, 0),
         "lightgray" | "lightgrey" | "hellgrau" => Color::Gray,
         "darkgray" | "darkgrey" | "dunkelgrau" => Color::DarkGray,
         "lightblue" | "hellblau" => Color::LightBlue,
@@ -117,5 +119,8 @@ mod tests {
         assert_eq!(vga("LightBlue"), Color::LightBlue);
         assert_eq!(vga("Dark Gray"), Color::DarkGray);
         assert_eq!(vga("Yellow"), Color::Yellow);
+        assert_eq!(vga("Orange"), Color::Rgb(255, 165, 0));
+        assert_eq!(vga("Brown"), Color::Rgb(170, 85, 0));
+        assert_eq!(vga("Dark Green"), Color::Rgb(0, 85, 0));
     }
 }

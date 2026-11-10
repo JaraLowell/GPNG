@@ -303,6 +303,9 @@ impl Config {
                 "MONITORINVERSATTR" => {
                     self.colors.monitor_invers_attr = value.to_string();
                 }
+                "MONITORINFOERROR" => {
+                    self.colors.monitor_infoerror = value.to_string();
+                }
                 "EDITORFOREGROUND" => {
                     self.colors.editor_foreground = value.to_string();
                 }
@@ -536,6 +539,12 @@ impl Config {
             if s.backup { "true" } else { "false" },
         )?;
         put_key(path, "session", "rx_click", &s.rx_click.to_string())?;
+        put_key(
+            path,
+            "session",
+            "max_spy",
+            &s.max_spy.clamp(1, 8).to_string(),
+        )?;
         put_key(path, "session", "connect_bell", &s.connect_bell.to_string())?;
         put_key(
             path,
@@ -582,12 +591,14 @@ impl Config {
         )?;
         let c = &self.colors;
         for (key, value) in [
+            ("clock_background", c.clock_background.as_str()),
             ("input_background", c.input_background.as_str()),
             ("input_foreground", c.input_foreground.as_str()),
             ("input_invers_attr", c.input_invers_attr.as_str()),
             ("monitor_background", c.monitor_background.as_str()),
             ("monitor_foreground", c.monitor_foreground.as_str()),
             ("monitor_invers_attr", c.monitor_invers_attr.as_str()),
+            ("monitor_infoerror", c.monitor_infoerror.as_str()),
             ("connect_background", c.connect_background.as_str()),
             ("connect_foreground", c.connect_foreground.as_str()),
             ("connect_invers_attr", c.connect_invers_attr.as_str()),
@@ -973,6 +984,7 @@ impl SerialConfig {
 #[serde(default)]
 pub struct SessionConfig {
     pub channels: u32,
+    /// `MAXSPY`. How many spy windows the session bar shows. GP DOS allows 1..=8.
     pub max_spy: u32,
     /// `CONNECTBELL`. Times `CONNECT.WAV` plays on connect. `0` is off and
     /// also skips `DISCONECT.WAV`. `2`..=`4` play again as soon as the last ends.
@@ -1292,6 +1304,10 @@ fn default_white_name() -> String {
     "White".into()
 }
 
+fn default_orange_name() -> String {
+    "Orange".into()
+}
+
 /// Longest line the beacon text box accepts.
 pub const BEACON_TEXT_MAX: usize = 81;
 /// Once a day. Zero minutes means the beacon is off.
@@ -1425,6 +1441,9 @@ pub struct ColorConfig {
     pub border_attr: String,
     pub connect_invers_attr: String,
     pub monitor_invers_attr: String,
+    /// Monitor warning and info lines (TNC, COM port, errors, "Local call set to").
+    #[serde(default = "default_orange_name")]
+    pub monitor_infoerror: String,
     pub editor_foreground: String,
     pub editor_background: String,
     pub check_foreground: String,
@@ -1445,7 +1464,7 @@ pub struct ColorConfig {
 impl Default for ColorConfig {
     fn default() -> Self {
         Self {
-            clock_background: "Black".into(),
+            clock_background: "DarkGreen".into(),
             input_foreground: "White".into(),
             input_background: "LightBlue".into(),
             input_invers_attr: "White".into(),
@@ -1462,6 +1481,7 @@ impl Default for ColorConfig {
             border_attr: "White".into(),
             connect_invers_attr: "LightGreen".into(),
             monitor_invers_attr: "LightGray".into(),
+            monitor_infoerror: "Orange".into(),
             editor_foreground: "White".into(),
             editor_background: "Blue".into(),
             check_foreground: "White".into(),

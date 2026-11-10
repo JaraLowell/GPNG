@@ -82,7 +82,7 @@ smooth_scroll = false
 echo = true
 channel_echo = []
 bell = true
-seven_plus = true
+seven_plus = false
 remote = true
 scr_lock = false
 hour_gong = true
@@ -152,7 +152,7 @@ monitor_mode = "IUSC"
 
 # KISS wire: "serial" = Kenwood etc. via [serial] port/baud + KISS.INI;
 # "tcp" = Soundmodem / Direwolf raw KISS TCP (no KISS.INI).
-kiss_transport = "tcp"
+kiss_transport = "serial"
 kiss_tcp_host = "127.0.0.1"
 kiss_tcp_port = 8200 # UZ7HO Soundmodem KISS TCP; Direwolf often 8001
 
@@ -166,19 +166,20 @@ kiss_exit_delay_ms = 5000  # settle after RESTART (classic KISSINIT -D exit)
 
 [colors]
 # Legacy VGA attribute names preserved for theme migration / future TUI.
-clock_background = "Black"
+clock_background = "DarkGreen"
 input_foreground = "White"
 input_background = "LightBlue"
 input_invers_attr = "White"
-monitor_foreground = "Yellow"
+monitor_foreground = "LightGreen"
 monitor_background = "Blue"
+monitor_infoerror = "Orange"
 connect_foreground = "White"
 connect_background = "DarkGray"
 state_background = "Magenta"
 state_foreground = "White"
 state_invers_attr = "White"
 menu_background = "Red"
-menu_foreground = "LightGray"
+menu_foreground = "Orange"
 menu_invers_attr = "White"
 border_attr = "White"
 connect_invers_attr = "LightGreen"
@@ -192,9 +193,9 @@ editor_invers_attr = "LightGreen"
 list_background = "Cyan"
 list_foreground = "White"
 list_invers_attr = "Yellow"
-mh_background = "LightGray"
-mh_foreground = "Black"
-mh_invers_attr = "LightBlue"
+mh_background = "Blue"
+mh_foreground = "LightCyan"
+mh_invers_attr = "Cyan"
 spy_background = "Blue"
 spy_foreground = "White"
 spy_invers_attr = "LightCyan"
@@ -211,8 +212,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 2628
-y = 77
+x = 1330
+y = 59
 width = 1160
 height = 818
 maximized = false

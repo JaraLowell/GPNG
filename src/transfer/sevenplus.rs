@@ -147,10 +147,7 @@ impl SevenPlusAutosave {
         }
         let got = cap.body.len() as u64;
         let total = (expected as u64).max(got);
-        let name = cap
-            .name
-            .clone()
-            .unwrap_or_else(|| "7plus".into());
+        let name = cap.name.clone().unwrap_or_else(|| "7plus".into());
         Some((got, total, name, cap.started))
     }
 
@@ -454,10 +451,7 @@ fn resolve_seed_part(dir: &Path, name: &str) -> Result<PathBuf, String> {
     if stem.is_empty() {
         return Err(format!("not in USER: {base}"));
     }
-    for candidate in [
-        part_disk_name(&stem, 1, 2),
-        part_disk_name(&stem, 1, 1),
-    ] {
+    for candidate in [part_disk_name(&stem, 1, 2), part_disk_name(&stem, 1, 1)] {
         if let Some(path) = find_named_file(dir, &candidate) {
             return Ok(path);
         }
