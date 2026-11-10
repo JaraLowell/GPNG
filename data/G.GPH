@@ -2,6 +2,7 @@
 
   //<n> [Text]           : Join chat on channel <n>, or send one line; //0 leaves
   //7+ <ON/OFF>          : Switches 7+ AutoSave on or off
+  //7DECODE <file>       : Join 7Plus parts in USER into the original file
   //Activity             : Query sysop activity
   //Bell                 : Calls Sysop by ringing a bell
   //CATalog [wildcard]   : Shows a list of all readable files
@@ -42,6 +43,14 @@
       This command switches 7+ AutoSave on or off. This command may be used
       if you want to send some 7+ files, but the operator is not at his
       station and you are not sure, if he turned 7+ AutoSave on or not.
+
+@7DECODE,7
+
+  //7DECODE <file>
+      Joins 7Plus part files already stored in USER. <file> may be a part
+      name (README.P01) or the original name (README.TXT). The first part
+      supplies the part count. Missing parts are reported; when every part
+      is present the original file is written and the parts are deleted.
 
 @ACTIVITY,2
 

@@ -82,7 +82,7 @@ smooth_scroll = false
 echo = true
 channel_echo = []
 bell = true
-seven_plus = false
+seven_plus = true
 remote = true
 scr_lock = false
 hour_gong = true
@@ -152,7 +152,7 @@ monitor_mode = "IUSC"
 
 # KISS wire: "serial" = Kenwood etc. via [serial] port/baud + KISS.INI;
 # "tcp" = Soundmodem / Direwolf raw KISS TCP (no KISS.INI).
-kiss_transport = "serial"
+kiss_transport = "tcp"
 kiss_tcp_host = "127.0.0.1"
 kiss_tcp_port = 8200 # UZ7HO Soundmodem KISS TCP; Direwolf often 8001
 
@@ -211,8 +211,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1349
-y = 68
+x = 2628
+y = 77
 width = 1160
 height = 818
 maximized = false

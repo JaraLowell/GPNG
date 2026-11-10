@@ -191,6 +191,27 @@ pub fn encode_parts(
     Ok(out)
 }
 
+/// Header fields from one part file (no full join).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartMeta {
+    /// 8.3 name from the header, lower case (`picture.jpg`).
+    pub name: String,
+    pub part: usize,
+    pub parts: usize,
+    pub size: usize,
+}
+
+/// Read part / of / name / size from a saved part without joining the set.
+pub fn part_meta(raw: &[u8]) -> Result<PartMeta, String> {
+    let p = parse_part(raw)?;
+    Ok(PartMeta {
+        name: p.name,
+        part: p.part,
+        parts: p.parts,
+        size: p.size,
+    })
+}
+
 /// Join part files. Every part of the set must be present.
 pub fn decode_parts(files: &[Vec<u8>]) -> Result<DecodedFile, String> {
     if files.is_empty() {

@@ -105,29 +105,24 @@ cutting a file into parts before a send, is
 MS-DOS `7PLUS.EXE` is not invoked, so the same code runs on Windows,
 Linux, and macOS. The port stays under the 7PLUS terms (no commercial
 use, no sale, circulate freely). It is not MIT / Apache-2.0. Error
-reports (`.err` / `.cor`) are not ported yet.
+reports (`.err` / `.cor`) are not ported; the manual part
+`//Read` / `//7DECODE` flow does not need them.
 
-**Receive.** Parts go to `SaveDir` (`data/SAVE`), not `UserDir`.
-`UserDir` stays the `//Read` folder. The header says which part this is
+**Receive.** Parts are saved in `UserDir` (`data/USER`) — the same folder
+`//Read` uses, as classic GP expects. The header says which part this is
 and how many exist (`001 of 003`). When every part of that name is in
-`SAVE`, `decode_parts` writes the original filename.
+USER (autosave or `//7DECODE`), `decode_parts` writes the original file
+(or `name (2).ext` if taken) and deletes the parts.
 
-**Send.** On “send this file”, encode into `data/TEMP` with
-`encode_parts(name, bytes, part_bytes)`. `part_bytes` is 7plus `-sb`:
-a part ends once at least that many source bytes are in it, in steps of
-62. Send part 1, then wait. The next part goes out only after the other
-station sends a line that is `ok` or `okay`. That word is not a 7plus
-command and it is not AutoBin `#OK#`. 7plus itself never acks a part.
-Each part is still cut into AX.25 frames of `packet_payload` bytes.
-`-sb` is the size of one part, not that frame size. The 7plus help uses
-`-sb 3000` (about 3000 bytes; the encoder also caps a part at 512
-lines). Setting `-sb` equal to `packet_payload` (128) makes very small
-parts and a long chain of okay round-trips. Keep the two numbers
-separate unless a transfer is deliberately that fine.
-
-The sniffer still writes `data/USER` today. `SAVE`, `TEMP`, and the
-okay-gated send are not wired to the channel yet. The codec itself
-round-trips.
+**Send.** `//Read` of a normal USER file runs `encode_parts` (`-sb` 3000)
+and writes `.p01` / `.7pl` beside the original in USER, then reports
+parts ready. The peer pulls each part with another `//Read`. `part_bytes`
+is 7plus `-sb`: a part ends once at least that many source bytes are in
+it, in steps of 62. A separate TEMP folder is not used. An `ok`/`okay`
+gated auto-send of successive parts is not wired; the peer chooses when
+to `//Read` the next part. Each part on the air is still cut into AX.25
+frames of `packet_payload` bytes. `-sb` is the size of one part, not that
+frame size.
 
 Interoperability test matrix:
 
@@ -166,18 +161,19 @@ Interoperability test matrix:
 and `stop_7+.` (also `go_text.` / `go_info.`) is written into `UserDir`
 (`data/USER`). The part name follows hb9xar/7plus `extract.c`
 (`picture.p01`, single part `picture.7pl`, part 10 `picture.p0a`).
-`//Read name` sends a file from that folder; `//7+ ON|OFF` is the same
-switch as the session button. AutoBin is still not on the air.
+`//Read` of a normal file encodes into USER parts; a part file is sent as
+text. `//7+ ON|OFF` is the same switch as the session button. `//7DECODE`
+joins a set by hand. AutoBin (`//RPrg` / `//WPrg`, BIN-TX/RX) is on the air.
 
 ---
 
 ## 5. Progress window (DOS GP 1.50+)
 
-A sized send does not open a separate dialog. It rewrites the magenta
-status grid and leaves the channel pad in place. Captured on DOS GP 1.63
-while BIN-TX sends a file (`docs/screenshots/Transfer30.png` at 31%,
-`Transfer80.png` at 83%, and `SplitScreen.png` at 57% with the monitor
-split open).
+A sized send does not open a separate dialog. It expands the purple
+status strip **above the channel pad** (about three transfer lines on
+top of the usual channel/buffers rows) and leaves the QSO text in place.
+Best visual reference: `docs/screenshots/Transfer80.png` (83%). Also
+`Transfer30.png` at 31% and `SplitScreen.png` at 57%.
 
 The grid becomes four rows:
 
@@ -191,7 +187,9 @@ The grid becomes four rows:
 Bytes are sent/total. The percent is the bar label, not a second copy of
 the byte counts. Eff. Baud is the effective rate; it moved from 2662 at
 31% to 1914 at 83% on the same file, and the estimate moved with it
-(`00:00:20` then `00:00:27`). Times are `hh:mm:ss`.
+(`00:00:20` then `00:00:27`). Times are `hh:mm:ss`. Estimated Time is
+the **total** projected duration (`total × elapsed / got`), not the
+time remaining — at 83% / 23s the estimate reads `00:00:27`.
 
 The bar and the estimate need a known total (AutoBin, 7Plus AutoSave).
 A plain text capture has no total, so no bar. The channel pad keeps

@@ -45,6 +45,7 @@ pub use kiss_ini::{
 pub use monitor_filter::{normalize_call, parse_heard, FrameClass, MonitorFilter, MonitorInput};
 pub use payload::{
     flush_rx_line, normalize_newlines, pack_text_payloads, payload_lines, take_rx_lines,
+    take_rx_lines_bytes,
 };
 pub use serial::{detect_serial_ports, DetectedPort};
 pub use wa8ded_ini::{

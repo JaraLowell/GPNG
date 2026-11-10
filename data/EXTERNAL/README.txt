@@ -13,6 +13,13 @@ Remote must be on. With Remote off, //RUN is answered with
 //RUN FREE
     memory total, used, and still free. It reads no input.
 
+//RUN QSLINFO N1UIR
+    a callsign card from hamdb.org: name, license, address, and
+    grid. //QSLINFO N1UIR is the same. With no callsign it asks
+    once. A packet SSID such as N1UIR-2 is dropped before the
+    lookup. HamDB is the US FCC record; an unknown call answers
+    "not found".
+
 //RUN DOS
     an MS-DOS 6.20 window. Drive C: is the USER folder, and there
     is no other drive (D: answers "Drive D does not excist!").
@@ -65,7 +72,8 @@ Linux, macOS, and Windows
     as well. One program per channel, so ten channels is ten
     programs at most.
 
-FREE and DOS are the samples. Both are Python and use only the
-standard library. FREE reports memory on Linux, macOS, and
-Windows and then exits. DOS stays open until EXIT, the link
-drops, or the 300-second quiet limit closes it.
+FREE, QSLINFO, and DOS are the samples. All three are Python and
+use only the standard library. FREE reports memory on Linux,
+macOS, and Windows and then exits. QSLINFO looks up one callsign
+and exits. DOS stays open until EXIT, the link drops, or the
+300-second quiet limit closes it.

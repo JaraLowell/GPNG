@@ -36,22 +36,21 @@ These are the DOS features an operator would notice first.
    **Name** on the channel strip is ALT-N, and `//Name` writes the same file.
    `%N` reads it. MHeard no longer stores names. Still open: a type `B`
    mailbox does not block remotes, and `PORTx` does not switch a multiport TNC.
-3. **7Plus Code-AutoSave is untested.** The sniffer and `//7+` are in the
-   program, and `//Read` sends a file from `data/USER` as plain text. No live
-   DOS part (`go_7+.` … `stop_7+.`) has been captured, so the save into
-   `data/USER` is not confirmed. BIN-TX, `//7+`, and `//Read` do not run the
-   7Plus encoder. **AutoBin is on the air** with DOS GP 1.63 (`#BIN#`, `#OK#`,
-   `#NO#`, `#ABORT#`, the GP 1.63 CRC). Still open there: `//RPrg` / `//WPrg`,
-   resume, and ALT-T.
-   Later, and only GPNG to GPNG: on connect, ask if the other station has 7+
-   support. If it does, send CTEXT and files as `#7+#` plus the data. Our side
-   puts that back together and shows it on the channel. Classic DOS `go_7+.`
-   stays as it is. Not built.
+3. **7Plus Code-AutoSave is done** on a live KISS link with DOS GP 1.63
+   (`go_7+.` … `stop_7+.` into `data/USER`, trailing-CR framing fixed).
+   `//Read` of a normal USER file encodes with `sevenplus_codec` (`-sb` 3000)
+   and reports parts ready; `//Read` of a `.pXX` / `.7pl` still sends that
+   part as text. A full set joins back to the original (or `name (2).ext`),
+   deletes the parts, and reports missing names; `//7DECODE <file>` does the
+   same by hand. **AutoBin is on the air** (`#BIN#`, `#OK#`, `#NO#`,
+   `#ABORT#`, the GP 1.63 CRC). `//RPrg` / `//WPrg` are **Have** / live with
+   DOS GP (AutoBin pull / push). Transfer80 progress strip is **Have**.
+   Still open there: resume and ALT-T.
 4. **A few `//` remotes are still stubs.** The parser covers the classic
    set, and most of it runs (see the `//` table below). Cross-channel
    `//n` / `//0` chat mode is in (join/leave notices, both-way relay on
    the air). `//Quit` also accepts `//Q` and `//BYE`. Still parsed and
-   then refused: `//Activity`, `//RPrg`, `//RTt`, `//WPrg`, `//C`, and
+   then refused: `//Activity`, `//RTt`, `//C`, and
    chat `#`. `REMOTE=` / `NOREMOTE=` are loaded and not enforced; the
    **Remote** button is the one global switch, and with it off a `//RUN`
    is answered, not started. A mailbox marked type `B` in `NAMES.GP`
@@ -94,7 +93,7 @@ These are the DOS features an operator would notice first.
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
 | Install to a directory, `CONFIG.GP` | **Partial** | `Config.toml`, with an optional `CONFIG.GP` overlay for recognised keys |
-| `UserDir`, `ExternalDir`, `SaveDir`, `LogDir`, `SpyDir` | **Partial** | `data/USER` is `//Read` and 7Plus autosave. `data/EXTERNAL` is `//RUN` (Python, PHP, Perl, Ruby, Node, Lua, or Java). Incoming parts are intended for `data/SAVE`. `data/TEMP` is where a send is split. SAVE and TEMP are not wired to the channel yet |
+| `UserDir`, `ExternalDir`, `SaveDir`, `LogDir`, `SpyDir` | **Partial** | `data/USER` is `//Read`, 7Plus parts (encode, autosave, join / `//7DECODE`) — where GP expects them. `data/EXTERNAL` is `//RUN` (Python, PHP, Perl, Ruby, Node, Lua, or Java). `data/SAVE` is AutoBin / manual saves. No separate 7+ TEMP folder |
 | Per-call `CTEXT???.GPI`, `<call>.GPC`, `<call>.GPM`, `<mycall>.GPI`, `QRT.GPI` | **Have** | Connect greeting: `{CALL}.GPC` in `data/` for the peer (SSID dropped), else the channel/global CT file (`CTEXT.GPI` …). Mail: `{CALL}.GPM` in `data/MAIL`; connect announces it, then the greeting. `//MAIL` / bare `//Read` send mail; `//DEL` / `//Kill` with no name delete only that mail. `//Info`: `<mycall>.GPI` (our station base call) wins over `INFO.GPI`. A release ships `INFO.GPI` as the example because the callsign is unknown at pack time; operators who want a personal info text add `<call>.GPI`. `QRT.GPI` on `//Quit` / `//Q` / `//BYE` |
 | `GP.EXE` vs `GP286.EXE`, overlay, EMS/XMS | **DOS-only** | One native binary. QSO spy is included (it was the GP286-only extra) |
 
@@ -153,9 +152,9 @@ These are the DOS features an operator would notice first.
 | Connect with digipeaters from `NAMES.GP`, or typed `CALL via via` | **Have** | A single token is a call, ident, or name in `NAMES.GP`. `CALL,VIA` is still an explicit path and skips the file |
 | Compose window, auto line wrap, auto-send of a full line | **Partial** | Pre-write history and a compose box. No per-channel line length (80, or 65 in CONVERSE) and no automatic send when the line fills |
 | ALT-T file send: text, raw binary, AutoBin, editor contents | **Missing** | See `docs/TRANSFER.md` for the protocol we intend to match |
-| Transfer progress (bytes, percent, elapsed, estimate) and resume after quit | **Partial** | Layout is the magenta status grid, not a popup. `Transfer30.png` / `Transfer80.png`: path, `Bytes: sent/total`, green bar with the percent, `Elapsed Time`, `Eff. Baud`, `Estimated Time`, `Status: BIN-TX`, mode title `Information Transfer`. Details in `docs/TRANSFER.md`. The grid is not built yet. Resume after quit is still missing |
+| Transfer progress (bytes, percent, elapsed, estimate) and resume after quit | **Partial** | Progress strip **Have** (`Transfer80.png`): full-width path / `Bytes` / `Status: BIN-TX`·`BIN-RX`·`7+-TX`·`7+-RX` under the clock, green block bar + `%`, `Elapsed Time` / `Eff. Baud` / `Estimated Time`, title `Information Transfer`. Resume after quit is still missing |
 | ALT-S continuous text save, print to LPT1–LPT4, save a marked range, AutoBin receive names `<call>.000`–`.999` | **Missing** | |
-| 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`, ERR/COR parts) | **Partial** | Untested on the air. No sample part yet. The sniffer would save channel RX into `data/USER` when **7+** is on. `transfer::sevenplus_codec` can encode and join parts in Rust. `.err` / `.cor`, `data/SAVE`, `data/TEMP`, and waiting for `ok`/`okay` are not wired. Later, GPNG to GPNG only: ask on connect, then send CTEXT and files as `#7+#` plus the data and show the rebuilt text on the channel |
+| 7Plus / LCplus Code AutoSave (`go_7+.` … `stop_7+.`) | **Have** | Live with DOS GP: **7+** saves parts into `data/USER` (`go_7+.` … `stop_7+.`). `//Read` encodes a normal file into USER parts; part files send as text. Full sets decode (auto or `//7DECODE`); missing parts are reported. `//RPrg` / `//WPrg` AutoBin and the Transfer80 progress strip are live. `.err` / `.cor` not needed for the manual part flow |
 | Mouse-mark QSO lines and Ctrl-Ins / Ctrl-K into the editor | **Missing** | |
 | Remote control from the peer, and ESC `//` from the operator | **Partial** | Incoming `//` lines are parsed when **Remote** is on. Cross-channel `//n` / `//0` joins a TERM channel’s QSO and relays both ways; the room hears Joined/Left. **Remote** is one global switch: off answers a `//RUN` with `<GPNG>: Remote commands are turned off by the sysop.` and starts nothing; on runs it. Esc opens the TNC command box (manual 5.9). A typed `//` line on an unlinked channel runs here; on a linked channel it goes to the other station. On KISS the box does not send |
 | External programs (`ExternalDir`, `//RUN`) | **Have** | GPNG addon, below. One text program from `data/EXTERNAL` per channel. Bare `//RUN` sends `RUN.GPI`. Samples: `FREE` (memory, then exits) and `DOS` (MS-DOS 6.20 window, `C:` is `data/USER`). DOS GPRI Pascal programs are not started |
@@ -165,7 +164,7 @@ These are the DOS features an operator would notice first.
 | Station journal `LOG=ON` plus `QRG` | **Have** | `LOG`, `QRG`, and `UTC` come from `CONFIG.GP` or `Config.toml`. The line is written under `data/log` (or `LogDir`). `gpng.log` in that folder is the shell log |
 | Alternate connect texts `CTEXT_A.GPI` and fallback to `CTEXT.GPI` | **Have** | The CT button picks the channel file (`CTEXT.GPI`, `CTEXT_A.GPI`, or another GPI). A `data/{CALL}.GPC` for the station that connected replaces that file. Mail, when present, is one line before that greeting |
 | Sysop password (`SY`/`PW`, `*.GPW`, TheNet / BayCom / FlexNet / DieBox / FALCon types) | **Partial** | `DB0IZ-9` reads `data/DB0IZ9.GPW`. Type `N`, `D`, and `W` pick 1-based characters. Type `F` uses the old 5-digit product-sum, or character positions when the secret is longer. The reply is placed in the compose box; Ctrl-B pastes it again. A type `B` 60×27 grid is recognised and not calculated |
-| DieBox `(BIN)` mail via AutoBin | **Missing** | Depends on the unwired AutoBin path |
+| DieBox `(BIN)` mail via AutoBin | **Partial** | AutoBin on the channel is live (`//RPrg` / `//WPrg`, BIN-TX/RX). DieBox mail that should arrive as `(BIN)` AutoBin is not wired as mailbox mail yet |
 
 ### 6 Mailbox menus
 
@@ -203,8 +202,6 @@ These are the DOS features an operator would notice first.
 | Pick a QSO from MHeard (ALT-S / **SPY**), both directions, two colours, show N(S) | **Partial** | A slot watches one callsign and copies matching monitor lines. No pair detection, no “please select QSO”, no sequence number, no save-this-QSO prompt |
 | Kill spy (ALT-K / **KILL SPY**) | **Partial** | Clears the call in the current spy slot. Does not pick a QSO out of MHeard to stop |
 | AutoSpy / NoAutoSpy, files `CALL.000`–`.999` in `SpyDir`, close on DISC/DM/UA, skip `ctl UI` | **Partial** | `AutoSpy=` / `NoAutoSpy=` load from config; Spy Setup edits them. Matching lines open a free spy slot and append `data/SPY/CALL.NNN` (next free 000–999 on disk; same call reuses that number until the program exits). Manual SPY still uses `data/SAVE/CALL.spy`. Not yet: auto-close on DISC/DM/UA, or `AutoSpyMinimumSave` |
-| Copy 7Plus parts out of a spy file | **Missing** | Would fall out of Code AutoSave once that is wired |
-
 ### 10 Autorouter
 
 | DOS feature | Status | Notes |
@@ -233,13 +230,13 @@ A mailbox marked `B` is stored and still does not block remotes. `MultiPort` in 
 | Line break per channel | **Missing**. Input columns are stored and do not wrap the compose box |
 | Packet length for all channels | **Have**. The channel menu sets `packet_payload`, which is the size used when a line is sent |
 | Softscroll | **Partial**. The menu and ALT-R cycle the line step. The session button shows a stair when it is on and `/` when it is off (manual 11.12). Chapter 15’s pixel soft-scroll is **DOS-only** |
-| 7Plus / LCplus Code AutoSave per channel | **Partial**. The channel menu flips the one **7+** switch for every channel. Live capture into `data/USER` is untested |
+| 7Plus / LCplus Code AutoSave per channel | **Have**. One global **7+** switch (session bar / setup / `//7+`). Live capture, encode-on-`//Read`, join, and `//7DECODE` are in. Not per channel in the DOS 1.50+ sense |
 | Word wrapping, `*.BAK` | **Partial**. `*.BAK` is copied before an editor save when the toggle is on. Word wrapping is stored and the editor does not hard-wrap yet |
 | Insert list from editor, reference channel, file drawer | **Have**. Insert appends DieBox lines from the editor. The reference channel is where the live list is read and where `READ` is sent. The file drawer is the Box-List rubric |
 | Beacon menu (monitor only) | **Partial**. Address, text, and period are saved. Period 0 is off. Manual 11.11: `ALL` is `fm CALL to ALL ctl UI^`, and `ALL DB0FN` is `fm CALL to ALL via DB0FN ctl UI^`. The same path is what a line typed on the monitor uses, so `APMI03 WIDE1-1 WIDE2-2` is `to APMI03 via WIDE1-1,WIDE2-2`. On KISS the period sends that one UI frame. The heard copy with `via DB0FN*` is the digipeater’s repeat, not a second send. On hostmode the values are stored and no TNC beacon command is invented |
 | InsertMonLine | **Partial**. Stored. Monitor blank lines are not inserted |
 | System language | **Have**. Cycles `EN`, `NL`, `DL`, `F`, `PL`, `SLO`, `OK`, `HA` into `remote_language` |
-| Session-bar switches: QRG, CT, umlauts, echo, stair or `/`, bell, 7+, remote, BIN-RX, BIN-TX, Name, ScrLock | **Partial**. **CT** is global on Monitor and per channel (green) on a channel; picking the global file there inherits again. **Echo** is per channel. **♪** is global for connect, disconnect, and newline sounds. **Remote** is global. The soft-scroll mark is a drawn stair or `/`. Umlauts are also the setup toggle. **7+** is the Code-AutoSave switch and is untested on the air. **Name** writes `NAMES.GP`. BIN-RX / BIN-TX run the `#BIN#` transfer. ScrLock does not freeze a TNC poll, and it is not per channel |
+| Session-bar switches: QRG, CT, umlauts, echo, stair or `/`, bell, 7+, remote, BIN-RX, BIN-TX, Name, ScrLock | **Partial**. **CT** is global on Monitor and per channel (green) on a channel; picking the global file there inherits again. **Echo** is per channel. **♪** is global for connect, disconnect, and newline sounds. **Remote** is global. The soft-scroll mark is a drawn stair or `/`. Umlauts are also the setup toggle. **7+** is Code-AutoSave (live). **Name** writes `NAMES.GP`. BIN-RX / BIN-TX run the `#BIN#` transfer. ScrLock does not freeze a TNC poll, and it is not per channel |
 
 ### 12–18 and the appendices
 
@@ -267,7 +264,7 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 | `//Quit` / `//Q` / `//BYE`, `//DISConnect` | **Have** | `//Quit` (and `//Q` / `//BYE`) sends `QRT.GPI`, then disconnects when the TX queue is empty. `//DISC` drops at once |
 | `//Info`, `//NEws`, other `*.GPI` by stem or prefix | **Have** | `//Info` uses `<mycall>.GPI` if present, else the shipped `INFO.GPI`. Other stems need a matching `data/*.GPI` |
 | `//VERsion`, `//Echo`, `//Bell`, `//MHeard`, `//Name` | **Have** |
-| `//7+`, `//Read`, `//CATalog` / `//DIR` | **Have** | `//7+ ON\|OFF` is the session switch. `//Read file` and `//CAT` / `//DIR` stay inside `data/USER`. A pattern such as `*.txt;*.doc` is a DOS wildcard. The reply says `USER`, not a disk path |
+| `//7+`, `//7DECODE`, `//Read`, `//RPrg`, `//WPrg`, `//CATalog` / `//DIR` | **Have** | `//7+ ON\|OFF` is the session switch. `//7DECODE file` joins USER parts (reports missing). `//Read` of a normal file encodes to parts and reports ready; a part file is sent as text. `//RPrg file` AutoBin-TX from USER; `//WPrg file` arms AutoBin-RX into USER (auto-`#OK#`). `//CAT` / `//DIR` stay inside `data/USER`. A pattern such as `*.txt;*.doc` is a DOS wildcard. The reply says `USER`, not a disk path |
 | `//Help`, `//Language` | **Have** | `//Help` and `//H H` use `data/G.GPH` (English) or the pack selected with `//Language` |
 | `//PRompt`, `//Usage` | **Have** | Prompt on/off, and this channel’s link state or a `NAMES.GP` lookup |
 | `//PARameters` / `//P` | **Have** | TNC timing dump (P-Persistence, Slottime, Frack, T2, T3, TXDelay, MaxUnack). WA8DED re-queries `F` / `@T2` / `@T3` live. KISS applies `T`/`P`/`W` from `init[]` / `WA8DED.INI` as TAPR param frames after bring-up; `//P` reports those (T2/T3 as `?`). TFPCX sends the same lines as hostmode text into the soft-TNC |
@@ -279,7 +276,7 @@ Parsed in `src/remote/commands.rs`. Executed from the pixel UI in
 | `//RUN` | **Have** | Addon below. Bare `//RUN` sends `RUN.GPI` and starts nothing. `//RUN ?` lists `data/EXTERNAL` and the languages found on this computer. `//RUN FREE` reports memory. `//RUN DOS` opens the MS-DOS window. `//name` starts a program that is not already a command. With **Remote** off, a `//RUN` is answered `<GPNG>: Remote commands are turned off by the sysop.` |
 | `//CUT` | **Have** | Aborts BIN-RX, BIN-TX, or a 7+ capture on that channel. The receiver sends `#ABORT#` (`#NO#` if the BIN file has not started). The sender stops. Chat resumes |
 | `//<n> [text]` / `//0` | **Have** | Bare `//n` joins chat on channel *n*; `//0` leaves. One-shot `//n text` sends a line. Traffic is relayed both ways onto the radio. Room hears `<GPNG>: CALL (Name) Joined/Left your channel!` |
-| `//Activity`, `//RPrg`, `//RTt`, `//WPrg`, `//C`, chat `#` | **Missing** | Parsed, then “not implemented” |
+| `//Activity`, `//RTt`, `//C`, chat `#` | **Missing** | Parsed, then “not implemented” |
 
 `#` as a chat allow-list token in `REMOTE=` is not applied.
 
@@ -312,10 +309,10 @@ This is the stand-in for the DOS GPRI Pascal interface. A DOS program in `EXTERN
 - Manual spy slots that follow a callsign on the monitor.
 - Editor load/save in CP437.
 - Pad logs under `log/` for monitor, channels, spy, BBS, and box.
-- Remote command catalogue and macro expander. Cross-channel `//n` / `//0` chat mode (both-way RF relay, Joined/Left notices). `//Quit` / `//Q` / `//BYE` sends `QRT.GPI`. A few remotes are still stubs (`//Activity`, `//RPrg`, `//RTt`, `//WPrg`, `//C`).
+- Remote command catalogue and macro expander. Cross-channel `//n` / `//0` chat mode (both-way RF relay, Joined/Left notices). `//Quit` / `//Q` / `//BYE` sends `QRT.GPI`. `//RPrg` / `//WPrg` AutoBin remotes are live. A few remotes are still stubs (`//Activity`, `//RTt`, `//C`).
 - `//RUN` addon: one Python, PHP, Perl, Ruby, Node, Lua, or Java program from `data/EXTERNAL` per channel. Shebang on Linux, macOS, and Windows. Java is headless. Input or new output keeps that process; 300 seconds with neither, exit, or disconnect closes it. A linked station is told `closed run program after timeout`. Bare `//RUN` sends `RUN.GPI`. Samples: `FREE` and the `DOS` window on `data/USER`.
 - Sounds and session switches: RX-Click counts `NEWLINE.WAV`, Connect Bell counts `CONNECT.WAV` (off also silences `DISCONECT.WAV`), ♪ silences connect/disconnect/newline everywhere, the clock strikes `CHIME.WAV` on a 12-hour clock, **CT** and **Echo** can be set per channel, and **Remote** is one global switch.
-- AutoBin on a live KISS link with DOS GP 1.63 (`#BIN#` / `#OK#` / `#ABORT#`, file in `data/SAVE`). 7Plus Code-AutoSave is implemented and untested. See `docs/TRANSFER.md`.
+- AutoBin on a live KISS link with DOS GP 1.63 (`#BIN#` / `#OK#` / `#ABORT#`, file in `data/SAVE`). 7Plus Code-AutoSave is live (`go_7+.` … `stop_7+.` into `data/USER`), with encode-on-`//Read`, auto-join, missing-part reports, and `//7DECODE`. See `docs/TRANSFER.md`.
 - Setup menu (ALT-U / **SETUP**). Rows follow the current window. Colours, the KISS beacon, and the Esc TNC box are live. Settings go to `Config.toml`.
 - DieBox BBS menu and Box list: mark, `READ`, find, sort, and the replace / append / interrupt question. Other mailbox formats are not parsed.
 - Session soft-scroll button: `/` or a stair. The text still steps a whole line.
@@ -324,11 +321,11 @@ This is the stand-in for the DOS GPRI Pascal interface. A DOS program in `EXTERN
 
 ## Suggested build order
 
-1. 7Plus Code-AutoSave stays untested until a real `go_7+.` part is on the link. The later GPNG-only `#7+#` connect handshake is not this item. AutoBin on the channel is in. Still open: `//RPrg`, `//WPrg`, and resume. `//CUT` aborts a running BIN or 7+ transfer.
+1. 7Plus Code-AutoSave **Done** on the air with DOS GP (`go_7+.` … `stop_7+.`). Encode-on-`//Read`, join, missing reports, `//7DECODE`, AutoBin `//RPrg` / `//WPrg`, and the Transfer80 progress strip are in; parts stay in `data/USER`. Still open on this family: transfer resume and ALT-T. `//CUT` aborts a running BIN or 7+ transfer.
 2. `NAMES.GP` plus autorouter on Connect, then ALT-N. **Done.** Connect uses `data/NAMES.GP`. **Name** is ALT-N. A type `B` mailbox still does not block remotes, and `PORTx` does not change the radio.
 3. BBS-Menu and Box-List parsers (DieBox first), mark, and `READ`. **Done** for DieBox `CHECK` and `LIST` on the setup reference channel. F6FBB, DK5SG, and DB0IE are still ahead.
-4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language. **Done.** Help follows `data/G.GPH` (English) and the other language packs. Catalog, read, write, and delete stay in `data/USER`. `//CD` cannot leave that folder. Cross-channel `//n` / `//0` chat mode and `//BYE` as a Quit alias are **Done**. AutoBin `//RPrg` / `//WPrg` remain with item 1.
+4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language. **Done.** Help follows `data/G.GPH` (English) and the other language packs. Catalog, read, write, and delete stay in `data/USER`. `//CD` cannot leave that folder. Cross-channel `//n` / `//0` chat mode and `//BYE` as a Quit alias are **Done**. AutoBin `//RPrg` / `//WPrg` are **Done** (item 1).
 5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper. **Done** for the journal and for TheNet, BayCom, and FlexNet. Shell and debug lines go to `data/log/gpng.log`. The DieBox 60×27 grid is not calculated.
 6. Setup menu. **Done** for the DOS rows that have a live effect: colours, prompt, remote (one global switch), backup, echo (per channel show/hide, lines always stored), RX-Click (a count of `NEWLINE.WAV`), Connect Bell (a count of `CONNECT.WAV`; off also silences `DISCONECT.WAV`), umlauts, the stair / `/` line step, packet length, Code-AutoSave, language, editor `*.BAK`, insert-from-editor, the reference channel, the file drawer, the KISS beacon (manual 11.11, also the monitor unproto path), and the Esc TNC command box. The ♪ button is the global connect/disconnect/newline mute, **CT** can hold a file per channel, and EDIT keeps its file, text, and caret until another file is loaded. Word wrapping, input columns, and InsertMonLine are stored. Hostmode does not send the beacon. A `//` line in the Esc box is not the operator remote from manual 5.5. Settings go to `Config.toml`, not `CSTAT.GPB`.
 7. Pixel-UI hotkeys that match DOS GP chapter 4. **Done** for the keys that already have an action: F1–F12, ALT-M/E/X/U/O/R/G/Q/C/D/Y/N/T/B, ALT-F1/F2/F4/F6/F7/F8/F9/F10, Shift-F1–F12, Ctrl-D/T/Y/C/P/O/B, Ctrl-Enter, Esc (TNC command, or back to Monitor from BBS/List), and editor ALT-L/S. Still ahead: ALT-S continuous save, ALT-F file send, Insert/overwrite, Ctrl-K, and Ctrl+PrintScreen TNC-Statistics (hostmode / TFPCX only, not KISS). ALT-Z stays DOS VGA zoom. On the BBS menu ALT-S sorts and ALT-F finds; on the Box list ALT-F finds.
-8. Still ahead, in short: the other mailbox list formats (F6FBB, DK5SG, DB0IE) and rubric sections; a live 7Plus part on the air, `//RPrg` / `//WPrg`, transfer resume and ALT-T / ALT-S / ALT-F; a type `B` mailbox blocking remotes and `PORTx` switching a multiport TNC; the `REMOTE=` allow-list; editor Insert/overwrite, hard word wrap, and Ctrl-K; AutoSpy close on DISC/DM/UA; stub remotes `//Activity`, `//RTt`, `//C`; Ctrl+PrintScreen TNC-Statistics when WA8DED / TFPCX are checked on hardware or soft-TNC. The `//RUN` samples (`FREE`, `DOS`), bare `//RUN` → `RUN.GPI`, cross-channel `//n` chat, `//BYE`, Auto Spy / Spy Auto Ignore setup with `CALL.NNN` files, the global **Remote** answer, and the per-channel **CT** / **Echo** switches are done.
+8. Still ahead, in short: the other mailbox list formats (F6FBB, DK5SG, DB0IE) and rubric sections; transfer resume and ALT-T / ALT-S / ALT-F; a type `B` mailbox blocking remotes and `PORTx` switching a multiport TNC; the `REMOTE=` allow-list; editor Insert/overwrite, hard word wrap, and Ctrl-K; AutoSpy close on DISC/DM/UA; stub remotes `//Activity`, `//RTt`, `//C`; Ctrl+PrintScreen TNC-Statistics when WA8DED / TFPCX are checked on hardware or soft-TNC. Done: live 7Plus Code-AutoSave / `//7DECODE` (parts in USER), `//RPrg` / `//WPrg` AutoBin, Transfer80 progress strip, `//RUN` samples (`FREE`, `DOS`), bare `//RUN` → `RUN.GPI`, cross-channel `//n` chat, `//BYE`, Auto Spy / Spy Auto Ignore setup with `CALL.NNN` files, the global **Remote** answer, and per-channel **CT** / **Echo**.

@@ -59,32 +59,70 @@ pub fn pack_text_payloads(text: &str, max_len: usize) -> Vec<String> {
 /// A packet boundary is not a row break. Only `\n`, `\r`, and `\r\n` start
 /// the next row. The unfinished tail stays in `pending` for the next packet.
 /// A blank row (two breaks in a row) is kept so column art stays aligned.
-pub fn take_rx_lines(pending: &mut String, chunk: &str) -> Vec<String> {
+///
+/// DOS packet radio ends a row with CR. A CR as the last byte of a packet is
+/// still a finished row — holding it forever left 7Plus `stop_7+.` stuck in
+/// the sniffer after a `//Read` part. When that CR might be the first half of
+/// CRLF, set `cr_hold` so the next chunk drops a leading LF.
+pub fn take_rx_lines(pending: &mut String, chunk: &str, cr_hold: &mut bool) -> Vec<String> {
+    let chunk = if *cr_hold {
+        *cr_hold = false;
+        chunk.strip_prefix('\n').unwrap_or(chunk)
+    } else {
+        chunk
+    };
     pending.push_str(chunk);
-    let bytes = pending.as_bytes();
     let mut lines = Vec::new();
-    let mut start = 0;
-    let mut consumed = 0;
-    while let Some(relative_pos) = bytes[start..]
-        .iter()
-        .position(|&b| b == b'\n' || b == b'\r')
-    {
-        let pos = start + relative_pos;
-        // A CR at the very end may be the first byte of a CRLF in the next packet.
-        if bytes[pos] == b'\r' && pos + 1 == bytes.len() {
+    loop {
+        let bytes = pending.as_bytes();
+        let Some(pos) = bytes.iter().position(|&b| b == b'\n' || b == b'\r') else {
             break;
-        }
-        let line = pending[start..pos].to_string();
+        };
+        let line = pending[..pos].to_string();
         let mut next = pos + 1;
-        if bytes[pos] == b'\r' && bytes.get(pos + 1) == Some(&b'\n') {
-            next += 1;
+        if bytes[pos] == b'\r' {
+            if bytes.get(pos + 1) == Some(&b'\n') {
+                next = pos + 2;
+            } else if pos + 1 == bytes.len() {
+                *cr_hold = true;
+            }
         }
-        consumed = next;
-        start = next;
+        pending.drain(..next);
         lines.push(line);
     }
-    if consumed > 0 {
-        pending.drain(..consumed);
+    lines
+}
+
+/// Same row rules as [`take_rx_lines`], but on raw octets so 7Plus check bytes
+/// (`0xB0 0xB1`) survive as Latin-1 code points.
+pub fn take_rx_lines_bytes(pending: &mut Vec<u8>, chunk: &[u8], cr_hold: &mut bool) -> Vec<String> {
+    let mut offset = 0;
+    if *cr_hold {
+        *cr_hold = false;
+        if chunk.first() == Some(&b'\n') {
+            offset = 1;
+        }
+    }
+    pending.extend_from_slice(&chunk[offset..]);
+    let mut lines = Vec::new();
+    loop {
+        let Some(pos) = pending.iter().position(|&b| b == b'\n' || b == b'\r') else {
+            break;
+        };
+        let line: String = pending[..pos]
+            .iter()
+            .map(|&b| char::from_u32(u32::from(b)).unwrap_or('?'))
+            .collect();
+        let mut next = pos + 1;
+        if pending[pos] == b'\r' {
+            if pending.get(pos + 1) == Some(&b'\n') {
+                next = pos + 2;
+            } else if pos + 1 == pending.len() {
+                *cr_hold = true;
+            }
+        }
+        pending.drain(..next);
+        lines.push(line);
     }
     lines
 }
@@ -158,9 +196,10 @@ mod tests {
         let chunks = pack_text_payloads(text, 40);
         assert!(chunks.len() > 1);
         let mut pending = String::new();
+        let mut cr_hold = false;
         let mut lines = Vec::new();
         for chunk in chunks {
-            lines.extend(take_rx_lines(&mut pending, &chunk));
+            lines.extend(take_rx_lines(&mut pending, &chunk, &mut cr_hold));
         }
         if let Some(rest) = flush_rx_line(&mut pending) {
             lines.push(rest);
@@ -180,18 +219,51 @@ mod tests {
     #[test]
     fn receiver_consumes_many_rows_in_one_pass() {
         let mut pending = String::new();
-        let rows = take_rx_lines(&mut pending, "one\r\ntwo\nthree\rfour");
+        let mut cr_hold = false;
+        let rows = take_rx_lines(&mut pending, "one\r\ntwo\nthree\rfour", &mut cr_hold);
         assert_eq!(rows, ["one", "two", "three"]);
         assert_eq!(pending, "four");
+        assert!(!cr_hold);
     }
 
     #[test]
-    fn receiver_keeps_a_trailing_cr_until_the_next_chunk() {
+    fn receiver_trailing_cr_completes_the_row() {
         let mut pending = String::new();
-        assert_eq!(take_rx_lines(&mut pending, "first\nsecond\r"), ["first"]);
-        assert_eq!(pending, "second\r");
-        assert_eq!(take_rx_lines(&mut pending, "\nthird"), ["second"]);
-        assert_eq!(pending, "third");
+        let mut cr_hold = false;
+        assert_eq!(
+            take_rx_lines(&mut pending, "first\nsecond\r", &mut cr_hold),
+            ["first", "second"]
+        );
+        assert!(pending.is_empty());
+        assert!(cr_hold);
+        // CRLF split across packets: leading LF after a held CR is filler.
+        assert_eq!(
+            take_rx_lines(&mut pending, "\nthird\n", &mut cr_hold),
+            ["third"]
+        );
+        assert!(pending.is_empty());
+        assert!(!cr_hold);
+    }
+
+    #[test]
+    fn receiver_bytes_trailing_cr_closes_stop_7plus() {
+        let mut pending = Vec::new();
+        let mut cr_hold = false;
+        let go = b" go_7+. 001 of 001 README.TXT\r";
+        let body = b"payload\r";
+        let stop = b" stop_7+. (README.7PL) [0]\r";
+        assert!(take_rx_lines_bytes(&mut pending, go, &mut cr_hold)
+            .iter()
+            .any(|l| l.contains("go_7+")));
+        assert!(cr_hold);
+        let _ = take_rx_lines_bytes(&mut pending, body, &mut cr_hold);
+        let last = take_rx_lines_bytes(&mut pending, stop, &mut cr_hold);
+        assert!(
+            last.iter().any(|l| l.trim_start().starts_with("stop_7+.")),
+            "stop marker must not stick behind a trailing CR: {last:?}"
+        );
+        assert!(pending.is_empty());
+        assert!(cr_hold);
     }
 
     #[test]

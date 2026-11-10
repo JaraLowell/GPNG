@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""//RUN QSLINFO CALL — a callsign card from hamdb.org.
+
+Start it with //RUN QSLINFO N1UIR, or //QSLINFO N1UIR (Remote must be
+on). With no callsign it asks once, prints one card, and exits.
+The lookup is https://api.hamdb.org/v1/<CALL>/json/python_lookup
+HamDB carries the US FCC record. A call it does not know is "not found".
+"""
+
+import json
+import sys
+import urllib.error
+import urllib.request
+
+API = "https://api.hamdb.org/v1/{call}/json/python_lookup"
+TIMEOUT = 15
+
+CLASS = {
+    "E": "Extra",
+    "A": "Advanced",
+    "G": "General",
+    "T": "Technician",
+    "N": "Novice",
+    "P": "Tech Plus",
+}
+
+STATUS = {
+    "A": "Active",
+    "C": "Canceled",
+    "E": "Expired",
+    "T": "Terminated",
+}
+
+
+def configure_stdio():
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace", newline="\n")
+            except (OSError, ValueError):
+                pass
+
+
+def blank(value):
+    text = str(value or "").strip()
+    if not text or text.upper() == "NOT_FOUND":
+        return ""
+    return text
+
+
+def title(text):
+    return " ".join(part.capitalize() for part in text.split())
+
+
+def call_of(word):
+    """A license call. A packet SSID (`N1UIR-2`) is dropped."""
+    word = word.strip().upper()
+    base, sep, ssid = word.partition("-")
+    if sep and ssid.isdigit():
+        word = base
+    if not 3 <= len(word) <= 10 or not word.isalnum():
+        return ""
+    if not any(ch.isalpha() for ch in word):
+        return ""
+    if not any(ch.isdigit() for ch in word):
+        return ""
+    return word
+
+
+def ask_call():
+    if len(sys.argv) > 1:
+        return call_of(sys.argv[1]), sys.argv[1].strip()
+    print("Call?", flush=True)
+    try:
+        line = input()
+    except EOFError:
+        line = ""
+    return call_of(line), line.strip()
+
+
+def fetch(call):
+    req = urllib.request.Request(
+        API.format(call=call),
+        headers={"User-Agent": "Python", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        raw = resp.read()
+    return json.loads(raw.decode("utf-8-sig", errors="replace"))
+
+
+def coord(lat, lon):
+    try:
+        la = float(lat)
+        lo = float(lon)
+    except (TypeError, ValueError):
+        return ""
+    ns = "N" if la >= 0 else "S"
+    ew = "E" if lo >= 0 else "W"
+    return f"{abs(la):.4f}{ns}  {abs(lo):.4f}{ew}"
+
+
+def person(rec):
+    middle = blank(rec.get("mi")).upper().rstrip(".")
+    if len(middle) == 1:
+        middle += "."
+    suffix = blank(rec.get("suffix")).upper()
+    if suffix in {"JR", "SR"}:
+        suffix = suffix.title()
+    parts = (
+        title(blank(rec.get("fname"))),
+        middle,
+        title(blank(rec.get("name"))),
+        suffix,
+    )
+    return " ".join(part for part in parts if part)
+
+
+def city_line(rec):
+    city = title(blank(rec.get("addr2")))
+    region = blank(rec.get("state"))
+    if len(region) <= 3:
+        region = region.upper()
+    else:
+        region = title(region)
+    postal = blank(rec.get("zip"))
+    if city and region and postal:
+        return f"{city}, {region} {postal}"
+    if city and region:
+        return f"{city}, {region}"
+    if city and postal:
+        return f"{city} {postal}"
+    return " ".join(part for part in (city, region, postal) if part)
+
+
+def obj(parent, key):
+    if not isinstance(parent, dict):
+        return {}
+    child = parent.get(key)
+    return child if isinstance(child, dict) else {}
+
+
+def card(data, asked):
+    ham = obj(data, "hamdb")
+    msg = blank(obj(ham, "messages").get("status"))
+    rec = obj(ham, "callsign")
+    call = blank(rec.get("call"))
+    if msg.upper() != "OK" or not call:
+        return f"<GPNG>: hamdb.org - {asked or '?'} not found"
+
+    kind = CLASS.get(blank(rec.get("class")).upper(), title(blank(rec.get("class"))))
+    state = STATUS.get(blank(rec.get("status")).upper(), title(blank(rec.get("status"))))
+    expires = blank(rec.get("expires"))
+    license_line = "   ".join(
+        part
+        for part in (kind, state, f"expires {expires}" if expires else "")
+        if part
+    )
+    country = blank(rec.get("country"))
+    if country.isupper():
+        country = title(country)
+    grid = blank(rec.get("grid"))
+    where = coord(blank(rec.get("lat")), blank(rec.get("lon")))
+    loc = "   ".join(part for part in (f"Grid {grid}" if grid else "", where) if part)
+
+    lines = [f"<GPNG>: hamdb.org -  {call}"]
+    for line in (
+        person(rec),
+        license_line,
+        title(blank(rec.get("addr1"))),
+        city_line(rec),
+        country,
+        loc,
+    ):
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def lookup_failed(err):
+    text = " ".join(str(err).split())
+    if not text:
+        text = "no answer"
+    if len(text) > 60:
+        text = text[:60].rstrip()
+    print(f"<GPNG>: lookup failed ({text})")
+
+def main():
+    configure_stdio()
+    call, raw = ask_call()
+    if not call:
+        if raw:
+            print(f"<GPNG>: {raw} is not a callsign")
+        else:
+            print("<GPNG>: use a callsign, for example N1UIR")
+        return 0
+    try:
+        data = fetch(call)
+    except urllib.error.HTTPError as err:
+        print(f"<GPNG>: lookup failed (HTTP {err.code})")
+        return 1
+    except urllib.error.URLError as err:
+        lookup_failed(err.reason or err)
+        return 1
+    except (TimeoutError, json.JSONDecodeError, OSError, ValueError) as err:
+        lookup_failed(err)
+        return 1
+    print(card(data, call))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

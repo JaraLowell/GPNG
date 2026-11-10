@@ -8,6 +8,8 @@
 pub enum RemoteAction {
     CrossChannelText,
     SevenPlusAutoSave,
+    /// `//7DECODE <file>` — join 7Plus parts in USER into the original file.
+    SevenPlusDecode,
     Activity,
     Bell,
     Catalog,
@@ -72,6 +74,13 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             2,
             RemoteAction::SevenPlusAutoSave,
             "7Plus AutoSave on/off",
+        ),
+        cmd(
+            "//7DECODE",
+            &["7DECODE"],
+            7,
+            RemoteAction::SevenPlusDecode,
+            "Join 7Plus parts in USER into the original file",
         ),
         cmd(
             "//Activity",
@@ -415,6 +424,15 @@ pub fn parse_line(line: &str) -> Option<(RemoteAction, String)> {
         return Some((RemoteAction::SevenPlusAutoSave, args));
     }
 
+    // //7DECODE file — also starts with '7', so it must beat //n chat mode
+    {
+        let (verb, args) = split_verb(&rest);
+        let verb_up = verb.to_ascii_uppercase();
+        if verb_up.len() >= 7 && "7DECODE".starts_with(verb_up.as_str()) {
+            return Some((RemoteAction::SevenPlusDecode, args.to_string()));
+        }
+    }
+
     // //1 hello  — cross-channel text / chat mode; //0 leaves
     if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         return Some((RemoteAction::CrossChannelText, rest));
@@ -484,18 +502,16 @@ fn match_verb(verb_up: &str) -> Option<RemoteAction> {
 }
 
 /// Operator typed `verb`; catalogue key is `key`. Accept abbreviations.
+///
+/// `//Q` matches `QUIT`. A longer word does not: `//QSLINFO` is not Quit,
+/// so that name can be a program in EXTERNAL.
 fn verb_matches(verb: &str, key: &str, min_prefix: usize) -> bool {
-    if verb.len() < min_prefix && verb != key {
-        // Allow exact short aliases listed explicitly (e.g. "B", "Q") even if
-        // min_prefix for the canonical English name is longer.
-        if key.len() == verb.len() && key == verb {
-            return true;
-        }
-        if verb.len() < min_prefix {
-            return false;
-        }
+    // An exact short alias (`Q`, `B`) matches even when the canonical
+    // name's minimum is longer. Anything shorter than that minimum does not.
+    if verb != key && verb.len() < min_prefix {
+        return false;
     }
-    key.starts_with(verb) || verb.starts_with(key)
+    key.starts_with(verb)
 }
 
 fn split_verb(rest: &str) -> (&str, &str) {
@@ -559,6 +575,19 @@ mod tests {
             (RemoteAction::SevenPlusAutoSave, "ON".into())
         );
         assert_eq!(
+            parse_line("//7DECODE README.P01").unwrap(),
+            (RemoteAction::SevenPlusDecode, "README.P01".into())
+        );
+        assert_eq!(
+            parse_line("//7decode readme.txt").unwrap(),
+            (RemoteAction::SevenPlusDecode, "readme.txt".into())
+        );
+        // Too short for 7DECODE; leading '7' is channel chat, not a command stub.
+        assert_eq!(
+            parse_line("//7DEC").unwrap().0,
+            RemoteAction::CrossChannelText
+        );
+        assert_eq!(
             parse_line("//SEND NL1STK-2").unwrap(),
             (RemoteAction::Send, "NL1STK-2".into())
         );
@@ -567,7 +596,10 @@ mod tests {
         assert_eq!(parse_line("//MA").unwrap().0, RemoteAction::Mail);
         assert_eq!(parse_line("//MH").unwrap().0, RemoteAction::MHeard);
         assert_eq!(parse_line("//Q").unwrap().0, RemoteAction::Quit);
+        assert_eq!(parse_line("//QUIT").unwrap().0, RemoteAction::Quit);
         assert_eq!(parse_line("//BYE").unwrap().0, RemoteAction::Quit);
+        assert!(parse_line("//QSLINFO").is_none());
+        assert!(parse_line("//QSLINFO N1UIR").is_none());
         assert_eq!(parse_line("//DISC").unwrap().0, RemoteAction::Disconnect);
         assert_eq!(
             parse_line("//Name Jara").unwrap(),

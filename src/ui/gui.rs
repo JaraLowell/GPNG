@@ -23,7 +23,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::f32::consts::TAU;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -59,9 +59,9 @@ use crate::tnc::{
     apply_configured_paclen, detect_serial_ports, kiss_param_lines, kiss_payload_len,
     load_kiss_paclen, load_kiss_params, normalize_call, pack_text_payloads, parse_heard,
     parse_kiss_esc, payload_lines, resolve_kiss_ini, resolve_wa8ded_ini, store_kiss_paclen,
-    store_kiss_param, timing_banner_fallback, wa8ded_section_lines, BufferReport, ChannelBuffers,
-    DetectedPort, EscKiss, FrameClass, HostCode, MonitorFilter, MonitorInput, RadioLink,
-    TncCommand, TncEvent, TNC_RAM,
+    store_kiss_param, take_rx_lines_bytes, timing_banner_fallback, wa8ded_section_lines,
+    BufferReport, ChannelBuffers, DetectedPort, EscKiss, FrameClass, HostCode, MonitorFilter,
+    MonitorInput, RadioLink, TncCommand, TncEvent, TNC_RAM,
 };
 use crate::transfer::autobin::{self, AutoBinState, BinReceiveDone, TxReply};
 use crate::transfer::sevenplus::{self, SevenPlusAutosave};
@@ -288,8 +288,12 @@ pub struct GpGuiApp {
     list_offer: Option<ListOffer>,
     /// AutoBin receive. DOS waits on `#OK#` before the file bytes.
     autobin: Option<LiveAutoBin>,
+    /// Paced 7+ part send (`//Read name.p01`) with Transfer80 progress.
+    seven_tx: Option<LiveSevenTx>,
     /// One in-flight file frame after a local `#ABORT#`. Hidden unless it is `<GP>:`.
     bin_rx_swallow: Option<u8>,
+    /// `//WPrg name`: next `#BIN#` on this channel is saved into USER as `name`.
+    wprg_name: Option<(u8, String)>,
     /// `//CUT` already stopped the transfer while this line was sniffed.
     transfer_cut: bool,
     find_open: bool,
@@ -420,6 +424,8 @@ pub struct GpGuiApp {
     rx_ansi: Vec<AnsiDecoder>,
     /// Unfinished 7Plus row per channel (raw payload bytes, not the painted text).
     seven_pending: Vec<Vec<u8>>,
+    /// Last 7Plus packet ended on CR; skip a leading LF on the next chunk.
+    seven_cr: Vec<bool>,
     /// One 7Plus sniffer per channel. Index 0 (monitor) is unused.
     seven: Vec<SevenPlusAutosave>,
     /// `//Write` capture, one slot per channel (0 = local compose).
@@ -702,7 +708,9 @@ impl GpGuiApp {
             bbs_sort_desc: false,
             list_offer: None,
             autobin: None,
+            seven_tx: None,
             bin_rx_swallow: None,
+            wprg_name: None,
             transfer_cut: false,
             find_open: false,
             find_text: String::new(),
@@ -780,6 +788,7 @@ impl GpGuiApp {
             rx_cr: vec![false; slots],
             rx_ansi: vec![AnsiDecoder::new(); slots],
             seven_pending: vec![Vec::new(); slots],
+            seven_cr: vec![false; slots],
             seven: (0..slots)
                 .map(|_| SevenPlusAutosave::new(seven_on))
                 .collect(),
@@ -2025,6 +2034,9 @@ impl GpGuiApp {
             self.autobin = None;
             self.session.bin_rx = false;
             self.session.bin_tx = false;
+            if self.wprg_name.as_ref().is_some_and(|(ch, _)| *ch == channel) {
+                self.wprg_name = None;
+            }
         }
         if self.bin_rx_swallow == Some(channel) {
             self.bin_rx_swallow = None;
@@ -3165,35 +3177,78 @@ impl GpGuiApp {
         self.persist_session_chrome();
     }
 
+    /// `//7DECODE <file>` — join parts already in USER.
+    fn remote_seven_decode(&mut self, args: &str) {
+        let dir = self.cfg.paths.user_dir.clone();
+        let _ = sevenplus::ensure_user_dir(&dir);
+        let name = args.trim();
+        if name.is_empty() {
+            self.status = "7DECODE needs a file name".into();
+            self.send_report("7DECODE needs a file name");
+            return;
+        }
+        self.apply_seven_assemble(sevenplus::decode_user_parts(&dir, name), true);
+    }
+
+    fn apply_seven_assemble(
+        &mut self,
+        result: Result<sevenplus::AssembleOutcome, String>,
+        report_ignored: bool,
+    ) {
+        match result {
+            Ok(sevenplus::AssembleOutcome::Joined(joined)) => {
+                self.status = format!("7+ decoded {}", joined.name);
+                self.log_event(format!(
+                    "7+ decoded {} (removed {} part(s))",
+                    joined.path.display(),
+                    joined.deleted_parts.len()
+                ));
+                self.send_report(&format!("7+ decoded {}", joined.name));
+            }
+            Ok(sevenplus::AssembleOutcome::Incomplete { missing }) => {
+                for part_name in &missing {
+                    self.send_report(&format!("missing {part_name}"));
+                }
+                if let Some(first) = missing.first() {
+                    self.status = if missing.len() == 1 {
+                        format!("7+ missing {first}")
+                    } else {
+                        format!("7+ missing {} (+{})", first, missing.len() - 1)
+                    };
+                    self.log_event(format!("7+ missing {}", missing.join(", ")));
+                } else {
+                    self.status = "7+ waiting for more parts".into();
+                }
+            }
+            Ok(sevenplus::AssembleOutcome::Ignored) => {
+                if report_ignored {
+                    self.status = "7+ decode: not a 7Plus part".into();
+                    self.send_report("not a 7Plus part");
+                }
+            }
+            Err(err) => {
+                self.status = format!("7+ decode: {err}");
+                self.log_event(self.status.clone());
+                self.send_report(&err);
+            }
+        }
+    }
+
     /// Split one payload on CR/LF and hand each finished row to the sniffer.
     /// Bytes stay as Latin-1 so the 7Plus 8-bit check (`0xB0 0xB1`) survives.
+    /// A trailing CR completes the row (DOS); otherwise `stop_7+.` never saved.
     fn note_seven_payload(&mut self, channel: u8, payload: &[u8]) {
         if channel == 0 {
             return;
         }
-        let Some(buf) = self.seven_pending.get_mut(channel as usize) else {
+        let idx = channel as usize;
+        let Some(buf) = self.seven_pending.get_mut(idx) else {
             return;
         };
-        buf.extend_from_slice(payload);
-        let mut lines = Vec::new();
-        loop {
-            let Some(pos) = buf.iter().position(|&b| b == b'\n' || b == b'\r') else {
-                break;
-            };
-            if buf[pos] == b'\r' && pos + 1 == buf.len() {
-                break;
-            }
-            let line: String = buf[..pos]
-                .iter()
-                .map(|&b| char::from_u32(u32::from(b)).unwrap_or('?'))
-                .collect();
-            let mut next = pos + 1;
-            if buf[pos] == b'\r' && buf.get(pos + 1) == Some(&b'\n') {
-                next += 1;
-            }
-            buf.drain(..next);
-            lines.push(line);
-        }
+        let Some(cr_hold) = self.seven_cr.get_mut(idx) else {
+            return;
+        };
+        let lines = take_rx_lines_bytes(buf, payload, cr_hold);
         for line in lines {
             self.feed_sevenplus(channel, &line);
         }
@@ -3240,6 +3295,7 @@ impl GpGuiApp {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("part");
                 self.status = format!("7+ saved {name}");
                 self.log_event(format!("7+ saved {}", path.display()));
+                self.apply_seven_assemble(sevenplus::try_decode_complete_set(&dir, &path), false);
             }
             Err(err) => {
                 self.status = format!("7+ save: {err}");
@@ -3347,6 +3403,12 @@ impl GpGuiApp {
             self.status = format!("BIN-RX: {label} — SAVE");
             self.log_event(self.status.clone());
             self.show_proto_line(channel, line, PadKind::Incoming);
+            // `//WPrg` (or 7+ AutoSave) answers the offer without a SAVE click.
+            let auto = self.wprg_name.as_ref().is_some_and(|(ch, _)| *ch == channel)
+                || self.session.seven_plus;
+            if auto {
+                let _ = self.accept_autobin(channel);
+            }
             return None;
         }
         Some(info.to_vec())
@@ -3361,13 +3423,25 @@ impl GpGuiApp {
         if !pending {
             return false;
         }
-        let raw_name = self
+        let wprg = match self.wprg_name.as_ref() {
+            Some((ch, name)) if *ch == channel => Some(name.clone()),
+            _ => None,
+        };
+        if wprg.is_some() {
+            self.wprg_name = None;
+        }
+        let offer_name = self
             .autobin
             .as_ref()
             .and_then(|live| live.state.pending_offer())
             .and_then(|offer| offer.filename.clone())
             .unwrap_or_default();
-        let (_safe, final_path, part_path) = self.autobin_paths(&raw_name);
+        let raw_name = wprg.clone().unwrap_or(offer_name);
+        let (_safe, final_path, part_path) = if wprg.is_some() {
+            self.autobin_paths_in(&raw_name, &self.cfg.paths.user_dir)
+        } else {
+            self.autobin_paths(&raw_name)
+        };
         if let Some(parent) = part_path.parent() {
             if let Err(err) = std::fs::create_dir_all(parent) {
                 self.status = format!("BIN-RX: {err}");
@@ -3492,13 +3566,14 @@ impl GpGuiApp {
         let acked = self.autobin.as_ref().is_some_and(|live| {
             live.channel == channel && live.tx_ns.is_some_and(|ns| nr == (ns.wrapping_add(1) & 7))
         });
-        if !acked {
+        if acked {
+            if let Some(live) = self.autobin.as_mut() {
+                live.tx_ns = None;
+            }
+            self.pump_bin_tx(channel);
             return;
         }
-        if let Some(live) = self.autobin.as_mut() {
-            live.tx_ns = None;
-        }
-        self.pump_bin_tx(channel);
+        self.note_seven_tx_ack(channel, nr);
     }
 
     fn pump_bin_tx(&mut self, channel: u8) {
@@ -3565,7 +3640,7 @@ impl GpGuiApp {
             self.status = "BIN-TX — connect the channel first".into();
             return;
         }
-        if self.autobin.is_some() {
+        if self.autobin.is_some() || self.seven_tx.is_some() {
             self.status = "BIN-TX — a transfer is already running".into();
             return;
         }
@@ -3595,8 +3670,78 @@ impl GpGuiApp {
                 shown = name.to_string();
             }
         }
+        self.start_bin_tx_data(channel, &shown, data, ftime);
+    }
+
+    /// `//RPrg` — AutoBin-TX a file from USER.
+    fn remote_rprg(&mut self, channel: u8, args: &str) {
+        let name = args.trim();
+        if name.is_empty() {
+            self.status = "RPrg needs a file name".into();
+            self.send_report("RPrg needs a file name");
+            return;
+        }
+        if self.autobin.is_some() || self.seven_tx.is_some() {
+            self.status = "BIN-TX — a transfer is already running".into();
+            self.send_report("a file transfer is already running");
+            return;
+        }
+        let dir = self.cfg.paths.user_dir.clone();
+        let path = match sevenplus::resolve_user_file(&dir, name) {
+            Ok(path) => path,
+            Err(err) => {
+                self.status = err.clone();
+                self.send_report(&err);
+                return;
+            }
+        };
+        let data = match std::fs::read(&path) {
+            Ok(data) if !data.is_empty() => data,
+            Ok(_) => {
+                self.status = "USER file is empty".into();
+                self.send_report("USER file is empty");
+                return;
+            }
+            Err(err) => {
+                let msg = format!("BIN-TX: {err}");
+                self.status = msg.clone();
+                self.send_report(&msg);
+                return;
+            }
+        };
+        let shown = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(name)
+            .to_string();
+        self.start_bin_tx_data(channel, &shown, data, file_ftime(&path));
+    }
+
+    /// `//WPrg` — next AutoBin on this channel is stored in USER as `name`.
+    fn remote_wprg(&mut self, channel: u8, args: &str) {
+        let name = match userdir::safe_name(args) {
+            Ok(name) => name,
+            Err(err) => {
+                self.status = err.clone();
+                self.send_report(&err);
+                return;
+            }
+        };
+        if userdir::is_mail_name(&name) {
+            self.status = "mail is not in USER".into();
+            self.send_report("mail is not in USER");
+            return;
+        }
+        let _ = sevenplus::ensure_user_dir(&self.cfg.paths.user_dir);
+        self.wprg_name = Some((channel, name.clone()));
+        self.session.bin_rx = true;
+        self.status = format!("WPrg ready for {name}");
+        self.send_report(&format!("WPrg ready for {name}"));
+    }
+
+    fn start_bin_tx_data(&mut self, channel: u8, shown: &str, data: Vec<u8>, ftime: u32) {
         let mut state = AutoBinState::Idle;
-        let header = state.begin_gp_send(&shown, data, ftime);
+        let header = state.begin_gp_send(shown, data, ftime);
         self.autobin = Some(LiveAutoBin {
             channel,
             state,
@@ -3636,6 +3781,19 @@ impl GpGuiApp {
         });
         if bin_rx {
             self.cancel_autobin();
+            self.transfer_cut = true;
+            return true;
+        }
+        if self
+            .seven_tx
+            .as_ref()
+            .is_some_and(|tx| tx.channel == channel)
+        {
+            self.seven_tx = None;
+            let my = self.effective_mycall(channel);
+            let _ = self.send_kiss_i(channel, &my, b"#ABORT#\r", "#ABORT#");
+            self.show_proto_line(channel, "#ABORT#", PadKind::Own);
+            self.status = "7+-TX aborted".into();
             self.transfer_cut = true;
             return true;
         }
@@ -3740,8 +3898,11 @@ impl GpGuiApp {
     }
 
     fn autobin_paths(&self, raw: &str) -> (String, PathBuf, PathBuf) {
+        self.autobin_paths_in(raw, &self.cfg.paths.save_dir)
+    }
+
+    fn autobin_paths_in(&self, raw: &str, dir: &Path) -> (String, PathBuf, PathBuf) {
         let safe = autobin_safe_name(raw);
-        let dir = &self.cfg.paths.save_dir;
         let final_path = dir.join(&safe);
         let part = dir.join(format!(".{safe}.part"));
         (safe, final_path, part)
@@ -4999,7 +5160,7 @@ impl GpGuiApp {
         true
     }
 
-    /// `//Read` — list USER, or send one file from that folder.
+    /// `//Read` — list USER, send a part as text, or encode a normal file.
     fn read_from_user(&mut self, args: &str) {
         let dir = self.cfg.paths.user_dir.clone();
         let _ = sevenplus::ensure_user_dir(&dir);
@@ -5012,9 +5173,24 @@ impl GpGuiApp {
         }
         match userdir::read_file(&dir, name) {
             Ok(bytes) => {
-                self.status = format!("//Read {name}");
-                self.log_event(format!("//Read {} ({} bytes)", name, bytes.len()));
-                self.send_file_bytes(&bytes);
+                if sevenplus::is_part_filename(name) {
+                    self.status = format!("//Read {name}");
+                    self.log_event(format!("//Read {} ({} bytes)", name, bytes.len()));
+                    self.send_seven_part(name, &bytes);
+                    return;
+                }
+                match sevenplus::encode_user_file(&dir, name, &bytes) {
+                    Ok(n) => {
+                        let msg = format!("{name} parts ready for reading");
+                        self.status = format!("7+ encoded {name} → {n} part(s)");
+                        self.log_event(self.status.clone());
+                        self.send_report(&msg);
+                    }
+                    Err(err) => {
+                        self.status = err.clone();
+                        self.send_report(&err);
+                    }
+                }
             }
             Err(err) => {
                 self.status = err.clone();
@@ -5030,7 +5206,45 @@ impl GpGuiApp {
             self.status = "USER file is empty".into();
             return;
         }
-        let display = latin1_string(&wire);
+        self.echo_wire_lines(&wire);
+        self.queue_wire_chunks(&wire);
+    }
+
+    /// `//Read` of a 7+ part: paced TX with Transfer80 `7+-TX` when KISS-linked.
+    fn send_seven_part(&mut self, name: &str, raw: &[u8]) {
+        let wire = sevenplus::to_cr_bytes(raw);
+        if wire.is_empty() {
+            self.status = "USER file is empty".into();
+            return;
+        }
+        let channel = match self.active_channel() {
+            Some(ch) if self.channel_linked(ch) && self.kiss_mode() => ch,
+            _ => {
+                self.echo_wire_lines(&wire);
+                self.queue_wire_chunks(&wire);
+                return;
+            }
+        };
+        if self.autobin.is_some() || self.seven_tx.is_some() {
+            self.status = "transfer already running".into();
+            self.send_report("a file transfer is already running");
+            return;
+        }
+        self.echo_wire_lines(&wire);
+        self.seven_tx = Some(LiveSevenTx {
+            channel,
+            name: name.to_string(),
+            data: wire,
+            offset: 0,
+            started: Instant::now(),
+            tx_ns: None,
+        });
+        self.status = format!("7+-TX: {name}");
+        self.pump_seven_tx(channel);
+    }
+
+    fn echo_wire_lines(&mut self, wire: &[u8]) {
+        let display = latin1_string(wire);
         let mut lines: Vec<&str> = display.split('\r').collect();
         if lines.last().is_some_and(|s| s.is_empty()) {
             lines.pop();
@@ -5040,6 +5254,9 @@ impl GpGuiApp {
             self.echo_own_line(line);
         }
         self.end_newline_coalesce();
+    }
+
+    fn queue_wire_chunks(&mut self, wire: &[u8]) {
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
         for chunk in wire.chunks(max) {
             if self.kiss_mode() {
@@ -5055,6 +5272,72 @@ impl GpGuiApp {
                 });
             }
         }
+    }
+
+    fn pump_seven_tx(&mut self, channel: u8) {
+        if self
+            .seven_tx
+            .as_ref()
+            .is_some_and(|tx| tx.channel == channel && tx.tx_ns.is_some())
+        {
+            return;
+        }
+        let max = self.cfg.buffers.packet_payload.max(1) as usize;
+        let chunk = {
+            let Some(tx) = self.seven_tx.as_mut() else {
+                return;
+            };
+            if tx.channel != channel {
+                return;
+            }
+            if tx.offset >= tx.data.len() {
+                None
+            } else {
+                let end = (tx.offset + max).min(tx.data.len());
+                let piece = tx.data[tx.offset..end].to_vec();
+                tx.offset = end;
+                Some(piece)
+            }
+        };
+        let Some(chunk) = chunk else {
+            self.finish_seven_tx();
+            return;
+        };
+        let ns = self.ax25_vs.get(channel as usize).copied().unwrap_or(0);
+        let my = self.effective_mycall(channel);
+        if !self.send_kiss_i(channel, &my, &chunk, "") {
+            self.seven_tx = None;
+            self.status = format!("7+-TX: channel {channel} has no link");
+            return;
+        }
+        if let Some(tx) = self.seven_tx.as_mut() {
+            tx.tx_ns = Some(ns);
+        }
+    }
+
+    fn finish_seven_tx(&mut self) {
+        let Some(tx) = self.seven_tx.take() else {
+            return;
+        };
+        let got = tx.offset as u64;
+        let elapsed = tx.started.elapsed();
+        let secs = elapsed.as_secs().max(1);
+        let baud = (got.saturating_mul(8) / secs) as u32;
+        self.status = format!("7+-TX sent {got} bytes ({baud} Bd)");
+        self.log_event(format!("7+-TX {} done, {got} bytes", tx.name));
+    }
+
+    fn note_seven_tx_ack(&mut self, channel: u8, nr: u8) {
+        let acked = self.seven_tx.as_ref().is_some_and(|tx| {
+            tx.channel == channel && tx.tx_ns.is_some_and(|ns| nr == (ns.wrapping_add(1) & 7))
+        });
+        if !acked {
+            return;
+        }
+        if let Some(tx) = self.seven_tx.as_mut() {
+            tx.tx_ns = None;
+        }
+        self.pump_seven_tx(channel);
     }
 
     /// Typed text and text files: normalize breaks to `\n`, then one packet
@@ -5302,6 +5585,21 @@ impl GpGuiApp {
                         self.send_report("7+ ON or OFF");
                     }
                 }
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::SevenPlusDecode => {
+                self.remote_seven_decode(args);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::ReadAutoBin => {
+                self.remote_rprg(channel, args);
+                self.close_remote(prev);
+                return;
+            }
+            RemoteAction::WriteAutoBin => {
+                self.remote_wprg(channel, args);
                 self.close_remote(prev);
                 return;
             }
@@ -9135,7 +9433,9 @@ impl eframe::App for GpGuiApp {
         self.poll_beacon();
         let link_hot = self.link_tx_until.is_some_and(|t| t > Instant::now())
             || self.link_rx_until.is_some_and(|t| t > Instant::now());
-        let repaint = if link_hot {
+        let repaint = if self.transfer_row_open() {
+            Duration::from_millis(100)
+        } else if link_hot {
             Duration::from_millis(40)
         } else if self.external_run.iter().any(|run| run.occupied()) {
             Duration::from_millis(50)
@@ -9163,7 +9463,20 @@ impl eframe::App for GpGuiApp {
             min_w, 700.0,
         )));
         let session_h = if self.show_session_bar() { 26.0 } else { 0.0 };
-        let status_h = 44.0_f32;
+        // Idle: 2 magenta rows beside the clock. Transfer adds a full-width
+        // strip under the clock (thin path/bytes/status + taller bar/times).
+        let status_row_h = 24.0_f32;
+        let status_idle_h = status_row_h * 2.0;
+        let path_h = 18.0_f32;
+        // Two time cells beside the bar; each +3px vs a 15px half-row.
+        let time_cell_h = 18.0_f32;
+        let bar_h = time_cell_h * 2.0;
+        let transfer_extra_h = if self.transfer_row_open() {
+            path_h + bar_h
+        } else {
+            0.0
+        };
+        let status_h = status_idle_h + transfer_extra_h;
         // Channel / BBS / Box row is 20% shorter than the old 72px grid.
         let channels_h = 72.0_f32 * 0.8;
         // Slim column — dial stays centered with little side air.
@@ -9176,9 +9489,9 @@ impl eframe::App for GpGuiApp {
         // Same kind of air the dial has under the top border.
         let under_badge = 8.0_f32;
         let clock_bottom = 12.0 + radius * 2.0 + 8.0 + badge_h * 2.0 + badge_gap + under_badge;
-        let prewrite_h = (clock_bottom - channels_h - status_h).max(80.0);
-        let autobin_h = if self.autobin_row_open() { 36.0 } else { 0.0 };
-        let top_h = prewrite_h + channels_h + status_h + autobin_h;
+        // Clock height is locked to the idle 2-row status — transfer grows under it.
+        let prewrite_h = (clock_bottom - channels_h - status_idle_h).max(80.0);
+        let top_h = prewrite_h + channels_h + status_h;
 
         egui::TopBottomPanel::top("gp_top")
             .exact_height(top_h)
@@ -9190,8 +9503,10 @@ impl eframe::App for GpGuiApp {
                     ui.available_width(),
                     prewrite_h,
                     channels_h,
-                    status_h,
-                    autobin_h,
+                    status_idle_h,
+                    transfer_extra_h,
+                    path_h,
+                    bar_h,
                     clock_w,
                 );
             });
@@ -9765,55 +10080,66 @@ impl GpGuiApp {
 
 impl GpGuiApp {
     /// Left: purple pre-write → channels → 2-row magenta status.
-    /// Right: tall clock spanning the whole stack (fixed width — never clipped).
+    /// Right: clock locked to that idle height. Transfer path/bar rows are
+    /// full-width under the clock (they do not stretch the clock column).
     fn top_stack_with_clock(
         &mut self,
         ui: &mut Ui,
         width: f32,
         prewrite_h: f32,
         channels_h: f32,
-        status_h: f32,
-        autobin_h: f32,
+        status_idle_h: f32,
+        transfer_extra_h: f32,
+        path_h: f32,
+        bar_h: f32,
         clock_w: f32,
     ) {
-        let height = prewrite_h + channels_h + status_h + autobin_h;
+        let height = prewrite_h + channels_h + status_idle_h + transfer_extra_h;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
 
         // Absolute split so the clock column cannot be pushed off-screen by
         // a greedy left pane (that was clipping the dial on the right).
         let clock_w = clock_w.min(rect.width() * 0.35).max(120.0);
         let left_r = rect.right() - clock_w;
-        let left = Rect::from_min_max(rect.left_top(), Pos2::new(left_r, rect.bottom()));
+        let status_top = rect.top() + prewrite_h + channels_h;
+        let clock_bottom = status_top + status_idle_h;
+        let left = Rect::from_min_max(rect.left_top(), Pos2::new(left_r, clock_bottom));
         let pre_r = Rect::from_min_max(rect.left_top(), Pos2::new(left_r, rect.top() + prewrite_h));
         let ch_r = Rect::from_min_max(
             Pos2::new(rect.left(), rect.top() + prewrite_h),
-            Pos2::new(left_r, rect.top() + prewrite_h + channels_h),
+            Pos2::new(left_r, status_top),
         );
-        let status_bottom = rect.top() + prewrite_h + channels_h + status_h;
         let st_r = Rect::from_min_max(
-            Pos2::new(rect.left(), rect.top() + prewrite_h + channels_h),
-            Pos2::new(left_r, status_bottom),
+            Pos2::new(rect.left(), status_top),
+            Pos2::new(left_r, clock_bottom),
         );
-        let bin_r = Rect::from_min_max(
-            Pos2::new(rect.left(), status_bottom),
-            Pos2::new(left_r, rect.bottom()),
-        );
+        // Full-width strip under the clock (path/bytes/status + bar/times).
+        let xfer_r = if transfer_extra_h > 0.0 {
+            Some(Rect::from_min_max(
+                Pos2::new(rect.left(), clock_bottom),
+                Pos2::new(rect.right(), rect.bottom()),
+            ))
+        } else {
+            None
+        };
         let clock_rect = Rect::from_min_max(
             Pos2::new(left_r, rect.top()),
-            Pos2::new(rect.right(), status_bottom),
+            Pos2::new(rect.right(), clock_bottom),
         );
 
         // Channel chrome uses the menu-window background, same as the icon strip.
-        // Clock column stays dark green.
+        // Clock column stays dark green and does not grow with the transfer strip.
         ui.painter_at(left).rect_filled(left, 0.0, self.menu_bg);
         ui.painter_at(clock_rect)
             .rect_filled(clock_rect, 0.0, VGA_DARK_GREEN);
 
         self.draw_prewrite(ui, pre_r);
         self.draw_channel_grid(ui, ch_r);
-        self.draw_status_grid(ui, st_r);
-        if autobin_h > 0.0 {
-            self.draw_autobin_bar(ui, bin_r);
+        if let (Some(xfer), Some(view)) = (xfer_r, self.transfer_view()) {
+            self.draw_transfer80_head(ui, st_r);
+            self.draw_transfer80_foot(ui, xfer, &view, path_h, bar_h);
+        } else {
+            self.draw_status_grid(ui, st_r);
         }
         if draw_analog_clock(ui, clock_rect, self.session.hour_gong) {
             self.session.hour_gong = !self.session.hour_gong;
@@ -10146,84 +10472,73 @@ impl GpGuiApp {
         c.compose_caret_end = true;
     }
 
-    fn autobin_row_open(&self) -> bool {
-        self.autobin
+    /// Purple Transfer80 strip under the status grid (BIN / 7+ TX or RX).
+    fn transfer_row_open(&self) -> bool {
+        if self
+            .autobin
             .as_ref()
             .is_some_and(|live| live.state.recv_progress().is_some() || live.state.tx_active())
-    }
-
-    /// Row under the magenta status, left column only.
-    /// Waiting: the file name and SAVE. Receiving: BIN-RX progress.
-    fn draw_autobin_bar(&self, ui: &mut Ui, rect: Rect) {
-        let Some(live) = self.autobin.as_ref() else {
-            return;
-        };
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, self.state_bg);
-        let (got, total, name, mode, waiting) =
-            if let Some((got, total, name)) = live.state.recv_progress() {
-                (got, total, name, "BIN-RX", false)
-            } else if let Some((got, total, name, waiting)) = live.state.tx_progress() {
-                (got, total, name, "BIN-TX", waiting)
-            } else {
-                return;
-            };
-        if waiting {
-            let label = format!("{name}  Bytes {got}/{total}  {mode}  waiting #OK#");
-            painter.text(
-                Pos2::new(rect.left() + 6.0, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                &label,
-                FontId::monospace(13.0),
-                self.state_fg,
-            );
-            return;
+        {
+            return true;
         }
-        let pct = if total == 0 {
-            0.0
-        } else {
-            (got as f32 / total as f32).clamp(0.0, 1.0)
-        };
-        let elapsed = live.started.elapsed();
-        let secs = elapsed.as_secs_f32().max(0.05);
-        let baud = ((got as f32) * 8.0 / secs) as u32;
-        let left = total.saturating_sub(got);
-        let eta = if got == 0 {
-            0
-        } else {
-            ((left as f32) * secs / (got as f32)) as u32
-        };
-        let e = elapsed.as_secs();
-        let label = format!(
-            "{name}  Bytes {got}/{total}  {mode}  {:>3.0}%  {:02}:{:02}:{:02}  {baud} Bd  ~{eta}s",
-            pct * 100.0,
-            e / 3600,
-            (e / 60) % 60,
-            e % 60,
-        );
-        painter.text(
-            Pos2::new(rect.left() + 6.0, rect.top() + 2.0),
-            egui::Align2::LEFT_TOP,
-            &label,
-            FontId::monospace(13.0),
-            self.state_fg,
-        );
-        let track = Rect::from_min_max(
-            Pos2::new(rect.left() + 6.0, rect.bottom() - 10.0),
-            Pos2::new(rect.right() - 6.0, rect.bottom() - 3.0),
-        );
-        painter.rect_filled(track, 0.0, Color32::BLACK);
-        let mut fill = track;
-        fill.set_right(track.left() + track.width() * pct);
-        painter.rect_filled(fill, 0.0, self.state_fg);
+        if self.seven_tx.is_some() {
+            return true;
+        }
+        self.seven.iter().any(|s| s.progress().is_some())
     }
 
-    /// Magenta status: same visual weight as the channel grid, but not clickable.
-    /// Left title cell spans 2 rows; right side is a 2×N field grid.
-    ///
-    /// Outlines are 1px white grid lines drawn once (no double borders where
-    /// cells touch). The right outer edge is omitted — the clock column owns
-    /// that shared seam.
+    /// Snapshot for the Transfer80 strip: path, bytes, status label, clock.
+    fn transfer_view(&self) -> Option<TransferView> {
+        if let Some(live) = self.autobin.as_ref() {
+            if let Some((got, total, name)) = live.state.recv_progress() {
+                return Some(TransferView {
+                    path: name,
+                    got,
+                    total,
+                    status: "BIN-RX",
+                    waiting: false,
+                    started: live.started,
+                });
+            }
+            if let Some((got, total, name, waiting)) = live.state.tx_progress() {
+                return Some(TransferView {
+                    path: name,
+                    got,
+                    total,
+                    status: "BIN-TX",
+                    waiting,
+                    started: live.started,
+                });
+            }
+        }
+        if let Some(tx) = self.seven_tx.as_ref() {
+            return Some(TransferView {
+                path: tx.name.clone(),
+                got: tx.offset as u64,
+                total: tx.data.len() as u64,
+                status: "7+-TX",
+                waiting: false,
+                started: tx.started,
+            });
+        }
+        for sniff in &self.seven {
+            if let Some((got, total, name, started)) = sniff.progress() {
+                let path = self.cfg.paths.user_dir.join(&name);
+                return Some(TransferView {
+                    path: path.display().to_string().replace('/', "\\"),
+                    got,
+                    total,
+                    status: "7+-RX",
+                    waiting: false,
+                    started,
+                });
+            }
+        }
+        None
+    }
+
+    /// Magenta status grid (white hairline cells), same idea as the channel row.
+    /// Idle only — transfer uses [`draw_transfer80_head`] / [`draw_transfer80_foot`].
     fn draw_status_grid(&mut self, ui: &mut Ui, rect: Rect) {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, self.state_bg);
@@ -10237,20 +10552,21 @@ impl GpGuiApp {
         let rows = [owned.0.as_slice(), owned.1.as_slice()];
         let row_h = (rect.height() / 2.0).max(1.0);
         let fields_w = (rect.width() - title_w).max(1.0);
+        let fg = self.state_fg;
+        let font = FontId::monospace(14.0);
+        let hair = Stroke::new(1.0, Color32::WHITE);
 
-        // Title (full height) — galley-centered in the title cell.
         {
             let title = self.pane_title();
-            let galley = painter.layout_no_wrap(title, FontId::proportional(24.0), self.state_fg);
+            let galley = painter.layout_no_wrap(title, FontId::proportional(24.0), fg);
             let title_cell = Rect::from_min_max(rect.left_top(), Pos2::new(title_x, rect.bottom()));
             let pos = Pos2::new(
                 title_cell.center().x - galley.size().x * 0.5,
                 title_cell.center().y - galley.size().y * 0.5,
             );
-            painter.galley(pos, galley, self.state_fg);
+            painter.galley(pos, galley, fg);
         }
 
-        // Field labels — vertically centered in each grid cell.
         for (ri, fields) in rows.iter().enumerate() {
             if fields.is_empty() {
                 continue;
@@ -10263,24 +10579,18 @@ impl GpGuiApp {
                     Pos2::new(title_x + ci as f32 * cell_w, y0),
                     Vec2::new(cell_w, row_h),
                 );
-                let galley =
-                    painter.layout_no_wrap((*text).clone(), FontId::monospace(14.0), self.state_fg);
-                // +2 px optical nudge — Consolas metrics sit high in the cell.
+                let galley = painter.layout_no_wrap((*text).clone(), font.clone(), fg);
                 let pos = Pos2::new(
                     cell.left() + 8.0,
                     cell.center().y - galley.size().y * 0.5 + 2.0,
                 );
-                painter.galley(pos, galley, self.state_fg);
+                painter.galley(pos, galley, fg);
             }
         }
 
-        // 1px white hairlines — each shared edge drawn once.
-        let hair = Stroke::new(1.0, Color32::WHITE);
-        // Outer: left / top / bottom (skip right — clock draws that seam).
         painter.line_segment([rect.left_top(), rect.right_top()], hair);
         painter.line_segment([rect.left_top(), rect.left_bottom()], hair);
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], hair);
-        // Title | fields
         painter.line_segment(
             [
                 Pos2::new(title_x, rect.top()),
@@ -10288,12 +10598,10 @@ impl GpGuiApp {
             ],
             hair,
         );
-        // Horizontal split between field rows
         painter.line_segment(
             [Pos2::new(title_x, mid_y), Pos2::new(rect.right(), mid_y)],
             hair,
         );
-        // Vertical field dividers — per row, so uneven column counts stay aligned.
         for (ri, fields) in rows.iter().enumerate() {
             let cols = fields.len();
             if cols <= 1 {
@@ -10307,6 +10615,263 @@ impl GpGuiApp {
                 painter.line_segment([Pos2::new(x, y0), Pos2::new(x, y1)], hair);
             }
         }
+    }
+
+    /// Transfer rows beside the clock: Channel | Information Transfer, then My/Buffers/….
+    fn draw_transfer80_head(&self, ui: &mut Ui, rect: Rect) {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, self.state_bg);
+        let fg = self.state_fg;
+        let font = FontId::monospace(13.0);
+        let hair = Stroke::new(1.0, Color32::WHITE);
+        let row_h = rect.height() / 2.0;
+        let mid = rect.top() + row_h;
+
+        let ch = self
+            .active_channel()
+            .or_else(|| self.autobin.as_ref().map(|l| l.channel))
+            .or_else(|| self.seven_tx.as_ref().map(|t| t.channel))
+            .unwrap_or(1);
+        let peer = self
+            .channel_peer
+            .get(ch as usize)
+            .and_then(|p| p.as_ref())
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let channel_txt = if peer.is_empty() {
+            format!("Channel {ch}")
+        } else {
+            format!("Channel {ch}: {peer}")
+        };
+        let my = self.effective_mycall(ch);
+        let at = |v: &[u32]| v.get(ch as usize).copied().unwrap_or(0);
+
+        let r0 = Rect::from_min_max(rect.left_top(), Pos2::new(rect.right(), mid));
+        let split0 = r0.left() + r0.width() * 0.55;
+        paint_status_cell(
+            &painter,
+            Rect::from_min_max(r0.left_top(), Pos2::new(split0, r0.bottom())),
+            &channel_txt,
+            &font,
+            fg,
+        );
+        paint_status_cell(
+            &painter,
+            Rect::from_min_max(Pos2::new(split0, r0.top()), r0.right_bottom()),
+            "Information Transfer",
+            &font,
+            fg,
+        );
+
+        let r1 = Rect::from_min_max(
+            Pos2::new(rect.left(), mid),
+            rect.right_bottom(),
+        );
+        let row1 = [
+            format!("My: {my}"),
+            format!("Buffers: {}", self.tnc_free),
+            format!("Not disp: {}", at(&self.ch_not_disp)),
+            format!("Not sent: {}", at(&self.ch_not_sent)),
+            format!("Tries: {}", at(&self.ch_tries)),
+            format!("Unack: {}", at(&self.ch_unack)),
+        ];
+        let cell_w = r1.width() / row1.len() as f32;
+        for (i, text) in row1.iter().enumerate() {
+            let cell = Rect::from_min_size(
+                Pos2::new(r1.left() + i as f32 * cell_w, r1.top()),
+                Vec2::new(cell_w, r1.height()),
+            );
+            paint_status_cell(&painter, cell, text, &font, fg);
+        }
+
+        // Hairlines (skip right — clock seam).
+        painter.line_segment([rect.left_top(), rect.right_top()], hair);
+        painter.line_segment([rect.left_top(), rect.left_bottom()], hair);
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()], hair);
+        painter.line_segment(
+            [Pos2::new(rect.left(), mid), Pos2::new(rect.right(), mid)],
+            hair,
+        );
+        painter.line_segment(
+            [Pos2::new(split0, rect.top()), Pos2::new(split0, mid)],
+            hair,
+        );
+        for c in 1..row1.len() {
+            let x = r1.left() + c as f32 * cell_w;
+            painter.line_segment([Pos2::new(x, mid), Pos2::new(x, rect.bottom())], hair);
+        }
+    }
+
+    /// Full-width strip under the clock: thin path/bytes/status + taller bar/times.
+    fn draw_transfer80_foot(
+        &self,
+        ui: &mut Ui,
+        rect: Rect,
+        view: &TransferView,
+        path_h: f32,
+        bar_h: f32,
+    ) {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, self.state_bg);
+        let fg = self.state_fg;
+        let font = FontId::monospace(13.0);
+        let hair = Stroke::new(1.0, Color32::WHITE);
+        let path_h = path_h.min(rect.height() * 0.45).max(14.0);
+        let bar_top = rect.top() + path_h;
+        let r2 = Rect::from_min_max(rect.left_top(), Pos2::new(rect.right(), bar_top));
+        let r3 = Rect::from_min_max(
+            Pos2::new(rect.left(), bar_top),
+            rect.right_bottom(),
+        );
+        let _ = bar_h;
+
+        // Thin path | Bytes | Status
+        let path_w = r2.width() * 0.42;
+        let bytes_w = r2.width() * 0.33;
+        let x_path = r2.left() + path_w;
+        let x_bytes = x_path + bytes_w;
+        let path = truncate_path_for_bar(&view.path, 64);
+        let bytes = format!("Bytes: {}/{}", view.got, view.total);
+        let status = format!("Status: {}", view.status);
+        paint_status_cell(
+            &painter,
+            Rect::from_min_max(r2.left_top(), Pos2::new(x_path, r2.bottom())),
+            &path,
+            &font,
+            fg,
+        );
+        paint_status_cell(
+            &painter,
+            Rect::from_min_max(Pos2::new(x_path, r2.top()), Pos2::new(x_bytes, r2.bottom())),
+            &bytes,
+            &font,
+            fg,
+        );
+        paint_status_cell(
+            &painter,
+            Rect::from_min_max(Pos2::new(x_bytes, r2.top()), r2.right_bottom()),
+            &status,
+            &font,
+            fg,
+        );
+
+        // Taller bar + % | Elapsed/Baud and Estimated (each time cell shares bar_h/2).
+        let time_w = (r3.width() * 0.36).clamp(220.0, 360.0);
+        let bar_right = r3.right() - time_w;
+        let time_mid = r3.top() + r3.height() * 0.5;
+        let pct = if view.total == 0 {
+            0.0
+        } else {
+            (view.got as f32 / view.total as f32).clamp(0.0, 1.0)
+        };
+        let elapsed = view.started.elapsed();
+        let secs = elapsed.as_secs_f32().max(0.05);
+        let baud = if view.got == 0 {
+            0
+        } else {
+            ((view.got as f32) * 8.0 / secs).round() as u32
+        };
+        let eta_secs = if view.got == 0 {
+            0
+        } else {
+            ((view.total as f32) * secs / (view.got as f32)).round() as u64
+        };
+        let e = elapsed.as_secs();
+        let elapsed_txt = format!(
+            "Elapsed Time: {:02}:{:02}:{:02}",
+            e / 3600,
+            (e / 60) % 60,
+            e % 60
+        );
+        let baud_txt = format!("Eff. Baud: {baud}");
+        let eta_txt = format!(
+            "Estimated Time: {:02}:{:02}:{:02}",
+            eta_secs / 3600,
+            (eta_secs / 60) % 60,
+            eta_secs % 60
+        );
+
+        if view.waiting {
+            paint_status_cell(
+                &painter,
+                Rect::from_min_max(r3.left_top(), Pos2::new(bar_right, r3.bottom())),
+                "waiting for #OK#",
+                &font,
+                fg,
+            );
+        } else {
+            paint_dos_progress_bar(
+                &painter,
+                Rect::from_min_max(
+                    Pos2::new(r3.left() + 4.0, r3.top() + 3.0),
+                    Pos2::new(bar_right - 4.0, r3.bottom() - 3.0),
+                ),
+                pct,
+                fg,
+            );
+        }
+
+        let half = (r3.right() - bar_right) * 0.55;
+        paint_status_cell(
+            &painter,
+            Rect::from_min_max(
+                Pos2::new(bar_right, r3.top()),
+                Pos2::new(bar_right + half, time_mid),
+            ),
+            &elapsed_txt,
+            &font,
+            fg,
+        );
+        paint_status_cell(
+            &painter,
+            Rect::from_min_max(
+                Pos2::new(bar_right + half, r3.top()),
+                Pos2::new(r3.right(), time_mid),
+            ),
+            &baud_txt,
+            &font,
+            fg,
+        );
+        paint_status_cell(
+            &painter,
+            Rect::from_min_max(Pos2::new(bar_right, time_mid), r3.right_bottom()),
+            &eta_txt,
+            &font,
+            fg,
+        );
+
+        // Full-width outer box + cell hairlines (includes under-clock area).
+        painter.line_segment([rect.left_top(), rect.right_top()], hair);
+        painter.line_segment([rect.left_top(), rect.left_bottom()], hair);
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()], hair);
+        painter.line_segment([rect.right_top(), rect.right_bottom()], hair);
+        painter.line_segment(
+            [Pos2::new(rect.left(), bar_top), Pos2::new(rect.right(), bar_top)],
+            hair,
+        );
+        painter.line_segment(
+            [Pos2::new(x_path, rect.top()), Pos2::new(x_path, bar_top)],
+            hair,
+        );
+        painter.line_segment(
+            [Pos2::new(x_bytes, rect.top()), Pos2::new(x_bytes, bar_top)],
+            hair,
+        );
+        painter.line_segment(
+            [Pos2::new(bar_right, bar_top), Pos2::new(bar_right, rect.bottom())],
+            hair,
+        );
+        painter.line_segment(
+            [Pos2::new(bar_right, time_mid), Pos2::new(rect.right(), time_mid)],
+            hair,
+        );
+        painter.line_segment(
+            [
+                Pos2::new(bar_right + half, bar_top),
+                Pos2::new(bar_right + half, time_mid),
+            ],
+            hair,
+        );
     }
 
     fn apply_buffers(&mut self, report: BufferReport) {
@@ -12861,6 +13426,104 @@ struct LiveAutoBin {
     recv_file: Option<std::fs::File>,
     recv_part: Option<PathBuf>,
     recv_final: Option<PathBuf>,
+}
+
+/// 7Plus part on the wire (`//Read *.p??` / `*.7pl`), paced like AutoBin TX.
+struct LiveSevenTx {
+    channel: u8,
+    name: String,
+    data: Vec<u8>,
+    offset: usize,
+    started: Instant,
+    tx_ns: Option<u8>,
+}
+
+/// One frame of the Transfer80 purple strip.
+struct TransferView {
+    path: String,
+    got: u64,
+    total: u64,
+    status: &'static str,
+    waiting: bool,
+    started: Instant,
+}
+
+fn truncate_path_for_bar(path: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= max_chars {
+        return path.to_string();
+    }
+    if max_chars <= 3 {
+        return chars.into_iter().take(max_chars).collect();
+    }
+    let keep = max_chars - 3;
+    let mut out: String = chars[chars.len() - keep..].iter().collect();
+    out.insert_str(0, "...");
+    out
+}
+
+fn paint_status_cell(
+    painter: &egui::Painter,
+    cell: Rect,
+    text: &str,
+    font: &FontId,
+    fg: Color32,
+) {
+    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), fg);
+    let pos = Pos2::new(
+        cell.left() + 6.0,
+        cell.center().y - galley.size().y * 0.5 + 1.0,
+    );
+    painter.galley(pos, galley, fg);
+}
+
+/// DOS Transfer80 green block bar with a percent box at the end.
+fn paint_dos_progress_bar(painter: &egui::Painter, area: Rect, pct: f32, fg: Color32) {
+    let pct_w = 44.0_f32.min(area.width() * 0.18);
+    let gap = 3.0_f32;
+    let bar = Rect::from_min_max(
+        area.left_top(),
+        Pos2::new((area.right() - pct_w - gap).max(area.left() + 20.0), area.bottom()),
+    );
+    let pct_box = Rect::from_min_max(
+        Pos2::new(bar.right() + gap, area.top()),
+        Pos2::new(area.right(), area.bottom()),
+    );
+    let border = Color32::from_rgb(160, 160, 160);
+    let empty = Color32::from_rgb(64, 64, 64);
+    painter.rect_stroke(bar, 0.0, Stroke::new(1.0, border));
+    painter.rect_stroke(pct_box, 0.0, Stroke::new(1.0, border));
+    painter.rect_filled(
+        Rect::from_min_max(
+            Pos2::new(pct_box.left() + 1.0, pct_box.top() + 1.0),
+            Pos2::new(pct_box.right() - 1.0, pct_box.bottom() - 1.0),
+        ),
+        0.0,
+        empty,
+    );
+
+    let inner = Rect::from_min_max(
+        Pos2::new(bar.left() + 2.0, bar.top() + 2.0),
+        Pos2::new(bar.right() - 2.0, bar.bottom() - 2.0),
+    );
+    let blocks = ((inner.width() / 8.0).floor() as i32).clamp(8, 40);
+    let block_w = inner.width() / blocks as f32;
+    let filled = ((pct.clamp(0.0, 1.0) * blocks as f32).round() as i32).clamp(0, blocks);
+    for i in 0..blocks {
+        let x0 = inner.left() + i as f32 * block_w;
+        let cell = Rect::from_min_max(
+            Pos2::new(x0 + 0.5, inner.top()),
+            Pos2::new(x0 + block_w - 0.5, inner.bottom()),
+        );
+        painter.rect_filled(cell, 0.0, if i < filled { VGA_GREEN } else { empty });
+    }
+    painter.text(
+        pct_box.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("{:.0}%", pct * 100.0),
+        FontId::monospace(12.0),
+        fg,
+    );
 }
 
 fn file_ftime(path: &std::path::Path) -> u32 {
