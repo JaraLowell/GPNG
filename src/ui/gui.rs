@@ -523,6 +523,8 @@ pub struct GpGuiApp {
     window_dirty: bool,
     /// When the place last changed. The file is written after it settles.
     window_dirty_at: Instant,
+    /// ALT-Enter exclusive fullscreen (title bar off). Session-only.
+    fullscreen: bool,
 }
 
 impl GpGuiApp {
@@ -837,6 +839,7 @@ impl GpGuiApp {
             last_beacon: Instant::now(),
             window_dirty: false,
             window_dirty_at: Instant::now(),
+            fullscreen: false,
         }
     }
 
@@ -8383,6 +8386,17 @@ impl GpGuiApp {
     fn poll_hotkeys(&mut self, ctx: &Context) {
         let alt = egui::Modifiers::ALT;
         let none = egui::Modifiers::NONE;
+        // ALT-Enter: exclusive fullscreen (title bar off). Works on every screen.
+        if eat_key(ctx, alt, egui::Key::Enter) {
+            self.fullscreen = !self.fullscreen;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+            self.status = if self.fullscreen {
+                "Fullscreen ON (ALT-Enter)".into()
+            } else {
+                "Fullscreen OFF".into()
+            };
+            return;
+        }
         if self.show_radio_gate {
             if eat_key(ctx, alt, egui::Key::X) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -10417,7 +10431,8 @@ impl GpGuiApp {
                         && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     {
                         let mods = ui.input(|i| i.modifiers);
-                        if !mods.shift && !mods.ctrl {
+                        // ALT-Enter is fullscreen; Shift/Ctrl-Enter have their own jobs.
+                        if !mods.alt && !mods.shift && !mods.ctrl {
                             if let Some(c) = self.compose.get_mut(slot) {
                                 if c.input.ends_with('\n') {
                                     c.input.pop();
