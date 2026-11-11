@@ -4,7 +4,7 @@ Asynchronous Rust foundation for a cross-platform rewrite of **Graphic Packet (G
 
 This crate targets modern Windows / macOS / Linux hosts talking to USB-to-serial TNCs (WA8DED hostmode, TFPCX, Kenwood KISS) and soft TNCs over **TCP KISS** (Soundmodem, Direwolf, …).
 
-![afbeelding](https://i.gyazo.com/984bd59351bff904028a41b37ec625aa.png)
+![afbeelding](https://i.gyazo.com/d8bde765d19db1ee5ba339240dbeb1f7.jpg)
 
 ## Development status
 
