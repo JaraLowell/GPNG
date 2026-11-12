@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""//RUN SWPC — NOAA Space Weather.
+
+Start it from a linked channel with //RUN SWPC, or //SWPC (Remote must
+be on). It prints one report, reads no input, and exits. Bare //RUN is
+different: that sends RUN.GPI and starts nothing.
+
+The feed is the N0NBH HamQSL solar XML: flux, Kp, solar wind, the HF
+noise floor, and the calculated HF and VHF band conditions.
+"""
+
+import math
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+import requests
+
+# --- STATION CONFIGURATION (Musselkanaal, NL) ---
+CALLSIGN = "NL0MSK"
+GRID = "JO32SW"
+LAT = 52.93
+LON = 7.01
+
+HAMQSL_URLS = [
+    "https://www.hamqsl.com/solarxml.php",
+    "http://www.hamqsl.com/solarxml.php",
+]
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/xml,application/xml,text/plain,*/*",
+}
+
+def get_solar_elevation(lat, lon, dt_utc):
+    """Calculates approximate solar elevation angle in degrees."""
+    doy = dt_utc.timetuple().tm_yday
+    hour = dt_utc.hour + dt_utc.minute / 60.0
+    decl = 23.44 * math.sin(math.radians((360.0 / 365.0) * (doy - 81)))
+    solar_time = hour + (lon / 15.0)
+    hour_angle = 15.0 * (solar_time - 12.0)
+
+    lat_r = math.radians(lat)
+    decl_r = math.radians(decl)
+    ha_r = math.radians(hour_angle)
+
+    sin_elev = (
+        math.sin(lat_r) * math.sin(decl_r)
+        + math.cos(lat_r) * math.cos(decl_r) * math.cos(ha_r)
+    )
+    return math.degrees(math.asin(max(-1.0, min(1.0, sin_elev))))
+
+def text_of(parent, tag, default=""):
+    el = parent.find(tag)
+    if el is None or not el.text or not el.text.strip():
+        return default
+    return el.text.strip()
+
+
+def float_of(parent, tag):
+    try:
+        return float(text_of(parent, tag))
+    except ValueError:
+        return None
+
+
+def reported(text):
+    """A real reading. HamQSL uses NoRpt and an empty tag for 'no data'."""
+    value = (text or "").strip()
+    if value.lower() in {"", "n/a", "norpt", "no report", "noreport"}:
+        return ""
+    return value
+
+
+def fetch_hamqsl_data():
+    """Fetches and parses the N0NBH HamQSL solar XML."""
+    last_err = None
+    xml_text = None
+
+    for url in HAMQSL_URLS:
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp.raise_for_status()
+            xml_text = resp.text
+            break
+        except Exception as e:
+            last_err = f"{url} -> {type(e).__name__}: {e}"
+
+    if not xml_text:
+        raise RuntimeError(last_err)
+
+    root = ET.fromstring(xml_text)
+    sd = root.find("solardata")
+    if sd is None:
+        raise ValueError(f"Unexpected response body: {xml_text[:120]!r}")
+
+    hf = []
+    conditions = sd.find("calculatedconditions")
+    if conditions is not None:
+        for el in conditions.findall("band"):
+            hf.append((
+                (el.get("name") or "").strip(),
+                (el.get("time") or "").strip().lower(),
+                (el.text or "").strip() or "N/A",
+            ))
+
+    vhf = []
+    vhf_conditions = sd.find("calculatedvhfconditions")
+    if vhf_conditions is not None:
+        for el in vhf_conditions.findall("phenomenon"):
+            vhf.append((
+                (el.get("name") or "").strip(),
+                (el.get("location") or "").strip(),
+                (el.text or "").strip() or "N/A",
+            ))
+
+    return {
+        "updated": text_of(sd, "updated", "N/A"),
+        "sfi": float_of(sd, "solarflux"),
+        "aindex": float_of(sd, "aindex"),
+        "kp": float_of(sd, "kindex"),
+        "k_next": text_of(sd, "kindexnt"),
+        "xray": text_of(sd, "xray", "N/A"),
+        "sunspots": text_of(sd, "sunspots", "N/A"),
+        "helium": text_of(sd, "heliumline", "N/A"),
+        "proton": text_of(sd, "protonflux", "N/A"),
+        "electron": text_of(sd, "electonflux", "N/A"),
+        "aurora": text_of(sd, "aurora", "N/A"),
+        "aurora_lat": text_of(sd, "latdegree", "N/A"),
+        "wind_speed": float_of(sd, "solarwind"),
+        "bz": float_of(sd, "magneticfield"),
+        "geomag": text_of(sd, "geomagfield", "N/A"),
+        "noise": text_of(sd, "signalnoise", "N/A"),
+        "muf": text_of(sd, "muf"),
+        "fof2": text_of(sd, "fof2"),
+        "muf_factor": text_of(sd, "muffactor"),
+        "hf": hf,
+        "vhf": vhf,
+    }
+
+def noise_peak(text):
+    """Highest S-unit in a range such as S0-S1 or S5."""
+    peak = 0
+    number = ""
+    for ch in text or "":
+        if ch.isdigit():
+            number += ch
+            continue
+        if number:
+            peak = max(peak, int(number))
+            number = ""
+    if number:
+        peak = max(peak, int(number))
+    return peak
+
+
+def local_period(solar_elev):
+    if solar_elev > 0:
+        return "day"
+    if solar_elev > -6:
+        return "greyline"
+    return "night"
+
+
+VHF_LABEL = {
+    ("vhf-aurora", "northern_hemi"): "Aurora, N hemisphere",
+    ("E-Skip", "europe"): "E-skip, Europe",
+    ("E-Skip", "europe_6m"): "E-skip, Europe 6m",
+    ("E-Skip", "europe_4m"): "E-skip, Europe 4m",
+    ("E-Skip", "north_america"): "E-skip, N America",
+}
+
+
+def vhf_label(name, location):
+    known = VHF_LABEL.get((name, location))
+    if known:
+        return known
+    parts = [part.replace("_", " ") for part in (name, location) if part]
+    return ", ".join(parts) or "VHF"
+
+
+def hf_lines(pairs, period):
+    order = []
+    table = {}
+    for name, when, cond in pairs:
+        if name not in table:
+            order.append(name)
+            table[name] = {}
+        table[name][when] = cond
+
+    if period == "day":
+        day_h, night_h = "DAY*", "NIGHT"
+        title = "HF BANDS (now DAY)"
+    elif period == "night":
+        day_h, night_h = "DAY", "NIGHT*"
+        title = "HF BANDS (now NIGHT)"
+    else:
+        day_h, night_h = "DAY", "NIGHT"
+        title = "HF BANDS (now GREYLINE)"
+
+    lines = [
+        f" {title}",
+        f"            {day_h:<8} {night_h}",
+    ]
+    if not order:
+        lines.append("  (no band report)")
+        return lines
+    for name in order:
+        lines.append(
+            f"  {name:<10} {table[name].get('day', '-'):<8} "
+            f"{table[name].get('night', '-')}"
+        )
+    return lines
+
+
+def vhf_lines(rows):
+    lines = [" VHF / E-SKIP"]
+    if not rows:
+        lines.append("  (no VHF report)")
+        return lines
+    rank = {key: index for index, key in enumerate(VHF_LABEL)}
+    ordered = sorted(rows, key=lambda row: rank.get((row[0], row[1]), 50))
+    for name, location, cond in ordered:
+        lines.append(f"  {vhf_label(name, location):<26} {cond}")
+    return lines
+
+
+def muf_text(data):
+    muf = reported(data["muf"])
+    fof2 = reported(data["fof2"])
+    factor = reported(data["muf_factor"])
+    if not muf and not fof2 and not factor:
+        return "no report"
+    bits = [muf or "no report"]
+    if fof2:
+        bits.append(f"foF2 {fof2}")
+    if factor:
+        bits.append(f"factor {factor}")
+    return "   ".join(bits)
+
+
+def evaluate_local_conditions(data, solar_elev):
+    notes = []
+    kp = data["kp"] if data["kp"] is not None else 0.0
+    bz = data["bz"] if data["bz"] is not None else 0.0
+    xray = data["xray"]
+    noise = data["noise"]
+
+    if noise_peak(noise) >= 4:
+        notes.append(f"ELEVATED NOISE FLOOR ({noise}): weak signals will be hard to copy.")
+    elif noise and noise != "N/A":
+        notes.append(f"HF noise floor {noise}.")
+
+    if solar_elev > 0:
+        sun_status = f"DAYLIGHT (Sun +{solar_elev:.1f} deg)"
+        if xray.startswith(("M", "X")):
+            notes.append(f"FLARE ALERT ({xray}): Watch for sudden D-layer HF fades.")
+    elif solar_elev > -6:
+        sun_status = f"GREYLINE / TWILIGHT ({solar_elev:.1f} deg)"
+        notes.append("GREYLINE ENHANCEMENT: Prime window for 30m/40m/80m long-path DX.")
+    else:
+        sun_status = f"NIGHTTIME (Sun {solar_elev:.1f} deg)"
+
+    if kp >= 5:
+        notes.append(f"STORM (Kp {kp:.0f}): HF polar/trans-Atlantic paths degraded/fluttery.")
+        notes.append("VHF AURORA ALERT: Point 6m/2m beams NORTH for auroral scatter!")
+    elif kp >= 4 or bz <= -5.0:
+        notes.append("UNSETTLED FIELD: Expect mild QSB (fading) on high-latitude HF paths.")
+    else:
+        notes.append("Geomagnetic field QUIET: Stable low-noise HF conditions.")
+
+    return sun_status, notes
+
+def build_bbs_bulletin():
+    now_utc = datetime.now(timezone.utc)
+    timestamp = now_utc.strftime("%Y-%m-%d %H:%MZ")
+    solar_elev = get_solar_elevation(LAT, LON, now_utc)
+
+    try:
+        data = fetch_hamqsl_data()
+    except Exception as e:
+        return f"ERR: UNABLE TO FETCH TELEMETRY ({e})"
+
+    sun_status, notes = evaluate_local_conditions(data, solar_elev)
+    period = local_period(solar_elev)
+
+    sfi_str = f"{data['sfi']:.0f} sfu" if data["sfi"] is not None else "N/A"
+    if data["kp"] is None:
+        kp_str = "N/A"
+    elif data["aindex"] is None:
+        kp_str = f"{data['kp']:.0f}"
+    else:
+        kp_str = f"{data['kp']:.0f} (A={data['aindex']:.0f})"
+    k_next = reported(data["k_next"])
+    if k_next:
+        kp_str = f"{kp_str}  next {k_next}"
+    wind_str = f"{data['wind_speed']:.0f} km/s" if data["wind_speed"] is not None else "N/A"
+    bz_str = f"{data['bz']:+.1f} nT" if data["bz"] is not None else "N/A"
+    if data["aurora_lat"] and data["aurora_lat"] != "N/A":
+        aurora_str = f"{data['aurora']} at {data['aurora_lat']}N"
+    else:
+        aurora_str = data["aurora"]
+
+    lines = [
+        "=" * 72,
+        f" SPACE WEATHER & HF/VHF PROPAGATION REPORT - {CALLSIGN} ({GRID})",
+        f" ISSUED: {timestamp} | LOCAL SOLAR: {sun_status}",
+        "=" * 72,
+        f" SOLAR FLUX  : {sfi_str:<14} | SUNSPOTS     : {data['sunspots']}",
+        f" X-RAY       : {data['xray']:<14} | 304A HELIUM  : {data['helium']}",
+        f" GEOMAG FIELD: {data['geomag']:<14} | PLANETARY Kp : {kp_str}",
+        f" SOLAR WIND  : {wind_str:<14} | IMF Bz       : {bz_str}",
+        f" AURORA      : {aurora_str:<14} | P-FLUX / e-  : {data['proton']} / {data['electron']}",
+        f" NOISE FLOOR : {data['noise']:<14} | MUF          : {muf_text(data)}",
+        "-" * 72,
+    ]
+    lines.extend(hf_lines(data["hf"], period))
+    lines.append("")
+    lines.extend(vhf_lines(data["vhf"]))
+    lines.extend([
+        "-" * 72,
+        " LOCAL STATION PROPAGATION SUMMARY:",
+    ])
+
+    for note in notes:
+        lines.append(f"  * {note}")
+
+    lines.extend([
+        "-" * 72,
+        f" DATA: N0NBH HamQSL ({data['updated']}) | 73 DE {CALLSIGN}",
+        "=" * 72,
+    ])
+
+    return "\n".join(lines)
+
+if __name__ == "__main__":
+    print(build_bbs_bulletin())

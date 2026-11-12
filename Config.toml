@@ -76,7 +76,7 @@ spy_calls = ["", "", "", "", "", "", "", "", "", ""]
 allow_color_ansi = true
 
 # Session-bar button state (restored on start; rewritten when you toggle).
-icon_file = "ICONS.GP"
+icon_file = "ICONS-A.GP"
 [session.chrome]
 qrg_mhz = 149.1125
 ctext = "D:\\MyPython\\GPNG\\data\\CTEXT.GPI"
@@ -85,7 +85,7 @@ extended_ascii = false
 smooth_scroll = false
 echo = true
 channel_echo = []
-bell = true
+bell = false
 seven_plus = false
 remote = true
 scr_lock = false
@@ -209,15 +209,15 @@ address = "CQ"
 source = "file"
 text = ""
 file = "D:\\MyPython\\GPNG\\data\\BEACON.GPI"
-period_minutes = 72
+period_minutes = 60
 [print]
 # Legacy ESC/P printer attribute byte sequences.
 default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 373
-y = 165
+x = 1248
+y = 193
 width = 1155
-height = 818
+height = 914
 maximized = false

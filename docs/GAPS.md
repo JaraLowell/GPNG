@@ -163,14 +163,14 @@ These are the DOS features an operator would notice first.
 | ESC TNC command window | **Partial** | Esc opens the box. Esc again closes it without sending. Enter sends the line on hostmode. KISS has no TNC command channel. ALT-O does not restore `TNCINI` |
 | Station journal `LOG=ON` plus `QRG` | **Have** | `LOG`, `QRG`, and `UTC` come from `CONFIG.GP` or `Config.toml`. The line is written under `data/log` (or `LogDir`). `gpng.log` in that folder is the shell log |
 | Alternate connect texts `CTEXT_A.GPI` and fallback to `CTEXT.GPI` | **Have** | The CT button picks the channel file (`CTEXT.GPI`, `CTEXT_A.GPI`, or another GPI). A `data/{CALL}.GPC` for the station that connected replaces that file. Mail, when present, is one line before that greeting |
-| Sysop password (`SY`/`PW`, `*.GPW`, TheNet / BayCom / FlexNet / DieBox / FALCon types) | **Partial** | `DB0IZ-9` reads `data/DB0IZ9.GPW`. Type `N`, `D`, and `W` pick 1-based characters. Type `F` uses the old 5-digit product-sum, or character positions when the secret is longer. The reply is placed in the compose box; Ctrl-B pastes it again. A type `B` 60×27 grid is recognised and not calculated |
-| DieBox `(BIN)` mail via AutoBin | **Partial** | AutoBin on the channel is live (`//RPrg` / `//WPrg`, BIN-TX/RX). DieBox mail that should arrive as `(BIN)` AutoBin is not wired as mailbox mail yet |
+| Sysop password (`SY`/`PW`, `*.GPW`, TheNet / BayCom / FlexNet / DieBox / FALCon types) | **Partial** | `DB0IZ-9` reads `data/DB0IZ9.GPW`. Type `N`, `D`, and `W` pick 1-based characters. Type `F` uses the old 5-digit product-sum, or character positions when the secret is longer. The reply is placed in the compose box; Ctrl-B pastes it again. A type `B` 60×27 grid is recognised and not calculated — DieBox 1.9 docs give the time-offset algorithm (see research note below) |
+| DieBox `(BIN)` mail via AutoBin | **Partial** | AutoBin on the channel is live (`//RPrg` / `//WPrg`, BIN-TX/RX). DieBox CHECK titles that start with `(BIN)` are not yet treated as mailbox AutoBin when READing |
 
 ### 6 Mailbox menus
 
 | DOS feature | Status | Notes |
 |-------------|--------|-------|
-| Recognise DieBox, F6FBB 5.15, DK5SG, DB0IE check/list formats | **Partial** | DieBox `CHECK` / `LIST` from the DB0HB handbook work as the client. F6FBB, DK5SG, and DB0IE need sample dumps from those BBS servers — GPNG cannot self-test them |
+| Recognise DieBox, F6FBB 5.15, DK5SG, DB0IE check/list formats | **Partial** | DieBox `CHECK` / `LIST` from the DB0HB handbook work as the client. F6FBB list row shape is documented in local `fbb-7.0.15` (see research note below). DK5SG and DB0IE still need sample dumps. Live captures remain the best fixtures |
 | BBS-Menu (F11): mark, Enter sends mailbox `READ`, keep list across a timeout on the same channel, replace-or-append prompt | **Have** | One shared buffer. Space marks (manual 4.4). Enter sends `R BOARD nr` on the BBS reference channel for every marked line, or for the bar when nothing is marked. The list stays until that channel is disconnected locally. Rubric sections are not split out |
 | Box-List (F12): one rubric, same mark/read behaviour, DieBox only | **Have** | `R nr`, or `R drawer nr` when the file drawer is set. Same mark and read keys. The reference channel is the Box-List one |
 | ALT-F find, ALT-S sort (BBS menu only) | **Have** | Find (manual 6.3) opens an empty box. The same word continues from the bar; a different word starts at the top. Sort is rubric then number, and only on the BBS menu (manual 4.4). On a channel, ALT-S and ALT-F are still the unwired save and file send |
@@ -323,9 +323,93 @@ This is the stand-in for the DOS GPRI Pascal interface. A DOS program in `EXTERN
 
 1. 7Plus Code-AutoSave **Done** on the air with DOS GP (`go_7+.` … `stop_7+.`). Encode-on-`//Read`, join, missing reports, `//7DECODE`, AutoBin `//RPrg` / `//WPrg`, and the Transfer80 progress strip are in; parts stay in `data/USER`. Still open on this family: transfer resume and ALT-T. `//CUT` aborts a running BIN or 7+ transfer.
 2. `NAMES.GP` plus autorouter on Connect, then ALT-N. **Done.** Connect uses `data/NAMES.GP`. **Name** is ALT-N. A type `B` mailbox still does not block remotes, and `PORTx` does not change the radio.
-3. BBS-Menu and Box-List parsers (DieBox first), mark, and `READ`. **Done** for DieBox `CHECK` and `LIST` on the setup reference channel. F6FBB, DK5SG, and DB0IE are still ahead.
+3. BBS-Menu and Box-List parsers (DieBox first), mark, and `READ`. **Done** for DieBox `CHECK` and `LIST` on the setup reference channel. Next mailbox work: F6FBB list parser from `fbb-7.0.15`, then DK5SG / DB0IE when dumps exist (research note below).
 4. Finish `//` remotes that only need files: help (`*.GPH`), catalog, delete, prompt, parameters, usage, language. **Done.** Help follows `data/G.GPH` (English) and the other language packs. Catalog, read, write, and delete stay in `data/USER`. `//CD` cannot leave that folder. Cross-channel `//n` / `//0` chat mode and `//BYE` as a Quit alias are **Done**. AutoBin `//RPrg` / `//WPrg` are **Done** (item 1).
-5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper. **Done** for the journal and for TheNet, BayCom, and FlexNet. Shell and debug lines go to `data/log/gpng.log`. The DieBox 60×27 grid is not calculated.
+5. Journal (`LOG`, `QRG`, `UTC`, `<mycall>.GPL`) and the sysop `*.GPW` helper. **Done** for the journal and for TheNet, BayCom, and FlexNet. Shell and debug lines go to `data/log/gpng.log`. The DieBox 60×27 / PWLIST reply is documented but not calculated yet (research note below).
 6. Setup menu. **Done** for the DOS rows that have a live effect: colours, prompt, remote (one global switch), backup, echo (per channel show/hide, lines always stored), RX-Click (a count of `NEWLINE.WAV`), Connect Bell (a count of `CONNECT.WAV`; off also silences `DISCONECT.WAV`), umlauts, the stair / `/` line step, packet length, Code-AutoSave, language, editor `*.BAK`, insert-from-editor, the reference channel, the file drawer, the KISS beacon (manual 11.11, also the monitor unproto path), and the Esc TNC command box. The ♪ button is the global connect/disconnect/newline mute, **CT** can hold a file per channel, and EDIT keeps its file, text, and caret until another file is loaded. Word wrapping, input columns, and InsertMonLine are stored. Hostmode does not send the beacon. A `//` line in the Esc box is not the operator remote from manual 5.5. Settings go to `Config.toml`, not `CSTAT.GPB`.
 7. Pixel-UI hotkeys that match DOS GP chapter 4. **Done** for the keys that already have an action: F1–F12, ALT-M/E/X/U/O/R/G/Q/C/D/Y/N/T/B, ALT-F1/F2/F4/F6/F7/F8/F9/F10, Shift-F1–F12, Ctrl-D/T/Y/C/P/O/B, Ctrl-Enter, Esc (TNC command, or back to Monitor from BBS/List), and editor ALT-L/S. Still ahead: ALT-S continuous save, ALT-F file send, Insert/overwrite, Ctrl-K, and Ctrl+PrintScreen TNC-Statistics (hostmode / TFPCX only, not KISS). ALT-Z stays DOS VGA zoom. On the BBS menu ALT-S sorts and ALT-F finds; on the Box list ALT-F finds.
-8. Still ahead, in short: the other mailbox list formats (F6FBB, DK5SG, DB0IE) and rubric sections; transfer resume and ALT-T / ALT-S / ALT-F; a type `B` mailbox blocking remotes and `PORTx` switching a multiport TNC; the `REMOTE=` allow-list; editor Insert/overwrite, hard word wrap, and Ctrl-K; AutoSpy close on DISC/DM/UA; stub remotes `//Activity`, `//RTt`, `//C`; Ctrl+PrintScreen TNC-Statistics when WA8DED / TFPCX are checked on hardware or soft-TNC. Done: live 7Plus Code-AutoSave / `//7DECODE` (parts in USER), `//RPrg` / `//WPrg` AutoBin, Transfer80 progress strip, `//RUN` samples (`FREE`, `DOS`), bare `//RUN` → `RUN.GPI`, cross-channel `//n` chat, `//BYE`, Auto Spy / Spy Auto Ignore setup with `CALL.NNN` files, the global **Remote** answer, and per-channel **CT** / **Echo**.
+8. Still ahead, in short: the other mailbox list formats (F6FBB, DK5SG, DB0IE) and rubric sections; DieBox PRIV / `(BIN)` READ polish; transfer resume and ALT-T / ALT-S / ALT-F; a type `B` mailbox blocking remotes and `PORTx` switching a multiport TNC; the `REMOTE=` allow-list; editor Insert/overwrite, hard word wrap, and Ctrl-K; AutoSpy close on DISC/DM/UA; stub remotes `//Activity`, `//RTt`, `//C`; Ctrl+PrintScreen TNC-Statistics when WA8DED / TFPCX are checked on hardware or soft-TNC. Done: live 7Plus Code-AutoSave / `//7DECODE` (parts in USER), `//RPrg` / `//WPrg` AutoBin, Transfer80 progress strip, `//RUN` samples (`FREE`, `DOS`), bare `//RUN` → `RUN.GPI`, cross-channel `//n` chat, `//BYE`, Auto Spy / Spy Auto Ignore setup with `CALL.NNN` files, the global **Remote** answer, and per-channel **CT** / **Echo**.
+
+---
+
+## Research note — mailbox references (Nov 2026)
+
+Offline trees and docs looked at while DieBox / BBS work was still open. GPNG is the **client** (BBS-Menu = DieBox `CHECK` or FBB `L*` lists; Box-List = DieBox `LIST` for one rubric). We do not run a BBS.
+
+### Local paths worth reopening
+
+| Path | What it is | Use for GPNG |
+|------|------------|--------------|
+| `D:\GPDos\MB19` | DieBox / THEBOX **1.9** install (`BOX.EXE`, not BOOX) | **Authority for DieBox Box-LIST and CHECK.** `LANGUAGE\LIST.DL`, `MSGDL.BOX` / `MSGG.BOX` (LIST + CHECK headers), `READ.C` / `SEND.C`, `MANUAL\MANUAL19.PRN`, `PWD\PWLIST.TXT` |
+| `D:\GPDos\fbb-7.0.15` | F6FBB **7.0.15** source + `doc\html` + `etc\lang` | **Best offline source for an F6FBB BBS-Menu parser.** List emitter: `src\mbl_list.c`, `src\aff_stat.c`, macros in `src\variable.c`; row template in `etc\lang\english.txt`; commands in `doc\html\docbbs.htm` |
+| `D:\GPDos\GP\USER\packet\bbs\misc` | `bbs_spec.194`, `bbs_spec.doc`, `hierarchical` | **Not** for list panes. BBS↔BBS S&F / SID / HLOC only |
+| `D:\GPDos\GP\USER\packet\bbs\thebox` | DieBox archives (`diebox19.zip`, …) | Extra copies if MB19 is incomplete |
+| `D:\GPDos\GP\USER\packet\bbs\f6fbb` | FBB utilities / archives | Secondary; prefer `fbb-7.0.15` for formats |
+
+### DieBox (MB19) — what we learned
+
+- **Box-List** is DieBox `LIST`: `Nr Call Datum Zeit Bytes Titel` (time may use `:` or `.`). Read is `R nr` or `R drawer nr`. That is what `bbs::parse_list` already targets. Rubric / file drawer comes from setup, not from the list line.
+- **BBS-Menu** is DieBox `CHECK`: `Call > File Nr. date @MBX bytes LT title` (DB0HB handbook samples in `src/bbs.rs`). Read is `R RUBRIK nr`.
+- End of a list dump: prompt containing ` de ` and ending in `>` (`is_diebox_prompt`). Short menu after PRIV looks like `H C L R S E D U M Q`; still ends with that prompt style.
+- `CHECK` is capped at **50** lines per reply (`LANGUAGE\CHECK.DL`); next page e.g. `CHECK 50-`.
+- Binary mail: CHECK title can start with **`(BIN)`**; before AutoBin the client should send CR/LF; box asks to start AutoBin (`MANUAL19.PRN` changelog / `MSG*.BOX`).
+- **`BOX.MSK` is not a list layout.** Manual: splash mask at program start, “keine weitere Funktion.” Decorative CP437 grid + “THE BOX” logo only.
+- **PRIV / type `B` GPW:** `PWLIST.TXT` is **1620** chars (= 60×27). Password is **4** chars from login date/time: `row = (min + day); if row > 59 then row -= 60`; `offset = row * 27 + hour`; then `PRIV xxxx`. Not a digit-position challenge like TheNet.
+
+### F6FBB (`fbb-7.0.15`) — what we learned
+
+- No DieBox-style rubrics. User lists are `L` / `LM` / `LL` / …; read by **msg#** (`R 1234`), not `R RUBRIK nr`. Feeds **BBS-Menu**, not Box-List.
+- English header / row (`etc\lang\english.txt`):
+
+```text
+Msg#   TSLD  Size To    @Route  From   Date/Time Subject  …
+$M $t$s$r%r $n $G$0 $P $i $1
+```
+
+  TSLD ≈ type, status, local (`L`/space), binary (`D`/space). Good enough to draft `parse_fbb_*` and synthetic fixtures; a live `LM`/`LL` paste still validates 5.15 vs 7.0.15 drift.
+
+### Other references (do not confuse with DieBox source)
+
+- **`bbs_spec.194` / `.doc`:** S&F handshake only (`SB`/`OK`/`F>`). Skip for CHECK/LIST.
+- **`hierarchical`:** TAPR HLOC (`@CALL.#area.region.country.continent`) — explains `@MBX` / `@Route` strings, not list columns.
+- **DPBox** (DL8HBS): operational successor many sites moved to from DieBox (e.g. DB0HB ~1999), **not** a DieBox code fork. Speaks TheBox-ish S&F / prompts; can also emit FBB-style CHECK (`FBBMODE`). OpenBSD port: <https://github.com/jg1uaa/dpbox-openbsd>. Useful as a second readable C tree; MB19 remains the DieBox 1.9 authority.
+
+### Modern local BBS trees (`D:\MyPython\Packet Radio`, Nov 2026)
+
+Grabbed to try a local KISS loop and capture CHECK/LIST (or FBB `L*`) for fixtures. Verdict: **partially useful, not drop-in.**
+
+| Path | Clone | Reality vs expectation |
+|------|-------|------------------------|
+| `D:\MyPython\Packet Radio\openBCM` | [andreaspeters/openBCM](https://github.com/andreaspeters/openBCM) (BayCom mailbox) | **Closest to DieBox-style mail.** Has `CHECK` / `LIST` / boards; docs say CHECK is for DieBox compatibility; `(BIN)` on titles; optional `FBBCHECKMODE`. **Not** a DieBox binary — BayCom line layout is configurable (`ALTER ULIST` / check options) and may **not** match DieBox `Call > File Nr` byte-for-byte. This fork’s README: **Linux-only** 2.x builds (Makefile targets Ubuntu/Debian). KISS exists in L2 (`l1kiss_l.cpp`) but `#define KISS 0` by default in `layer2.h`; classic setup is **serial/PTY KISS** via `init.l2` (`assign kiss` / `device …` / `mode 19200c`), not TCP KISS. Docs: that KISS port is for **software coupling**, not a happy path to a hardware TNC. Also Linux **kernel AX.25** (`ax25k_if`). Win32/DOS belongs to older trees (`readme.1st`, `oe5hpm/openBCM` v1.08 path), not this master build story |
+| `D:\MyPython\Packet Radio\linbpq` | **[g8bpq/linbpq](https://github.com/g8bpq/linbpq)** stock (checked out as `6.0.26.1`) | **Yes — this is the BBS tree.** Full **BPQMail** (`BPQMail.c`, `MailCommands.c`, `MBLRoutines.c`, `FBBRoutines.c`, …) plus **KISS** (`kiss.c`, TCP KISS in cfg). List UI is **FBB-ish** (`L` / `LM` / `LL` / …, read by msg#), good for **BBS-Menu** fixtures — **not** DieBox Box-List. Build: Linux via `BUILDING.md` / `make` (or `make nomqtt`); Windows has Visual Studio projects in-tree. Typical lab: `PROTOCOL=KISS` + `IPADDR=127.0.0.1` / `TCPPORT=…` ↔ GPNG `kiss_transport = "tcp"` |
+| `D:\MyPython\Packet Radio\linbpq-light` | [andreaspeters/linbpq](https://github.com/andreaspeters/linbpq) “LinBPQ Lite” (renamed aside) | **No BBS.** Node/Convers only; BBS deleted. Keep only if you want a thin node — **do not** use for mail-list capture |
+
+**Local KISS capture idea (GPNG ↔ box):** feasible because GPNG already does **TCP and serial KISS**. Realistic stacks:
+
+1. **Stock `linbpq` (g8bpq)** + TCP KISS on `127.0.0.1` ↔ GPNG TCP KISS — best lab for **F6FBB-style BBS-Menu** dumps (`LM`/`LL`). Enable APPLICATION/BBS in `bpq32.cfg`, seed a few msgs, capture from GPNG’s channel pad / `bbs.txt`.
+2. **openBCM on Linux/WSL** + serial/PTY KISS ↔ com0com / `socat` ↔ GPNG serial KISS (or kernel AX.25 + a KISS bridge into GPNG TCP KISS) — for DieBox-*like* mail **after** eyeballing one `CHECK`/`LIST` line against `bbs::parse_*`.
+3. A Python “link” script only helps as a **KISS bridge / logger** between two KISS endpoints.
+
+Before investing in openBCM KISS glue: seed a few mails and **eyeball** one `CHECK` and one `LIST` line. If they match `bbs::parse_check` / `parse_list`, a KISS loop is worth it; if BayCom-shaped, treat as a third format or stick to MB19 + `fbb-7.0.15` / stock LinBPQ fixtures.
+
+### Strategy — DieBox vs what hams actually run (Nov 2026)
+
+DOS GP’s BBS-Menu / Box-List were built around **DieBox** (`CHECK` / `LIST`). That is why GPNG already has DieBox parsers. DieBox itself is **old, closed, DOS-only**, and largely retired in favour of open stacks:
+
+| Modern box | Open? | Role for GPNG |
+|------------|-------|----------------|
+| **OpenBCM** (BayCom) | Yes | Living **board / CHECK / LIST** mailbox in the DieBox *command* tradition — best candidate to **succeed DieBox** as the “mail + boards” client target |
+| **LinBPQ / BPQMail** (g8bpq) | Yes | Living **FBB-style** `L`/`LM` BBS — best candidate for **BBS-Menu** on the air today |
+| **F6FBB** | Yes | Same list family as BPQMail; `fbb-7.0.15` documents the row shape |
+| **DPBox** | Yes | TheBox-ish Linux successor; secondary reference, not our primary lab |
+| **DieBox 1.9** | No | Keep as **legacy** parse path (already in `bbs.rs`); do not invest in PRIV / lab boxes unless an operator still needs it |
+
+**Direction:** treat DieBox as compatibility, not the future. Prefer **OpenBCM** for board-mail UX (replace “Box-List = DieBox LIST only” over time) and **LinBPQ / FBB** for bulletin-style BBS-Menu. Capture real OpenBCM `CHECK`/`LIST` lines before rewriting parsers — they may already be close, or need a dedicated `parse_openbcm_*` next to DieBox.
+
+### Possible next steps for GPNG
+
+1. **Primary lab:** build **stock `linbpq`** + TCP KISS ↔ GPNG; capture `LM`/`LL` → implement **F6FBB/BPQ BBS-Menu** parser (`R <msg#>`). Cross-check `fbb-7.0.15` macros.
+2. **Primary mail successor:** run **openBCM** (Linux/WSL); dump `CHECK` / `LIST`; if lines ≠ DieBox, add an OpenBCM parser and make Box-List / BBS-Menu prefer it when recognised. Keep DieBox parsers for old traffic.
+3. **DieBox polish:** only if still needed — PRIV from PWLIST, `(BIN)` READ, 50-line CHECK pages. Not blocking modern formats.
+4. **Still blocked without dumps:** DK5SG and DB0IE; optional CHECK rubric *section* chrome in the UI.
+5. **Do not chase:** `BOX.MSK`, `bbs_spec.*`, hierarchical tables alone, DPBox-as-DieBox, or **`linbpq-light`** for mail lists.

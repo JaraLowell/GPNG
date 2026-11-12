@@ -1,15 +1,12 @@
 GPNG V%v: %c logon %d at %t %z
 
-    (``\-.-/'`)
-     `( 0 0 )`
-   .ooO.(_).Ooo.       %Y
-    .oO           Packet Terminal
-    (  )   Oo.       Channel %k
-     \_)--(  )
-          (_/ %i
-Hi %n,
-
-To take full advantage of this station's server facilities,
+   (``\-.-/'`)        %Y
+    `( 0 0 )`    Packet Terminal
+  .ooO.(_).Ooo.    Channel %k
+   .oO 
+   (  )   Oo.
+    \_)--(  ) %i
+         (_/
+Hi %n, To take full advantage of this station's facilities,
 ask for help by typing //H or //run ? for remote programs.
-
 %>

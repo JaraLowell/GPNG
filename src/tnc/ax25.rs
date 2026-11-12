@@ -701,6 +701,62 @@ fn classify(content: &FrameContent) -> (Ax25FrameType, u8, u8, bool, Vec<u8>) {
     }
 }
 
+/// What to do with an I-frame's N(S) against our V(R). Window is one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecvI {
+    /// N(S) is the one we are waiting for.
+    Accept,
+    /// They repeated the I-frame we already accepted (our ack was lost).
+    Duplicate,
+    /// Gap. `expected` is V(R); ask them to resend from there.
+    Reject { expected: u8, got: u8 },
+}
+
+/// `accepted` is true after this link has taken at least one I-frame.
+/// Before that, N(S) = 7 is not a duplicate of a frame we never had.
+pub fn classify_recv_i(vr: u8, ns: u8, accepted: bool) -> RecvI {
+    let vr = vr & 7;
+    let ns = ns & 7;
+    if ns == vr {
+        RecvI::Accept
+    } else if accepted && ns == (vr + 7) & 7 {
+        RecvI::Duplicate
+    } else {
+        RecvI::Reject {
+            expected: vr,
+            got: ns,
+        }
+    }
+}
+
+/// What a REJ's N(R) means against our next V(S). The frame still out is
+/// `(vs + 7) % 8`. Any other N(R) is a frame we no longer have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecvRej {
+    /// They want the I-frame that is still outstanding.
+    Resend,
+    /// N(R) is our next V(S): they already have that frame.
+    Ack,
+    /// N(R) names a frame this window cannot produce.
+    Reset { wanted: u8, outstanding: u8 },
+}
+
+pub fn classify_rej(vs_next: u8, rej_nr: u8) -> RecvRej {
+    let vs = vs_next & 7;
+    let nr = rej_nr & 7;
+    let outstanding = (vs + 7) & 7;
+    if nr == outstanding {
+        RecvRej::Resend
+    } else if nr == vs {
+        RecvRej::Ack
+    } else {
+        RecvRej::Reset {
+            wanted: nr,
+            outstanding,
+        }
+    }
+}
+
 /// Decode a KISS payload (AX.25 without FCS).
 pub fn parse_frame(payload: &[u8]) -> Option<Ax25Frame> {
     let f = LibFrame::from_bytes(payload).ok()?;
@@ -881,6 +937,41 @@ mod tests {
         assert_eq!(
             ui.monitor_line(),
             "fm NL0MSK to CQ via DB0ABC ctl UI^ pid F0"
+        );
+    }
+
+    #[test]
+    fn recv_i_accepts_the_next_and_rejects_a_jump() {
+        assert_eq!(classify_recv_i(1, 1, true), RecvI::Accept);
+        assert_eq!(classify_recv_i(1, 0, true), RecvI::Duplicate);
+        assert_eq!(
+            classify_recv_i(1, 3, true),
+            RecvI::Reject {
+                expected: 1,
+                got: 3
+            }
+        );
+        // Nothing accepted yet: N(S)=7 against V(R)=0 is a jump, not a duplicate.
+        assert_eq!(
+            classify_recv_i(0, 7, false),
+            RecvI::Reject {
+                expected: 0,
+                got: 7
+            }
+        );
+    }
+
+    #[test]
+    fn rej_of_the_outstanding_frame_is_a_resend() {
+        // Sent N(S)=3, so V(S) is now 4. REJ 3 asks for that frame.
+        assert_eq!(classify_rej(4, 3), RecvRej::Resend);
+        assert_eq!(classify_rej(4, 4), RecvRej::Ack);
+        assert_eq!(
+            classify_rej(4, 1),
+            RecvRej::Reset {
+                wanted: 1,
+                outstanding: 3
+            }
         );
     }
 

@@ -20,6 +20,13 @@ Remote must be on. With Remote off, //RUN is answered with
     lookup. HamDB is the US FCC record; an unknown call answers
     "not found".
 
+//RUN SWPC
+    a space-weather bulletin from the N0NBH HamQSL solar XML:
+    flux, Kp, solar wind, the HF noise floor, and the calculated
+    HF and VHF band conditions, plus a short note for the station
+    written in the script (CALLSIGN, GRID, LAT, LON). It reads
+    no input.
+
 //RUN DOS
     an MS-DOS 6.20 window. Drive C: is the USER folder, and there
     is no other drive (D: answers "Drive D does not excist!").
@@ -72,8 +79,9 @@ Linux, macOS, and Windows
     as well. One program per channel, so ten channels is ten
     programs at most.
 
-FREE, QSLINFO, and DOS are the samples. All three are Python and
-use only the standard library. FREE reports memory on Linux,
+FREE, QSLINFO, SWPC, and DOS are the samples. All four are Python
+and use only the standard library. FREE reports memory on Linux,
 macOS, and Windows and then exits. QSLINFO looks up one callsign
-and exits. DOS stays open until EXIT, the link drops, or the
-300-second quiet limit closes it.
+and exits. SWPC prints one NOAA bulletin and exits. DOS stays
+open until EXIT, the link drops, or the 300-second quiet limit
+closes it.

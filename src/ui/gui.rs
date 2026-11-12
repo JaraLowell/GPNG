@@ -333,6 +333,11 @@ pub struct GpGuiApp {
     ax25_vs: Vec<u8>,
     /// KISS AX.25 receive sequence N(R) per channel (`0` unused).
     ax25_vr: Vec<u8>,
+    /// This link has accepted an I-frame since the counters were cleared.
+    ax25_i_ok: Vec<bool>,
+    /// Last REJ on this channel: (N(S) we wanted, N(S) they sent).
+    /// The same pair again means they did not rewind, so the link resets.
+    ax25_rej: Vec<Option<(u8, u8)>>,
     /// Last I/S/U activity on a linked KISS channel (T3 idle clock).
     ax25_alive_at: Vec<Option<Instant>>,
     /// Outstanding RR poll (T1) — `None` = not waiting.
@@ -569,6 +574,8 @@ impl GpGuiApp {
         let mut temp_slot_call = Vec::with_capacity(channels as usize + 1);
         let mut ax25_vs = Vec::with_capacity(channels as usize + 1);
         let mut ax25_vr = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_i_ok = Vec::with_capacity(channels as usize + 1);
+        let mut ax25_rej = Vec::with_capacity(channels as usize + 1);
         let mut ax25_alive_at = Vec::with_capacity(channels as usize + 1);
         let mut ax25_poll_at = Vec::with_capacity(channels as usize + 1);
         let mut ax25_poll_tries = Vec::with_capacity(channels as usize + 1);
@@ -596,6 +603,8 @@ impl GpGuiApp {
             temp_slot_call.push(None);
             ax25_vs.push(0);
             ax25_vr.push(0);
+            ax25_i_ok.push(false);
+            ax25_rej.push(None);
             ax25_alive_at.push(None);
             ax25_poll_at.push(None);
             ax25_poll_tries.push(0);
@@ -762,6 +771,8 @@ impl GpGuiApp {
             temp_slot_call,
             ax25_vs,
             ax25_vr,
+            ax25_i_ok,
+            ax25_rej,
             ax25_alive_at,
             ax25_poll_at,
             ax25_poll_tries,
@@ -1874,12 +1885,7 @@ impl GpGuiApp {
             pad.push(PadKind::System, format!("*** CONNECTED to {answer_call}"));
         }
         for ch in [caller, answer] {
-            if let Some(vs) = self.ax25_vs.get_mut(ch as usize) {
-                *vs = 0;
-            }
-            if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
-                *vr = 0;
-            }
+            self.zero_ax25_seq(ch as usize);
             self.kiss_link_activity(ch, true);
         }
         self.play_connect_bell();
@@ -2176,12 +2182,7 @@ impl GpGuiApp {
         if let Some(q) = self.qrt_disc.get_mut(idx) {
             *q = QrtDiscState::Idle;
         }
-        if let Some(vs) = self.ax25_vs.get_mut(idx) {
-            *vs = 0;
-        }
-        if let Some(vr) = self.ax25_vr.get_mut(idx) {
-            *vr = 0;
-        }
+        self.zero_ax25_seq(idx);
         self.seal_term(channel);
         if let Some(dec) = self.rx_ansi.get_mut(idx) {
             *dec = AnsiDecoder::new();
@@ -4151,9 +4152,8 @@ impl GpGuiApp {
                         return;
                     }
                 }
-                // Repeat SABM before this peer has spoken: same circuit (lost
-                // UA). Once the link has carried their traffic, a new SABM
-                // from them is another connect and is not swallowed here.
+                // Same circuit: lost UA, or SABM to clear a broken sequence.
+                // A live QSO answers UA and starts again at N(S) = N(R) = 0.
                 if let Some(ch) = self.sabm_retry_channel(&frame.src, &frame.dest) {
                     self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
                     let my = self.effective_mycall(ch);
@@ -4165,10 +4165,19 @@ impl GpGuiApp {
                         .get(ch as usize)
                         .copied()
                         .unwrap_or(false);
-                    if !heard {
+                    if heard {
+                        self.zero_ax25_seq(ch as usize);
+                        if let Some(pad) = self.pads.get_mut(ch as usize) {
+                            pad.push(
+                                PadKind::System,
+                                "*** link reset — sequences back to 0".to_string(),
+                            );
+                        }
+                        self.status = format!("KISS link reset ch{ch} ← {}", frame.src);
+                    } else {
                         self.send_connect_text(ch);
+                        self.status = format!("KISS UA again ch{ch} {my} ← {}", frame.src);
                     }
-                    self.status = format!("KISS UA again ch{ch} {my} ← {}", frame.src);
                     return;
                 }
                 let slot = self.incoming_slot(&frame.dest, &frame.src, None);
@@ -4199,12 +4208,7 @@ impl GpGuiApp {
                 if let Some(c) = self.channel_connecting.get_mut(ch as usize) {
                     *c = None;
                 }
-                if let Some(vs) = self.ax25_vs.get_mut(ch as usize) {
-                    *vs = 0;
-                }
-                if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
-                    *vr = 0;
-                }
+                self.zero_ax25_seq(ch as usize);
                 self.kiss_clear_sabm_timer(ch);
                 self.kiss_clear_disc_timer(ch);
                 self.kiss_link_activity(ch, true);
@@ -4266,47 +4270,84 @@ impl GpGuiApp {
                     if self.channel_disconnecting(ch) {
                         return;
                     }
-                    let mut expect = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
+                    let expect = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
+                    let accepted = self.ax25_i_ok.get(ch as usize).copied().unwrap_or(false);
                     let my = self.effective_mycall(ch);
                     let vias = self.link_vias(ch);
                     let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-                    // N(S)=0 N(R)=0 is the first I of a new link. A V(R) kept
-                    // from the previous QSO makes REJ illegal; DOS answers FRMR.
-                    if frame.ns != expect && frame.ns == 0 && frame.nr == 0 {
-                        expect = 0;
-                        if let Some(vs) = self.ax25_vs.get_mut(ch as usize) {
-                            *vs = 0;
+                    match ax25::classify_recv_i(expect, frame.ns, accepted) {
+                        ax25::RecvI::Duplicate => {
+                            // Ack was lost. RR again; the text is already on the channel.
+                            self.tx_kiss_payload(
+                                0,
+                                &ax25::build_rr_via(
+                                    &frame.src, &my, expect, frame.poll, false, &via_ref,
+                                ),
+                            );
+                            self.kiss_link_activity(ch, true);
+                            self.note_ax25_peer(ch);
+                            self.note_bin_tx_ack(ch, frame.nr);
                         }
-                        if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
-                            *vr = 0;
+                        ax25::RecvI::Reject { expected, got } => {
+                            let again = self
+                                .ax25_rej
+                                .get(ch as usize)
+                                .and_then(|v| *v)
+                                == Some((expected, got));
+                            if again {
+                                self.kiss_reset_link_sequences(
+                                    ch,
+                                    &format!(
+                                        "*** sequence error: got N(S)={got} again, want N(S)={expected} — resetting link"
+                                    ),
+                                );
+                                return;
+                            }
+                            if let Some(slot) = self.ax25_rej.get_mut(ch as usize) {
+                                *slot = Some((expected, got));
+                            }
+                            if let Some(pad) = self.pads.get_mut(ch as usize) {
+                                pad.push(
+                                    PadKind::System,
+                                    format!("*** REJ: got N(S)={got}, want N(S)={expected}"),
+                                );
+                            }
+                            self.tx_kiss_payload(
+                                0,
+                                &ax25::build_rej_via(
+                                    &frame.src, &my, expected, frame.poll, &via_ref,
+                                ),
+                            );
+                            self.kiss_link_activity(ch, true);
+                        }
+                        ax25::RecvI::Accept => {
+                            if let Some(ok) = self.ax25_i_ok.get_mut(ch as usize) {
+                                *ok = true;
+                            }
+                            if let Some(slot) = self.ax25_rej.get_mut(ch as usize) {
+                                *slot = None;
+                            }
+                            if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
+                                *vr = (frame.ns.wrapping_add(1)) & 7;
+                            }
+                            let nr = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
+                            // Ack I with RR (Final if peer set P).
+                            self.tx_kiss_payload(
+                                0,
+                                &ax25::build_rr_via(
+                                    &frame.src, &my, nr, frame.poll, false, &via_ref,
+                                ),
+                            );
+                            self.kiss_link_activity(ch, true);
+                            self.note_ax25_peer(ch);
+                            self.note_rx_calls(ch, &frame.src, &frame.dest);
+                            if let Some(bytes) = self.autobin_channel_text(ch, &frame.info) {
+                                self.note_seven_payload(ch, &bytes);
+                                self.accept_rx_text(ch, &decode_cp437(&bytes), PadKind::Incoming);
+                            }
+                            self.note_bin_tx_ack(ch, frame.nr);
                         }
                     }
-                    if frame.ns != expect {
-                        // Out of sequence — ask them to resend from V(R).
-                        self.tx_kiss_payload(
-                            0,
-                            &ax25::build_rej_via(&frame.src, &my, expect, frame.poll, &via_ref),
-                        );
-                        self.kiss_link_activity(ch, true);
-                        return;
-                    }
-                    if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
-                        *vr = (frame.ns.wrapping_add(1)) & 7;
-                    }
-                    let nr = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
-                    // Ack I with RR (Final if peer set P).
-                    self.tx_kiss_payload(
-                        0,
-                        &ax25::build_rr_via(&frame.src, &my, nr, frame.poll, false, &via_ref),
-                    );
-                    self.kiss_link_activity(ch, true);
-                    self.note_ax25_peer(ch);
-                    self.note_rx_calls(ch, &frame.src, &frame.dest);
-                    if let Some(bytes) = self.autobin_channel_text(ch, &frame.info) {
-                        self.note_seven_payload(ch, &bytes);
-                        self.accept_rx_text(ch, &decode_cp437(&bytes), PadKind::Incoming);
-                    }
-                    self.note_bin_tx_ack(ch, frame.nr);
                 } else if frame.command {
                     self.kiss_dm_if_ours_disconnected(&frame);
                 }
@@ -4343,6 +4384,22 @@ impl GpGuiApp {
                 // the T3 idle clock on this side.
                 self.kiss_link_activity(ch, true);
                 self.note_ax25_peer(ch);
+                if matches!(frame.kind, Ax25FrameType::Rej) {
+                    let vs = *self.ax25_vs.get(ch as usize).unwrap_or(&0);
+                    if let ax25::RecvRej::Reset {
+                        wanted,
+                        outstanding,
+                    } = ax25::classify_rej(vs, frame.nr)
+                    {
+                        self.kiss_reset_link_sequences(
+                            ch,
+                            &format!(
+                                "*** sequence error: REJ wants N(S)={wanted}, this side sent N(S)={outstanding} — resetting link"
+                            ),
+                        );
+                        return;
+                    }
+                }
                 if matches!(frame.kind, Ax25FrameType::Rnr) {
                     if let Some(pad) = self.pads.get_mut(ch as usize) {
                         pad.push(PadKind::System, "*** peer busy (RNR)");
@@ -4396,6 +4453,43 @@ impl GpGuiApp {
                 }
             }
         }
+    }
+
+    /// V(S), V(R), and the REJ memory go back to a new link.
+    fn zero_ax25_seq(&mut self, idx: usize) {
+        if let Some(vs) = self.ax25_vs.get_mut(idx) {
+            *vs = 0;
+        }
+        if let Some(vr) = self.ax25_vr.get_mut(idx) {
+            *vr = 0;
+        }
+        if let Some(ok) = self.ax25_i_ok.get_mut(idx) {
+            *ok = false;
+        }
+        if let Some(rej) = self.ax25_rej.get_mut(idx) {
+            *rej = None;
+        }
+    }
+
+    /// Counters no longer match and this side cannot repair them by resending
+    /// one I-frame. SABM starts the link again at N(S) = N(R) = 0.
+    fn kiss_reset_link_sequences(&mut self, ch: u8, reason: &str) {
+        if !(1..=self.channels).contains(&ch) || self.channel_disconnecting(ch) {
+            return;
+        }
+        self.zero_ax25_seq(ch as usize);
+        if let Some(pad) = self.pads.get_mut(ch as usize) {
+            pad.push(PadKind::System, reason.to_string());
+        }
+        self.status = format!("KISS sequence reset ch{ch}");
+        let Some(peer) = self.channel_peer.get(ch as usize).and_then(|p| p.clone()) else {
+            return;
+        };
+        let my = self.effective_mycall(ch);
+        let vias = self.link_vias(ch);
+        let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
+        self.tx_kiss_payload(0, &ax25::build_sabm_via(&peer, &my, &via_ref));
+        self.kiss_link_activity(ch, false);
     }
 
     /// This circuit has carried a frame from the other station.
@@ -4624,12 +4718,7 @@ impl GpGuiApp {
         self.note_last_call(ch, peer);
         self.kiss_clear_sabm_timer(ch);
         self.kiss_link_activity(ch, true);
-        if let Some(vs) = self.ax25_vs.get_mut(ch as usize) {
-            *vs = 0;
-        }
-        if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
-            *vr = 0;
-        }
+        self.zero_ax25_seq(ch as usize);
         self.play_connect_bell();
         let moved = !requested.is_empty() && !requested.eq_ignore_ascii_case(peer);
         let line = if moved {
@@ -4717,10 +4806,11 @@ impl GpGuiApp {
         channel_for_exact_pair(&peers, &mine, src, dest)
     }
 
-    /// Repeat SABM for a circuit this peer has not spoken on yet.
-    /// A numbered SSID that is already in a live QSO with them is that
-    /// same circuit too. A SABM to the bare name after they have been
-    /// heard is a new connect and is left for [`Self::incoming_slot`].
+    /// SABM for a circuit we already have with this station.
+    ///
+    /// Lost UA (they have not spoken yet) and a live link are both this
+    /// channel. SABM on a live link clears the sequence counters. A bare
+    /// call we have not heard yet can still be a retry of a redirected SSID.
     fn sabm_retry_channel(&self, src: &str, dest: &str) -> Option<u8> {
         let (pool, specific) = self.match_pool(dest)?;
         let bare = specific.is_none();
@@ -4742,10 +4832,7 @@ impl GpGuiApp {
                 .copied()
                 .unwrap_or(false);
             let exact = air.eq_ignore_ascii_case(dest);
-            if exact && !heard {
-                return Some(n);
-            }
-            if exact && heard && !bare {
+            if exact {
                 return Some(n);
             }
             if bare && !heard {
@@ -12946,12 +13033,7 @@ impl GpGuiApp {
         if let Some(c) = self.channel_connecting.get_mut(idx) {
             *c = Some(dest.clone());
         }
-        if let Some(vs) = self.ax25_vs.get_mut(idx) {
-            *vs = 0;
-        }
-        if let Some(vr) = self.ax25_vr.get_mut(idx) {
-            *vr = 0;
-        }
+        self.zero_ax25_seq(idx);
         if let Some(slot) = self.channel_via.get_mut(idx) {
             *slot = if self_connect {
                 Vec::new()

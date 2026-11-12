@@ -207,9 +207,11 @@ impl KissDelivery {
 
     /// Peer RR / REJ / RNR / I. N(R) is the next N(S) the peer expects.
     ///
-    /// RR and I clear peer-busy and free the acknowledged frame. REJ with
-    /// N(R) past our frame does the same; REJ naming our outstanding N(S)
-    /// resends that frame. RNR acks what it can and holds further I-frames.
+    /// RR and I clear peer-busy and free the acknowledged frame. REJ naming
+    /// our outstanding N(S) sends that frame again (it was missed). REJ with
+    /// N(R) just past it is an ack. Any other N(R) is a frame this window
+    /// does not have: the outstanding I-frame and the queue are dropped so
+    /// T1 does not keep repeating the wrong one. The UI then resets the link.
     pub fn on_rx(&mut self, ax25_payload: &[u8], now: Instant) -> Option<Outgoing> {
         let Some(frame) = ax25::parse_frame(ax25_payload) else {
             return None;
@@ -255,7 +257,7 @@ impl KissDelivery {
                 link.flow.busy = false;
                 if let Some(cur) = link.inflight.as_ref() {
                     if frame.nr == (cur.ns & 7) {
-                        // Rejected the outstanding frame — send it again.
+                        // They missed this one — send the same I-frame again.
                         let out = Outgoing {
                             port: cur.port,
                             frame: cur.frame.clone(),
@@ -269,6 +271,9 @@ impl KissDelivery {
                     if frame.nr == (cur.ns + 1) & 7 {
                         return release_next(link, now);
                     }
+                    // N(R) is not the frame we can send. Stop repeating it.
+                    link.inflight = None;
+                    link.queued.clear();
                 }
                 None
             }
@@ -389,7 +394,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::tnc::ax25::{build_i, build_rr, build_ui};
+    use crate::tnc::ax25::{build_i, build_rej, build_rr, build_ui};
 
     fn now() -> Instant {
         Instant::now()
@@ -517,5 +522,30 @@ mod tests {
         let snaps = q.tx_snapshots();
         assert_eq!(snaps[0].tries, 1);
         assert_eq!(snaps[0].unack, 1);
+    }
+
+    #[test]
+    fn rej_of_the_frame_in_flight_sends_it_again() {
+        let mut q = KissDelivery::new();
+        let t = now();
+        q.push(0, build_i("PEER", "ME", 1, 0, false, b"one"), t)
+            .unwrap();
+        let again = q
+            .on_rx(&build_rej("ME", "PEER", 1, false), t)
+            .expect("resend the missed I-frame");
+        assert_eq!(ax25::parse_frame(&again.frame).unwrap().ns, 1);
+        assert!(q.tick(t + T1 - Duration::from_millis(1)).is_none());
+    }
+
+    #[test]
+    fn rej_for_a_frame_we_do_not_have_stops_the_retry() {
+        let mut q = KissDelivery::new();
+        let t = now();
+        q.push(0, build_i("PEER", "ME", 3, 3, false, b"lol"), t)
+            .unwrap();
+        assert!(q.push(0, build_i("PEER", "ME", 4, 3, false, b"next"), t).is_none());
+        assert!(q.on_rx(&build_rej("ME", "PEER", 1, false), t).is_none());
+        assert!(q.tick(t + T1 + Duration::from_millis(1)).is_none());
+        assert!(q.tx_snapshots().is_empty());
     }
 }

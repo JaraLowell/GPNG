@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""//RUN WEATHER — Local Weather.
+
+Start it from a linked channel with //RUN WEATHER, or //WEATHER (Remote must
+be on). It prints one report, reads no input, and exits. Bare //RUN is
+different: that sends RUN.GPI and starts nothing.
+
+Needs your Weather Undergound API Key !
+"""
+
+import requests
+
+API_KEY = "<WU API KEY>"
+STATION_ID = "IMUSSE20"
+URL = (
+    f"https://api.weather.com/v2/pws/observations/current"
+    f"?stationId={STATION_ID}&format=json&units=m&numericPrecision=decimal&apiKey={API_KEY}"
+)
+
+def wind_dir_text(deg):
+    if deg is None:
+        return "N/A"
+    dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    return dirs[round(deg / 22.5) % 16]
+
+res = requests.get(URL, timeout=10)
+if res.status_code != 200 or not res.text.strip():
+    print(f"[!] Station {STATION_ID} offline or returned no recent data.")
+    exit()
+
+obs = res.json()["observations"][0]
+m = obs["metric"]
+
+loc = obs.get("neighborhood", "Musselkanaal")
+time_local = obs.get("obsTimeLocal", "Unknown")
+wind_card = wind_dir_text(obs.get("winddir"))
+
+bbs_output = f"""
++==============================================================================+
+|   * * *                        W E A T H E R                         * * *   |
++==============================================================================+
+| STATION ID : {obs['stationID']:<23} | LOCATION : {loc:<26} |
+| LOCAL TIME : {time_local:<23} | SOFTWARE : {obs.get('softwareType', 'PWS'):<26} |
++--------------------------------------+---------------------------------------+
+|  [ TEMPERATURE & HUMIDITY ]          |  [ WIND & BAROMETER ]                 |
+|  Temp      : {m['temp']:>6.1f} C                |  Wind      : {m['windSpeed']:>5.1f} km/h ({wind_card:<5})       |
+|  Feels Like: {m['heatIndex']:>6.1f} C                |  Gusts     : {m['windGust']:>5.1f} km/h               |
+|  Dew Point : {m['dewpt']:>6.1f} C                |  Pressure  : {m['pressure']:>7.1f} hPa              |
+|  Humidity  : {obs['humidity']:>6} %                |  Precip    : {m['precipTotal']:>5.1f} mm (Rate {m['precipRate']:.1f})      |
++--------------------------------------+---------------------------------------+
+|  Solar Rad : {str(obs.get('solarRadiation', 'N/A')):>6} W/m2             |  UV Index  : {str(obs.get('uv', 'N/A')):>5}                    |
++==============================================================================+
+"""
+print(bbs_output.strip())

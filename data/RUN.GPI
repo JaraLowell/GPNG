@@ -2,7 +2,10 @@
 |
 | Programs in EXTERNAL
 |
-| FREE       -  Memory total, used, and still free
-| DOS        -  MS-DOS 6.20 window on the USER folder
+| FREE       - Memory total, used, and still free
+| DOS        - MS-DOS 6.20 window on the USER folder
+| QSLINFO    - A callsign card from hamdb.org
+| SWPC       - NOAA Space Weather
+| WEATHER    - Local Weather information
 |
 | //RUN [PROGRAM] to run a programm
