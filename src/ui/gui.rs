@@ -530,6 +530,8 @@ pub struct GpGuiApp {
     newline_sound_channel: u8,
     /// Prevents double-fire within the same hour.
     last_gong: Option<(chrono::NaiveDate, u32)>,
+    /// Last key / mouse activity (for `//Activity`). Updated from egui input.
+    last_sysop_activity: Instant,
     show_setup: bool,
     /// Face last given to egui. `true` is JetBrains Mono Bold (`Zoom` on).
     console_bold: bool,
@@ -886,6 +888,7 @@ impl GpGuiApp {
             newline_sound_pending: false,
             newline_sound_channel: 0,
             last_gong: None,
+            last_sysop_activity: Instant::now(),
             show_setup: false,
             console_bold,
             setup_pane: ActivePane::Monitor,
@@ -5697,6 +5700,7 @@ impl GpGuiApp {
             origin_line: gpi::random_origin_line(),
             digi: String::new(),
             qrg: self.session.qrg_text(),
+            activity: macros::activity_status(self.last_sysop_activity.elapsed()),
             name_unknown: false,
         };
         self.apply_channel_peer(&mut ctx, channel);
@@ -6013,6 +6017,15 @@ impl GpGuiApp {
             RemoteAction::Name => {
                 self.store_remote_name(channel, args);
             }
+            RemoteAction::Activity => {
+                let age = self.last_sysop_activity.elapsed();
+                let msg = format!(
+                    "The last sysop activity was {} ago.",
+                    activity_age_phrase(age)
+                );
+                self.status = msg.clone();
+                self.send_report(&msg);
+            }
             _ => {
                 self.status = format!("remote {action:?} (not implemented)");
                 self.send_report("not implemented");
@@ -6024,6 +6037,31 @@ impl GpGuiApp {
     fn close_remote(&mut self, prev: ActivePane) {
         self.active = prev;
         self.maybe_send_prompt();
+    }
+
+    /// egui input on any OS: key, text, click, move, or scroll counts as sysop activity.
+    fn touch_sysop_activity(&mut self, ctx: &Context) {
+        let busy = ctx.input(|i| {
+            i.pointer.any_pressed()
+                || i.pointer.any_released()
+                || i.pointer.delta().length_sq() > 0.25
+                || i.smooth_scroll_delta.length_sq() > 0.0
+                || i.raw_scroll_delta.length_sq() > 0.0
+                || !i.keys_down.is_empty()
+                || i.events.iter().any(|ev| {
+                    matches!(
+                        ev,
+                        egui::Event::Key { .. }
+                            | egui::Event::Text(_)
+                            | egui::Event::PointerMoved(_)
+                            | egui::Event::PointerButton { .. }
+                            | egui::Event::MouseWheel { .. }
+                    )
+                })
+        });
+        if busy {
+            self.last_sysop_activity = Instant::now();
+        }
     }
 
     fn maybe_send_prompt(&mut self) {
@@ -10021,6 +10059,7 @@ impl eframe::App for GpGuiApp {
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        self.touch_sysop_activity(ctx);
         self.sync_console_font(ctx);
         self.track_window(ctx);
         self.poll_external();
@@ -14493,6 +14532,18 @@ fn latin1_string(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Idle age for `//Activity`: seconds, then minutes, then hours.
+fn activity_age_phrase(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        format!("{secs} second(s)")
+    } else if secs < 3600 {
+        format!("{} minute(s)", secs / 60)
+    } else {
+        format!("{} hour(s)", secs / 3600)
+    }
+}
+
 /// Local 24-hour `hh:mm` with leading zeros, inserted after `fm`.
 fn is_fm_header(line: &str) -> bool {
     ax25::split_monitor_fm(line).is_some()
@@ -16165,6 +16216,23 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::activity_age_phrase;
+    use std::time::Duration;
+
+    #[test]
+    fn activity_phrase_scales_to_minutes_and_hours() {
+        assert_eq!(activity_age_phrase(Duration::from_secs(0)), "0 second(s)");
+        assert_eq!(activity_age_phrase(Duration::from_secs(1)), "1 second(s)");
+        assert_eq!(activity_age_phrase(Duration::from_secs(59)), "59 second(s)");
+        assert_eq!(activity_age_phrase(Duration::from_secs(60)), "1 minute(s)");
+        assert_eq!(activity_age_phrase(Duration::from_secs(119)), "1 minute(s)");
+        assert_eq!(activity_age_phrase(Duration::from_secs(3600)), "1 hour(s)");
+        assert_eq!(activity_age_phrase(Duration::from_secs(7200)), "2 hour(s)");
+    }
 }
 
 #[cfg(test)]

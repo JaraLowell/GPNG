@@ -1,11 +1,17 @@
 //! GPI / CTEXT macro expansion — classic Graphic Packet `%` tokens.
 //!
-//! Documented set: fifteen macros in `README.TXT`, plus `%DIGI%` and the
-//! config-only `%TFPCX200` keyword. Formatting suffix `#NN` pads/truncates.
+//! Documented set: fifteen macros in `README.TXT`, plus `%DIGI%`, `%Q`,
+//! `%A` (sysop activity), and the config-only `%TFPCX200` keyword.
+//! Formatting suffix `#NN` pads/truncates. Undocumented EXE extras `%P` /
+//! `%*` are not implemented.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use chrono::Local;
+
+/// Idle under this many seconds → `%A` reports the sysop at the keyboard.
+pub const ACTIVITY_PRESENT_SECS: u64 = 5 * 60;
 
 /// Runtime values available while expanding a `*.GPI` / `*.GPM` / prompt line.
 #[derive(Debug, Clone, Default)]
@@ -23,6 +29,8 @@ pub struct MacroContext {
     pub digi: String,
     /// QRG in MHz (session-bar / Config.toml), e.g. `27.235`.
     pub qrg: String,
+    /// Preformatted `%A` text from [`activity_status`].
+    pub activity: String,
     /// If true, `%?` should solicit a name (caller handles interaction).
     pub name_unknown: bool,
 }
@@ -42,8 +50,37 @@ impl MacroContext {
             origin_line: "73 de GP".into(),
             digi: String::new(),
             qrg: "27.235".into(),
+            activity: activity_status(Duration::from_secs(30)),
             name_unknown: false,
         }
+    }
+}
+
+/// `%A` / activity status from idle time since last sysop key/mouse input.
+///
+/// Under five minutes: present. Otherwise relative minutes / hours / days.
+pub fn activity_status(elapsed: Duration) -> String {
+    if elapsed.as_secs() < ACTIVITY_PRESENT_SECS {
+        "Sysop is at Keyboard".into()
+    } else {
+        format!(
+            "Sysop not at keyboard, last seen {} ago",
+            activity_ago_phrase(elapsed)
+        )
+    }
+}
+
+fn activity_ago_phrase(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 3600 {
+        let n = (secs / 60).max(1);
+        format!("{n} minute{}", if n == 1 { "" } else { "s" })
+    } else if secs < 86_400 {
+        let n = secs / 3600;
+        format!("{n} hour{}", if n == 1 { "" } else { "s" })
+    } else {
+        let n = secs / 86_400;
+        format!("{n} day{}", if n == 1 { "" } else { "s" })
     }
 }
 
@@ -105,6 +142,7 @@ pub fn expand(input: &str, ctx: &MacroContext) -> String {
             '_' => "\r\n".into(),
             'O' | 'o' => ctx.origin_line.clone(),
             'Q' | 'q' => ctx.qrg.clone(),
+            'A' | 'a' => ctx.activity.clone(),
             '?' => {
                 if ctx.name_unknown {
                     // Placeholder — real UI should prompt; mark for session layer.
@@ -166,6 +204,7 @@ pub fn help_entries() -> &'static [(&'static str, &'static str)] {
         ("%%", "Literal %"),
         ("%O", "Random ORIGIN.GPI line"),
         ("%Q", "QRG (MHz)"),
+        ("%A", "Sysop at keyboard / last seen"),
         ("%?", "Ask for name if unknown"),
         ("%>", "Enable remote prompt"),
         ("%DIGI%", "Digipeater path"),
@@ -336,6 +375,35 @@ mod tests {
             ..ctx
         };
         assert_eq!(expand("Hallo %N,", &named), "Hallo Jara,");
+    }
+
+    #[test]
+    fn activity_macro_present_under_five_minutes() {
+        assert_eq!(
+            activity_status(Duration::from_secs(4 * 60 + 59)),
+            "Sysop is at Keyboard"
+        );
+        let ctx = MacroContext {
+            activity: activity_status(Duration::from_secs(10)),
+            ..MacroContext::demo()
+        };
+        assert_eq!(expand("%A", &ctx), "Sysop is at Keyboard");
+    }
+
+    #[test]
+    fn activity_macro_last_seen_minutes_hours_days() {
+        assert_eq!(
+            activity_status(Duration::from_secs(5 * 60)),
+            "Sysop not at keyboard, last seen 5 minutes ago"
+        );
+        assert_eq!(
+            activity_status(Duration::from_secs(60 * 60)),
+            "Sysop not at keyboard, last seen 1 hour ago"
+        );
+        assert_eq!(
+            activity_status(Duration::from_secs(2 * 86_400)),
+            "Sysop not at keyboard, last seen 2 days ago"
+        );
     }
 
     #[test]

@@ -272,6 +272,7 @@ fn macro_ctx(snap: &BeaconSnap) -> MacroContext {
         origin_line: gpi::random_origin_line(),
         digi: String::new(),
         qrg: snap.qrg.clone(),
+        activity: String::new(),
         name_unknown: false,
     }
 }

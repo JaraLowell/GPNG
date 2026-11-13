@@ -47,7 +47,7 @@ find, sort, replace/append). Still open:
 
 | Gap | Status | Notes |
 |-----|--------|-------|
-| `//Activity`, `//RTt`, `//C`, chat `#` | **Missing** | Parsed, then refused |
+| `//RTt`, `//C`, chat `#` | **Missing** | Parsed, then refused |
 | `REMOTE=` / `NOREMOTE=` call allow-lists | **Partial** | Loaded; not enforced. Per-channel **Remote** bit is the live gate |
 | `NAMES.GP` type `B` blocks remotes | **Missing** | Type stored; remotes still run |
 | `PORTx` / multiport radio switch | **Partial** | `%DIGI%` / `PORTx` QRG match in paths; no TNC/radio port change |
@@ -97,21 +97,26 @@ find, sort, replace/append). Still open:
 
 | Gap | Status |
 |-----|--------|
-| ALT-Z VGA zoom | **DOS-only** |
 | ALT + numpad ASCII 1–31 | **DOS-only** |
 | DOS shell / `/e` `/v` `/NOXMS` … | **DOS-only** |
+
+ALT-Z toggles Theme **Zoom** (JetBrains Mono bold on/off), same as Setup → Theme Setup → Zoom.
 
 ---
 
 ## Stub `//` remotes
 
-Everything else in the remote catalogue runs. These four still return
+Everything else in the remote catalogue runs. These still return
 “not implemented” after parse:
 
-- `//Activity`
 - `//RTt`
 - `//C` (remote connect)
 - chat `#` (and `#` tokens inside `REMOTE=`)
+
+`//Activity` reports idle time from last egui key/mouse input
+(`The last sysop activity was N second(s)|minute(s)|hour(s) ago.`).
+`%A` uses the same timer: under 5 min → `Sysop is at Keyboard`; else
+`Sysop not at keyboard, last seen N minute(s)|hour(s)|day(s) ago`.
 
 Full command / macro table: `docs/COMPATIBILITY.md`.
 
@@ -120,6 +125,7 @@ Full command / macro table: `docs/COMPATIBILITY.md`.
 ## Recent behaviour (so agents do not re-open closed work)
 
 - **InsertMonLine** — ON inserts a blank monitor row before each new `fm …` header.
+- **ALT-Z / Theme Zoom** — bold console font on/off (not DOS VGA zoom).
 - **Session chrome bits** — umlaut, softscroll, echo, bell, 7+, remote are
   per-slot bit masks in `[session.chrome]`. Monitor toggles set every bit that
   setting uses; a channel / spy / BBS / Box-List toggle flips only that slot.
@@ -156,6 +162,6 @@ DieBox PRIV (if ever needed): PWLIST 1620 chars (60×27); four chars from
 1. F6FBB/BPQ BBS-Menu parser (LinBPQ TCP KISS capture → fixtures).
 2. OpenBCM CHECK/LIST capture → parser or confirm DieBox match.
 3. ALT-T / ALT-S / ALT-F / transfer resume.
-4. Stub remotes (`//Activity`, `//RTt`, `//C`) or drop from the help packs.
+4. Stub remotes (`//RTt`, `//C`) or drop from the help packs.
 5. `REMOTE=` allow-list + type `B` remote block.
 6. Hostmode hardware pass + Ctrl+PrintScreen TNC-Statistics.
