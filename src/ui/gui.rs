@@ -39,7 +39,7 @@ use crate::bbs::{self, Entry as MailEntry};
 use crate::cipher;
 use crate::config::{
     beacon_minutes, clip_beacon, normalize_mycall, BeaconConfig, Config, HostProtocol,
-    BEACON_FILE_MAX, BEACON_MINUTES_MAX, BEACON_TEXT_MAX,
+    BEACON_MINUTES_MAX, BEACON_TEXT_MAX,
 };
 use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
@@ -68,6 +68,7 @@ use crate::transfer::sevenplus::{self, SevenPlusAutosave};
 use crate::version;
 
 use super::ansi::{strip_ansi, AnsiDecoder, AnsiStyle};
+use super::beacon::{BeaconSchedule, BeaconSnap};
 use super::editor::{
     channel_store_text, decode_cp437, encode_channel_wire, show_channel_text, GpEditor,
 };
@@ -538,8 +539,8 @@ pub struct GpGuiApp {
     icon_editor: Option<IconEdit>,
     show_tnc: bool,
     tnc_cmd: String,
-    /// Last beacon UI. The next one waits `period_minutes`.
-    last_beacon: Instant,
+    /// Wall-clock beacon. Not the paint loop: a covered window stops painting.
+    beacon_sched: BeaconSchedule,
     /// Window place changed and still needs a write to Config.toml.
     window_dirty: bool,
     /// When the place last changed. The file is written after it settles.
@@ -688,6 +689,18 @@ impl GpGuiApp {
         if let Err(err) = crate::paths::ensure_dir(&cfg.paths.external_dir) {
             tracing::warn!("EXTERNAL dir: {err}");
         }
+        let beacon_sched = BeaconSchedule::start(
+            cc.egui_ctx.clone(),
+            BeaconSnap {
+                kiss: cfg.tnc.protocol_kind() == HostProtocol::Kiss,
+                beacon: cfg.beacon.clone(),
+                my_call: cfg.primary_mycall().to_string(),
+                qrg: session.qrg_text(),
+                version: version::APP_VERSION.into(),
+                cmd_tx: cmd_tx.clone(),
+                mail_dir: mail::mail_dir(),
+            },
+        );
         Self {
             monitor_bg: egui_color(&colors.monitor_background),
             monitor_fg: egui_color(&colors.monitor_foreground),
@@ -875,7 +888,7 @@ impl GpGuiApp {
             icon_editor: None,
             show_tnc: false,
             tnc_cmd: String::new(),
-            last_beacon: Instant::now(),
+            beacon_sched,
             window_dirty: false,
             window_dirty_at: Instant::now(),
             fullscreen: false,
@@ -989,37 +1002,76 @@ impl GpGuiApp {
         (!call.is_empty()).then_some(call)
     }
 
-    /// One snapshot of the channel pad. `CALL.GPL`, then `CALL.000.GPL`, `CALL.001.GPL`, …
-    fn save_channel_transcript(&mut self, channel: u8) {
-        let Some(call) = self.channel_call_for_save(channel) else {
-            self.status = "Save — no call on this channel".into();
+    /// Suggested `*.LOG` name and the visible pad, for the Save dialog.
+    fn transcript_for_save(&self) -> Option<(String, String)> {
+        let text = |pad: &super::padlog::TextPad| pad.transcript_text();
+        match self.active {
+            ActivePane::Monitor => {
+                let body = self.pads.first().map(text).unwrap_or_default();
+                Some(("MONITOR.LOG".into(), body))
+            }
+            ActivePane::Channel(n) => {
+                let name = self
+                    .channel_call_for_save(n)
+                    .map(|call| format!("{call}.LOG"))
+                    .unwrap_or_else(|| format!("CH{n:02}.LOG"));
+                let body = self.pads.get(n as usize).map(text).unwrap_or_default();
+                Some((name, body))
+            }
+            ActivePane::Check => Some(("BBS.LOG".into(), self.bbs_pad.transcript_text())),
+            ActivePane::List => Some(("BOX.LOG".into(), self.box_pad.transcript_text())),
+            ActivePane::Spy(n) => {
+                let call = transcript_call(self.spy_call(n));
+                let name = if call.is_empty() {
+                    format!("SPY{n:02}.LOG")
+                } else {
+                    format!("{call}.LOG")
+                };
+                let body = self
+                    .spy_pads
+                    .get(n.saturating_sub(1) as usize)
+                    .map(text)
+                    .unwrap_or_default();
+                Some((name, body))
+            }
+            _ => None,
+        }
+    }
+
+    /// Ask for a `*.LOG` name in the LOG folder, then write this screen's transcript.
+    fn save_screen_transcript(&mut self) {
+        let Some((name, body)) = self.transcript_for_save() else {
+            self.status = "Save — this window has no transcript".into();
             return;
         };
-        let body = self
-            .pads
-            .get(channel as usize)
-            .map(super::padlog::TextPad::transcript_text)
-            .unwrap_or_default();
         if body.is_empty() {
-            self.status = format!("Save — {call} has no text");
+            self.status = format!("Save — {} has no text", self.pane_title());
             return;
         }
-        let dir = self.cfg.paths.save_dir.clone();
+        let dir = self.cfg.paths.log_dir.clone();
         if let Err(e) = crate::paths::ensure_dir(&dir) {
             self.status = format!("Save: {e}");
             return;
         }
-        let path = match next_gpl_path(&dir, &call) {
-            Ok(path) => path,
-            Err(e) => {
-                self.status = e;
+        let dialog = rfd::FileDialog::new()
+            .add_filter("Log", &["log", "LOG"])
+            .set_title("Save transcript")
+            .set_file_name(&name)
+            .set_directory(&dir);
+        let Some(path) = dialog.save_file() else {
+            return;
+        };
+        let path = with_log_extension(path);
+        if let Some(parent) = path.parent() {
+            if let Err(e) = crate::paths::ensure_dir(parent) {
+                self.status = format!("Save: {e}");
                 return;
             }
-        };
+        }
         match std::fs::write(&path, body) {
             Ok(()) => {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&call);
-                self.status = format!("saved {name}");
+                let shown = path.file_name().and_then(|n| n.to_str()).unwrap_or("log");
+                self.status = format!("saved {shown}");
             }
             Err(e) => self.status = format!("Save: {e}"),
         }
@@ -2071,7 +2123,11 @@ impl GpGuiApp {
             self.autobin = None;
             self.session.bin_rx = false;
             self.session.bin_tx = false;
-            if self.wprg_name.as_ref().is_some_and(|(ch, _)| *ch == channel) {
+            if self
+                .wprg_name
+                .as_ref()
+                .is_some_and(|(ch, _)| *ch == channel)
+            {
                 self.wprg_name = None;
             }
         }
@@ -3445,7 +3501,10 @@ impl GpGuiApp {
             self.log_event(self.status.clone());
             self.show_proto_line(channel, line, PadKind::Incoming);
             // `//WPrg` (or 7+ AutoSave) answers the offer without a SAVE click.
-            let auto = self.wprg_name.as_ref().is_some_and(|(ch, _)| *ch == channel)
+            let auto = self
+                .wprg_name
+                .as_ref()
+                .is_some_and(|(ch, _)| *ch == channel)
                 || self.session.seven_plus;
             if auto {
                 let _ = self.accept_autobin(channel);
@@ -4289,10 +4348,7 @@ impl GpGuiApp {
                             self.note_bin_tx_ack(ch, frame.nr);
                         }
                         ax25::RecvI::Reject { expected, got } => {
-                            let again = self
-                                .ax25_rej
-                                .get(ch as usize)
-                                .and_then(|v| *v)
+                            let again = self.ax25_rej.get(ch as usize).and_then(|v| *v)
                                 == Some((expected, got));
                             if again {
                                 self.kiss_reset_link_sequences(
@@ -6669,7 +6725,12 @@ impl GpGuiApp {
         self.pads
             .first()
             .map(|pad| {
-                pad.layout_job_monitor(columns, self.monitor_fg, self.monitor_inv, self.monitor_info)
+                pad.layout_job_monitor(
+                    columns,
+                    self.monitor_fg,
+                    self.monitor_inv,
+                    self.monitor_info,
+                )
             })
             .unwrap_or_default()
     }
@@ -6759,7 +6820,6 @@ impl GpGuiApp {
         self.setup_color_pick = None;
         self.setup_icon_pick = false;
         self.setup_view = SetupView::Main;
-        self.last_beacon = Instant::now();
         if let Err(e) = self.cfg.persist_setup(&self.config_path) {
             self.status = format!("setup: {e}");
         } else {
@@ -6824,48 +6884,42 @@ impl GpGuiApp {
                 c.menu_foreground.clone(),
                 c.menu_invers_attr.clone(),
             ],
-            ColorSlot::Clock => [
-                c.clock_background.clone(),
-                String::new(),
-                String::new(),
+            ColorSlot::Clock => [c.clock_background.clone(), String::new(), String::new()],
+            ColorSlot::Monitor => [
+                c.monitor_background.clone(),
+                c.monitor_foreground.clone(),
+                c.monitor_invers_attr.clone(),
             ],
-            ColorSlot::Output => match self.setup_pane {
-                ActivePane::Channel(_) => [
-                    c.connect_background.clone(),
-                    c.connect_foreground.clone(),
-                    c.connect_invers_attr.clone(),
-                ],
-                ActivePane::Editor => [
-                    c.editor_background.clone(),
-                    c.editor_foreground.clone(),
-                    c.editor_invers_attr.clone(),
-                ],
-                ActivePane::Check => [
-                    c.check_background.clone(),
-                    c.check_foreground.clone(),
-                    c.check_invers_attr.clone(),
-                ],
-                ActivePane::List => [
-                    c.list_background.clone(),
-                    c.list_foreground.clone(),
-                    c.list_invers_attr.clone(),
-                ],
-                ActivePane::Mh => [
-                    c.mh_background.clone(),
-                    c.mh_foreground.clone(),
-                    c.mh_invers_attr.clone(),
-                ],
-                ActivePane::Spy(_) => [
-                    c.spy_background.clone(),
-                    c.spy_foreground.clone(),
-                    c.spy_invers_attr.clone(),
-                ],
-                _ => [
-                    c.monitor_background.clone(),
-                    c.monitor_foreground.clone(),
-                    c.monitor_invers_attr.clone(),
-                ],
-            },
+            ColorSlot::Channel => [
+                c.connect_background.clone(),
+                c.connect_foreground.clone(),
+                c.connect_invers_attr.clone(),
+            ],
+            ColorSlot::Editor => [
+                c.editor_background.clone(),
+                c.editor_foreground.clone(),
+                c.editor_invers_attr.clone(),
+            ],
+            ColorSlot::Check => [
+                c.check_background.clone(),
+                c.check_foreground.clone(),
+                c.check_invers_attr.clone(),
+            ],
+            ColorSlot::List => [
+                c.list_background.clone(),
+                c.list_foreground.clone(),
+                c.list_invers_attr.clone(),
+            ],
+            ColorSlot::Mh => [
+                c.mh_background.clone(),
+                c.mh_foreground.clone(),
+                c.mh_invers_attr.clone(),
+            ],
+            ColorSlot::Spy => [
+                c.spy_background.clone(),
+                c.spy_foreground.clone(),
+                c.spy_invers_attr.clone(),
+            ],
         }
     }
 
@@ -6890,43 +6944,41 @@ impl GpGuiApp {
             ColorSlot::Clock => {
                 c.clock_background = v[0].clone();
             }
-            ColorSlot::Output => match self.setup_pane {
-                ActivePane::Channel(_) => {
-                    c.connect_background = v[0].clone();
-                    c.connect_foreground = v[1].clone();
-                    c.connect_invers_attr = v[2].clone();
-                }
-                ActivePane::Editor => {
-                    c.editor_background = v[0].clone();
-                    c.editor_foreground = v[1].clone();
-                    c.editor_invers_attr = v[2].clone();
-                }
-                ActivePane::Check => {
-                    c.check_background = v[0].clone();
-                    c.check_foreground = v[1].clone();
-                    c.check_invers_attr = v[2].clone();
-                }
-                ActivePane::List => {
-                    c.list_background = v[0].clone();
-                    c.list_foreground = v[1].clone();
-                    c.list_invers_attr = v[2].clone();
-                }
-                ActivePane::Mh => {
-                    c.mh_background = v[0].clone();
-                    c.mh_foreground = v[1].clone();
-                    c.mh_invers_attr = v[2].clone();
-                }
-                ActivePane::Spy(_) => {
-                    c.spy_background = v[0].clone();
-                    c.spy_foreground = v[1].clone();
-                    c.spy_invers_attr = v[2].clone();
-                }
-                _ => {
-                    c.monitor_background = v[0].clone();
-                    c.monitor_foreground = v[1].clone();
-                    c.monitor_invers_attr = v[2].clone();
-                }
-            },
+            ColorSlot::Monitor => {
+                c.monitor_background = v[0].clone();
+                c.monitor_foreground = v[1].clone();
+                c.monitor_invers_attr = v[2].clone();
+            }
+            ColorSlot::Channel => {
+                c.connect_background = v[0].clone();
+                c.connect_foreground = v[1].clone();
+                c.connect_invers_attr = v[2].clone();
+            }
+            ColorSlot::Editor => {
+                c.editor_background = v[0].clone();
+                c.editor_foreground = v[1].clone();
+                c.editor_invers_attr = v[2].clone();
+            }
+            ColorSlot::Check => {
+                c.check_background = v[0].clone();
+                c.check_foreground = v[1].clone();
+                c.check_invers_attr = v[2].clone();
+            }
+            ColorSlot::List => {
+                c.list_background = v[0].clone();
+                c.list_foreground = v[1].clone();
+                c.list_invers_attr = v[2].clone();
+            }
+            ColorSlot::Mh => {
+                c.mh_background = v[0].clone();
+                c.mh_foreground = v[1].clone();
+                c.mh_invers_attr = v[2].clone();
+            }
+            ColorSlot::Spy => {
+                c.spy_background = v[0].clone();
+                c.spy_foreground = v[1].clone();
+                c.spy_invers_attr = v[2].clone();
+            }
         }
         self.apply_palette();
     }
@@ -7075,6 +7127,10 @@ impl GpGuiApp {
         };
         match row.kind {
             RowKind::Submenu => match row.id {
+                RowId::Theme => {
+                    self.setup_icon_pick = false;
+                    self.setup_view = SetupView::Theme { cursor: 0 };
+                }
                 RowId::Beacon => self.setup_view = self.beacon_view(),
                 RowId::Icons => self.setup_icon_pick = !self.setup_icon_pick,
                 RowId::Prompt => {
@@ -7107,21 +7163,7 @@ impl GpGuiApp {
                 }
                 id => {
                     if let Some(slot) = id.color_slot() {
-                        let saved = self.color_triple(slot);
-                        let info = if matches!(slot, ColorSlot::Output)
-                            && matches!(self.setup_pane, ActivePane::Monitor)
-                        {
-                            Some(self.cfg.colors.monitor_infoerror.clone())
-                        } else {
-                            None
-                        };
-                        self.setup_view = SetupView::Colors {
-                            slot,
-                            cursor: 0,
-                            draft: saved.clone(),
-                            saved,
-                            info,
-                        };
+                        self.open_color_slot(slot, 0);
                     }
                 }
             },
@@ -7133,6 +7175,52 @@ impl GpGuiApp {
             },
             RowKind::Exit => self.close_setup(),
         }
+    }
+
+    fn open_color_slot(&mut self, slot: ColorSlot, theme_cursor: usize) {
+        let saved = self.color_triple(slot);
+        let info = if matches!(slot, ColorSlot::Monitor) {
+            Some(self.cfg.colors.monitor_infoerror.clone())
+        } else {
+            None
+        };
+        self.setup_color_pick = None;
+        self.setup_view = SetupView::Colors {
+            slot,
+            cursor: 0,
+            draft: saved.clone(),
+            saved,
+            info,
+            theme_cursor,
+        };
+    }
+
+    fn activate_theme_row(&mut self) {
+        let SetupView::Theme { cursor } = self.setup_view else {
+            return;
+        };
+        let rows = setup::theme_rows();
+        let Some(row) = rows.get(cursor).copied() else {
+            return;
+        };
+        match row.kind {
+            RowKind::Submenu => match row.id {
+                RowId::Icons => self.setup_icon_pick = !self.setup_icon_pick,
+                id => {
+                    if let Some(slot) = id.color_slot() {
+                        self.setup_icon_pick = false;
+                        self.open_color_slot(slot, cursor);
+                    }
+                }
+            },
+            RowKind::Toggle | RowKind::Number => self.nudge_setup(row.id, 1),
+            RowKind::Action | RowKind::Exit => {}
+        }
+    }
+
+    fn show_theme(&mut self, cursor: usize) {
+        self.setup_color_pick = None;
+        self.setup_view = SetupView::Theme { cursor };
     }
 
     fn note_mail_line(&mut self, channel: u8, text: &str) {
@@ -7788,6 +7876,14 @@ impl GpGuiApp {
         if eat_key(ctx, none, egui::Key::Escape) {
             match &self.setup_view {
                 SetupView::Main => self.close_setup(),
+                SetupView::Theme { .. } => {
+                    self.setup_icon_pick = false;
+                    self.setup_view = SetupView::Main;
+                }
+                SetupView::Colors { theme_cursor, .. } => {
+                    let cursor = *theme_cursor;
+                    self.show_theme(cursor);
+                }
                 _ => self.setup_view = SetupView::Main,
             }
             return;
@@ -7825,6 +7921,10 @@ impl GpGuiApp {
             SetupView::Beacon { cursor, .. } => {
                 *cursor = (*cursor as i32 + step).rem_euclid(4) as usize;
             }
+            SetupView::Theme { cursor } => {
+                let n = setup::theme_rows().len().max(1) as i32;
+                *cursor = (*cursor as i32 + step).rem_euclid(n) as usize;
+            }
             SetupView::Main => {
                 self.setup_cursor =
                     (self.setup_cursor as i32 + step).rem_euclid(len as i32) as usize;
@@ -7857,6 +7957,14 @@ impl GpGuiApp {
                     }
                 }
             }
+            SetupView::Theme { cursor } => {
+                let rows = setup::theme_rows();
+                if let Some(row) = rows.get(*cursor).copied() {
+                    if matches!(row.kind, RowKind::Toggle | RowKind::Number) {
+                        self.nudge_setup(row.id, step);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -7864,17 +7972,19 @@ impl GpGuiApp {
     fn activate_open_row(&mut self) {
         match self.setup_view.clone() {
             SetupView::Main => self.activate_setup_row(),
+            SetupView::Theme { .. } => self.activate_theme_row(),
             SetupView::Colors {
                 slot,
                 cursor,
                 draft,
                 info,
+                theme_cursor,
                 ..
             } => {
                 let apply_at = color_choice_count(slot, info.is_some());
                 if cursor >= apply_at {
                     self.apply_color_choice(slot, draft, info);
-                    self.setup_view = SetupView::Main;
+                    self.show_theme(theme_cursor);
                 }
             }
             SetupView::Beacon { .. } => {}
@@ -7929,15 +8039,10 @@ impl GpGuiApp {
                 cursor,
                 draft,
                 info,
+                theme_cursor,
                 ..
             } => {
-                let title = match slot {
-                    ColorSlot::Input => "Colours of input window",
-                    ColorSlot::Output => output_color_title(self.setup_pane),
-                    ColorSlot::State => "Colours of state window",
-                    ColorSlot::Menu => "Colours of menu window",
-                    ColorSlot::Clock => "Colours of Clock",
-                };
+                let title = slot.title();
                 let labels = ["Background", "Foreground", "Inverse"];
                 let shown = if matches!(slot, ColorSlot::Clock) {
                     1
@@ -8029,10 +8134,50 @@ impl GpGuiApp {
                 );
                 if applied {
                     self.apply_color_choice(slot, draft, info);
-                    self.setup_color_pick = None;
-                    self.setup_view = SetupView::Main;
+                    self.show_theme(theme_cursor);
                 } else if !open {
-                    self.setup_color_pick = None;
+                    self.show_theme(theme_cursor);
+                }
+            }
+            SetupView::Theme { cursor } => {
+                let rows = setup::theme_rows();
+                let cursor = cursor.min(rows.len().saturating_sub(1));
+                let mut open = true;
+                let mut back = false;
+                centered_popup("Theme Setup", egui::Id::new("gp_setup_theme"), &mut open).show(
+                    ctx,
+                    |ui| {
+                        ui.set_min_width(retro::ROW_W);
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        for (i, row) in rows.iter().enumerate() {
+                            let value = self.setup_value(row.id);
+                            let tab = match row.kind {
+                                RowKind::Submenu | RowKind::Action => retro::TAB_OPEN,
+                                _ => retro::TAB_VALUE,
+                            };
+                            let resp = retro::entry(
+                                ui,
+                                row.id.label(),
+                                &value,
+                                tab,
+                                i == cursor,
+                                retro::ROW_W,
+                                menu_font(17.0),
+                            );
+                            if resp.clicked() && !resp.double_clicked() {
+                                if let SetupView::Theme { cursor } = &mut self.setup_view {
+                                    *cursor = i;
+                                }
+                                self.activate_theme_row();
+                            }
+                        }
+                        if retro::apply(ui, false, menu_font(20.0)) {
+                            back = true;
+                        }
+                    },
+                );
+                if back || !open {
+                    self.setup_icon_pick = false;
                     self.setup_view = SetupView::Main;
                 }
             }
@@ -8160,7 +8305,7 @@ impl GpGuiApp {
                         };
                         let resp = retro::entry(
                             ui,
-                            setup_row_label(row.id, self.setup_pane),
+                            row.id.label(),
                             &value,
                             tab,
                             i == cursor,
@@ -8190,7 +8335,7 @@ impl GpGuiApp {
         if !self.setup_icon_pick {
             return;
         }
-        if !matches!(self.setup_view, SetupView::Main) {
+        if !matches!(self.setup_view, SetupView::Theme { .. }) {
             self.setup_icon_pick = false;
             return;
         }
@@ -8645,59 +8790,23 @@ impl GpGuiApp {
         self.log_event(self.status.clone());
     }
 
+    /// Hand the latest beacon setup to the wall-clock thread and show its note.
+    ///
+    /// Closing setup does not restart the period. The thread is what actually
+    /// sends; this only keeps its copy current while the window is painting.
     fn poll_beacon(&mut self) {
-        if !self.cfg.beacon.armed() {
-            return;
+        self.beacon_sched.publish(BeaconSnap {
+            kiss: self.kiss_mode(),
+            beacon: self.cfg.beacon.clone(),
+            my_call: self.cfg.primary_mycall().to_string(),
+            qrg: self.session.qrg_text(),
+            version: version::APP_VERSION.into(),
+            cmd_tx: self.cmd_tx.clone(),
+            mail_dir: mail::mail_dir(),
+        });
+        if let Some(note) = self.beacon_sched.take_note() {
+            self.status = note;
         }
-        let mins = self.cfg.beacon.period_minutes;
-        let wait = Duration::from_secs(u64::from(mins) * 60);
-        if self.last_beacon.elapsed() < wait {
-            return;
-        }
-        self.last_beacon = Instant::now();
-        self.send_beacon();
-    }
-
-    fn send_beacon(&mut self) {
-        let raw = match self.cfg.beacon.body() {
-            Ok(Some(text)) => text,
-            Ok(None) => {
-                if self.cfg.beacon.uses_file() {
-                    self.status = "Beacon file is empty".into();
-                }
-                return;
-            }
-            Err(err) => {
-                self.status = err;
-                return;
-            }
-        };
-        let text = beacon_on_air(&raw, self.cfg.beacon.uses_file(), &self.beacon_macro_ctx());
-        if text.is_empty() {
-            self.status = "Beacon is empty".into();
-            return;
-        }
-        let (dest, vias) = ax25::parse_unproto(&self.cfg.beacon.address);
-        if !self.kiss_mode() {
-            self.status = "Beacon is stored. It is sent as a UI frame on KISS".into();
-            return;
-        }
-        let my = self.cfg.primary_mycall().to_string();
-        let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-        let frame = ax25::build_ui(&dest, &my, &via_ref, text.as_bytes());
-        self.tx_kiss_payload(0, &frame);
-        self.status = format!("beacon {my} {}", ax25::unproto_to(&dest, &vias));
-    }
-
-    /// Unproto beacon: own call, no connected station. `%Y` matches the frame.
-    fn beacon_macro_ctx(&self) -> MacroContext {
-        let mut ctx = self.macro_ctx();
-        ctx.my_call = self.cfg.primary_mycall().to_string();
-        ctx.peer_call.clear();
-        ctx.peer_name.clear();
-        ctx.channel = 0;
-        ctx.name_unknown = false;
-        ctx
     }
 
     fn pick_beacon_file(&mut self) {
@@ -9088,7 +9197,7 @@ impl GpGuiApp {
         match self.active {
             ActivePane::Editor => self.editor_save(),
             ActivePane::Check => self.sort_bbs(),
-            ActivePane::Channel(n) => self.save_channel_transcript(n),
+            ActivePane::Channel(_) => self.save_screen_transcript(),
             _ => self.status = "Continuous save is not built yet".into(),
         }
     }
@@ -9755,22 +9864,6 @@ fn color_choice_count(slot: ColorSlot, info: bool) -> usize {
         ColorSlot::Clock => 1,
         _ if info => 4,
         _ => 3,
-    }
-}
-
-fn output_color_title(pane: ActivePane) -> &'static str {
-    match pane {
-        ActivePane::Mh => "Colours of MHeard window",
-        ActivePane::Spy(_) => "Colours of Spy window",
-        _ => "Colours of output window",
-    }
-}
-
-fn setup_row_label(id: RowId, pane: ActivePane) -> &'static str {
-    match (id, pane) {
-        (RowId::ColorsOutput, ActivePane::Mh) => "Colours of MHeard window",
-        (RowId::ColorsOutput, ActivePane::Spy(_)) => "Colours of Spy window",
-        _ => id.label(),
     }
 }
 
@@ -11053,10 +11146,7 @@ impl GpGuiApp {
             fg,
         );
 
-        let r1 = Rect::from_min_max(
-            Pos2::new(rect.left(), mid),
-            rect.right_bottom(),
-        );
+        let r1 = Rect::from_min_max(Pos2::new(rect.left(), mid), rect.right_bottom());
         let row1 = [
             format!("My: {my}"),
             format!("Buffers: {}", self.tnc_free),
@@ -11109,10 +11199,7 @@ impl GpGuiApp {
         let path_h = path_h.min(rect.height() * 0.45).max(14.0);
         let bar_top = rect.top() + path_h;
         let r2 = Rect::from_min_max(rect.left_top(), Pos2::new(rect.right(), bar_top));
-        let r3 = Rect::from_min_max(
-            Pos2::new(rect.left(), bar_top),
-            rect.right_bottom(),
-        );
+        let r3 = Rect::from_min_max(Pos2::new(rect.left(), bar_top), rect.right_bottom());
         let _ = bar_h;
 
         // Thin path | Bytes | Status
@@ -11236,7 +11323,10 @@ impl GpGuiApp {
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], hair);
         painter.line_segment([rect.right_top(), rect.right_bottom()], hair);
         painter.line_segment(
-            [Pos2::new(rect.left(), bar_top), Pos2::new(rect.right(), bar_top)],
+            [
+                Pos2::new(rect.left(), bar_top),
+                Pos2::new(rect.right(), bar_top),
+            ],
             hair,
         );
         painter.line_segment(
@@ -11248,11 +11338,17 @@ impl GpGuiApp {
             hair,
         );
         painter.line_segment(
-            [Pos2::new(bar_right, bar_top), Pos2::new(bar_right, rect.bottom())],
+            [
+                Pos2::new(bar_right, bar_top),
+                Pos2::new(bar_right, rect.bottom()),
+            ],
             hair,
         );
         painter.line_segment(
-            [Pos2::new(bar_right, time_mid), Pos2::new(rect.right(), time_mid)],
+            [
+                Pos2::new(bar_right, time_mid),
+                Pos2::new(rect.right(), time_mid),
+            ],
             hair,
         );
         painter.line_segment(
@@ -11414,7 +11510,7 @@ impl GpGuiApp {
                     ],
                     vec![
                         "Insert".into(),
-                        format!("Filled Lines: {}/780", self.editor.line_count()),
+                        format!("Bytes: {}", self.editor.byte_count()),
                     ],
                 )
             }
@@ -11819,116 +11915,113 @@ impl GpGuiApp {
             ui.set_min_size(avail);
             ui.painter().rect_filled(rect, 0.0, bg);
             // No stroke: a right/bottom line sits on the monitor blue and shows through.
-            Frame::none()
-                .fill(bg)
-                .inner_margin(0.0)
-                .show(ui, |ui| {
-                    let full = ui.max_rect();
-                    ui.set_min_size(full.size());
-                    let bar_w = if show_bar {
-                        DOS_SCROLL_W.min(full.width() * 0.5)
-                    } else {
-                        0.0
-                    };
-                    let text_outer = Rect::from_min_max(
-                        full.min,
-                        Pos2::new(full.right() - bar_w, full.bottom()),
-                    );
-                    let text = Rect::from_min_max(
-                        Pos2::new(text_outer.left() + 6.0, text_outer.top() + 4.0),
-                        Pos2::new(
-                            (text_outer.right() - 4.0).max(text_outer.left() + 8.0),
-                            (text_outer.bottom() - 4.0).max(text_outer.top() + 8.0),
-                        ),
-                    );
-                    let bar_rect = Rect::from_min_max(
-                        Pos2::new(text_outer.right(), full.top()),
-                        full.right_bottom(),
-                    );
-                    let row_h = ui.fonts(|f| f.row_height(&row_font)).max(1.0) + 2.0;
+            Frame::none().fill(bg).inner_margin(0.0).show(ui, |ui| {
+                let full = ui.max_rect();
+                ui.set_min_size(full.size());
+                let bar_w = if show_bar {
+                    DOS_SCROLL_W.min(full.width() * 0.5)
+                } else {
+                    0.0
+                };
+                let text_outer =
+                    Rect::from_min_max(full.min, Pos2::new(full.right() - bar_w, full.bottom()));
+                let text = Rect::from_min_max(
+                    Pos2::new(text_outer.left() + 6.0, text_outer.top() + 4.0),
+                    Pos2::new(
+                        (text_outer.right() - 4.0).max(text_outer.left() + 8.0),
+                        (text_outer.bottom() - 4.0).max(text_outer.top() + 8.0),
+                    ),
+                );
+                let bar_rect = Rect::from_min_max(
+                    Pos2::new(text_outer.right(), full.top()),
+                    full.right_bottom(),
+                );
+                let row_h = ui.fonts(|f| f.row_height(&row_font)).max(1.0) + 2.0;
 
-                    let mut snap = None;
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text), |ui| {
-                        ui.set_min_size(text.size());
-                        if pick {
+                let mut snap = None;
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text), |ui| {
+                    ui.set_min_size(text.size());
+                    if pick {
+                        ui.label(
+                            RichText::new("SPY — click a station, then confirm")
+                                .color(text_fg)
+                                .strong(),
+                        );
+                    }
+                    // Wide call lines still shift-scroll. The visible bar is the DOS one.
+                    let mut list = egui::ScrollArea::both()
+                        .id_salt("mheard_list")
+                        .auto_shrink([false, false])
+                        .scroll_bar_visibility(
+                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                        );
+                    if open_at_top {
+                        list = list.vertical_scroll_offset(0.0);
+                    }
+                    let out = list.show(ui, |ui| {
+                        // Setup (and every other dialog) widens the global
+                        // widget gap. This list must keep the normal 3px
+                        // pitch, or the station rows spread when it opens.
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        if nudge != 0.0 {
+                            ui.scroll_with_delta(Vec2::new(0.0, nudge));
+                        }
+                        if lines.is_empty() {
                             ui.label(
-                                RichText::new("SPY — click a station, then confirm")
-                                    .color(text_fg)
-                                    .strong(),
+                                RichText::new(
+                                    "No stations heard yet — APRS/AX.25 UI frames appear here.",
+                                )
+                                .color(text_fg)
+                                .font(row_font.clone()),
                             );
-                        }
-                        // Wide call lines still shift-scroll. The visible bar is the DOS one.
-                        let mut list = egui::ScrollArea::both()
-                            .id_salt("mheard_list")
-                            .auto_shrink([false, false])
-                            .scroll_bar_visibility(
-                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-                            );
-                        if open_at_top {
-                            list = list.vertical_scroll_offset(0.0);
-                        }
-                        let out = list.show(ui, |ui| {
-                            // Setup (and every other dialog) widens the global
-                            // widget gap. This list must keep the normal 3px
-                            // pitch, or the station rows spread when it opens.
-                            ui.spacing_mut().item_spacing.y = 3.0;
-                            if nudge != 0.0 {
-                                ui.scroll_with_delta(Vec2::new(0.0, nudge));
-                            }
-                            if lines.is_empty() {
-                                ui.label(
-                                    RichText::new(
-                                        "No stations heard yet — APRS/AX.25 UI frames appear here.",
-                                    )
-                                    .color(text_fg)
-                                    .font(row_font.clone()),
-                                );
-                            } else {
-                                for (i, line) in &lines {
-                                    let is_sel = selected == Some(*i);
-                                    let fill = if is_sel { text_inv } else { Color32::TRANSPARENT };
-                                    let fg = if is_sel { bg } else { text_fg };
-                                    let resp = egui::Frame::none()
-                                        .fill(fill)
-                                        .inner_margin(egui::Margin::symmetric(4.0, 1.0))
-                                        .show(ui, |ui| {
-                                            ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(line)
-                                                        .color(fg)
-                                                        .font(row_font.clone()),
-                                                )
-                                                .wrap_mode(TextWrapMode::Extend)
-                                                .sense(Sense::click()),
+                        } else {
+                            for (i, line) in &lines {
+                                let is_sel = selected == Some(*i);
+                                let fill = if is_sel {
+                                    text_inv
+                                } else {
+                                    Color32::TRANSPARENT
+                                };
+                                let fg = if is_sel { bg } else { text_fg };
+                                let resp = egui::Frame::none()
+                                    .fill(fill)
+                                    .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(line)
+                                                    .color(fg)
+                                                    .font(row_font.clone()),
                                             )
-                                        })
-                                        .response;
-                                    let hit = ui.interact(
-                                        resp.rect,
-                                        ui.id().with(("mh_row", *i)),
-                                        Sense::click(),
-                                    );
-                                    if hit.clicked() || resp.clicked() {
-                                        clicked = Some(*i);
-                                    }
+                                            .wrap_mode(TextWrapMode::Extend)
+                                            .sense(Sense::click()),
+                                        )
+                                    })
+                                    .response;
+                                let hit = ui.interact(
+                                    resp.rect,
+                                    ui.id().with(("mh_row", *i)),
+                                    Sense::click(),
+                                );
+                                if hit.clicked() || resp.clicked() {
+                                    clicked = Some(*i);
                                 }
                             }
-                        });
-                        snap = Some((
-                            out.id,
-                            out.state,
-                            out.content_size.y,
-                            out.inner_rect.height(),
-                        ));
-                    });
-                    if show_bar && bar_rect.width() > 4.0 {
-                        if let Some((sid, mut state, content_h, view_h)) = snap {
-                            drive_dos_bar(
-                                ui, bar_rect, sid, &mut state, content_h, view_h, row_h,
-                            );
                         }
-                    }
+                    });
+                    snap = Some((
+                        out.id,
+                        out.state,
+                        out.content_size.y,
+                        out.inner_rect.height(),
+                    ));
                 });
+                if show_bar && bar_rect.width() > 4.0 {
+                    if let Some((sid, mut state, content_h, view_h)) = snap {
+                        drive_dos_bar(ui, bar_rect, sid, &mut state, content_h, view_h, row_h);
+                    }
+                }
+            });
         });
 
         if let Some(i) = clicked {
@@ -13476,7 +13569,11 @@ impl GpGuiApp {
     }
 
     fn apply_spy_call_from_edit(&mut self) -> Result<(), String> {
-        let slot = self.session.spy_slot.unwrap_or(1).clamp(1, self.spy_limit());
+        let slot = self
+            .session
+            .spy_slot
+            .unwrap_or(1)
+            .clamp(1, self.spy_limit());
         let raw = self.session.spy_edit.trim().to_string();
         self.cfg.normalize_spy_calls();
         let idx = slot.saturating_sub(1) as usize;
@@ -13672,17 +13769,17 @@ impl GpGuiApp {
                 "MONITOR" => self.select(ActivePane::Monitor),
                 "EDIT" => self.open_ctext_editor(),
                 "SAVE" => match self.active {
+                    ActivePane::Editor => self.editor_save(),
                     ActivePane::Channel(n) => {
                         if !self.accept_autobin(n) {
-                            self.save_channel_transcript(n);
+                            self.save_screen_transcript();
                         }
                     }
-                    _ => {
-                        if !matches!(self.active, ActivePane::Editor) {
-                            self.open_ctext_editor();
-                        }
-                        self.editor_save();
-                    }
+                    ActivePane::Monitor
+                    | ActivePane::Check
+                    | ActivePane::List
+                    | ActivePane::Spy(_) => self.save_screen_transcript(),
+                    _ => self.status = "Save — this window has no transcript".into(),
                 },
                 "LOAD" => self.editor_load_dialog(),
                 "MHEARD" => self.select(ActivePane::Mh),
@@ -13858,13 +13955,7 @@ fn truncate_path_for_bar(path: &str, max_chars: usize) -> String {
     out
 }
 
-fn paint_status_cell(
-    painter: &egui::Painter,
-    cell: Rect,
-    text: &str,
-    font: &FontId,
-    fg: Color32,
-) {
+fn paint_status_cell(painter: &egui::Painter, cell: Rect, text: &str, font: &FontId, fg: Color32) {
     let galley = painter.layout_no_wrap(text.to_string(), font.clone(), fg);
     let pos = Pos2::new(
         cell.left() + 6.0,
@@ -13879,7 +13970,10 @@ fn paint_dos_progress_bar(painter: &egui::Painter, area: Rect, pct: f32, fg: Col
     let gap = 3.0_f32;
     let bar = Rect::from_min_max(
         area.left_top(),
-        Pos2::new((area.right() - pct_w - gap).max(area.left() + 20.0), area.bottom()),
+        Pos2::new(
+            (area.right() - pct_w - gap).max(area.left() + 20.0),
+            area.bottom(),
+        ),
     );
     let pct_box = Rect::from_min_max(
         Pos2::new(bar.right() + gap, area.top()),
@@ -14164,19 +14258,18 @@ fn transcript_call(call: &str) -> String {
     call.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
 }
 
-/// `CALL.GPL` while that name is free, otherwise `CALL.000.GPL`, `CALL.001.GPL`, …
-fn next_gpl_path(dir: &std::path::Path, call: &str) -> Result<std::path::PathBuf, String> {
-    let primary = dir.join(format!("{call}.GPL"));
-    if !primary.exists() {
-        return Ok(primary);
+/// A name with no extension, or an extension other than `log`, becomes `*.LOG`.
+fn with_log_extension(path: std::path::PathBuf) -> std::path::PathBuf {
+    let keep = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("log"));
+    if keep {
+        return path;
     }
-    for n in 0..1000 {
-        let path = dir.join(format!("{call}.{n:03}.GPL"));
-        if !path.exists() {
-            return Ok(path);
-        }
-    }
-    Err(format!("{call}: no free transcript name through 999"))
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".LOG");
+    path.with_file_name(name)
 }
 
 /// Next free AutoSpy file `CALL.000` … `CALL.999` in `SpyDir`.
@@ -14944,8 +15037,7 @@ fn read_first_font(candidates: &[&str]) -> Option<(String, Vec<u8>)> {
 /// JetBrains Mono, no-ligature. SIL OFL 1.1 — see `assets/fonts/OFL.txt`.
 /// `include_bytes` compiles the TTF into the exe, so pads look the same on every OS.
 /// Zoom off uses Regular. Zoom on uses Bold. Only the monospace family.
-const JETBRAINS_MONO: &[u8] =
-    include_bytes!("../../assets/fonts/ttf/JetBrainsMonoNL-Regular.ttf");
+const JETBRAINS_MONO: &[u8] = include_bytes!("../../assets/fonts/ttf/JetBrainsMonoNL-Regular.ttf");
 const JETBRAINS_MONO_BOLD: &[u8] =
     include_bytes!("../../assets/fonts/ttf/JetBrainsMonoNL-Bold.ttf");
 
@@ -15616,163 +15708,155 @@ fn paint_text_pane(
         ui.painter().rect_filled(rect, 0.0, bg);
         // Fill the whole pane. A stroke on the right and bottom leaves a line,
         // and on MHeard that line is the monitor blue showing through.
-        Frame::none()
-            .fill(bg)
-            .inner_margin(0.0)
-            .show(ui, |ui| {
-                let full = ui.max_rect();
-                ui.set_min_size(full.size());
-                let bar_w = if show_bar {
-                    DOS_SCROLL_W.min(full.width() * 0.5)
-                } else {
-                    0.0
-                };
-                let text_outer =
-                    Rect::from_min_max(full.min, Pos2::new(full.right() - bar_w, full.bottom()));
-                let text = Rect::from_min_max(
-                    Pos2::new(text_outer.left() + 6.0, text_outer.top() + 4.0),
-                    Pos2::new(
-                        (text_outer.right() - 4.0).max(text_outer.left() + 8.0),
-                        (text_outer.bottom() - 4.0).max(text_outer.top() + 8.0),
-                    ),
-                );
-                let bar_rect = Rect::from_min_max(
-                    Pos2::new(text_outer.right(), full.top()),
-                    full.right_bottom(),
-                );
+        Frame::none().fill(bg).inner_margin(0.0).show(ui, |ui| {
+            let full = ui.max_rect();
+            ui.set_min_size(full.size());
+            let bar_w = if show_bar {
+                DOS_SCROLL_W.min(full.width() * 0.5)
+            } else {
+                0.0
+            };
+            let text_outer =
+                Rect::from_min_max(full.min, Pos2::new(full.right() - bar_w, full.bottom()));
+            let text = Rect::from_min_max(
+                Pos2::new(text_outer.left() + 6.0, text_outer.top() + 4.0),
+                Pos2::new(
+                    (text_outer.right() - 4.0).max(text_outer.left() + 8.0),
+                    (text_outer.bottom() - 4.0).max(text_outer.top() + 8.0),
+                ),
+            );
+            let bar_rect = Rect::from_min_max(
+                Pos2::new(text_outer.right(), full.top()),
+                full.right_bottom(),
+            );
 
-                let area = if scroll_x {
-                    egui::ScrollArea::both()
-                } else {
-                    egui::ScrollArea::vertical()
-                };
-                // Follow is applied after layout. egui's own stick jumps a whole line.
-                // The DOS bar is drawn beside this viewport, so egui's bar stays hidden.
-                let mut snap = None;
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text), |ui| {
-                    ui.set_min_size(text.size());
-                    let out = area
-                        .id_salt(id)
-                        .animated(false)
-                        .stick_to_bottom(false)
-                        .auto_shrink([false, false])
-                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                        .show(ui, |ui| {
-                            if nudge != 0.0 {
-                                ui.scroll_with_delta(Vec2::new(0.0, nudge));
-                            }
-                            let job = make_job(ui);
-                            ui.add(egui::Label::new(job).wrap_mode(TextWrapMode::Extend));
-                        });
-                    snap = Some((
-                        out.id,
-                        out.state,
-                        out.content_size.y,
-                        out.inner_rect.height(),
-                    ));
-                });
-                if let Some((sid, mut state, content_h, view_h)) = snap {
-                    let max_off = (content_h - view_h).max(0.0);
-                    let now = ui.input(|i| i.time);
-                    let ctx = ui.ctx().clone();
-                    let mut crawl = ctx
-                        .data(|d| d.get_temp::<SoftCrawl>(sid))
-                        .unwrap_or_default();
-                    let before = state.offset.y;
-                    // ScrLock off → follow. Turning it off again must resume even
-                    // if a prior lock had cleared `follow` while scrolled up.
-                    let unlocked = stick && !crawl.stick;
+            let area = if scroll_x {
+                egui::ScrollArea::both()
+            } else {
+                egui::ScrollArea::vertical()
+            };
+            // Follow is applied after layout. egui's own stick jumps a whole line.
+            // The DOS bar is drawn beside this viewport, so egui's bar stays hidden.
+            let mut snap = None;
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text), |ui| {
+                ui.set_min_size(text.size());
+                let out = area
+                    .id_salt(id)
+                    .animated(false)
+                    .stick_to_bottom(false)
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        if nudge != 0.0 {
+                            ui.scroll_with_delta(Vec2::new(0.0, nudge));
+                        }
+                        let job = make_job(ui);
+                        ui.add(egui::Label::new(job).wrap_mode(TextWrapMode::Extend));
+                    });
+                snap = Some((
+                    out.id,
+                    out.state,
+                    out.content_size.y,
+                    out.inner_rect.height(),
+                ));
+            });
+            if let Some((sid, mut state, content_h, view_h)) = snap {
+                let max_off = (content_h - view_h).max(0.0);
+                let now = ui.input(|i| i.time);
+                let ctx = ui.ctx().clone();
+                let mut crawl = ctx
+                    .data(|d| d.get_temp::<SoftCrawl>(sid))
+                    .unwrap_or_default();
+                let before = state.offset.y;
+                // ScrLock off → follow. Turning it off again must resume even
+                // if a prior lock had cleared `follow` while scrolled up.
+                let unlocked = stick && !crawl.stick;
 
-                    if !stick {
-                        crawl.follow = false;
-                        crawl.carry = 0.0;
-                    } else if !crawl.seen {
-                        crawl.seen = true;
-                        crawl.owner = owner;
-                        crawl.last_t = now;
+                if !stick {
+                    crawl.follow = false;
+                    crawl.carry = 0.0;
+                } else if !crawl.seen {
+                    crawl.seen = true;
+                    crawl.owner = owner;
+                    crawl.last_t = now;
+                    state.offset.y = max_off;
+                    crawl.follow = true;
+                } else if unlocked {
+                    crawl.owner = owner;
+                    crawl.carry = 0.0;
+                    crawl.last_t = now;
+                    state.offset.y = max_off;
+                    crawl.follow = true;
+                } else if owner != crawl.owner {
+                    // Another pad in this same viewport. Show its end at once;
+                    // only lines that arrive afterwards crawl.
+                    crawl.owner = owner;
+                    crawl.carry = 0.0;
+                    crawl.last_t = now;
+                    if crawl.follow {
                         state.offset.y = max_off;
-                        crawl.follow = true;
-                    } else if unlocked {
-                        crawl.owner = owner;
-                        crawl.carry = 0.0;
-                        crawl.last_t = now;
-                        state.offset.y = max_off;
-                        crawl.follow = true;
-                    } else if owner != crawl.owner {
-                        // Another pad in this same viewport. Show its end at once;
-                        // only lines that arrive afterwards crawl.
-                        crawl.owner = owner;
-                        crawl.carry = 0.0;
-                        crawl.last_t = now;
-                        if crawl.follow {
-                            state.offset.y = max_off;
+                    }
+                } else {
+                    let dt = (now - crawl.last_t).clamp(0.0, 0.5) as f32;
+                    crawl.last_t = now;
+                    crawl.follow = keep_following(
+                        stick,
+                        state.offset.y,
+                        crawl.last_offset,
+                        max_off,
+                        crawl.last_max,
+                        crawl.follow,
+                    );
+                    if crawl.follow {
+                        let (y, carry) =
+                            soft_scroll_toward(state.offset.y, max_off, crawl.carry, dt, smooth);
+                        state.offset.y = y;
+                        crawl.carry = carry;
+                        if max_off - y > 0.5 {
+                            ctx.request_repaint_after(Duration::from_millis(50));
                         }
                     } else {
-                        let dt = (now - crawl.last_t).clamp(0.0, 0.5) as f32;
-                        crawl.last_t = now;
-                        crawl.follow = keep_following(
-                            stick,
-                            state.offset.y,
-                            crawl.last_offset,
-                            max_off,
-                            crawl.last_max,
-                            crawl.follow,
-                        );
-                        if crawl.follow {
-                            let (y, carry) = soft_scroll_toward(
-                                state.offset.y,
-                                max_off,
-                                crawl.carry,
-                                dt,
-                                smooth,
-                            );
-                            state.offset.y = y;
-                            crawl.carry = carry;
-                            if max_off - y > 0.5 {
-                                ctx.request_repaint_after(Duration::from_millis(50));
-                            }
-                        } else {
+                        crawl.carry = 0.0;
+                    }
+                }
+
+                if show_bar && bar_rect.width() > 4.0 {
+                    let row_h = ui
+                        .fonts(|f| f.row_height(&FontId::monospace(padlog::PAD_FONT_SIZE)))
+                        .max(1.0);
+                    let page = (view_h - row_h).max(row_h);
+                    let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
+                    let (offset, moved, held) = dos_bar_input(
+                        ui,
+                        sid,
+                        &parts,
+                        bar_rect,
+                        state.offset.y,
+                        max_off,
+                        page,
+                        row_h,
+                    );
+                    if moved {
+                        state.offset.y = offset;
+                        if max_off - state.offset.y > 1.0 {
+                            crawl.follow = false;
                             crawl.carry = 0.0;
                         }
                     }
-
-                    if show_bar && bar_rect.width() > 4.0 {
-                        let row_h = ui
-                            .fonts(|f| f.row_height(&FontId::monospace(padlog::PAD_FONT_SIZE)))
-                            .max(1.0);
-                        let page = (view_h - row_h).max(row_h);
-                        let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
-                        let (offset, moved, held) = dos_bar_input(
-                            ui,
-                            sid,
-                            &parts,
-                            bar_rect,
-                            state.offset.y,
-                            max_off,
-                            page,
-                            row_h,
-                        );
-                        if moved {
-                            state.offset.y = offset;
-                            if max_off - state.offset.y > 1.0 {
-                                crawl.follow = false;
-                                crawl.carry = 0.0;
-                            }
-                        }
-                        let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
-                        paint_dos_scrollbar(ui.painter(), bar_rect, &parts, held);
-                    }
-
-                    crawl.stick = stick;
-                    crawl.seen = true;
-                    crawl.last_offset = state.offset.y;
-                    crawl.last_max = max_off;
-                    ctx.data_mut(|d| d.insert_temp(sid, crawl));
-                    if (state.offset.y - before).abs() > 0.01 {
-                        state.store(&ctx, sid);
-                    }
+                    let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
+                    paint_dos_scrollbar(ui.painter(), bar_rect, &parts, held);
                 }
-            });
+
+                crawl.stick = stick;
+                crawl.seen = true;
+                crawl.last_offset = state.offset.y;
+                crawl.last_max = max_off;
+                ctx.data_mut(|d| d.insert_temp(sid, crawl));
+                if (state.offset.y - before).abs() > 0.01 {
+                    state.store(&ctx, sid);
+                }
+            }
+        });
     });
 }
 
@@ -16034,7 +16118,8 @@ mod chat_sound_tests {
 
 #[cfg(test)]
 mod transcript_tests {
-    use super::{next_gpl_path, transcript_call};
+    use super::{transcript_call, with_log_extension};
+    use std::path::PathBuf;
 
     #[test]
     fn call_file_drops_the_ssid() {
@@ -16043,19 +16128,25 @@ mod transcript_tests {
     }
 
     #[test]
-    fn the_first_file_is_gpl_and_the_next_are_numbered() {
-        let dir = std::env::temp_dir().join(format!("gpng-save-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let first = next_gpl_path(&dir, "CB0MVB").unwrap();
-        assert_eq!(first.file_name().unwrap(), "CB0MVB.GPL");
-        std::fs::write(&first, b"a").unwrap();
-        let second = next_gpl_path(&dir, "CB0MVB").unwrap();
-        assert_eq!(second.file_name().unwrap(), "CB0MVB.000.GPL");
-        std::fs::write(&second, b"b").unwrap();
-        let third = next_gpl_path(&dir, "CB0MVB").unwrap();
-        assert_eq!(third.file_name().unwrap(), "CB0MVB.001.GPL");
-        let _ = std::fs::remove_dir_all(&dir);
+    fn a_bare_name_gains_a_log_extension() {
+        assert_eq!(
+            with_log_extension(PathBuf::from("data/LOG/MONITOR"))
+                .file_name()
+                .unwrap(),
+            "MONITOR.LOG"
+        );
+        assert_eq!(
+            with_log_extension(PathBuf::from("data/LOG/CB0MVB.LOG"))
+                .file_name()
+                .unwrap(),
+            "CB0MVB.LOG"
+        );
+        assert_eq!(
+            with_log_extension(PathBuf::from("data/LOG/notes.txt"))
+                .file_name()
+                .unwrap(),
+            "notes.txt.LOG"
+        );
     }
 }
 
@@ -16245,34 +16336,6 @@ mod pair_ssid_tests {
         // Bare is up, -1 dropped, -2 still up: the new duplicate is -1.
         let hole = [("NL0MSK", "NL0AS"), ("NL0MSK-2", "NL0AS")];
         assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &hole), "NL0MSK-1");
-    }
-}
-
-/// Expand `%` macros, then keep the beacon inside one UI frame.
-fn beacon_on_air(raw: &str, from_file: bool, ctx: &MacroContext) -> String {
-    let max = if from_file {
-        BEACON_FILE_MAX
-    } else {
-        BEACON_TEXT_MAX
-    };
-    clip_beacon(macros::expand(raw, ctx).trim(), max)
-}
-
-#[cfg(test)]
-mod beacon_macro_tests {
-    use super::beacon_on_air;
-    use crate::remote::macros::MacroContext;
-
-    #[test]
-    fn text_and_file_expand_the_same_macros() {
-        let mut ctx = MacroContext::demo();
-        ctx.my_call = "NL0MSK".into();
-        ctx.qrg = "430.625".into();
-        let line = "de %Y qrg %Q";
-        assert_eq!(beacon_on_air(line, false, &ctx), "de NL0MSK qrg 430.625");
-        assert_eq!(beacon_on_air(line, true, &ctx), "de NL0MSK qrg 430.625");
-        let long = format!("{}%Y", "x".repeat(80));
-        assert_eq!(beacon_on_air(&long, false, &ctx).chars().count(), 81);
     }
 }
 

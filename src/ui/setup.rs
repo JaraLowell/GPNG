@@ -28,8 +28,16 @@ pub const LANGUAGES: &[&str] = &["EN", "NL", "DL", "F", "PL", "SLO", "OK", "HA"]
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowId {
+    /// Opens the shared colour, zoom, and icon list.
+    Theme,
     ColorsInput,
-    ColorsOutput,
+    ColorsMonitor,
+    ColorsChannel,
+    ColorsEditor,
+    ColorsCheck,
+    ColorsList,
+    ColorsMh,
+    ColorsSpy,
     ColorsState,
     ColorsMenu,
     ColorsClock,
@@ -61,7 +69,8 @@ pub enum RowId {
     SpyAutoIgnore,
     /// `MAXSPY`, 1..=8. Default 1.
     MaxSpy,
-    /// MHeard only. Days before a station is dropped. `0` is off, `365` is a year.
+    /// MHeard only. Drop stations last heard more than this many days ago.
+    /// `0` is off, `365` is a year. The label says days so the number is obvious.
     MheardClean,
     /// MHeard only. Drop every station on the list.
     MheardClear,
@@ -88,21 +97,47 @@ pub struct Row {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorSlot {
     Input,
-    Output,
+    /// Monitor text (`monitor_*`), including Info / Error.
+    Monitor,
+    /// Connected channel text (`connect_*`).
+    Channel,
+    Editor,
+    /// BBS-Menu (`check_*`).
+    Check,
+    List,
+    Mh,
+    Spy,
     State,
     Menu,
-    /// Monitor clock column. Background only (`clock_background`).
+    /// Monitor clock. Background only (`clock_background`).
     Clock,
+}
+
+impl ColorSlot {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Input => "Colours of Input window",
+            Self::Monitor => "Colours of Monitor window",
+            Self::Channel => "Colours of Channel window",
+            Self::Editor => "Colours of Editor window",
+            Self::Check => "Colours of BBS window",
+            Self::List => "Colours of Box-List window",
+            Self::Mh => "Colours of MHeard window",
+            Self::Spy => "Colours of Spy window",
+            Self::State => "Colours of State window",
+            Self::Menu => "Colours of Menu window",
+            Self::Clock => "Colours of Clock",
+        }
+    }
 }
 
 impl RowId {
     pub fn label(self) -> &'static str {
+        if let Some(title) = self.color_slot().map(ColorSlot::title) {
+            return title;
+        }
         match self {
-            Self::ColorsInput => "Colours of input window",
-            Self::ColorsOutput => "Colours of output window",
-            Self::ColorsState => "Colours of state window",
-            Self::ColorsMenu => "Colours of menu window",
-            Self::ColorsClock => "Colours of Clock",
+            Self::Theme => "Theme Setup",
             Self::Prompt => "Remote control prompt",
             Self::Remote => "Remote control",
             Self::Backup => "Backup text buffers",
@@ -127,16 +162,33 @@ impl RowId {
             Self::AutoSpy => "Auto Spy",
             Self::SpyAutoIgnore => "Spy Auto Ignore",
             Self::MaxSpy => "Number of spies",
-            Self::MheardClean => "Auto Clean",
+            Self::MheardClean => "Clear MHeard older than (days)",
             Self::MheardClear => "Clear MHeard List",
             Self::Use => "Use these values",
+            Self::ColorsInput
+            | Self::ColorsMonitor
+            | Self::ColorsChannel
+            | Self::ColorsEditor
+            | Self::ColorsCheck
+            | Self::ColorsList
+            | Self::ColorsMh
+            | Self::ColorsSpy
+            | Self::ColorsState
+            | Self::ColorsMenu
+            | Self::ColorsClock => "",
         }
     }
 
     pub fn color_slot(self) -> Option<ColorSlot> {
         match self {
             Self::ColorsInput => Some(ColorSlot::Input),
-            Self::ColorsOutput => Some(ColorSlot::Output),
+            Self::ColorsMonitor => Some(ColorSlot::Monitor),
+            Self::ColorsChannel => Some(ColorSlot::Channel),
+            Self::ColorsEditor => Some(ColorSlot::Editor),
+            Self::ColorsCheck => Some(ColorSlot::Check),
+            Self::ColorsList => Some(ColorSlot::List),
+            Self::ColorsMh => Some(ColorSlot::Mh),
+            Self::ColorsSpy => Some(ColorSlot::Spy),
             Self::ColorsState => Some(ColorSlot::State),
             Self::ColorsMenu => Some(ColorSlot::Menu),
             Self::ColorsClock => Some(ColorSlot::Clock),
@@ -158,13 +210,19 @@ pub enum EditKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
     Main,
+    /// Colours, zoom, and icons. The same list from every window.
+    Theme {
+        cursor: usize,
+    },
     Colors {
         slot: ColorSlot,
         cursor: usize,
         draft: [String; 3],
         saved: [String; 3],
-        /// Monitor output only. Info / Error (`monitor_infoerror`).
+        /// Monitor window only. Info / Error (`monitor_infoerror`).
         info: Option<String>,
+        /// Row to highlight again when this box closes.
+        theme_cursor: usize,
     },
     Beacon {
         cursor: usize,
@@ -191,13 +249,29 @@ pub fn next_name(names: &[&str], current: &str, step: i32) -> String {
     names[next].to_string()
 }
 
+/// Colours, zoom, and icons. Identical from Monitor, Spy, MHeard, and the rest.
+pub fn theme_rows() -> Vec<Row> {
+    rows(&[
+        (RowId::ColorsInput, RowKind::Submenu),
+        (RowId::ColorsMonitor, RowKind::Submenu),
+        (RowId::ColorsChannel, RowKind::Submenu),
+        (RowId::ColorsEditor, RowKind::Submenu),
+        (RowId::ColorsCheck, RowKind::Submenu),
+        (RowId::ColorsList, RowKind::Submenu),
+        (RowId::ColorsMh, RowKind::Submenu),
+        (RowId::ColorsSpy, RowKind::Submenu),
+        (RowId::ColorsState, RowKind::Submenu),
+        (RowId::ColorsMenu, RowKind::Submenu),
+        (RowId::ColorsClock, RowKind::Submenu),
+        (RowId::Zoom, RowKind::Toggle),
+        (RowId::Icons, RowKind::Submenu),
+    ])
+}
+
 pub fn rows_for(pane: ActivePane) -> Vec<Row> {
     match pane {
         ActivePane::Channel(_) => rows(&[
-            (RowId::ColorsInput, RowKind::Submenu),
-            (RowId::ColorsOutput, RowKind::Submenu),
-            (RowId::ColorsState, RowKind::Submenu),
-            (RowId::ColorsMenu, RowKind::Submenu),
+            (RowId::Theme, RowKind::Submenu),
             (RowId::Prompt, RowKind::Submenu),
             (RowId::Remote, RowKind::Toggle),
             (RowId::Backup, RowKind::Toggle),
@@ -210,44 +284,32 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::PacketLen, RowKind::Number),
             (RowId::AutoSave, RowKind::Toggle),
             (RowId::Language, RowKind::Number),
-            (RowId::Zoom, RowKind::Toggle),
-            (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
         ActivePane::Editor => rows(&[
-            (RowId::ColorsOutput, RowKind::Submenu),
-            (RowId::ColorsState, RowKind::Submenu),
-            (RowId::ColorsMenu, RowKind::Submenu),
+            (RowId::Theme, RowKind::Submenu),
             (RowId::Backup, RowKind::Toggle),
             (RowId::RxClick, RowKind::Number),
             (RowId::Softscroll, RowKind::Toggle),
             (RowId::EditorBak, RowKind::Toggle),
             (RowId::WordWrap, RowKind::Number),
             (RowId::Language, RowKind::Number),
-            (RowId::Zoom, RowKind::Toggle),
-            (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
         ActivePane::Check => list_rows(false),
         ActivePane::List => list_rows(true),
         ActivePane::Mh => rows(&[
-            (RowId::ColorsOutput, RowKind::Submenu),
-            (RowId::ColorsState, RowKind::Submenu),
-            (RowId::ColorsMenu, RowKind::Submenu),
+            (RowId::Theme, RowKind::Submenu),
             (RowId::Backup, RowKind::Toggle),
             (RowId::RxClick, RowKind::Number),
             (RowId::Softscroll, RowKind::Toggle),
             (RowId::Language, RowKind::Number),
-            (RowId::Zoom, RowKind::Toggle),
-            (RowId::Icons, RowKind::Submenu),
             (RowId::MheardClean, RowKind::Number),
             (RowId::MheardClear, RowKind::Action),
             (RowId::Use, RowKind::Exit),
         ]),
         ActivePane::Spy(_) => rows(&[
-            (RowId::ColorsOutput, RowKind::Submenu),
-            (RowId::ColorsState, RowKind::Submenu),
-            (RowId::ColorsMenu, RowKind::Submenu),
+            (RowId::Theme, RowKind::Submenu),
             (RowId::Backup, RowKind::Toggle),
             (RowId::RxClick, RowKind::Number),
             (RowId::Softscroll, RowKind::Toggle),
@@ -255,16 +317,10 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::AutoSpy, RowKind::Submenu),
             (RowId::SpyAutoIgnore, RowKind::Submenu),
             (RowId::Language, RowKind::Number),
-            (RowId::Zoom, RowKind::Toggle),
-            (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
         _ => rows(&[
-            (RowId::ColorsInput, RowKind::Submenu),
-            (RowId::ColorsOutput, RowKind::Submenu),
-            (RowId::ColorsState, RowKind::Submenu),
-            (RowId::ColorsMenu, RowKind::Submenu),
-            (RowId::ColorsClock, RowKind::Submenu),
+            (RowId::Theme, RowKind::Submenu),
             (RowId::Backup, RowKind::Toggle),
             (RowId::Echo, RowKind::Toggle),
             (RowId::RxClick, RowKind::Number),
@@ -274,8 +330,6 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::Softscroll, RowKind::Toggle),
             (RowId::Beacon, RowKind::Submenu),
             (RowId::Language, RowKind::Number),
-            (RowId::Zoom, RowKind::Toggle),
-            (RowId::Icons, RowKind::Submenu),
             (RowId::Use, RowKind::Exit),
         ]),
     }
@@ -283,9 +337,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
 
 fn list_rows(file_drawer: bool) -> Vec<Row> {
     let mut items = vec![
-        (RowId::ColorsOutput, RowKind::Submenu),
-        (RowId::ColorsState, RowKind::Submenu),
-        (RowId::ColorsMenu, RowKind::Submenu),
+        (RowId::Theme, RowKind::Submenu),
         (RowId::Backup, RowKind::Toggle),
         (RowId::RxClick, RowKind::Number),
         (RowId::Softscroll, RowKind::Toggle),
@@ -296,8 +348,6 @@ fn list_rows(file_drawer: bool) -> Vec<Row> {
     }
     items.push((RowId::InsertFromEditor, RowKind::Action));
     items.push((RowId::Language, RowKind::Number));
-    items.push((RowId::Zoom, RowKind::Toggle));
-    items.push((RowId::Icons, RowKind::Submenu));
     items.push((RowId::Use, RowKind::Exit));
     rows(&items)
 }
@@ -317,27 +367,7 @@ mod tests {
     #[test]
     fn monitor_has_beacon_and_channel_has_packet_length() {
         let mon = rows_for(ActivePane::Monitor);
-        let lang = mon.iter().position(|r| r.id == RowId::Language).unwrap();
-        assert_eq!(mon[lang + 1].id, RowId::Zoom);
-        assert_eq!(mon[lang + 1].kind, RowKind::Toggle);
-        assert_eq!(mon[lang + 2].id, RowId::Icons);
-        for pane in [
-            ActivePane::Monitor,
-            ActivePane::Channel(1),
-            ActivePane::Editor,
-            ActivePane::Check,
-            ActivePane::List,
-            ActivePane::Mh,
-            ActivePane::Spy(1),
-        ] {
-            let rows = rows_for(pane);
-            let lang = rows.iter().position(|r| r.id == RowId::Language).unwrap();
-            assert_eq!(rows[lang + 1].id, RowId::Zoom, "{pane:?}");
-        }
-        assert!(mon.iter().any(|r| r.id == RowId::ColorsClock));
-        assert!(!rows_for(ActivePane::Channel(1))
-            .iter()
-            .any(|r| r.id == RowId::ColorsClock));
+        assert_eq!(mon[0].id, RowId::Theme);
         assert!(mon.iter().any(|r| r.id == RowId::Beacon));
         assert!(mon.iter().any(|r| r.id == RowId::InsertMon));
         let ch = rows_for(ActivePane::Channel(1));
@@ -349,10 +379,39 @@ mod tests {
     }
 
     #[test]
-    fn editor_and_lists_drop_the_input_colours() {
-        assert!(!rows_for(ActivePane::Editor)
-            .iter()
-            .any(|r| r.id == RowId::ColorsInput));
+    fn every_menu_opens_the_same_theme_list() {
+        let theme = theme_rows();
+        assert_eq!(theme[0].id, RowId::ColorsInput);
+        assert!(theme.iter().any(|r| r.id == RowId::ColorsMonitor));
+        assert!(theme.iter().any(|r| r.id == RowId::ColorsChannel));
+        assert!(theme.iter().any(|r| r.id == RowId::ColorsMh));
+        assert!(theme.iter().any(|r| r.id == RowId::ColorsSpy));
+        assert!(theme.iter().any(|r| r.id == RowId::ColorsClock));
+        assert_eq!(theme[theme.len() - 2].id, RowId::Zoom);
+        assert_eq!(theme[theme.len() - 2].kind, RowKind::Toggle);
+        assert_eq!(theme[theme.len() - 1].id, RowId::Icons);
+        for pane in [
+            ActivePane::Monitor,
+            ActivePane::Channel(1),
+            ActivePane::Editor,
+            ActivePane::Check,
+            ActivePane::List,
+            ActivePane::Mh,
+            ActivePane::Spy(1),
+        ] {
+            let rows = rows_for(pane);
+            assert_eq!(rows[0].id, RowId::Theme, "{pane:?}");
+            assert_eq!(
+                rows.iter().filter(|r| r.id == RowId::Theme).count(),
+                1,
+                "{pane:?}"
+            );
+            assert!(
+                rows.iter().all(|r| r.id.color_slot().is_none()),
+                "{pane:?}"
+            );
+            assert!(!rows.iter().any(|r| r.id == RowId::Zoom || r.id == RowId::Icons));
+        }
         assert!(rows_for(ActivePane::List)
             .iter()
             .any(|r| r.id == RowId::FileDrawer));

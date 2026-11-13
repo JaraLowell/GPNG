@@ -299,11 +299,7 @@ mod tests {
         list.hear(&ui("OLD1"));
         list.hear(&ui("NEW1"));
         let now = list.entries[0].heard_ms;
-        let old = list
-            .entries
-            .iter_mut()
-            .find(|e| e.call == "OLD1")
-            .unwrap();
+        let old = list.entries.iter_mut().find(|e| e.call == "OLD1").unwrap();
         old.heard_ms = now - 10 * DAY_MS;
         assert_eq!(list.drop_older_than(0, now), 0);
         assert_eq!(list.listed_len(), 2);

@@ -78,14 +78,14 @@ allow_color_ansi = true
 # Session-bar button state (restored on start; rewritten when you toggle).
 icon_file = "ICONS-A.GP"
 [session.chrome]
-qrg_mhz = 149.1125
+qrg_mhz = 27.235
 ctext = "D:\\MyPython\\GPNG\\data\\CTEXT.GPI"
 channel_ctext = ["", "", "", "", "", "", "", "", "", "", ""]
 extended_ascii = false
 smooth_scroll = false
 echo = true
 channel_echo = []
-bell = false
+bell = true
 seven_plus = false
 remote = true
 scr_lock = false
@@ -103,7 +103,7 @@ input_buffer = 200
 # KISS uses data/KISS.INI [params] PACLEN for this size (0 means 256).
 # Newlines are `\n` and stay inside the packet; they do not each start one.
 # 144Mhz 255 and up
-packet_payload = 255
+packet_payload = 254
 
 [paths]
 # Legacy: USERDIR, EXTERNALDIR, SAVEDIR, LOGDIR, SPYDIR
@@ -216,8 +216,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1248
-y = 193
+x = 318
+y = 87
 width = 1155
-height = 914
+height = 807
 maximized = false

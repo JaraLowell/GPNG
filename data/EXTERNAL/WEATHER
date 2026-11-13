@@ -1,55 +1,294 @@
 #!/usr/bin/env python3
-"""//RUN WEATHER — Local Weather.
+"""//RUN WEATHER — Het Weer.
 
 Start it from a linked channel with //RUN WEATHER, or //WEATHER (Remote must
 be on). It prints one report, reads no input, and exits. Bare //RUN is
 different: that sends RUN.GPI and starts nothing.
 
-Needs your Weather Undergound API Key !
+Temperature, wind, and pressure come from the Weather Underground station.
+The drawing, the sky line, and the forecast come from weerlive.nl.
+The drawing is chosen from the weerlive image word (lichtbewolkt, zonnig, ...).
 """
 
 import requests
 
-API_KEY = "<WU API KEY>"
+API_KEY = "<YOUR WU API KEY>"
 STATION_ID = "IMUSSE20"
-URL = (
+STATION_URL = (
     f"https://api.weather.com/v2/pws/observations/current"
-    f"?stationId={STATION_ID}&format=json&units=m&numericPrecision=decimal&apiKey={API_KEY}"
+    f"?stationId={STATION_ID}&format=json&units=m"
+    f"&numericPrecision=decimal&apiKey={API_KEY}"
+)
+# Put yoru city name at the end >
+WEERLIVE_URL = (
+    "https://weerlive.nl/api/json-data-10min.php?key=84f2b4a2b3&locatie=Mussel"
 )
 
-def wind_dir_text(deg):
+# Each drawing is six lines of 13 characters. The word is the weerlive
+# `image` field; a sky line such as "Licht bewolkt" is accepted too.
+_BLANK = "             "
+_CLOUD = (
+    _BLANK,
+    "    .--.     ",
+    "   (    ).   ",
+    "  (____(__)  ",
+    _BLANK,
+    _BLANK,
+)
+_PARTLY = (
+    _BLANK,
+    "   \\__/      ",
+    " _ /  .-.    ",
+    "   \\_(   ).  ",
+    "   /(___(__) ",
+    _BLANK,
+)
+ART = {
+    "zonnig": (
+        _BLANK,
+        "    \\   /    ",
+        "     .-.     ",
+        "  - (   ) -  ",
+        "     `-'     ",
+        "    /   \\    ",
+    ),
+    "helderenacht": (
+        _BLANK,
+        "  *   ,    . ",
+        "     ((  *   ",
+        "   .  `   .  ",
+        _BLANK,
+        _BLANK,
+    ),
+    "bliksem": (
+        _BLANK,
+        "    .--.     ",
+        "   (    ).   ",
+        "  (____(__)  ",
+        "   ' / ' '   ",
+        "  '  /  '    ",
+    ),
+    "regen": (
+        _BLANK,
+        "    .--.     ",
+        "   (    ).   ",
+        "  (____(__)  ",
+        "   ' ' ' '   ",
+        "  ' ' ' '    ",
+    ),
+    "buien": (
+        _BLANK,
+        "    .--.     ",
+        "   (    ).   ",
+        "  (____(__)  ",
+        "   '  '   '  ",
+        "    '  '     ",
+    ),
+    "hagel": (
+        _BLANK,
+        "    .--.     ",
+        "   (    ).   ",
+        "  (____(__)  ",
+        "   *\\ *\\ *\\  ",
+        "   \\* \\* \\*  ",
+    ),
+    "mist": (
+        _BLANK,
+        " _ - _ - _ - ",
+        "  _ - _ - _  ",
+        " _ - _ - _ - ",
+        _BLANK,
+        _BLANK,
+    ),
+    "sneeuw": (
+        _BLANK,
+        "    .--.     ",
+        "   (    ).   ",
+        "  (____(__)  ",
+        "   * * * *   ",
+        "  * * * *    ",
+    ),
+    "bewolkt": _CLOUD,
+    "zwaarbewolkt": _CLOUD,
+    "wolkennacht": _CLOUD,
+    "lichtbewolkt": _PARTLY,
+    "halfbewolkt": _PARTLY,
+    "halfbewolkt_regen": (
+        "    __       ",
+        " _`/  .-.    ",
+        "  ,\\_(   ).  ",
+        "   /(___(__) ",
+        "    ' ' ' '  ",
+        "   ' ' ' '   ",
+    ),
+}
+ART["nachtmist"] = ART["mist"]
+DEFAULT_ART = (
+    "    .-.      ",
+    "     __)     ",
+    "    (        ",
+    "     `-\u1fbf     ",
+    "      \u2022      ",
+    _BLANK,
+)
+
+WIND = (
+    "Noord",
+    "Noordnoordoost",
+    "Noordoost",
+    "Oostnoordoost",
+    "Oost",
+    "Oostzuidoost",
+    "Zuidoost",
+    "Zuidzuidoost",
+    "Zuid",
+    "Zuidzuidwest",
+    "Zuidwest",
+    "Westzuidwest",
+    "West",
+    "Westnoordwest",
+    "Noordwest",
+    "Noordnoordwest",
+    "Noord",
+)
+
+
+def art_key(word):
+    """'Licht bewolkt' and 'lichtbewolkt' are the same drawing."""
+    return "".join(
+        ch for ch in (word or "").strip().lower() if ch.isalnum() or ch == "_"
+    )
+
+
+def ascii_art(word):
+    return ART.get(art_key(word), DEFAULT_ART)
+
+
+def wind_rose(deg):
     if deg is None:
         return "N/A"
-    dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-    return dirs[round(deg / 22.5) % 16]
+    index = int(float(deg) * 16 / 360.0 + 0.5)
+    if index < 0:
+        index = 0
+    if index > 16:
+        index = 16
+    return WIND[index]
 
-res = requests.get(URL, timeout=10)
-if res.status_code != 200 or not res.text.strip():
-    print(f"[!] Station {STATION_ID} offline or returned no recent data.")
-    exit()
 
-obs = res.json()["observations"][0]
-m = obs["metric"]
+def beaufort(kmh):
+    """WMO Beaufort from a km/h wind. Weather.com metric wind is km/h."""
+    bounds = (1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118)
+    for force, limit in enumerate(bounds):
+        if kmh < limit:
+            return force
+    return 12
 
-loc = obs.get("neighborhood", "Musselkanaal")
-time_local = obs.get("obsTimeLocal", "Unknown")
-wind_card = wind_dir_text(obs.get("winddir"))
 
-bbs_output = f"""
-+==============================================================================+
-|   * * *                        W E A T H E R                         * * *   |
-+==============================================================================+
-| STATION ID : {obs['stationID']:<23} | LOCATION : {loc:<26} |
-| LOCAL TIME : {time_local:<23} | SOFTWARE : {obs.get('softwareType', 'PWS'):<26} |
-+--------------------------------------+---------------------------------------+
-|  [ TEMPERATURE & HUMIDITY ]          |  [ WIND & BAROMETER ]                 |
-|  Temp      : {m['temp']:>6.1f} C                |  Wind      : {m['windSpeed']:>5.1f} km/h ({wind_card:<5})       |
-|  Feels Like: {m['heatIndex']:>6.1f} C                |  Gusts     : {m['windGust']:>5.1f} km/h               |
-|  Dew Point : {m['dewpt']:>6.1f} C                |  Pressure  : {m['pressure']:>7.1f} hPa              |
-|  Humidity  : {obs['humidity']:>6} %                |  Precip    : {m['precipTotal']:>5.1f} mm (Rate {m['precipRate']:.1f})      |
-+--------------------------------------+---------------------------------------+
-|  Solar Rad : {str(obs.get('solarRadiation', 'N/A')):>6} W/m2             |  UV Index  : {str(obs.get('uv', 'N/A')):>5}                    |
-+==============================================================================+
-"""
-print(bbs_output.strip())
+def number(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def day_temp(value):
+    reading = number(value)
+    if reading is None:
+        text = str(value or "").replace("&nbsp;", "").strip()
+        return text
+    if reading == int(reading):
+        return str(int(reading))
+    return f"{reading:.1f}"
+
+
+def plain(text):
+    text = (text or "").replace("&nbsp;", " ").replace("\xa0", " ")
+    for tag in ("<br>", "<br/>", "<br />"):
+        text = text.replace(tag, " ")
+    return " ".join(text.split())
+
+
+def fetch_json(url):
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    if not resp.text.strip():
+        raise ValueError("empty response")
+    return resp.json()
+
+
+def station_obs():
+    data = fetch_json(STATION_URL)
+    rows = data.get("observations") or []
+    if not rows:
+        raise ValueError("no observation")
+    return rows[0]
+
+
+def weerlive():
+    data = fetch_json(WEERLIVE_URL)
+    rows = data.get("liveweer") or []
+    if not rows:
+        raise ValueError("no liveweer")
+    return rows[0]
+
+
+def bulletin(obs, live):
+    metric = obs.get("metric") or {}
+    temp = number(metric.get("temp"))
+    wind = number(metric.get("windSpeed"))
+    pressure = number(metric.get("pressure"))
+    temp_now = f"{temp:.1f}" if temp is not None else "N/A"
+    low = day_temp(live.get("d0tmin"))
+    high = day_temp(live.get("d0tmax"))
+    if low and high:
+        temp_text = f"{temp_now} ({low} tot {high})"
+    else:
+        temp_text = temp_now
+    if wind is None:
+        wind_text = "N/A"
+    else:
+        wind_text = f"{beaufort(wind)} Beaufort"
+    if pressure is None:
+        pressure_text = "N/A"
+    else:
+        pressure_text = f"{pressure:.1f} hPa"
+
+    word = live.get("image") or live.get("samenv") or ""
+    drawing = ascii_art(word)
+    sky = plain(live.get("samenv")) or "onbekend"
+    forecast = plain(live.get("verw"))
+
+    lines = [
+        " .ooO  Het Weer .Ooo" + ("-" * 57),
+        f"| {drawing[0]} | Hier nu {sky}",
+        f"| {drawing[1]} |",
+        f"| {drawing[2]} | Temperatuur  : {temp_text} graden Celsius",
+        f"| {drawing[3]} | Windsnelheid : {wind_text}",
+        f"| {drawing[4]} | Windrichting : {wind_rose(obs.get('winddir'))}",
+        f"| {drawing[5]} | Luchtdruk    : {pressure_text}",
+        "|---------------`",
+    ]
+    if forecast:
+        lines.append(f"| {forecast}")
+    return "\n".join(lines)
+
+
+def main():
+    try:
+        obs = station_obs()
+    except Exception:
+        print(f"[!] Station {STATION_ID} offline or returned no recent data.")
+        return 1
+    try:
+        live = weerlive()
+    except Exception:
+        print("[!] Geen weerbericht van weerlive.nl.")
+        return 1
+    print(bulletin(obs, live))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

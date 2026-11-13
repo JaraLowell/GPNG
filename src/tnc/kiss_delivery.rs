@@ -543,7 +543,9 @@ mod tests {
         let t = now();
         q.push(0, build_i("PEER", "ME", 3, 3, false, b"lol"), t)
             .unwrap();
-        assert!(q.push(0, build_i("PEER", "ME", 4, 3, false, b"next"), t).is_none());
+        assert!(q
+            .push(0, build_i("PEER", "ME", 4, 3, false, b"next"), t)
+            .is_none());
         assert!(q.on_rx(&build_rej("ME", "PEER", 1, false), t).is_none());
         assert!(q.tick(t + T1 + Duration::from_millis(1)).is_none());
         assert!(q.tx_snapshots().is_empty());

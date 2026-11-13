@@ -27,6 +27,13 @@ Remote must be on. With Remote off, //RUN is answered with
     written in the script (CALLSIGN, GRID, LAT, LON). It reads
     no input.
 
+//RUN WEATHER
+    the Het Weer block. Temperature, wind, and pressure come
+    from the Weather Underground station in the script. The
+    drawing, the sky line, and the forecast come from
+    weerlive.nl. The drawing follows the image word
+    (lichtbewolkt, zonnig, regen, ...). It reads no input.
+
 //RUN DOS
     an MS-DOS 6.20 window. Drive C: is the USER folder, and there
     is no other drive (D: answers "Drive D does not excist!").
@@ -79,9 +86,8 @@ Linux, macOS, and Windows
     as well. One program per channel, so ten channels is ten
     programs at most.
 
-FREE, QSLINFO, SWPC, and DOS are the samples. All four are Python
-and use only the standard library. FREE reports memory on Linux,
-macOS, and Windows and then exits. QSLINFO looks up one callsign
-and exits. SWPC prints one NOAA bulletin and exits. DOS stays
-open until EXIT, the link drops, or the 300-second quiet limit
-closes it.
+FREE, QSLINFO, SWPC, WEATHER, and DOS are the samples. FREE reports
+memory on Linux, macOS, and Windows and then exits. QSLINFO looks
+up one callsign and exits. SWPC prints one NOAA bulletin and exits.
+WEATHER prints one Het Weer report and exits. DOS stays open until
+EXIT, the link drops, or the 300-second quiet limit closes it.

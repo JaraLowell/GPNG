@@ -1,6 +1,4 @@
-Have a good day, %n
+Have a good day, %n. Quote of the Day:
+%O
 
-Quote of the Day:
-%O 
-
-NL0MSK: %c loged out %d at %t
+%Y: %C loged out %D at %T

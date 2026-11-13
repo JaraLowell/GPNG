@@ -986,10 +986,7 @@ mod tests {
             "fm 03:22 NL0MSK-2 to NL0MSK ctl I07^ pid F0"
         );
         assert_eq!(insert_monitor_time("   payload", "03:22"), "   payload");
-        let tagged = tag_kiss_port(
-            "fm NL0MSK to CQ ctl UI^ pid F0",
-            2,
-        );
+        let tagged = tag_kiss_port("fm NL0MSK to CQ ctl UI^ pid F0", 2);
         assert_eq!(tagged, "fm2 NL0MSK to CQ ctl UI^ pid F0");
         assert_eq!(
             tag_kiss_port("fm NL0MSK to CQ ctl UI^ pid F0", 0),

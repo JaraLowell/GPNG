@@ -202,7 +202,7 @@ def hf_lines(pairs, period):
 
     lines = [
         f" {title}",
-        f"            {day_h:<8} {night_h}",
+        f"             {day_h:<8} {night_h}",
     ]
     if not order:
         lines.append("  (no band report)")
@@ -304,23 +304,21 @@ def build_bbs_bulletin():
         aurora_str = data["aurora"]
 
     lines = [
-        "=" * 72,
-        f" SPACE WEATHER & HF/VHF PROPAGATION REPORT - {CALLSIGN} ({GRID})",
-        f" ISSUED: {timestamp} | LOCAL SOLAR: {sun_status}",
-        "=" * 72,
+        f"SPACE WEATHER & HF/VHF PROPAGATION REPORT - {CALLSIGN} ({GRID})",
+        f"ISSUED: {timestamp} | LOCAL SOLAR: {sun_status}",
+        "--o-",
         f" SOLAR FLUX  : {sfi_str:<14} | SUNSPOTS     : {data['sunspots']}",
         f" X-RAY       : {data['xray']:<14} | 304A HELIUM  : {data['helium']}",
         f" GEOMAG FIELD: {data['geomag']:<14} | PLANETARY Kp : {kp_str}",
         f" SOLAR WIND  : {wind_str:<14} | IMF Bz       : {bz_str}",
         f" AURORA      : {aurora_str:<14} | P-FLUX / e-  : {data['proton']} / {data['electron']}",
         f" NOISE FLOOR : {data['noise']:<14} | MUF          : {muf_text(data)}",
-        "-" * 72,
+        "--o-",
     ]
     lines.extend(hf_lines(data["hf"], period))
-    lines.append("")
     lines.extend(vhf_lines(data["vhf"]))
     lines.extend([
-        "-" * 72,
+        "--o-",
         " LOCAL STATION PROPAGATION SUMMARY:",
     ])
 
@@ -328,9 +326,9 @@ def build_bbs_bulletin():
         lines.append(f"  * {note}")
 
     lines.extend([
-        "-" * 72,
+        "--o-",
         f" DATA: N0NBH HamQSL ({data['updated']}) | 73 DE {CALLSIGN}",
-        "=" * 72,
+        ""
     ])
 
     return "\n".join(lines)

@@ -89,6 +89,39 @@ pub fn waiting(dir: &Path, call: &str) -> bool {
     path.is_file() && inside(dir, &path)
 }
 
+/// Callsigns that have a `{CALL}.GPM` in `dir`, sorted.
+///
+/// The file stem is the station. `README.txt` and any name that is not a
+/// callsign are left out. The same call is listed once.
+pub fn waiting_calls(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut calls = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let upper = name.to_ascii_uppercase();
+        let Some(stem) = upper.strip_suffix(".GPM") else {
+            continue;
+        };
+        let Ok(call) = normalize_mycall(stem) else {
+            continue;
+        };
+        if calls.iter().any(|have: &String| have == &call) {
+            continue;
+        }
+        calls.push(call);
+    }
+    calls.sort();
+    calls
+}
+
 /// Mail text for `call`, macros still unexpanded. `None` when there is no file.
 pub fn read_text(dir: &Path, call: &str) -> Option<String> {
     let path = file_path(dir, call).ok()?;
@@ -194,6 +227,22 @@ mod tests {
         assert!(read_text(&dir, "NL0MSK").is_none());
         assert!(dir.join("DL1ABC.GPM").is_file());
         assert!(!delete_own(&dir, "NL0MSK").unwrap());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn waiting_calls_are_the_gpm_file_stems() {
+        let dir = std::env::temp_dir().join(format!("gpng-mail-list-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("README.txt"), b"not mail").unwrap();
+        fs::write(dir.join("nl1as.gpm"), b"one").unwrap();
+        fs::write(dir.join("PD4MV.GPM"), b"two").unwrap();
+        fs::write(dir.join("notes.txt"), b"no").unwrap();
+        assert_eq!(
+            waiting_calls(&dir),
+            vec!["NL1AS".to_string(), "PD4MV".to_string()]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -193,11 +193,10 @@ impl GpEditor {
             .to_string()
     }
 
-    pub fn line_count(&self) -> usize {
-        if self.text.is_empty() {
-            return 0;
-        }
-        self.text.lines().count().max(1)
+    /// CP437 size of the buffer. Each character is one byte, and Enter (`\n`)
+    /// counts, so the status total moves as the text is edited.
+    pub fn byte_count(&self) -> usize {
+        self.text.chars().count()
     }
 
     pub fn load_path(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
@@ -352,6 +351,18 @@ mod tests {
         assert_eq!(encode_channel_wire("a\rb", false), b"a\rb");
         assert_eq!(encode_channel_wire("\n", false), b"\r");
         assert_eq!(encode_channel("a\nb", false), b"a\nb");
+    }
+
+    #[test]
+    fn byte_count_includes_enter() {
+        let mut ed = GpEditor::default();
+        assert_eq!(ed.byte_count(), 0);
+        ed.text = "hello".into();
+        assert_eq!(ed.byte_count(), 5);
+        ed.text = "hello\n".into();
+        assert_eq!(ed.byte_count(), 6);
+        ed.text = "a\nb".into();
+        assert_eq!(ed.byte_count(), 3);
     }
 
     #[test]

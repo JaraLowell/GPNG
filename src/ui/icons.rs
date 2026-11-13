@@ -337,14 +337,14 @@ pub const TOOLBAR_CHANNEL: &[usize] = &[0, 3, 10, 6, 2, 9, 7, 4];
 pub const TOOLBAR_CHANNEL_DISC: &[usize] = &[1, 3, 10, 6, 2, 9, 7, 4];
 /// MHeard strip — SPY + CONNECT (connect selected call on first free channel).
 pub const TOOLBAR_MHEARD: &[usize] = &[12, 3, 10, 6, 2, 14, 0, 4];
-/// Spy strip — SPY sets call, KILL SPY clears it.
-pub const TOOLBAR_SPY: &[usize] = &[12, 3, 10, 6, 2, 14, 15, 4];
+/// Spy strip — SAVE writes the spy pad; SPY sets the call, KILL SPY clears it.
+pub const TOOLBAR_SPY: &[usize] = &[12, 3, 10, 6, 9, 14, 15, 4];
 /// Editor strip.
 pub const TOOLBAR_EDITOR: &[usize] = &[12, 3, 10, 6, 2, 9, 5, 4];
-/// BBS-Menu strip.
-pub const TOOLBAR_BBS_MENU: &[usize] = &[12, 3, 10, 6, 2, 13, 16, 4];
-/// Box-List strip.
-pub const TOOLBAR_BOX_LIST: &[usize] = &[12, 3, 10, 6, 2, 8, 16, 4];
+/// BBS-Menu strip — SAVE writes the menu pad. SORT and FIND stay.
+pub const TOOLBAR_BBS_MENU: &[usize] = &[12, 3, 10, 6, 9, 13, 16, 4];
+/// Box-List strip — SAVE writes the list pad. FIND stays.
+pub const TOOLBAR_BOX_LIST: &[usize] = &[12, 3, 10, 6, 2, 9, 16, 4];
 
 /// Default / Monitor labels (kept for TUI).
 pub const TOOLBAR_LABELS: &[&str] = &[
