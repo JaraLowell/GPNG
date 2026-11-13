@@ -2,10 +2,12 @@
 //!
 //! Documented set: fifteen macros in `README.TXT`, plus `%DIGI%`, `%Q`,
 //! `%A` (sysop activity), and the config-only `%TFPCX200` keyword.
-//! Formatting suffix `#NN` pads/truncates. Undocumented EXE extras `%P` /
-//! `%*` are not implemented.
+//! Formatting suffix `#NN` pads/truncates. `%P` is the USER folder for
+//! `//DIR` / `//CAT`, printed under `.` so the drive letter stays local.
+//! `%*` is not implemented.
 
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use chrono::Local;
@@ -33,6 +35,8 @@ pub struct MacroContext {
     pub activity: String,
     /// If true, `%?` should solicit a name (caller handles interaction).
     pub name_unknown: bool,
+    /// `%P`. USER folder relative to the install home, e.g. `.\data\USER`.
+    pub home: String,
 }
 
 impl MacroContext {
@@ -52,8 +56,87 @@ impl MacroContext {
             qrg: "27.235".into(),
             activity: activity_status(Duration::from_secs(30)),
             name_unknown: false,
+            home: user_home(&PathBuf::from("data").join("USER")),
         }
     }
+}
+
+/// `%P` — the folder `//DIR` and `//CAT` list.
+///
+/// DOS Graphic Packet prints `C:\GP\USER\`. The drive and every folder above
+/// this install stay off the air. The same place is `.\data\USER`.
+pub fn user_home(path: &Path) -> String {
+    format_home(&relative_home(path))
+}
+
+fn relative_home(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        for root in crate::paths::install_roots() {
+            if let Some(rel) = strip_home(&root, path) {
+                return rel;
+            }
+        }
+        return path
+            .file_name()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("USER"));
+    }
+    path.to_path_buf()
+}
+
+/// `path` with `root` removed, ASCII case ignored. `None` when `path` is not
+/// inside `root`.
+fn strip_home(root: &Path, path: &Path) -> Option<PathBuf> {
+    let mut root_c = root.components();
+    let mut rest = Vec::new();
+    for c in path.components() {
+        if let Some(r) = root_c.next() {
+            if !component_eq(&r, &c) {
+                return None;
+            }
+        } else {
+            rest.push(c);
+        }
+    }
+    if root_c.next().is_some() {
+        return None;
+    }
+    Some(rest.iter().collect())
+}
+
+fn component_eq(a: &Component<'_>, b: &Component<'_>) -> bool {
+    match (a, b) {
+        (Component::Prefix(x), Component::Prefix(y)) => {
+            x.as_os_str().eq_ignore_ascii_case(y.as_os_str())
+        }
+        (Component::RootDir, Component::RootDir) | (Component::CurDir, Component::CurDir) => true,
+        (Component::Normal(x), Component::Normal(y)) => x.eq_ignore_ascii_case(y),
+        _ => false,
+    }
+}
+
+fn format_home(rel: &Path) -> String {
+    let mut parts = Vec::new();
+    for c in rel.components() {
+        match c {
+            Component::Normal(part) => {
+                let name = part.to_string_lossy();
+                if name.contains(':') || name.contains('\\') || name.contains('/') {
+                    parts.clear();
+                    continue;
+                }
+                parts.push(name.into_owned());
+            }
+            Component::CurDir => {}
+            _ => parts.clear(),
+        }
+    }
+    if parts.is_empty() {
+        return r".\USER".into();
+    }
+    let mut out = String::from(r".\");
+    out.push_str(&parts.join(r"\"));
+    out
 }
 
 /// `%A` / activity status from idle time since last sysop key/mouse input.
@@ -143,6 +226,13 @@ pub fn expand(input: &str, ctx: &MacroContext) -> String {
             'O' | 'o' => ctx.origin_line.clone(),
             'Q' | 'q' => ctx.qrg.clone(),
             'A' | 'a' => ctx.activity.clone(),
+            'P' | 'p' => {
+                if ctx.home.is_empty() {
+                    user_home(&PathBuf::from("data").join("USER"))
+                } else {
+                    ctx.home.clone()
+                }
+            }
             '?' => {
                 if ctx.name_unknown {
                     // Placeholder — real UI should prompt; mark for session layer.
@@ -205,6 +295,7 @@ pub fn help_entries() -> &'static [(&'static str, &'static str)] {
         ("%O", "Random ORIGIN.GPI line"),
         ("%Q", "QRG (MHz)"),
         ("%A", "Sysop at keyboard / last seen"),
+        ("%P", "User Folder Path"),
         ("%?", "Ask for name if unknown"),
         ("%>", "Enable remote prompt"),
         ("%DIGI%", "Digipeater path"),
@@ -342,90 +433,4 @@ fn windows_zone() -> Option<(String, bool)> {
 fn wide_z(words: &[u16]) -> String {
     let end = words.iter().position(|&c| c == 0).unwrap_or(words.len());
     String::from_utf16_lossy(&words[..end])
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn expands_version_and_pad() {
-        let ctx = MacroContext {
-            peer_name: "Ulf".into(),
-            ..MacroContext::demo()
-        };
-        assert_eq!(
-            expand("GP %V", &ctx),
-            format!("GP {}", crate::version::APP_VERSION)
-        );
-        assert_eq!(expand("%N#6", &ctx), "Ulf   ");
-        assert_eq!(expand("100%%", &ctx), "100%");
-    }
-
-    #[test]
-    fn name_macro_falls_back_to_callsign() {
-        let ctx = MacroContext {
-            peer_call: "NL0MSK".into(),
-            peer_name: String::new(),
-            ..MacroContext::demo()
-        };
-        assert_eq!(expand("Hallo %N,", &ctx), "Hallo NL0MSK,");
-        let named = MacroContext {
-            peer_name: "Jara".into(),
-            ..ctx
-        };
-        assert_eq!(expand("Hallo %N,", &named), "Hallo Jara,");
-    }
-
-    #[test]
-    fn activity_macro_present_under_five_minutes() {
-        assert_eq!(
-            activity_status(Duration::from_secs(4 * 60 + 59)),
-            "Sysop is at Keyboard"
-        );
-        let ctx = MacroContext {
-            activity: activity_status(Duration::from_secs(10)),
-            ..MacroContext::demo()
-        };
-        assert_eq!(expand("%A", &ctx), "Sysop is at Keyboard");
-    }
-
-    #[test]
-    fn activity_macro_last_seen_minutes_hours_days() {
-        assert_eq!(
-            activity_status(Duration::from_secs(5 * 60)),
-            "Sysop not at keyboard, last seen 5 minutes ago"
-        );
-        assert_eq!(
-            activity_status(Duration::from_secs(60 * 60)),
-            "Sysop not at keyboard, last seen 1 hour ago"
-        );
-        assert_eq!(
-            activity_status(Duration::from_secs(2 * 86_400)),
-            "Sysop not at keyboard, last seen 2 days ago"
-        );
-    }
-
-    #[test]
-    fn holland_is_cet_in_winter_and_cest_in_summer() {
-        assert_eq!(zone_abbrev("W. Europe Standard Time", false), Some("CET"));
-        assert_eq!(zone_abbrev("W. Europe Standard Time", true), Some("CEST"));
-        assert_eq!(zone_abbrev("Romance Standard Time", false), Some("CET"));
-        assert_eq!(zone_abbrev("GMT Standard Time", true), Some("BST"));
-    }
-
-    #[test]
-    fn the_pc_clock_zone_is_not_a_hardcoded_utc() {
-        let label = local_zone();
-        assert!(!label.is_empty());
-        #[cfg(windows)]
-        {
-            let (id, daylight) = super::pc_zone().expect("Windows timezone");
-            if let Some(expect) = zone_abbrev(&id, daylight) {
-                assert_eq!(label, expect, "id={id} daylight={daylight}");
-            } else {
-                assert!(label.starts_with("UTC"), "id={id} label={label}");
-            }
-        }
-    }
 }

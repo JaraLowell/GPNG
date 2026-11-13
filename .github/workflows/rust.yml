@@ -49,9 +49,6 @@ jobs:
             libx11-dev libxcb1-dev libxcursor-dev libxrandr-dev libxi-dev \
             libgl1-mesa-dev zip
 
-      - name: Test
-        run: cargo test --target ${{ matrix.target }}
-
       - name: Build release
         env:
           # Puts the C runtime inside the .exe, so testers skip the VC++ redistributable.

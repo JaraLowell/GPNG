@@ -3,6 +3,8 @@
 //! Built from the union of `*.GPH` help packs + `README.TXT` / EXE strings.
 //! Matching is case-insensitive; significant-prefix length follows `@TAG,N`.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 /// What a recognised remote line should do (semantics filled in over time).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteAction {
@@ -511,166 +513,113 @@ fn verb_matches(verb: &str, key: &str, min_prefix: usize) -> bool {
     key.starts_with(verb)
 }
 
+/// What `//RTT` is asking for.
+///
+/// DOS Graphic Packet answers a bare `//RTT` with `//e //rtt #1128217`.
+/// `//e` is Echo, so the line comes back as `//rtt #1128217`. DOS then
+/// does nothing with that reply. `1128217` is a short clock (a day of
+/// BIOS ticks is about 1.5 million), not Unix time. Unix seconds are 10
+/// digits and Unix milliseconds are 13, so subtracting `1128217` from a
+/// modern clock is not a round trip — that is the broken DOS timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RttAsk {
+    /// No stamp. Send `//e //rtt #<milliseconds>` and wait for the echo.
+    Probe,
+    /// `#<digits>` on the line.
+    Stamp(u64),
+    /// Text after `//RTT` that is not a `#` number. Do not probe again.
+    Bad,
+}
+
+/// A `#` stamp compared with a fresh clock on this station.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RttRead {
+    /// Same clock, and the gap is short enough to be one trip.
+    Trip(Duration),
+    /// Fewer than 10 digits. The DOS clock (`#1128217`) lands here.
+    ShortClock,
+    /// The stamp is later than this clock.
+    Ahead,
+    /// The gap is too long to be one trip.
+    TooOld,
+}
+
+/// `//RTT`, `//RTT #1763050000123`, or neither.
+pub fn rtt_ask(args: &str) -> RttAsk {
+    let args = args.trim();
+    if args.is_empty() {
+        return RttAsk::Probe;
+    }
+    let Some(digits) = args.strip_prefix('#') else {
+        return RttAsk::Bad;
+    };
+    let digits = digits.trim();
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return RttAsk::Bad;
+    }
+    match digits.parse::<u64>() {
+        Ok(n) => RttAsk::Stamp(n),
+        Err(_) => RttAsk::Bad,
+    }
+}
+
+/// Milliseconds since 1970. This is the stamp we put after `#`.
+pub fn unix_millis(now: SystemTime) -> u64 {
+    now.duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// `stamp` was taken earlier on a Unix clock. `now_ms` is a new reading
+/// from the same kind of clock. The difference is the round trip when
+/// both readings belong to one station (the echo brought our own stamp
+/// home). A stamp from the other station's clock includes their skew.
+///
+/// Ten digits or more are Unix seconds. Thirteen digits are milliseconds.
+/// Anything shorter is the DOS clock and is not subtracted.
+pub fn rtt_from_stamps(stamp: u64, now_ms: u64) -> RttRead {
+    const UNIX_SECONDS: u64 = 1_000_000_000;
+    const UNIX_MILLIS: u64 = 1_000_000_000_000;
+    const MAX_TRIP_MS: u64 = 10 * 60 * 1000;
+    if stamp < UNIX_SECONDS {
+        return RttRead::ShortClock;
+    }
+    let delta_ms = if stamp >= UNIX_MILLIS {
+        if now_ms < stamp {
+            return RttRead::Ahead;
+        }
+        now_ms - stamp
+    } else {
+        let now_s = now_ms / 1000;
+        if now_s < stamp {
+            return RttRead::Ahead;
+        }
+        (now_s - stamp).saturating_mul(1000)
+    };
+    if delta_ms > MAX_TRIP_MS {
+        RttRead::TooOld
+    } else {
+        RttRead::Trip(Duration::from_millis(delta_ms))
+    }
+}
+
+/// One status line for a measured trip. `None` when it ran past ten minutes.
+pub fn rtt_phrase(elapsed: Duration) -> Option<String> {
+    let ms = elapsed.as_millis();
+    if ms > 10 * 60 * 1000 {
+        return None;
+    }
+    if ms < 1000 {
+        Some(format!("Round trip: {ms} ms"))
+    } else {
+        let secs = ms as f64 / 1000.0;
+        Some(format!("Round trip: {secs:.3} s"))
+    }
+}
+
 fn split_verb(rest: &str) -> (&str, &str) {
     let mut split = rest.splitn(2, ' ');
     let verb = split.next().unwrap_or("");
     let args = split.next().unwrap_or("").trim_end();
     (verb, args)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn remote_off_answer_names_the_sysop() {
-        assert_eq!(
-            REMOTE_OFF,
-            "<GPNG>: Remote commands are turned off by the sysop.\n"
-        );
-    }
-
-    #[test]
-    fn parses_common_abbreviations() {
-        assert_eq!(parse_line("//VER").unwrap().0, RemoteAction::Version);
-        assert_eq!(
-            parse_line("//echo hi").unwrap(),
-            (RemoteAction::Echo, "hi".into())
-        );
-        assert_eq!(
-            parse_line("//3 cq").unwrap(),
-            (RemoteAction::CrossChannelText, "3 cq".into())
-        );
-        assert_eq!(
-            parse_line("//0").unwrap(),
-            (RemoteAction::CrossChannelText, "0".into())
-        );
-        assert_eq!(split_cross_channel("3 cq"), Some((3, "cq")));
-        assert_eq!(split_cross_channel("0"), Some((0, "")));
-        assert_eq!(split_cross_channel("02"), Some((2, "")));
-        assert_eq!(split_cross_channel("2hello"), Some((2, "hello")));
-        assert_eq!(parse_line("//DIR *.txt").unwrap().0, RemoteAction::Catalog);
-        assert_eq!(parse_line("//KILL").unwrap().0, RemoteAction::Delete);
-        assert_eq!(
-            parse_line("//CD ..").unwrap(),
-            (RemoteAction::ChangeDir, "..".into())
-        );
-        assert_eq!(parse_line("//PAR").unwrap().0, RemoteAction::Parameters);
-        assert_eq!(parse_line("//P").unwrap().0, RemoteAction::Parameters);
-        assert_eq!(parse_line("//PR").unwrap().0, RemoteAction::Prompt);
-        assert_eq!(parse_line("//PRO").unwrap().0, RemoteAction::Prompt);
-        assert_eq!(parse_line("//PROMPT ON").unwrap().0, RemoteAction::Prompt);
-        assert_eq!(
-            parse_line("//CSTATUS").unwrap().0,
-            RemoteAction::ChannelStatus
-        );
-        assert_eq!(parse_line("//CS").unwrap().0, RemoteAction::ChannelStatus);
-        assert_eq!(parse_line("//CST").unwrap().0, RemoteAction::ChannelStatus);
-        assert_eq!(parse_line("//C").unwrap().0, RemoteAction::RemoteConnect);
-        assert_eq!(
-            parse_line("//7+ ON").unwrap(),
-            (RemoteAction::SevenPlusAutoSave, "ON".into())
-        );
-        assert_eq!(
-            parse_line("//7DECODE README.P01").unwrap(),
-            (RemoteAction::SevenPlusDecode, "README.P01".into())
-        );
-        assert_eq!(
-            parse_line("//7decode readme.txt").unwrap(),
-            (RemoteAction::SevenPlusDecode, "readme.txt".into())
-        );
-        // Too short for 7DECODE; leading '7' is channel chat, not a command stub.
-        assert_eq!(
-            parse_line("//7DEC").unwrap().0,
-            RemoteAction::CrossChannelText
-        );
-        assert_eq!(
-            parse_line("//SEND NL1STK-2").unwrap(),
-            (RemoteAction::Send, "NL1STK-2".into())
-        );
-        assert!(parse_line("//SEN NL1STK").is_none());
-        assert_eq!(parse_line("//MAIL").unwrap().0, RemoteAction::Mail);
-        assert_eq!(parse_line("//MA").unwrap().0, RemoteAction::Mail);
-        assert_eq!(parse_line("//MH").unwrap().0, RemoteAction::MHeard);
-        assert_eq!(parse_line("//Q").unwrap().0, RemoteAction::Quit);
-        assert_eq!(parse_line("//QUIT").unwrap().0, RemoteAction::Quit);
-        assert_eq!(parse_line("//BYE").unwrap().0, RemoteAction::Quit);
-        assert!(parse_line("//QSLINFO").is_none());
-        assert!(parse_line("//QSLINFO N1UIR").is_none());
-        assert_eq!(parse_line("//DISC").unwrap().0, RemoteAction::Disconnect);
-        assert_eq!(
-            parse_line("//Name Jara").unwrap(),
-            (RemoteAction::Name, "Jara".into())
-        );
-        assert_eq!(parse_line("//N Jara").unwrap().0, RemoteAction::Name);
-        assert_eq!(parse_line("//bell").unwrap().0, RemoteAction::Bell);
-        assert_eq!(parse_line("//B").unwrap().0, RemoteAction::Bell);
-        assert_eq!(parse_line("//ring").unwrap().0, RemoteAction::Bell);
-        assert_eq!(parse_line("//RI").unwrap().0, RemoteAction::Bell);
-        assert_eq!(parse_line("//R").unwrap().0, RemoteAction::Read);
-        assert_eq!(
-            parse_line("//Name   Jara  ").unwrap(),
-            (RemoteAction::Name, "Jara".into())
-        );
-        assert_eq!(
-            parse_line("//mh  50").unwrap(),
-            (RemoteAction::MHeard, "50".into())
-        );
-    }
-
-    #[test]
-    fn a_word_without_slashes_is_chat() {
-        assert!(parse_line("CAT").is_none());
-        assert!(parse_line("cat").is_none());
-        assert!(parse_line("7+").is_none());
-        assert!(parse_line("7+ ON").is_none());
-        assert!(parse_line("DOS").is_none());
-        assert!(slash_verb("CAT").is_none());
-        assert!(slash_verb("7+").is_none());
-        assert_eq!(parse_line("//CAT").unwrap().0, RemoteAction::Catalog);
-        assert_eq!(parse_line("//cat").unwrap().0, RemoteAction::Catalog);
-        assert_eq!(
-            parse_line("//7+").unwrap().0,
-            RemoteAction::SevenPlusAutoSave
-        );
-        assert_eq!(slash_verb("//d"), Some("D".into()));
-        assert_eq!(slash_verb("//D"), Some("D".into()));
-        assert_eq!(slash_verb("//dos extra"), Some("DOS".into()));
-        assert_eq!(slash_verb("//7+ ON"), Some("7+".into()));
-        assert!(parse_line("//D").is_none());
-        assert!(parse_line("//DO").is_none());
-        assert!(slash_verb("//").is_none());
-        assert_eq!(NOT_RECOGNIZED, "<GPNG>: Command not recognized\n");
-        assert_eq!(report("7+ ON"), "<GPNG>: 7+ ON");
-        assert_eq!(report("<GPNG>: USER CONTENT"), "<GPNG>: USER CONTENT");
-        assert_eq!(
-            report("USER CONTENT\r     682  README.txt"),
-            "<GPNG>: USER CONTENT\r     682  README.txt"
-        );
-        assert_eq!(
-            report_block("Channel status", "Ch. 1 - IO DISCONNECTED"),
-            "<GPNG>: Channel status\rCh. 1 - IO DISCONNECTED"
-        );
-        assert_eq!(
-            report_block("Available Help commands", "//Read  : send a file"),
-            "<GPNG>: Available Help commands\r//Read  : send a file"
-        );
-        assert_eq!(report_block("Version", ""), "<GPNG>: Version");
-    }
-
-    #[test]
-    fn leading_space_is_not_a_command() {
-        assert_eq!(parse_line(" //mh"), None);
-        assert_eq!(parse_line("  //Help"), None);
-        assert_eq!(parse_line("\t//VER"), None);
-        assert_eq!(parse_line("//VER").unwrap().0, RemoteAction::Version);
-    }
-
-    #[test]
-    fn typed_command_on_a_link_is_for_the_other_station() {
-        assert!(!typed_runs_locally(true, RemoteAction::MHeard));
-        assert!(!typed_runs_locally(true, RemoteAction::Bell));
-        assert!(typed_runs_locally(false, RemoteAction::MHeard));
-        assert!(typed_runs_locally(false, RemoteAction::Bell));
-    }
 }

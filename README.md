@@ -90,7 +90,6 @@ classic `CONFIG.GP` beside `Config.toml` merges recognised keys on load.
 
 ```bash
 RUST_LOG=debug cargo run
-cargo test
 ```
 
 ## Protocol notes

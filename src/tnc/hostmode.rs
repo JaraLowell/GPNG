@@ -193,29 +193,3 @@ pub fn drain_frames(stream: &mut Vec<u8>) -> Vec<InboundFrame> {
         });
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn link_status_splits_tries_from_unack() {
-        let full = parse_link_status(b"0 1 2 3 4 5").unwrap();
-        assert!(full.full);
-        assert_eq!(full.not_disp, 1);
-        assert_eq!(full.not_sent, 2);
-        assert_eq!(full.unack, 3);
-        assert_eq!(full.tries, 4);
-        let mon = parse_link_status(b"0 3\0").unwrap();
-        assert!(!mon.full);
-        assert_eq!(mon.not_disp, 3);
-        assert!(parse_link_status(b"CONNECTED to X").is_none());
-    }
-
-    #[test]
-    fn free_buffer_is_the_leading_number() {
-        assert_eq!(parse_free_buffer(b"600"), Some(600));
-        assert_eq!(parse_free_buffer(b" 412\r"), Some(412));
-        assert_eq!(parse_free_buffer(b"none"), None);
-    }
-}

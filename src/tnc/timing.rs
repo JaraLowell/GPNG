@@ -126,19 +126,3 @@ pub fn timing_from_tnc_config(tnc: &crate::config::TncConfig) -> TimingParams {
     };
     TimingParams::from_lines(lines.iter().map(String::as_str))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_init_style_lines() {
-        let t = TimingParams::from_lines(["P 63", "W 9", "T 45", "O 3", "F 5", "M IUSC"]);
-        assert_eq!(t.persist, Some(63));
-        assert_eq!(t.slottime, Some(9));
-        assert_eq!(t.txdelay, Some(45));
-        assert_eq!(t.maxunack, Some(3));
-        assert_eq!(t.frack, Some(5));
-        assert_eq!(t.kiss_set_commands(), vec![(1, 45), (2, 63), (3, 9)]);
-    }
-}

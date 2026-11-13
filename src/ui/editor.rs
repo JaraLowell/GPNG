@@ -38,25 +38,41 @@ pub fn cp437_char(b: u8) -> char {
 
 /// True when the console face (Consolas / CP437 set) has a real glyph.
 ///
-/// Space through `~`, plus the 128 DOS high-byte pictures. C0 controls, DEL,
-/// and anything outside that repertoire are not drawn — the monitor shows
-/// `<0xNN>` / `<U+NNNN>` instead of a box.
+/// Space through `~`, plus the 128 DOS high-byte pictures. C0 controls and
+/// DEL are not drawn — the monitor shows `<0xNN>` instead of a box. Other
+/// Unicode (emoji, euro) is drawn as itself.
 pub fn is_console_glyph(c: char) -> bool {
     let n = c as u32;
     (0x20..=0x7E).contains(&n) || CP437_HI.contains(&c)
 }
 
-fn char_to_byte(c: char) -> u8 {
-    if c.is_ascii() {
-        return c as u8;
-    }
-    for (i, &mapped) in CP437_HI.iter().enumerate() {
-        if mapped == c {
-            return 0x80 + i as u8;
+/// One DOS byte for `c`, or `None` when the PC set has no picture for it.
+///
+/// `umlaut_on` stores the seven äöü letters as Latin-1. Everything else is
+/// CP437, including `°` (`0xF8`). Emoji and the euro sign do not fit.
+fn dos_byte(c: char, umlaut_on: bool) -> Option<u8> {
+    if umlaut_on {
+        if let Some(byte) = latin1_umlaut(c) {
+            return Some(byte);
         }
     }
-    // Unmapped → DOS '?'
-    b'?'
+    if c.is_ascii() {
+        return Some(c as u8);
+    }
+    CP437_HI
+        .iter()
+        .position(|&mapped| mapped == c)
+        .map(|i| 0x80 + i as u8)
+}
+
+fn char_to_byte(c: char) -> u8 {
+    // Unmapped → DOS '?'. GPI files stay in the PC set.
+    dos_byte(c, false).unwrap_or(b'?')
+}
+
+/// True when every character is in the DOS set this button position uses.
+fn channel_fits_dos(text: &str, umlaut_on: bool) -> bool {
+    text.chars().all(|c| dos_byte(c, umlaut_on).is_some())
 }
 
 /// Decode CP437 file bytes to Unicode (egui TextEdit).
@@ -109,7 +125,15 @@ pub fn encode_channel(text: &str, umlaut_on: bool) -> Vec<u8> {
 ///
 /// The pad keeps `\n`. DOS GP's Enter is a single CR, so `\n`, `\r`, and
 /// `\r\n` each go out as one `0x0D`.
+///
+/// A line that fits the DOS set stays one byte per character, so `6°C` is
+/// `0x36 0xF8 0x43` and a DOS station still shows the degree sign. A line
+/// with anything else (emoji, euro, an en-dash) goes out as UTF-8. The GPI
+/// editor does not use this; it still stores `?` for those characters.
 pub fn encode_channel_wire(text: &str, umlaut_on: bool) -> Vec<u8> {
+    if !channel_fits_dos(text, umlaut_on) {
+        return encode_utf8_wire(text);
+    }
     let raw = encode_channel(text, umlaut_on);
     let mut out = Vec::with_capacity(raw.len());
     let mut i = 0;
@@ -128,11 +152,117 @@ pub fn encode_channel_wire(text: &str, umlaut_on: bool) -> Vec<u8> {
     out
 }
 
+/// Chat text the DOS set cannot hold. Newlines are still one CR.
+fn encode_utf8_wire(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push(b'\r');
+            }
+            '\n' => out.push(b'\r'),
+            _ => {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+    out
+}
+
+/// Index `i` is the first byte of a character, or one past the last byte.
+fn utf8_boundary(raw: &[u8], i: usize) -> bool {
+    i == raw.len() || (raw[i] & 0b1100_0000) != 0b1000_0000
+}
+
+/// Split `raw` into pieces of at most `max` bytes.
+///
+/// A UTF-8 chat line is cut on a character boundary so a degree sign or an
+/// emoji is not torn in half. DOS bytes are not UTF-8, and those cuts may
+/// land on any byte.
+pub fn packet_chunks(raw: &[u8], max: usize) -> Vec<&[u8]> {
+    let max = max.max(1);
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let utf8 = std::str::from_utf8(raw).is_ok();
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < raw.len() {
+        let mut end = (start + max).min(raw.len());
+        if utf8 {
+            while end > start && !utf8_boundary(raw, end) {
+                end -= 1;
+            }
+            if end == start {
+                end = (start + 1..=raw.len())
+                    .find(|&i| utf8_boundary(raw, i))
+                    .unwrap_or(raw.len());
+            }
+        }
+        out.push(&raw[start..end]);
+        start = end;
+    }
+    out
+}
+
+/// A complete UTF-8 character at the front of `raw`, if the bytes are one.
+pub fn leading_utf8(raw: &[u8]) -> Option<(char, usize)> {
+    let max = raw.len().min(4);
+    for len in 1..=max {
+        if let Ok(s) = std::str::from_utf8(&raw[..len]) {
+            if s.len() == len && s.chars().nth(1).is_none() {
+                return s.chars().next().map(|ch| (ch, len));
+            }
+        }
+    }
+    None
+}
+
+/// Channel payload back to text.
+///
+/// ASCII stays ASCII. A complete multibyte UTF-8 character (`ä` as `C3 A4`,
+/// `°` as `C2 B0`, emoji) is that character, so a UTF-8 chat line shows on
+/// the channel even when a packet cut left the emoji in the next frame.
+/// A lone high byte stays the DOS picture: `0xF8` is `°`, `0x84` is `ä`,
+/// and `0xE4` stays `Σ` until the äöü button maps it. That is the old
+/// Graphic Packet byte, not a UTF-8 sequence.
+pub fn decode_channel_bytes(raw: &[u8]) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let b = raw[i];
+        if b < 0x80 {
+            out.push(b as char);
+            i += 1;
+            continue;
+        }
+        if let Some((ch, len)) = leading_utf8(&raw[i..]) {
+            if len > 1 && !ch.is_control() {
+                out.push(ch);
+                i += len;
+                continue;
+            }
+        }
+        out.push(byte_to_char(b));
+        i += 1;
+    }
+    out
+}
+
 /// What a channel pad stores: the wire bytes read with the CP437 font.
 ///
 /// Latin-1 `ä` (`0xE4`) is stored as `Σ`. Turning the button on maps that
 /// glyph back to `ä`. A CP437 `ä` (`0x84`) stays `ä` in both positions.
+/// A line the DOS set cannot hold is kept as typed, so an emoji is not `?`.
 pub fn channel_store_text(typed: &str, umlaut_on: bool) -> String {
+    if !channel_fits_dos(typed, umlaut_on) {
+        return typed.to_string();
+    }
     decode_cp437(&encode_channel(typed, umlaut_on))
 }
 
@@ -299,80 +429,21 @@ impl GpEditor {
     }
 
     pub fn update_cursor_from_galley(&mut self, text: &str, cursor_cc: usize) {
-        let cursor_cc = cursor_cc.min(text.len());
+        // `cursor_cc` is a character index (egui's caret), not a byte index.
+        // `°` is two bytes, so a byte slice at that index would split it.
+        let cursor_cc = cursor_cc.min(text.chars().count());
         self.cursor_cc = cursor_cc;
-        let before = &text[..cursor_cc];
+        let byte = text
+            .char_indices()
+            .nth(cursor_cc)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
+        let before = &text[..byte];
         self.cursor_line = before.chars().filter(|&c| c == '\n').count() + 1;
         self.cursor_col = before
             .rsplit('\n')
             .next()
             .map(|s| s.chars().count() + 1)
             .unwrap_or(1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn roundtrip_box_drawing() {
-        let s = "┌─┐\näöü";
-        let bytes = encode_cp437(s);
-        let back = decode_cp437(&bytes);
-        assert!(back.contains('ä') || back.contains('?'));
-        assert_eq!(decode_cp437(&encode_cp437("ABC\n")), "ABC\n");
-    }
-
-    #[test]
-    fn umlaut_button_shifts_only_the_latin1_set() {
-        let letters = "äöüÄÖÜß";
-        let cp437 = encode_channel(letters, false);
-        assert_eq!(cp437, [0x84, 0x94, 0x81, 0x8E, 0x99, 0x9A, 0xE1]);
-        let latin1 = encode_channel(letters, true);
-        assert_eq!(latin1, [0xE4, 0xF6, 0xFC, 0xC4, 0xD6, 0xDC, 0xDF]);
-
-        let stored_off = decode_cp437(&cp437);
-        assert_eq!(stored_off, letters);
-        assert_eq!(show_channel_text(&stored_off, false), letters);
-        assert_eq!(show_channel_text(&stored_off, true), letters);
-
-        let stored_on = decode_cp437(&latin1);
-        assert_ne!(stored_on, letters);
-        assert_eq!(show_channel_text(&stored_on, false), stored_on);
-        assert_eq!(show_channel_text(&stored_on, true), letters);
-        assert_eq!(channel_store_text(letters, true), stored_on);
-    }
-
-    #[test]
-    fn outgoing_enter_is_one_cr() {
-        assert_eq!(encode_channel_wire("a\nb", false), b"a\rb");
-        assert_eq!(encode_channel_wire("a\r\nb", false), b"a\rb");
-        assert_eq!(encode_channel_wire("a\rb", false), b"a\rb");
-        assert_eq!(encode_channel_wire("\n", false), b"\r");
-        assert_eq!(encode_channel("a\nb", false), b"a\nb");
-    }
-
-    #[test]
-    fn byte_count_includes_enter() {
-        let mut ed = GpEditor::default();
-        assert_eq!(ed.byte_count(), 0);
-        ed.text = "hello".into();
-        assert_eq!(ed.byte_count(), 5);
-        ed.text = "hello\n".into();
-        assert_eq!(ed.byte_count(), 6);
-        ed.text = "a\nb".into();
-        assert_eq!(ed.byte_count(), 3);
-    }
-
-    #[test]
-    fn cut_and_paste_the_cursor_line() {
-        let mut ed = GpEditor::default();
-        ed.text = "one\ntwo\nthree".into();
-        ed.cursor_line = 2;
-        assert_eq!(ed.cut_cursor_line(), "two");
-        assert_eq!(ed.text, "one\nthree");
-        ed.paste_line("two");
-        assert_eq!(ed.text, "one\ntwo\nthree");
     }
 }

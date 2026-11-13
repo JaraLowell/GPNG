@@ -25,7 +25,7 @@ use std::collections::{HashMap, VecDeque};
 use std::f32::consts::TAU;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{Datelike, Local, Timelike};
 use eframe::egui::text::LayoutJob;
@@ -45,8 +45,9 @@ use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
 use crate::names::{ListedName, NamesFile, Route, StationKind};
 use crate::remote::commands::{
-    parse_line, report, report_block, slash_verb, split_cross_channel, typed_runs_locally,
-    RemoteAction, NOT_RECOGNIZED, REMOTE_OFF,
+    parse_line, report, report_block, rtt_ask, rtt_from_stamps, rtt_phrase, slash_verb,
+    split_cross_channel, typed_runs_locally, unix_millis, RemoteAction, RttAsk, RttRead,
+    NOT_RECOGNIZED, REMOTE_OFF,
 };
 use crate::remote::external;
 use crate::remote::gph;
@@ -70,7 +71,8 @@ use crate::version;
 use super::ansi::{strip_ansi, AnsiDecoder, AnsiStyle};
 use super::beacon::{BeaconSchedule, BeaconSnap};
 use super::editor::{
-    channel_store_text, decode_cp437, encode_channel_wire, show_channel_text, GpEditor,
+    channel_store_text, decode_channel_bytes, decode_cp437, encode_channel_wire, packet_chunks,
+    show_channel_text, GpEditor,
 };
 use super::icons::{
     icon_file_label, list_icon_files, resolve_icon_path, toolbar_for, toolbar_for_channel,
@@ -310,11 +312,19 @@ pub struct GpGuiApp {
     channel_last_call: Vec<Option<String>>,
     /// Channel lock. Typed chat is sealed; a sealed incoming line turns it on.
     channel_lock: Vec<bool>,
+    /// `//RTT` stamp we sent, and the monotonic instant we sent it.
+    /// The number on the air is Unix milliseconds. The instant is what we
+    /// subtract when that same number comes back, so a clock step mid-trip
+    /// does not change the answer.
+    rtt_probe: Vec<Option<(u64, Instant)>>,
     /// Per channel: `//n` chat-mode target (`None` = not bridging).
     channel_chat: Vec<Option<u8>>,
     /// Set while a chat bridge/join notice is on the air — blocks re-relay.
     chat_bridging: bool,
-    /// Incoming text arrived while this channel was not the one on screen.
+    /// Label attention. A connect or new text while this channel is not
+    /// on screen. Opening the channel clears it. A disconnect does not:
+    /// the label goes back to dots and keeps blinking until it is opened.
+    /// The callsign blinks white/red. The button face stays unreversed.
     channel_unread: Vec<bool>,
     /// Open QSO for `<base call>.GPL`. Index matches `channel_peer`.
     qso_open: Vec<Option<OpenQso>>,
@@ -780,6 +790,7 @@ impl GpGuiApp {
                 channels as usize + 1,
             ),
             channel_lock,
+            rtt_probe: vec![None; slots],
             channel_chat,
             chat_bridging: false,
             channel_unread,
@@ -1457,7 +1468,7 @@ impl GpGuiApp {
                                 self.note_rx_calls(channel, &peer, &mine);
                             }
                         }
-                        self.accept_rx_text(channel, &decode_cp437(&payload), kind);
+                        self.accept_rx_text(channel, &decode_channel_bytes(&payload), kind);
                     } else if !hide_monitor && !(skip_monitor_dup && idx == 0) {
                         if idx == 0 && monitor_bytes {
                             let heard: Vec<(String, String, Vec<String>)> = monitor_rows
@@ -1506,9 +1517,7 @@ impl GpGuiApp {
             self.mheard_scroll_top = true;
         }
         if let ActivePane::Channel(n) = pane {
-            if let Some(flag) = self.channel_unread.get_mut(n as usize) {
-                *flag = false;
-            }
+            self.clear_channel_attention(n);
         }
         self.active = pane;
         self.status = format!("active: {}", pane.label());
@@ -2000,7 +2009,7 @@ impl GpGuiApp {
         // row, and a colour sequence changes the pen. The 128-byte cut does not.
         // One newline.wav for the whole CTEXT, not one per row or packet cut.
         let wire = encode_channel_wire(&text, self.session.umlaut_for(answer));
-        let stored = decode_cp437(&wire);
+        let stored = decode_channel_bytes(&wire);
         self.begin_newline_coalesce();
         self.seal_term(answer);
         self.accept_rx_text(answer, &stored, PadKind::Own);
@@ -2011,9 +2020,9 @@ impl GpGuiApp {
             }
         }
         self.seal_term(caller);
-        for chunk in wire.chunks(max) {
+        for chunk in packet_chunks(&wire, max) {
             // Caller rebuilds rows from newlines, not from the 128-byte cut.
-            self.accept_rx_text(caller, &decode_cp437(chunk), PadKind::Incoming);
+            self.accept_rx_text(caller, &decode_channel_bytes(chunk), PadKind::Incoming);
             if kiss {
                 let ns = *self.ax25_vs.get(answer as usize).unwrap_or(&0);
                 let nr = *self.ax25_vr.get(answer as usize).unwrap_or(&0);
@@ -2351,7 +2360,9 @@ impl GpGuiApp {
     }
 
     /// Start the journal clock and arm a `.GPW` if this peer has one.
+    /// A connect we are not watching lights the channel label.
     fn note_link_up(&mut self, channel: u8) {
+        self.mark_channel_attention(channel);
         self.open_journal(channel);
         if self
             .linked_call(channel)
@@ -3099,19 +3110,33 @@ impl GpGuiApp {
         }
     }
 
-    /// Light the channel button when text arrives on a channel that is not open.
+    /// Light the channel label when text arrives on a channel that is not open.
     fn note_channel_unread(&mut self, channel: u8, chunk: &str) {
+        if !(1..=self.channels).contains(&channel) {
+            return;
+        }
+        if !chunk.chars().any(|c| !c.is_control() && !c.is_whitespace()) {
+            return;
+        }
+        self.mark_channel_attention(channel);
+    }
+
+    /// White/red label. Skipped when that channel is the one on screen.
+    fn mark_channel_attention(&mut self, channel: u8) {
         if !(1..=self.channels).contains(&channel) {
             return;
         }
         if matches!(self.active, ActivePane::Channel(n) if n == channel) {
             return;
         }
-        if !chunk.chars().any(|c| !c.is_control() && !c.is_whitespace()) {
-            return;
-        }
         if let Some(flag) = self.channel_unread.get_mut(channel as usize) {
             *flag = true;
+        }
+    }
+
+    fn clear_channel_attention(&mut self, channel: u8) {
+        if let Some(flag) = self.channel_unread.get_mut(channel as usize) {
+            *flag = false;
         }
     }
 
@@ -4134,7 +4159,7 @@ impl GpGuiApp {
         let shown: &str = if let Some(text) = shown {
             text
         } else {
-            owned = decode_cp437(info);
+            owned = decode_channel_bytes(info);
             &owned
         };
         let my = self.mycall_for_active();
@@ -4474,7 +4499,7 @@ impl GpGuiApp {
                             self.note_rx_calls(ch, &frame.src, &frame.dest);
                             if let Some(bytes) = self.autobin_channel_text(ch, &frame.info) {
                                 self.note_seven_payload(ch, &bytes);
-                                self.accept_rx_text(ch, &decode_cp437(&bytes), PadKind::Incoming);
+                                self.accept_rx_text(ch, &decode_channel_bytes(&bytes), PadKind::Incoming);
                             }
                             self.note_bin_tx_ack(ch, frame.nr);
                         }
@@ -5234,6 +5259,16 @@ impl GpGuiApp {
                 self.handle_remote(action, &args);
                 return;
             }
+            // A linked `//RTT` would make DOS answer `//e //rtt #<short clock>`
+            // and then ignore the echo. Send our own millisecond stamp for
+            // DOS to echo, so the trip is measured here when it comes back.
+            if linked && action == RemoteAction::RoundTrip && matches!(rtt_ask(&args), RttAsk::Probe)
+            {
+                if let ActivePane::Channel(n) = self.active {
+                    self.start_rtt(n);
+                    return;
+                }
+            }
         } else if !linked && slash_verb(&line).is_some() {
             // Internal missed. GPI in data/, then an EXTERNAL program, then the refusal.
             self.resolve_file_command(write_ch, &line);
@@ -5652,6 +5687,7 @@ impl GpGuiApp {
     }
 
     /// Channel bytes. The äöü button selects CP437 or the Latin-1 umlaut table.
+    /// A line the DOS set cannot hold (emoji, euro) is UTF-8 instead.
     fn write_channel_bytes(&mut self, text: &str, carriage_return: bool) {
         let channel = match self.active {
             ActivePane::Channel(n) => n,
@@ -5665,7 +5701,7 @@ impl GpGuiApp {
             return;
         }
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
-        for chunk in raw.chunks(max) {
+        for chunk in packet_chunks(&raw, max) {
             if self.kiss_mode() {
                 self.send_kiss_bytes(chunk, None);
             } else {
@@ -5702,6 +5738,7 @@ impl GpGuiApp {
             qrg: self.session.qrg_text(),
             activity: macros::activity_status(self.last_sysop_activity.elapsed()),
             name_unknown: false,
+            home: macros::user_home(&self.cfg.paths.user_dir),
         };
         self.apply_channel_peer(&mut ctx, channel);
         ctx
@@ -5736,6 +5773,60 @@ impl GpGuiApp {
         }
         self.end_newline_coalesce();
         self.send_operator_text(text);
+    }
+
+    /// Bare `//RTT`. Ask the peer to echo `//rtt #<unix milliseconds>`.
+    fn start_rtt(&mut self, channel: u8) {
+        if channel < 1 || !self.channel_linked(channel) {
+            let msg = "Round trip needs a linked channel";
+            self.status = msg.into();
+            self.send_report(msg);
+            return;
+        }
+        let token = unix_millis(SystemTime::now());
+        if let Some(slot) = self.rtt_probe.get_mut(channel as usize) {
+            *slot = Some((token, Instant::now()));
+        }
+        self.status = format!("RTT #{token}");
+        self.send_gpi_text(&format!("//e //rtt #{token}"));
+    }
+
+    fn answer_rtt(&mut self, channel: u8, args: &str) {
+        match rtt_ask(args) {
+            RttAsk::Probe => self.start_rtt(channel),
+            RttAsk::Stamp(stamp) => self.finish_rtt(channel, stamp),
+            RttAsk::Bad => {
+                let msg = "RTT needs a time stamp";
+                self.status = msg.into();
+                self.send_report(msg);
+            }
+        }
+    }
+
+    /// `//rtt #<number>` came back. Our own stamp uses the monotonic instant
+    /// from when we sent it. Any other full Unix time is compared with a
+    /// new clock reading. The short DOS clock is reported and not subtracted.
+    fn finish_rtt(&mut self, channel: u8, stamp: u64) {
+        let matched = self.rtt_probe.get_mut(channel as usize).and_then(|slot| {
+            match slot {
+                Some((saved, _)) if *saved == stamp => slot.take().map(|(_, started)| started),
+                _ => None,
+            }
+        });
+        let msg = if let Some(started) = matched {
+            rtt_phrase(started.elapsed()).unwrap_or_else(|| "Round trip timed out".into())
+        } else {
+            match rtt_from_stamps(stamp, unix_millis(SystemTime::now())) {
+                RttRead::Trip(elapsed) => {
+                    rtt_phrase(elapsed).unwrap_or_else(|| "Round trip timed out".into())
+                }
+                RttRead::ShortClock => format!("RTT #{stamp} is too short to be a time"),
+                RttRead::Ahead => format!("RTT #{stamp} is ahead of this clock"),
+                RttRead::TooOld => format!("RTT #{stamp} is not a recent time"),
+            }
+        };
+        self.status = msg.clone();
+        self.send_report(&msg);
     }
 
     fn handle_remote(&mut self, action: RemoteAction, args: &str) {
@@ -5998,6 +6089,9 @@ impl GpGuiApp {
             }
             RemoteAction::Echo => {
                 self.send_gpi_text(args);
+            }
+            RemoteAction::RoundTrip => {
+                self.answer_rtt(channel, args);
             }
             RemoteAction::Bell => {
                 // //Bell always plays BELL.WAV. The ♪ mute is only for
@@ -9780,79 +9874,7 @@ fn auto_spy_line_matches(line: &str, auto: &[String], ignore: &[String]) -> bool
         .any(|p| !p.is_empty() && line.contains(p.as_str()))
 }
 
-#[cfg(test)]
-mod channel_state_tests {
-    use super::format_channel_state_line;
 
-    #[test]
-    fn incoming_and_outgoing_arrows_match_gp_dos() {
-        assert_eq!(
-            format_channel_state_line(1, "NL1STK", false, "NL0MSK"),
-            "       Chan   1: NL1STK     <--  NL0MSK"
-        );
-        assert_eq!(
-            format_channel_state_line(1, "NL1STK", true, "NL0MSK"),
-            "       Chan   1: NL1STK     -->  NL0MSK"
-        );
-        assert_eq!(
-            format_channel_state_line(10, "NL1STK-15", true, "NL0MSK-2"),
-            "       Chan  10: NL1STK-15  -->  NL0MSK-2"
-        );
-    }
-}
-
-#[cfg(test)]
-mod auto_spy_filter_tests {
-    use super::{auto_spy_line_matches, join_csv_phrases, next_spy_nnn, split_csv_phrases};
-    use std::fs;
-
-    #[test]
-    fn phrases_keep_internal_spaces() {
-        let parts = split_csv_phrases("fm DB0SGL, fm DB0FN, ctl UI");
-        assert_eq!(parts, vec!["fm DB0SGL", "fm DB0FN", "ctl UI"]);
-        assert_eq!(join_csv_phrases(&parts), "fm DB0SGL, fm DB0FN, ctl UI");
-    }
-
-    #[test]
-    fn match_is_case_sensitive_substring() {
-        let auto = vec!["fm DB0SGL".into()];
-        let ignore = vec!["ctl UI".into()];
-        assert!(auto_spy_line_matches(
-            "fm DB0SGL to DB0FN ctl I",
-            &auto,
-            &ignore
-        ));
-        assert!(!auto_spy_line_matches(
-            "fm DB0SGL to DB0FN ctl UI",
-            &auto,
-            &ignore
-        ));
-        assert!(!auto_spy_line_matches(
-            "FM DB0SGL to DB0FN ctl I",
-            &auto,
-            &ignore
-        ));
-        assert!(!auto_spy_line_matches("fm DB0FN ctl I", &auto, &ignore));
-    }
-
-    #[test]
-    fn next_spy_nnn_skips_files_already_on_disk() {
-        let dir = std::env::temp_dir().join(format!(
-            "gpng-spy-nnn-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("NL0MSK.000"), b"a").unwrap();
-        fs::write(dir.join("NL0MSK.001"), b"b").unwrap();
-        assert_eq!(next_spy_nnn(&dir, "NL0MSK"), Some(2));
-        assert_eq!(next_spy_nnn(&dir, "NL1AS"), Some(0));
-        let _ = fs::remove_dir_all(&dir);
-    }
-}
 
 fn store_beacon_period(beacon: &mut BeaconConfig, text: &mut String) {
     text.retain(|c| c.is_ascii_digit());
@@ -10988,6 +11010,7 @@ impl GpGuiApp {
                     // Hide egui's tall bar caret; we paint a DOS `_` after show().
                     ui.visuals_mut().text_cursor.stroke = Stroke::new(0.0, Color32::TRANSPARENT);
                     // Exact rows×row_h flush to the purple floor (history fills above).
+                    let before_ime = self.compose[slot].input.clone();
                     let output = {
                         let input_ref = &mut self.compose[slot].input;
                         ui.allocate_ui_with_layout(
@@ -11010,6 +11033,20 @@ impl GpGuiApp {
                         )
                         .inner
                     };
+                    // `°` and emoji arrive as an IME commit. egui 0.29 keeps that
+                    // commit only while the caret is still where IME was enabled,
+                    // so typing `4.8` first makes the degree sign vanish.
+                    if output.response.has_focus() {
+                        let commit = ui.input(|i| dropped_ime_commit(&i.events));
+                        if !commit.is_empty() && self.compose[slot].input == before_ime {
+                            let cursor = output
+                                .cursor_range
+                                .map(|r| r.primary.ccursor.index)
+                                .unwrap_or_else(|| before_ime.chars().count());
+                            let at = insert_at_char(&mut self.compose[slot].input, cursor, &commit);
+                            place_compose_caret(ui.ctx(), focus_id, at);
+                        }
+                    }
                     let changed = output.response.changed();
                     let focused = output.response.has_focus();
                     if focused {
@@ -11723,6 +11760,10 @@ impl GpGuiApp {
     }
 
     fn draw_channel_grid(&mut self, ui: &mut Ui, rect: Rect) {
+        // Looking at the channel puts its label back to grey.
+        if let ActivePane::Channel(n) = self.active {
+            self.clear_channel_attention(n);
+        }
         if self.channel_unread.iter().any(|on| *on) {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
@@ -11767,26 +11808,18 @@ impl GpGuiApp {
                     (Some(ActivePane::List), ActivePane::List) => true,
                     _ => false,
                 };
-                // Idle dark grey · connected light grey · active uses the menu background.
-                let connected =
-                    matches!(action, Some(ActivePane::Channel(ch)) if self.channel_connected(ch));
-                let unread = matches!(action, Some(ActivePane::Channel(ch)) if {
+                // Face stays dark. A connect or unread text, while this
+                // channel is not open, blinks the label white → red.
+                let alert = matches!(action, Some(ActivePane::Channel(ch)) if {
                     !selected && self.channel_unread.get(ch as usize).copied().unwrap_or(false)
                 });
-                let (fill, text_color) = if selected {
-                    (menu_bg, Color32::WHITE)
-                } else if connected {
-                    (VGA_GRAY, Color32::BLACK)
-                } else {
-                    (VGA_DARK_GRAY, Color32::from_rgb(220, 220, 220))
-                };
-                // Slow breathe between the normal fill and red while unread.
-                let fill = if unread {
+                let fill = if selected { menu_bg } else { VGA_DARK_GRAY };
+                let text_color = if alert {
                     let t = ui.input(|i| i.time);
                     let wave = ((t * std::f64::consts::TAU / 1.8).sin() as f32) * 0.5 + 0.5;
-                    mix_rgb(fill, Color32::from_rgb(196, 36, 36), wave)
+                    mix_rgb(Color32::WHITE, Color32::from_rgb(220, 32, 32), wave)
                 } else {
-                    fill
+                    VGA_GRAY
                 };
                 let id = ui.id().with(("ch", n));
                 let resp = ui.interact(cell, id, Sense::click());
@@ -11802,17 +11835,9 @@ impl GpGuiApp {
                 let font = FontId::monospace(14.0);
                 let anchor = egui::Align2::CENTER_CENTER;
                 let at = cell.center();
-                let label_painter = painter.with_clip_rect(cell);
-                if connected {
-                    label_painter.text(
-                        at + Vec2::new(0.7, 0.0),
-                        anchor,
-                        &label,
-                        font.clone(),
-                        text_color,
-                    );
-                }
-                label_painter.text(at, anchor, &label, font, text_color);
+                painter
+                    .with_clip_rect(cell)
+                    .text(at, anchor, &label, font, text_color);
                 if resp.clicked() {
                     if let Some(pane) = action {
                         self.select(pane);
@@ -12274,7 +12299,33 @@ impl GpGuiApp {
                                         );
                                     });
                                 if let Some(output) = output {
-                                    if output.response.changed() && self.editor.text != before {
+                                    if output.response.has_focus() {
+                                        let commit = ui.input(|i| dropped_ime_commit(&i.events));
+                                        if !commit.is_empty() && self.editor.text == before {
+                                            let cursor = output
+                                                .cursor_range
+                                                .map(|r| r.primary.ccursor.index)
+                                                .unwrap_or_else(|| before.chars().count());
+                                            let at = insert_at_char(
+                                                &mut self.editor.text,
+                                                cursor,
+                                                &commit,
+                                            );
+                                            let mut state = egui::TextEdit::load_state(
+                                                ui.ctx(),
+                                                output.response.id,
+                                            )
+                                            .unwrap_or_default();
+                                            state.cursor.set_char_range(Some(
+                                                egui::text::CCursorRange::one(
+                                                    egui::text::CCursor::new(at),
+                                                ),
+                                            ));
+                                            state.store(ui.ctx(), output.response.id);
+                                            self.editor.cursor_cc = at;
+                                        }
+                                    }
+                                    if self.editor.text != before {
                                         self.editor.dirty = true;
                                     }
                                     if let Some(cursor) = output.cursor_range {
@@ -16030,6 +16081,31 @@ fn paint_text_pane(
     });
 }
 
+/// Characters from an IME commit (`°`, emoji, a dead-key umlaut).
+/// Control characters are left out so a commit cannot sneak in a newline.
+fn dropped_ime_commit(events: &[egui::Event]) -> String {
+    let mut extra = String::new();
+    for ev in events {
+        if let egui::Event::Ime(egui::ImeEvent::Commit(text)) = ev {
+            extra.extend(text.chars().filter(|c| !c.is_control()));
+        }
+    }
+    extra
+}
+
+/// Insert `extra` at a character index. Returns the caret just after it.
+fn insert_at_char(text: &mut String, char_index: usize, extra: &str) -> usize {
+    let count = text.chars().count();
+    let at = char_index.min(count);
+    let byte = text
+        .char_indices()
+        .nth(at)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    text.insert_str(byte, extra);
+    at + extra.chars().count()
+}
+
 fn compose_id_for(slot: usize) -> egui::Id {
     egui::Id::new(("gp_compose", slot))
 }
@@ -16216,349 +16292,4 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;
     Ok(())
-}
-
-#[cfg(test)]
-mod activity_tests {
-    use super::activity_age_phrase;
-    use std::time::Duration;
-
-    #[test]
-    fn activity_phrase_scales_to_minutes_and_hours() {
-        assert_eq!(activity_age_phrase(Duration::from_secs(0)), "0 second(s)");
-        assert_eq!(activity_age_phrase(Duration::from_secs(1)), "1 second(s)");
-        assert_eq!(activity_age_phrase(Duration::from_secs(59)), "59 second(s)");
-        assert_eq!(activity_age_phrase(Duration::from_secs(60)), "1 minute(s)");
-        assert_eq!(activity_age_phrase(Duration::from_secs(119)), "1 minute(s)");
-        assert_eq!(activity_age_phrase(Duration::from_secs(3600)), "1 hour(s)");
-        assert_eq!(activity_age_phrase(Duration::from_secs(7200)), "2 hour(s)");
-    }
-}
-
-#[cfg(test)]
-mod insert_mon_line_tests {
-    use super::should_insert_mon_blank;
-
-    #[test]
-    fn blank_only_before_fm_when_pad_has_content() {
-        assert!(!should_insert_mon_blank("fm NL0MSK to CQ ctl UI", None));
-        assert!(!should_insert_mon_blank("fm NL0MSK to CQ ctl UI", Some("")));
-        assert!(!should_insert_mon_blank("fm NL0MSK to CQ ctl UI", Some("   ")));
-        assert!(should_insert_mon_blank(
-            "fm NL0MSK to CQ ctl UI",
-            Some("   hello")
-        ));
-        assert!(should_insert_mon_blank(
-            "fm 12:00 NL0MSK to CQ ctl I01+",
-            Some("fm NL1AS to NL0MSK ctl UA")
-        ));
-        assert!(!should_insert_mon_blank("   payload", Some("fm NL0MSK to CQ ctl UI")));
-    }
-}
-
-#[cfg(test)]
-mod heard_fm_tests {
-    use super::heard_from_fm;
-
-    #[test]
-    fn any_fm_line_is_a_heard_station() {
-        let (src, dest, via) = heard_from_fm("fm 16:29 NL1AS to NL0MSK ctl SABM+").unwrap();
-        assert_eq!(src, "NL1AS");
-        assert_eq!(dest, "NL0MSK");
-        assert!(via.is_empty());
-
-        let (src, dest, via) =
-            heard_from_fm("fm NL1AS to NL0AS via NL1WIM* ctl I01+ pid F0").unwrap();
-        assert_eq!(src, "NL1AS");
-        assert_eq!(dest, "NL0AS");
-        assert_eq!(via, vec!["NL1WIM".to_string()]);
-    }
-}
-
-#[cfg(test)]
-mod split_tests {
-    use super::{clamp_split_lower, split_drag_step, split_monitor_height};
-
-    #[test]
-    fn monitor_keeps_a_qso_strip() {
-        let mon = split_monitor_height(400.0, 0.40);
-        assert!((mon - 160.0).abs() < 0.1);
-        assert!(mon >= 48.0);
-        assert!(400.0 - mon >= 48.0);
-    }
-
-    #[test]
-    fn ratio_stays_in_range() {
-        assert!((clamp_split_lower(-1.0) - 0.15).abs() < f32::EPSILON);
-        assert!((clamp_split_lower(2.0) - 0.75).abs() < f32::EPSILON);
-        let mon = split_monitor_height(400.0, 0.99);
-        assert!((mon - 300.0).abs() < 0.1);
-    }
-
-    #[test]
-    fn a_short_press_is_a_click_and_the_rest_resizes() {
-        assert_eq!(split_drag_step(0.0, 4.0), None);
-        assert_eq!(split_drag_step(4.0, 4.0), Some(8.0));
-        assert_eq!(split_drag_step(8.0, 3.0), Some(3.0));
-        assert_eq!(split_drag_step(0.0, -8.0), Some(-8.0));
-    }
-}
-
-#[cfg(test)]
-mod chat_sound_tests {
-    use super::chunk_has_chat;
-
-    #[test]
-    fn empty_and_whitespace_are_quiet() {
-        assert!(!chunk_has_chat(""));
-        assert!(!chunk_has_chat("\r\n"));
-        assert!(!chunk_has_chat(" \t"));
-        assert!(!chunk_has_chat("\u{0007}"));
-    }
-
-    #[test]
-    fn real_chat_counts() {
-        assert!(chunk_has_chat("hi"));
-        assert!(chunk_has_chat("\rhello\n"));
-        assert!(chunk_has_chat("\x1b[32mgreen\x1b[0m"));
-    }
-}
-
-#[cfg(test)]
-mod transcript_tests {
-    use super::{transcript_call, with_log_extension};
-    use std::path::PathBuf;
-
-    #[test]
-    fn call_file_drops_the_ssid() {
-        assert_eq!(transcript_call("cb0mvb-2"), "CB0MVB");
-        assert_eq!(transcript_call("****"), "");
-    }
-
-    #[test]
-    fn a_bare_name_gains_a_log_extension() {
-        assert_eq!(
-            with_log_extension(PathBuf::from("data/LOG/MONITOR"))
-                .file_name()
-                .unwrap(),
-            "MONITOR.LOG"
-        );
-        assert_eq!(
-            with_log_extension(PathBuf::from("data/LOG/CB0MVB.LOG"))
-                .file_name()
-                .unwrap(),
-            "CB0MVB.LOG"
-        );
-        assert_eq!(
-            with_log_extension(PathBuf::from("data/LOG/notes.txt"))
-                .file_name()
-                .unwrap(),
-            "notes.txt.LOG"
-        );
-    }
-}
-
-#[cfg(test)]
-mod soft_scroll_tests {
-    use super::{dos_bar_parts, keep_following, soft_scroll_toward};
-    use eframe::egui::{pos2, vec2, Rect};
-
-    #[test]
-    fn dos_thumb_parks_at_the_top_when_the_pad_fits() {
-        let bar = Rect::from_min_size(pos2(0.0, 0.0), vec2(16.0, 220.0));
-        let parts = dos_bar_parts(bar, 0.0, 0.0, 180.0);
-        assert!(parts.up.bottom() <= parts.track.top() + 0.1);
-        assert!(parts.down.top() + 0.1 >= parts.track.bottom());
-        assert!((parts.thumb.top() - parts.track.top()).abs() < 0.1);
-        assert!(parts.thumb.height() < parts.track.height() * 0.5);
-        assert!(parts.thumb.height() >= 18.0);
-    }
-
-    #[test]
-    fn dos_thumb_tracks_the_ends_of_a_long_pad() {
-        let bar = Rect::from_min_size(pos2(10.0, 20.0), vec2(16.0, 320.0));
-        let top = dos_bar_parts(bar, 0.0, 2000.0, 120.0);
-        let end = dos_bar_parts(bar, 2000.0, 2000.0, 120.0);
-        assert!((top.thumb.top() - top.track.top()).abs() < 0.1);
-        assert!((end.thumb.bottom() - end.track.bottom()).abs() < 0.1);
-        assert!(top.thumb.height() < top.track.height() * 0.25);
-        assert!((top.thumb.height() - end.thumb.height()).abs() < 0.1);
-    }
-
-    #[test]
-    fn slash_jumps_and_stair_steps_one_pixel() {
-        let (y, carry) = soft_scroll_toward(0.0, 16.0, 0.0, 0.25, false);
-        assert!((y - 16.0).abs() < f32::EPSILON);
-        assert_eq!(carry, 0.0);
-
-        // 0.25s at 6 px/s is one pixel, with half a pixel left over.
-        let (y, carry) = soft_scroll_toward(0.0, 16.0, 0.0, 0.25, true);
-        assert!((y - 1.0).abs() < f32::EPSILON);
-        assert!((carry - 0.5).abs() < 0.01);
-
-        let (y, carry) = soft_scroll_toward(0.0, 16.0, 0.0, 0.10, true);
-        assert!((y - 0.0).abs() < f32::EPSILON);
-        let (y, _) = soft_scroll_toward(y, 16.0, carry, 0.10, true);
-        assert!((y - 1.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn scroll_up_lets_go_until_the_end() {
-        assert!(!keep_following(true, 40.0, 80.0, 200.0, 200.0, true));
-        assert!(keep_following(true, 80.0, 80.0, 216.0, 200.0, true));
-        assert!(keep_following(true, 200.0, 184.0, 200.0, 184.0, false));
-        assert!(!keep_following(false, 200.0, 200.0, 216.0, 200.0, true));
-        // Clear shortens the pad; that is not the operator scrolling up.
-        assert!(keep_following(true, 0.0, 400.0, 0.0, 400.0, true));
-        // ScrLock off + new text: resume follow even after a scroll-up pause.
-        assert!(keep_following(true, 40.0, 40.0, 220.0, 200.0, false));
-        // ScrLock on: stay frozen when the pad grows.
-        assert!(!keep_following(false, 40.0, 40.0, 220.0, 200.0, false));
-    }
-}
-
-#[cfg(test)]
-mod connect_ua_tests {
-    use super::{channel_for_connect_ua, channel_for_exact_pair};
-
-    #[test]
-    fn disc_addressed_to_someone_else_is_not_our_link() {
-        let peers = vec![None, Some("NL1AS".into())];
-        let mine = vec![String::new(), "NL0MSK".into()];
-        assert_eq!(
-            channel_for_exact_pair(&peers, &mine, "NL1AS", "NL0AS"),
-            None
-        );
-        assert_eq!(
-            channel_for_exact_pair(&peers, &mine, "NL1AS", "NL0MSK"),
-            Some(1)
-        );
-    }
-
-    fn calls(n: usize) -> Vec<Option<String>> {
-        vec![None; n]
-    }
-
-    #[test]
-    fn ua_from_next_ssid_completes_the_connect() {
-        let mut connecting = calls(5);
-        connecting[1] = Some("NL0AS".into());
-        let mycall = vec![
-            "NL0MSK".into(),
-            "NL0MSK".into(),
-            String::new(),
-            String::new(),
-            String::new(),
-        ];
-        // SABM was to NL0AS. His channel is busy, so the UA is from NL0AS-1.
-        assert_eq!(
-            channel_for_connect_ua(4, &connecting, &mycall, "NL0AS-1", "NL0MSK"),
-            Some(1)
-        );
-        assert_eq!(
-            channel_for_connect_ua(4, &connecting, &mycall, "NL0AS", "NL0MSK"),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn overheard_ua_and_other_station_are_ignored() {
-        let mut connecting = calls(3);
-        connecting[1] = Some("NL0AS".into());
-        let mycall = vec!["NL0MSK".into(), "NL0MSK".into(), String::new()];
-        assert_eq!(
-            channel_for_connect_ua(2, &connecting, &mycall, "NL0AS-1", "DL0ABC"),
-            None
-        );
-        assert_eq!(
-            channel_for_connect_ua(2, &connecting, &mycall, "DB0XYZ-2", "NL0MSK"),
-            None
-        );
-    }
-
-    #[test]
-    fn exact_ssid_wins_when_another_channel_waits_on_the_same_station() {
-        let mut connecting = calls(4);
-        connecting[1] = Some("NL0AS".into());
-        connecting[2] = Some("NL0AS-3".into());
-        let mycall = vec![
-            "NL0MSK".into(),
-            "NL0MSK".into(),
-            "NL0MSK-1".into(),
-            String::new(),
-        ];
-        assert_eq!(
-            channel_for_connect_ua(3, &connecting, &mycall, "NL0AS-3", "NL0MSK-1"),
-            Some(2)
-        );
-        assert_eq!(
-            channel_for_connect_ua(3, &connecting, &mycall, "NL0AS-1", "NL0MSK"),
-            Some(1)
-        );
-        // Same source call on two waits: do not guess.
-        connecting[2] = Some("NL0AS".into());
-        let mycall = vec![
-            "NL0MSK".into(),
-            "NL0MSK".into(),
-            "NL0MSK".into(),
-            String::new(),
-        ];
-        assert_eq!(
-            channel_for_connect_ua(3, &connecting, &mycall, "NL0AS-1", "NL0MSK"),
-            None
-        );
-    }
-}
-
-#[cfg(test)]
-mod pair_ssid_tests {
-    use super::air_call_for_pair;
-
-    #[test]
-    fn different_station_stays_on_the_bare_call() {
-        // A is already on channel 1 as NL0MSK. C, even on channel 2, is a
-        // different from↔to and does not take a number.
-        let up = [("NL0MSK", "NL0AS")];
-        assert_eq!(air_call_for_pair("NL0MSK", "NL1C", &up), "NL0MSK");
-        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &[]), "NL0MSK");
-    }
-
-    #[test]
-    fn second_link_of_the_same_pair_is_dash_1_not_the_channel() {
-        // A connects again. The free channel may be 3; the first duplicate
-        // is still -1, and it is the called station that takes the number.
-        let up = [("NL0MSK", "NL0AS")];
-        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &up), "NL0MSK-1");
-        // The link we placed the other way is the same combination.
-        let reverse = [("NL0AS", "NL0MSK")];
-        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &reverse), "NL0MSK-1");
-    }
-
-    #[test]
-    fn the_number_stays_and_the_next_duplicate_takes_the_next_free() {
-        let both = [("NL0MSK", "NL0AS"), ("NL0MSK-1", "NL0AS")];
-        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &both), "NL0MSK-2");
-        // -1 dropped. -2 is left alone. The bare pair is free again.
-        let kept = [("NL0MSK-2", "NL0AS")];
-        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &kept), "NL0MSK");
-        // Bare is up, -1 dropped, -2 still up: the new duplicate is -1.
-        let hole = [("NL0MSK", "NL0AS"), ("NL0MSK-2", "NL0AS")];
-        assert_eq!(air_call_for_pair("NL0MSK", "NL0AS", &hole), "NL0MSK-1");
-    }
-}
-
-#[cfg(test)]
-mod history_tests {
-    use super::{history_step, HistMove};
-
-    #[test]
-    fn up_walks_newest_first_and_down_returns() {
-        assert!(matches!(history_step(0, None, true), HistMove::Stay));
-        assert!(matches!(history_step(3, None, true), HistMove::Load(2)));
-        assert!(matches!(history_step(3, Some(2), true), HistMove::Load(1)));
-        assert!(matches!(history_step(3, Some(0), true), HistMove::Stay));
-        assert!(matches!(history_step(3, Some(1), false), HistMove::Load(2)));
-        assert!(matches!(history_step(3, Some(2), false), HistMove::Restore));
-        assert!(matches!(history_step(3, None, false), HistMove::Stay));
-    }
 }

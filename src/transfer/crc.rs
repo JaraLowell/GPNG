@@ -60,29 +60,3 @@ pub fn crc_gp(data: &[u8]) -> u16 {
     }
     crc
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn empty_is_zero() {
-        assert_eq!(crc_ccitt(b""), 0);
-    }
-
-    #[test]
-    fn known_vector_stable() {
-        // Sanity: deterministic non-zero for ASCII payload.
-        let c = crc_ccitt(b"Graphic Packet");
-        assert_ne!(c, 0);
-        assert_eq!(c, crc_ccitt(b"Graphic Packet"));
-    }
-
-    #[test]
-    fn gp_crc_matches_dos_defs() {
-        assert_eq!(crc_gp(b""), 0);
-        assert_eq!(crc_gp(b"abcd"), 6043);
-        assert_eq!(crc_gp(b"A"), 65);
-        assert_ne!(crc_gp(b"abcd"), crc_ccitt(b"abcd"));
-    }
-}

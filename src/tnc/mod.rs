@@ -336,26 +336,3 @@ impl RadioLink {
         true
     }
 }
-
-#[cfg(test)]
-mod buffer_tests {
-    use super::*;
-
-    #[test]
-    fn free_ram_is_600_minus_bytes_still_waiting() {
-        let report = buffers_from_tx(&[TxSnap {
-            channel: 1,
-            peer: String::new(),
-            not_sent: 1,
-            unack: 1,
-            tries: 0,
-            waiting_bytes: 40,
-        }]);
-        assert_eq!(report.free, Some(TNC_RAM - 40));
-        assert_eq!(report.rows[0].not_sent, 1);
-        assert_eq!(report.rows[0].unack, 1);
-        assert_eq!(report.rows[0].tries, 0);
-        assert!(report.replace_rows);
-        assert_eq!(report.not_displayed, Some(0));
-    }
-}

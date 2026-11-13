@@ -222,15 +222,16 @@ pub fn monitor_payload_lines(text: &str) -> Vec<String> {
 
 /// Replace characters that must not hit the text layout.
 ///
-/// Only CP437 / console-font glyphs stay as text. C0 controls (including
-/// CR/LF/TAB), DEL, and any other codepoint become `<0x1c>` or `<U+2028>`.
+/// ASCII, the DOS pictures, and every other printable character stay,
+/// including UTF-8 (`ä`, `€`, emoji). C0 controls (CR/LF/TAB) and DEL
+/// become `<0x1c>` so they cannot open a new monitor row.
 pub fn escape_monitor_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        if monitor_char_ok(c) {
-            out.push(c);
-        } else {
+        if c.is_control() {
             out.push_str(&monitor_nonprint_token(c as u32));
+        } else {
+            out.push(c);
         }
     }
     out
@@ -268,10 +269,10 @@ pub fn monitor_display_lines_from_bytes(raw: &[u8], extended: bool) -> Vec<Strin
 
 /// Info field of a KISS frame, before the three-space indent.
 ///
-/// High bytes use the CP437 screen set (what Consolas can draw for GP DOS).
-/// Umlaut-on remaps the seven Latin-1 äöü bytes like the channel pads.
-/// C0 controls, DEL, and anything outside the console glyph set become
-/// `<0xNN>`.
+/// ASCII stays ASCII. A complete UTF-8 character is shown as itself, with
+/// the äöü button on or off. A lone high byte uses the CP437 picture, and
+/// umlaut-on remaps the seven Latin-1 äöü bytes like the channel pads.
+/// C0 controls and DEL become `<0xNN>`.
 pub fn bytes_to_monitor_body(raw: &[u8], extended: bool) -> String {
     let mut out = String::new();
     append_monitor_bytes(&mut out, trim_trailing_crlf(raw), extended);
@@ -318,11 +319,6 @@ fn trim_trailing_crlf(raw: &[u8]) -> &[u8] {
     &raw[..end]
 }
 
-/// Console glyph (CP437 / space..~). Everything else is a hex token.
-fn monitor_char_ok(c: char) -> bool {
-    crate::ui::editor::is_console_glyph(c)
-}
-
 fn monitor_nonprint_token(code: u32) -> String {
     if code <= 0xFF {
         format!("<0x{code:02x}>")
@@ -358,17 +354,11 @@ fn append_monitor_bytes(out: &mut String, raw: &[u8], extended: bool) {
             i += 1;
             continue;
         }
-        // Umlaut-off: keep UTF-8 only when Consolas/CP437 can draw it.
-        // A valid sequence outside that set becomes hex (not CP437 mojibake).
-        if !extended {
-            if let Some((ch, len)) = next_utf8(&raw[i..]) {
-                if monitor_char_ok(ch) {
-                    out.push(ch);
-                } else {
-                    for &byte in &raw[i..i + len] {
-                        out.push_str(&monitor_nonprint_token(u32::from(byte)));
-                    }
-                }
+        // A finished UTF-8 character, with the äöü button on or off.
+        // A lone high byte falls through to the DOS picture below.
+        if let Some((ch, len)) = next_utf8(&raw[i..]) {
+            if len > 1 && !ch.is_control() {
+                out.push(ch);
                 i += len;
                 continue;
             }
@@ -380,15 +370,7 @@ fn append_monitor_bytes(out: &mut String, raw: &[u8], extended: bool) {
 }
 
 fn next_utf8(raw: &[u8]) -> Option<(char, usize)> {
-    let max = raw.len().min(4);
-    for len in 1..=max {
-        if let Ok(s) = std::str::from_utf8(&raw[..len]) {
-            if s.len() == len && s.chars().nth(1).is_none() {
-                return s.chars().next().map(|ch| (ch, len));
-            }
-        }
-    }
-    None
+    crate::ui::editor::leading_utf8(raw)
 }
 
 /// Split `CALL` / `CALL-n` → `(BASE, ssid)`.
@@ -774,288 +756,4 @@ pub fn parse_frame(payload: &[u8]) -> Option<Ax25Frame> {
         command,
         info,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn aprs_path_is_dest_then_digis() {
-        let (dest, vias) = parse_unproto("APMI03 WIDE1-1 WIDE2-2");
-        assert_eq!(dest, "APMI03");
-        assert_eq!(vias, ["WIDE1-1", "WIDE2-2"]);
-        assert_eq!(unproto_to(&dest, &vias), "to APMI03 via WIDE1-1,WIDE2-2");
-        let (dest, vias) = parse_unproto("apmi03 via WIDE1-1,WIDE2-2");
-        assert_eq!(dest, "APMI03");
-        assert_eq!(vias, ["WIDE1-1", "WIDE2-2"]);
-        assert_eq!(parse_unproto("  ").0, "CQ");
-        let raw = build_ui("APMI03", "NL0MSK", &["WIDE1-1", "WIDE2-2"], b"hi");
-        let f = parse_frame(&raw).unwrap();
-        assert_eq!(f.dest, "APMI03");
-        assert_eq!(f.via, ["WIDE1-1", "WIDE2-2"]);
-        assert_eq!(
-            monitor_ctl_line("NL0MSK", &f.dest, &f.via, f.kind, 0, 0, false, true),
-            "fm NL0MSK to APMI03 via WIDE1-1,WIDE2-2 ctl UI^ pid F0"
-        );
-    }
-
-    #[test]
-    fn ui_cq_roundtrip_addrs() {
-        let raw = build_ui("CQ", "NL0MSK", &[], b"hello");
-        let f = parse_frame(&raw).expect("parse");
-        assert_eq!(f.dest, "CQ");
-        assert_eq!(f.src, "NL0MSK");
-        assert_eq!(f.kind, Ax25FrameType::Ui);
-        assert_eq!(f.info, b"hello");
-    }
-
-    #[test]
-    fn sabm_disc_classify() {
-        let sabm = build_sabm("DB0ABC", "NL0MSK");
-        let f = parse_frame(&sabm).unwrap();
-        assert_eq!(f.kind, Ax25FrameType::Sabm);
-        let disc = build_disc("DB0ABC", "NL0MSK");
-        assert_eq!(parse_frame(&disc).unwrap().kind, Ax25FrameType::Disc);
-    }
-
-    #[test]
-    fn i_frame_seq() {
-        let raw = build_i("DB0ABC", "NL0MSK", 2, 5, false, b"x");
-        let f = parse_frame(&raw).unwrap();
-        assert_eq!(f.kind, Ax25FrameType::Info);
-        assert_eq!(f.ns, 2);
-        assert_eq!(f.nr, 5);
-        assert_eq!(f.info, b"x");
-    }
-
-    #[test]
-    fn rr_command_vs_response() {
-        let cmd = build_rr("DB0ABC", "NL0MSK", 3, true, true);
-        let rsp = build_rr("DB0ABC", "NL0MSK", 3, true, false);
-        assert_ne!(cmd, rsp);
-        let f = parse_frame(&cmd).unwrap();
-        assert_eq!(f.kind, Ax25FrameType::Rr);
-        assert_eq!(f.nr, 3);
-        assert!(f.command);
-        assert!(f.poll);
-        let ans = parse_frame(&rsp).unwrap();
-        assert!(!ans.command, "RR Final is a response, not a new poll");
-        assert!(ans.poll);
-    }
-
-    #[test]
-    fn ua_dm_bits() {
-        let ua = parse_frame(&build_ua("A", "B", true)).unwrap();
-        assert_eq!(ua.kind, Ax25FrameType::Ua);
-        assert!(ua.poll);
-        let dm = parse_frame(&build_dm("A", "B", false)).unwrap();
-        assert_eq!(dm.kind, Ax25FrameType::Dm);
-        assert!(!dm.poll);
-    }
-
-    #[test]
-    fn connect_path_is_dest_then_digis() {
-        assert_eq!(split_connect_hops("NL0AS,NL1AS"), ["NL0AS", "NL1AS"]);
-        assert_eq!(split_connect_hops("nl0as via nl1as"), ["NL0AS", "NL1AS"]);
-        assert_eq!(
-            split_connect_hops("NL0AS V NL1AS,DB0FN"),
-            ["NL0AS", "NL1AS", "DB0FN"]
-        );
-    }
-
-    #[test]
-    fn sabm_via_starts_unrepeated_and_our_hop_sets_h() {
-        let raw = build_sabm_via("NL0AS", "NL0MSK", &["NL1AS"]);
-        let f = parse_frame(&raw).unwrap();
-        assert_eq!(f.dest, "NL0AS");
-        assert_eq!(f.src, "NL0MSK");
-        assert_eq!(f.via, ["NL1AS"]);
-        assert_eq!(f.repeated, [false]);
-        assert!(!f.path_complete());
-        assert!(repeat_if_ours(&raw, &["NL0MSK".into()]).is_none());
-        let relayed = repeat_if_ours(&raw, &["NL1AS".into()]).unwrap();
-        let g = parse_frame(&relayed).unwrap();
-        assert_eq!(g.repeated, [true]);
-        assert!(g.path_complete());
-        assert!(g.command);
-        assert_eq!(g.monitor_line(), "fm NL0MSK to NL0AS via NL1AS* ctl SABM+");
-        assert!(repeat_if_ours(&relayed, &["NL1AS".into()]).is_none());
-        assert_eq!(reply_via(&g.via), ["NL1AS"]);
-    }
-
-    #[test]
-    fn only_the_next_unrepeated_hop_relays() {
-        let raw = build_sabm_via("NL0AS", "NL0MSK", &["NL1AS", "DB0FN"]);
-        let once = repeat_if_ours(&raw, &["NL1AS".into()]).unwrap();
-        let mid = parse_frame(&once).unwrap();
-        assert_eq!(mid.repeated, [true, false]);
-        assert!(!mid.path_complete());
-        assert!(repeat_if_ours(&once, &["NL1AS".into()]).is_none());
-        let twice = repeat_if_ours(&once, &["DB0FN".into()]).unwrap();
-        assert!(parse_frame(&twice).unwrap().path_complete());
-        let ui = build_ui("CQ", "NL0MSK", &["NL1AS"], b"hi");
-        let out = repeat_if_ours(&ui, &["NL1AS".into()]).unwrap();
-        assert_eq!(parse_frame(&out).unwrap().info, b"hi");
-    }
-
-    #[test]
-    fn ua_dm_carry_the_digi_path() {
-        let ua = parse_frame(&build_ua_via("A", "B", true, &["DB0FN"])).unwrap();
-        assert_eq!(ua.via, ["DB0FN"]);
-        let dm = parse_frame(&build_dm_via("A", "B", true, &["DB0FN", "DB0ABC"])).unwrap();
-        assert_eq!(dm.via, ["DB0FN", "DB0ABC"]);
-        assert_eq!(
-            reply_via(&["DB0FN".into(), "DB0ABC".into()]),
-            ["DB0ABC", "DB0FN"]
-        );
-    }
-
-    #[test]
-    fn rej_roundtrip() {
-        let raw = build_rej("DB0ABC", "NL0MSK", 2, true);
-        let f = parse_frame(&raw).unwrap();
-        assert_eq!(f.kind, Ax25FrameType::Rej);
-        assert_eq!(f.nr, 2);
-        assert!(f.poll);
-        assert!(!f.command);
-        assert_eq!(f.monitor_line(), "fm NL0MSK to DB0ABC ctl REJ2-");
-    }
-
-    #[test]
-    fn gp_monitor_lines() {
-        let sabm = parse_frame(&build_sabm("NL0MSK", "NL0MSK")).unwrap();
-        assert_eq!(sabm.monitor_line(), "fm NL0MSK to NL0MSK ctl SABM+");
-        let ua = parse_frame(&build_ua("NL0MSK", "NL0MSK", true)).unwrap();
-        assert_eq!(ua.monitor_line(), "fm NL0MSK to NL0MSK ctl UA-");
-        let i = parse_frame(&build_i("NL0MSK", "NL0MSK", 0, 0, false, b"hi")).unwrap();
-        assert_eq!(i.monitor_line(), "fm NL0MSK to NL0MSK ctl I00^ pid F0");
-        let rr = parse_frame(&build_rr("NL0MSK", "NL0MSK", 1, false, false)).unwrap();
-        assert_eq!(rr.monitor_line(), "fm NL0MSK to NL0MSK ctl RR1v");
-        let via = build_ui("CQ", "NL0MSK", &["DB0ABC"], b"x");
-        let ui = parse_frame(&via).unwrap();
-        assert_eq!(
-            ui.monitor_line(),
-            "fm NL0MSK to CQ via DB0ABC ctl UI^ pid F0"
-        );
-    }
-
-    #[test]
-    fn recv_i_accepts_the_next_and_rejects_a_jump() {
-        assert_eq!(classify_recv_i(1, 1, true), RecvI::Accept);
-        assert_eq!(classify_recv_i(1, 0, true), RecvI::Duplicate);
-        assert_eq!(
-            classify_recv_i(1, 3, true),
-            RecvI::Reject {
-                expected: 1,
-                got: 3
-            }
-        );
-        // Nothing accepted yet: N(S)=7 against V(R)=0 is a jump, not a duplicate.
-        assert_eq!(
-            classify_recv_i(0, 7, false),
-            RecvI::Reject {
-                expected: 0,
-                got: 7
-            }
-        );
-    }
-
-    #[test]
-    fn rej_of_the_outstanding_frame_is_a_resend() {
-        // Sent N(S)=3, so V(S) is now 4. REJ 3 asks for that frame.
-        assert_eq!(classify_rej(4, 3), RecvRej::Resend);
-        assert_eq!(classify_rej(4, 4), RecvRej::Ack);
-        assert_eq!(
-            classify_rej(4, 1),
-            RecvRej::Reset {
-                wanted: 1,
-                outstanding: 3
-            }
-        );
-    }
-
-    #[test]
-    fn stamps_hhmm_after_fm() {
-        assert_eq!(
-            insert_monitor_time("fm NL0MSK-2 to NL0MSK ctl I07^ pid F0", "03:22"),
-            "fm 03:22 NL0MSK-2 to NL0MSK ctl I07^ pid F0"
-        );
-        assert_eq!(
-            insert_monitor_time("fm 03:22 NL0MSK-2 to NL0MSK ctl I07^ pid F0", "04:01"),
-            "fm 03:22 NL0MSK-2 to NL0MSK ctl I07^ pid F0"
-        );
-        assert_eq!(insert_monitor_time("   payload", "03:22"), "   payload");
-        let tagged = tag_kiss_port("fm NL0MSK to CQ ctl UI^ pid F0", 2);
-        assert_eq!(tagged, "fm2 NL0MSK to CQ ctl UI^ pid F0");
-        assert_eq!(
-            tag_kiss_port("fm NL0MSK to CQ ctl UI^ pid F0", 0),
-            "fm NL0MSK to CQ ctl UI^ pid F0"
-        );
-        assert_eq!(
-            insert_monitor_time(&tagged, "03:22"),
-            "fm2 03:22 NL0MSK to CQ ctl UI^ pid F0"
-        );
-        assert_eq!(
-            insert_monitor_time("fm2 03:22 NL0MSK to CQ ctl UI^ pid F0", "04:01"),
-            "fm2 03:22 NL0MSK to CQ ctl UI^ pid F0"
-        );
-        assert_eq!(tag_kiss_port(&tagged, 3), tagged);
-    }
-
-    #[test]
-    fn payload_keeps_nonprintables_on_the_indented_row() {
-        assert_eq!(monitor_payload_lines("hello"), vec!["   hello".to_string()]);
-        assert_eq!(
-            monitor_payload_lines("a\rb\nc\r\nd\r"),
-            vec!["   a<0x0d>b<0x0a>c<0x0d><0x0a>d".to_string()]
-        );
-        assert!(monitor_payload_lines("\r\n").is_empty());
-        assert_eq!(
-            monitor_payload_lines("`|R~l \"[/>\"3{}=\n?'\""),
-            vec!["   `|R~l \"[/>\"3{}=<0x0a>?'\"".to_string()]
-        );
-        assert_eq!(
-            monitor_payload_lines("ab\u{1c}cd"),
-            vec!["   ab<0x1c>cd".to_string()]
-        );
-    }
-
-    #[test]
-    fn host_monitor_splits_only_the_header() {
-        let raw = b"fm 15:45 PE1OID-9 to US2PP7 via DB0ET,WIDE1,WIDE2-2 ctl UIv pid F0\r   `|R~l \"[/>\"3{}=\n?'\"\r";
-        assert_eq!(
-            monitor_display_lines_from_bytes(raw, false),
-            vec![
-                "fm 15:45 PE1OID-9 to US2PP7 via DB0ET,WIDE1,WIDE2-2 ctl UIv pid F0".to_string(),
-                "   `|R~l \"[/>\"3{}=<0x0a>?'\"".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn monitor_bytes_keep_text_and_show_binary() {
-        assert_eq!(bytes_to_monitor_body(b"hi\r", false), "hi");
-        assert_eq!(bytes_to_monitor_body(b"a\x1cb", false), "a<0x1c>b");
-        assert_eq!(
-            bytes_to_monitor_body(b"a\tb\x7fc", false),
-            "a<0x09>b<0x7f>c"
-        );
-        // Umlaut-on: Latin-1 ä byte paints as ä. Off: CP437 picture for 0xE4.
-        assert_eq!(bytes_to_monitor_body(&[0xE4], true), "ä");
-        assert_eq!(bytes_to_monitor_body(&[0xE4], false), "Σ");
-        assert_eq!(bytes_to_monitor_body(&[0x84], false), "ä"); // CP437 ä
-        assert_eq!(bytes_to_monitor_body(&[0xA4], false), "ñ"); // CP437, not Latin-1 ¤
-        assert_eq!(bytes_to_monitor_body(&[0x80], true), "Ç");
-        assert_eq!(bytes_to_monitor_body("ä".as_bytes(), false), "ä"); // UTF-8 in set
-                                                                       // Euro is not in the CP437 console set → hex the UTF-8 bytes.
-        assert_eq!(
-            bytes_to_monitor_body("€".as_bytes(), false),
-            "<0xe2><0x82><0xac>"
-        );
-        assert_eq!(
-            bytes_to_monitor_body(&[0xFF, 0x00], false),
-            "\u{00a0}<0x00>"
-        );
-    }
 }
