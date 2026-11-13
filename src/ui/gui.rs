@@ -80,6 +80,7 @@ use super::layout::ActivePane;
 use super::mheard::MheardList;
 use super::padlog::{self, PadKind, TextPad};
 use super::retro;
+use super::channel_bits::{slot_for, SLOT_BBS, SLOT_LIST, SLOT_MONITOR};
 use super::session::{
     chime_strikes, connect_bell_plays, decode_rx_text, default_bell_wav, default_chime_wav,
     default_connect_wav, default_disconnect_wav, default_newline_wav, disconnect_plays,
@@ -323,6 +324,8 @@ pub struct GpGuiApp {
     last_gpw: String,
     /// In-progress connect target per channel (not linked yet).
     channel_connecting: Vec<Option<String>>,
+    /// This station placed the call. Incoming links stay false.
+    channel_outgoing: Vec<bool>,
     /// Self-connect in flight: `(caller_ch, answer_ch)`.
     self_connect_pair: Option<(u8, u8)>,
     /// Self-connect still linked (until either side disconnects).
@@ -523,6 +526,8 @@ pub struct GpGuiApp {
     /// GPI / CTEXT echo: keep one tick for the whole send, not one per row.
     newline_sound_quiet: bool,
     newline_sound_pending: bool,
+    /// Channel that queued a coalesced newline click.
+    newline_sound_channel: u8,
     /// Prevents double-fire within the same hour.
     last_gong: Option<(chrono::NaiveDate, u32)>,
     show_setup: bool,
@@ -572,6 +577,7 @@ impl GpGuiApp {
         let mut qso_open = Vec::with_capacity(channels as usize + 1);
         let mut gpw_armed = Vec::with_capacity(channels as usize + 1);
         let mut channel_connecting = Vec::with_capacity(channels as usize + 1);
+        let mut channel_outgoing = Vec::with_capacity(channels as usize + 1);
         let mut temp_slot_call = Vec::with_capacity(channels as usize + 1);
         let mut ax25_vs = Vec::with_capacity(channels as usize + 1);
         let mut ax25_vr = Vec::with_capacity(channels as usize + 1);
@@ -601,6 +607,7 @@ impl GpGuiApp {
             qso_open.push(None);
             gpw_armed.push(false);
             channel_connecting.push(None);
+            channel_outgoing.push(false);
             temp_slot_call.push(None);
             ax25_vs.push(0);
             ax25_vr.push(0);
@@ -682,7 +689,6 @@ impl GpGuiApp {
                 session.qrg_mhz = mhz;
             }
         }
-        let seven_on = session.seven_plus;
         if let Err(err) = sevenplus::ensure_user_dir(&cfg.paths.user_dir) {
             tracing::warn!("USER dir: {err}");
         }
@@ -779,6 +785,7 @@ impl GpGuiApp {
             gpw_armed,
             last_gpw: String::new(),
             channel_connecting,
+            channel_outgoing,
             self_connect_pair: None,
             self_connect_live: None,
             temp_slot_call,
@@ -841,7 +848,7 @@ impl GpGuiApp {
             seven_pending: vec![Vec::new(); slots],
             seven_cr: vec![false; slots],
             seven: (0..slots)
-                .map(|_| SevenPlusAutosave::new(seven_on))
+                .map(|ch| SevenPlusAutosave::new(session.seven_plus_for(ch as u8)))
                 .collect(),
             user_write: (0..slots).map(|_| None).collect(),
             mail_send: vec![None; slots],
@@ -877,6 +884,7 @@ impl GpGuiApp {
             newline_wav: default_newline_wav(),
             newline_sound_quiet: false,
             newline_sound_pending: false,
+            newline_sound_channel: 0,
             last_gong: None,
             show_setup: false,
             console_bold,
@@ -1275,6 +1283,9 @@ impl GpGuiApp {
                     for c in &mut self.channel_connecting {
                         *c = None;
                     }
+                    for flag in &mut self.channel_outgoing {
+                        *flag = false;
+                    }
                     for via in &mut self.channel_via {
                         via.clear();
                     }
@@ -1307,7 +1318,7 @@ impl GpGuiApp {
                     payload,
                 } => {
                     self.serial_rx_frames += 1;
-                    let text = decode_rx_text(&payload, self.session.extended_ascii);
+                    let text = decode_rx_text(&payload, self.session.umlaut_for(channel));
                     // WA8DED answers a bare `M` with the live flags (code 1). That
                     // reply is the monitor line, not a frame to list.
                     if !self.uses_software_monitor()
@@ -1405,7 +1416,7 @@ impl GpGuiApp {
                     let monitor_rows = if idx == 0 && monitor_bytes {
                         ax25::monitor_display_lines_from_bytes(
                             &payload,
-                            self.session.extended_ascii,
+                            self.session.umlaut_for(SLOT_MONITOR),
                         )
                     } else {
                         Vec::new()
@@ -1453,10 +1464,8 @@ impl GpGuiApp {
                             for (src, dest, via) in &heard {
                                 self.note_heard_on_monitor(src, dest, via);
                             }
-                            if let Some(pad) = self.pads.get_mut(0) {
-                                for part in &monitor_rows {
-                                    pad.push_monitor(kind, stamp_monitor_fm(part));
-                                }
+                            for part in &monitor_rows {
+                                self.push_mon_line(kind, stamp_monitor_fm(part));
                             }
                         } else {
                             let parts = payload_lines(&line);
@@ -1466,14 +1475,12 @@ impl GpGuiApp {
                                         self.note_heard_on_monitor(&src, &dest, &via);
                                     }
                                 }
-                            }
-                            if let Some(pad) = self.pads.get_mut(idx) {
                                 for part in parts {
-                                    if idx == 0 {
-                                        pad.push_monitor(kind, stamp_monitor_fm(&part));
-                                    } else {
-                                        pad.push(kind, part);
-                                    }
+                                    self.push_mon_line(kind, stamp_monitor_fm(&part));
+                                }
+                            } else if let Some(pad) = self.pads.get_mut(idx) {
+                                for part in parts {
+                                    pad.push(kind, part);
                                 }
                             }
                         }
@@ -1531,10 +1538,11 @@ impl GpGuiApp {
             || upper.contains("FAILURE WITH")
         {
             if was_linked {
-                self.play_disconnect_bell();
+                self.play_disconnect_bell(channel);
             }
             self.close_journal(channel);
             self.channel_peer[idx] = None;
+            self.set_link_outgoing(channel, false);
             self.clear_lock(channel);
             if let Some(c) = self.channel_connecting.get_mut(idx) {
                 *c = None;
@@ -1562,6 +1570,7 @@ impl GpGuiApp {
                         if let Some(p) = self.channel_peer.get_mut(other as usize) {
                             *p = None;
                         }
+                        self.set_link_outgoing(other, false);
                         self.clear_lock(other);
                     }
                 }
@@ -1602,7 +1611,7 @@ impl GpGuiApp {
         // Classic: CTEXT goes out only from the station that was connected to.
         if upper.contains("CONNECTED TO ") || upper.contains("CONNECTED") {
             if !was_linked {
-                self.play_connect_bell();
+                self.play_connect_bell(channel);
             }
             self.prepare_busy_redirect_identities();
             // Self-connect: answer channel sends CTEXT (white there, green on caller).
@@ -1613,6 +1622,7 @@ impl GpGuiApp {
                 }
             }
             if !was_linked {
+                self.set_link_outgoing(channel, was_outgoing);
                 self.finish_link_up(channel, !was_outgoing);
             }
         }
@@ -1939,8 +1949,8 @@ impl GpGuiApp {
         for ch in [caller, answer] {
             self.zero_ax25_seq(ch as usize);
             self.kiss_link_activity(ch, true);
+            self.play_connect_bell(ch);
         }
-        self.play_connect_bell();
         self.kiss_clear_sabm_timer(caller);
         self.kiss_clear_sabm_timer(answer);
         self.complete_self_connect_ctext(caller, answer);
@@ -1961,6 +1971,8 @@ impl GpGuiApp {
         if let Some(p) = self.channel_peer.get_mut(answer as usize) {
             *p = Some(caller_call);
         }
+        self.set_link_outgoing(caller, true);
+        self.set_link_outgoing(answer, false);
         if let Some(c) = self.channel_connecting.get_mut(caller as usize) {
             *c = None;
         }
@@ -1984,7 +1996,7 @@ impl GpGuiApp {
         // Sending window is the same terminal: a newline in the file is a
         // row, and a colour sequence changes the pen. The 128-byte cut does not.
         // One newline.wav for the whole CTEXT, not one per row or packet cut.
-        let wire = encode_channel_wire(&text, self.session.extended_ascii);
+        let wire = encode_channel_wire(&text, self.session.umlaut_for(answer));
         let stored = decode_cp437(&wire);
         self.begin_newline_coalesce();
         self.seal_term(answer);
@@ -2135,7 +2147,7 @@ impl GpGuiApp {
             self.bin_rx_swallow = None;
         }
         if was && play {
-            self.play_disconnect_bell();
+            self.play_disconnect_bell(channel);
         }
         if was {
             if let Some(pad) = self.pads.get_mut(channel as usize) {
@@ -2200,6 +2212,7 @@ impl GpGuiApp {
         if let Some(p) = self.channel_peer.get_mut(idx) {
             *p = None;
         }
+        self.set_link_outgoing(channel, false);
         self.clear_lock(channel);
         if let Some(calls) = self.rx_calls.get_mut(idx) {
             *calls = None;
@@ -2299,8 +2312,9 @@ impl GpGuiApp {
         if let Some(p) = self.channel_peer.get_mut(idx) {
             *p = Some(dest.clone());
         }
+        self.set_link_outgoing(channel, true);
         self.note_last_call(channel, &dest);
-        self.play_connect_bell();
+        self.play_connect_bell(channel);
         self.prepare_busy_redirect_identities();
         // First data while we are still calling — we placed this call.
         self.finish_link_up(channel, false);
@@ -2512,6 +2526,19 @@ impl GpGuiApp {
             .is_some()
     }
 
+    fn set_link_outgoing(&mut self, channel: u8, outgoing: bool) {
+        if let Some(flag) = self.channel_outgoing.get_mut(channel as usize) {
+            *flag = outgoing;
+        }
+    }
+
+    fn link_is_outgoing(&self, channel: u8) -> bool {
+        self.channel_outgoing
+            .get(channel as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
     /// Channel to drop for `//Q` / `//DISC`: prefer the given slot, else active
     /// linked channel, else any linked channel.
     fn resolve_disconnect_channel(&self, channel: u8) -> u8 {
@@ -2585,7 +2612,7 @@ impl GpGuiApp {
         // Colour bytes in the typed line paint that row; they are not shown.
         if idx != 0 {
             let ch = idx as u8;
-            let shown = channel_store_text(line, self.session.extended_ascii);
+            let shown = channel_store_text(line, self.session.umlaut_for(ch));
             self.seal_term(ch);
             self.accept_rx_text(ch, &shown, PadKind::Own);
             let wrote = self.rx_row.get(idx).copied().flatten().is_some();
@@ -2596,7 +2623,7 @@ impl GpGuiApp {
                 }
             }
         }
-        if self.kiss_mode() || !self.session.echo {
+        if self.kiss_mode() || !self.session.echo_for(SLOT_MONITOR) {
             return;
         }
         self.pads[0].push_monitor(PadKind::Own, strip_ansi(line));
@@ -2608,7 +2635,7 @@ impl GpGuiApp {
             return;
         };
         let info = if matches!(frame.kind, Ax25FrameType::Info | Ax25FrameType::Ui) {
-            let body = ax25::bytes_to_monitor_body(&frame.info, self.session.extended_ascii);
+            let body = ax25::bytes_to_monitor_body(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
             if body.is_empty() {
                 None
             } else {
@@ -2732,6 +2759,24 @@ impl GpGuiApp {
         self.monitor_lists_text(text)
     }
 
+    /// One monitor row on pad 0. With InsertMonLine, a blank line is placed
+    /// before each new `fm …` packet header (not before payload rows).
+    fn push_mon_line(&mut self, kind: PadKind, line: impl Into<String>) {
+        let line = line.into();
+        let blank = self.cfg.session.insert_mon_line
+            && should_insert_mon_blank(
+                &line,
+                self.pads.first().and_then(|p| p.lines.back().map(|l| l.text.as_str())),
+            );
+        let Some(pad) = self.pads.get_mut(0) else {
+            return;
+        };
+        if blank {
+            pad.push_monitor(kind, "");
+        }
+        pad.push_monitor(kind, line);
+    }
+
     /// GP DOS / axlisten monitor header on pad 0 (`fm … ctl …`).
     fn push_kiss_mon(
         &mut self,
@@ -2755,10 +2800,10 @@ impl GpGuiApp {
             &ax25::monitor_ctl_line(src, dest, via, frame_kind, ns, nr, poll, command),
             port,
         ));
-        self.pads[0].push_monitor(kind, hdr);
+        self.push_mon_line(kind, hdr);
         if let Some(text) = info_text {
             if let Some(line) = ax25::monitor_info_line(text) {
-                self.pads[0].push_monitor(kind, line);
+                self.push_mon_line(kind, line);
             }
         }
     }
@@ -2900,12 +2945,16 @@ impl GpGuiApp {
 
     /// One tick when channel chat appears. Quiet while a multi-line GPI/CTEXT
     /// send is echoing, then flush a single pending play.
-    fn note_channel_chat_sound(&mut self) {
-        if self.newline_sound_quiet {
-            self.newline_sound_pending = true;
+    fn note_channel_chat_sound(&mut self, channel: u8) {
+        if !self.session.bell_for(channel) {
             return;
         }
-        self.play_newline_clicks();
+        if self.newline_sound_quiet {
+            self.newline_sound_pending = true;
+            self.newline_sound_channel = channel;
+            return;
+        }
+        self.play_newline_clicks(channel);
     }
 
     fn begin_newline_coalesce(&mut self) {
@@ -2917,14 +2966,15 @@ impl GpGuiApp {
         self.newline_sound_quiet = false;
         if self.newline_sound_pending {
             self.newline_sound_pending = false;
-            self.play_newline_clicks();
+            let ch = self.newline_sound_channel;
+            self.play_newline_clicks(ch);
         }
     }
 
     /// `RX-Click` copies of `NEWLINE.WAV`, one second apart. `0` is silent.
-    /// The ♪ button silences this on every channel.
-    fn play_newline_clicks(&self) {
-        if !self.session.bell {
+    /// The ♪ bit for this channel silences it.
+    fn play_newline_clicks(&self, channel: u8) {
+        if !self.session.bell_for(channel) {
             return;
         }
         play_wav_times(
@@ -2937,9 +2987,9 @@ impl GpGuiApp {
 
     /// `Connect Bell` copies of `CONNECT.WAV`. The next starts when the
     /// previous one ends, so a replaced file keeps its own length. `0` is silent.
-    /// The ♪ button silences this on every channel.
-    fn play_connect_bell(&self) {
-        if !self.session.bell {
+    /// The ♪ bit for this channel silences it.
+    fn play_connect_bell(&self, channel: u8) {
+        if !self.session.bell_for(channel) {
             return;
         }
         play_wav_times(
@@ -2951,9 +3001,9 @@ impl GpGuiApp {
     }
 
     /// One `DISCONECT.WAV` while Connect Bell is on. Off skips it.
-    /// The ♪ button silences this on every channel.
-    fn play_disconnect_bell(&self) {
-        if !self.session.bell || !disconnect_plays(self.cfg.session.connect_bell) {
+    /// The ♪ bit for this channel silences it.
+    fn play_disconnect_bell(&self, channel: u8) {
+        if !self.session.bell_for(channel) || !disconnect_plays(self.cfg.session.connect_bell) {
             return;
         }
         play_wav(&self.disconnect_wav);
@@ -2966,7 +3016,7 @@ impl GpGuiApp {
         // and only while the session bell is on.
         if kind == PadKind::Incoming
             && channel >= 1
-            && self.session.bell
+            && self.session.bell_for(channel)
             && chunk.as_bytes().contains(&0x07)
         {
             play_bell_wav(&self.bell_wav);
@@ -2975,7 +3025,7 @@ impl GpGuiApp {
         // One play per write burst; multi-line CTEXT is coalesced by the caller.
         if channel >= 1 && matches!(kind, PadKind::Own | PadKind::Incoming) && chunk_has_chat(chunk)
         {
-            self.note_channel_chat_sound();
+            self.note_channel_chat_sound(channel);
         }
         let bytes = chunk.as_bytes();
         let mut i = 0;
@@ -3204,8 +3254,9 @@ impl GpGuiApp {
         if channel < 1 || !incoming {
             return;
         }
-        // Remote is one switch for every channel. Off answers //RUN and does not start it.
-        if !self.session.remote && self.another_run(line) {
+        // Remote is per-channel. Off answers //RUN and does not start it.
+        let remote_on = self.session.remote_for(channel);
+        if !remote_on && self.another_run(line) {
             self.refuse_remote_run(channel);
             return;
         }
@@ -3217,13 +3268,13 @@ impl GpGuiApp {
                 return;
             }
             if let Some((action, args)) = parse_line(line) {
-                if action == RemoteAction::Bell || self.session.remote {
+                if action == RemoteAction::Bell || remote_on {
                     self.handle_remote_on_channel(channel, action, &args);
                 }
                 return;
             }
             if slash_verb(line).is_some() {
-                if self.session.remote {
+                if remote_on {
                     self.resolve_file_command(channel, line);
                 }
                 return;
@@ -3232,7 +3283,7 @@ impl GpGuiApp {
             return;
         }
         let Some((action, args)) = parse_line(line) else {
-            if self.session.remote {
+            if remote_on {
                 self.resolve_file_command(channel, line);
             }
             // Ordinary chat on a channel that is in (or hosting) chat mode.
@@ -3248,7 +3299,7 @@ impl GpGuiApp {
             self.handle_remote_on_channel(channel, action, &args);
             return;
         }
-        if self.session.remote {
+        if remote_on {
             self.handle_remote_on_channel(channel, action, &args);
         }
     }
@@ -3259,16 +3310,34 @@ impl GpGuiApp {
             .is_some_and(SevenPlusAutosave::is_capturing)
     }
 
-    fn set_seven_plus(&mut self, on: bool) {
-        self.session.seven_plus = on;
-        for sniff in &mut self.seven {
-            sniff.set_enabled(on);
+    /// Toggle or set 7+ for `pane` (Monitor broadcasts to every channel).
+    fn set_seven_plus_pane(&mut self, pane: ActivePane, on: Option<bool>) {
+        let on = match on {
+            Some(v) => {
+                if matches!(pane, ActivePane::Monitor) {
+                    self.session.set_seven_plus_for(SLOT_MONITOR, v);
+                } else if let ActivePane::Channel(ch) = pane {
+                    self.session.set_seven_plus_for(ch, v);
+                } else {
+                    self.session.set_seven_plus_for(slot_for(pane), v);
+                }
+                v
+            }
+            None => self.session.toggle_seven_plus(pane),
+        };
+        for (idx, sniff) in self.seven.iter_mut().enumerate() {
+            sniff.set_enabled(self.session.seven_plus_for(idx as u8));
         }
         let dir = self.cfg.paths.user_dir.display().to_string();
+        let label = match pane {
+            ActivePane::Monitor => "all channels".into(),
+            ActivePane::Channel(ch) => format!("ch{ch}"),
+            _ => "channel".into(),
+        };
         self.status = if on {
-            format!("7+ ON — saving to {dir}")
+            format!("7+ ON ({label}) — saving to {dir}")
         } else {
-            "7+ OFF".into()
+            format!("7+ OFF ({label})")
         };
         self.log_event(self.status.clone());
         self.persist_session_chrome();
@@ -3361,16 +3430,16 @@ impl GpGuiApp {
             self.cut_transfer(channel);
             return;
         }
-        if !self.session.seven_plus {
+        if !self.session.seven_plus_for(channel) {
             if sevenplus::is_opening_line(line) {
-                self.status = "7+ part seen — switch is OFF".into();
+                self.status = format!("7+ part seen — ch{channel} switch is OFF");
                 self.log_event(self.status.clone());
             }
             return;
         }
         if sevenplus::is_opening_line(line) {
             let dir = self.cfg.paths.user_dir.display().to_string();
-            self.status = format!("7+ capturing → {dir}");
+            self.status = format!("7+ capturing ch{channel} → {dir}");
         }
         let idx = channel as usize;
         let part = {
@@ -3505,7 +3574,7 @@ impl GpGuiApp {
                 .wprg_name
                 .as_ref()
                 .is_some_and(|(ch, _)| *ch == channel)
-                || self.session.seven_plus;
+                || self.session.seven_plus_for(channel);
             if auto {
                 let _ = self.accept_autobin(channel);
             }
@@ -3762,7 +3831,7 @@ impl GpGuiApp {
             }
         };
         let ftime = file_ftime(&path);
-        let mut shown = path.display().to_string().replace('/', "\\");
+        let mut shown = crate::paths::display_native(&path);
         let crc = crate::transfer::crc::crc_gp(&data);
         let overhead = format!("#BIN#{}#|{crc}#$XXXXXXXX#\r", data.len()).len();
         if overhead + shown.len() > 240 {
@@ -4102,14 +4171,15 @@ impl GpGuiApp {
 
     /// Heard frame that is still on its way: list it, do not answer it.
     fn kiss_show_transit(&mut self, frame: &Ax25Frame, port: u8) {
-        let info_mon = ax25::bytes_to_monitor_body(&frame.info, self.session.extended_ascii);
+        let info_mon =
+            ax25::bytes_to_monitor_body(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
         let info_for_mon = if info_mon.is_empty() {
             None
         } else {
             Some(info_mon.as_str())
         };
         if matches!(frame.kind, Ax25FrameType::Ui) {
-            let info_text = decode_rx_text(&frame.info, self.session.extended_ascii);
+            let info_text = decode_rx_text(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
             self.mheard.hear(&Ax25UiFrame {
                 dest: frame.dest.clone(),
                 src: frame.src.clone(),
@@ -4157,8 +4227,9 @@ impl GpGuiApp {
             return;
         }
         let frame = heard;
-        let info_text = decode_rx_text(&frame.info, self.session.extended_ascii);
-        let info_mon = ax25::bytes_to_monitor_body(&frame.info, self.session.extended_ascii);
+        let info_text = decode_rx_text(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
+        let info_mon =
+            ax25::bytes_to_monitor_body(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
         let info_for_mon = if info_mon.is_empty() {
             None
         } else {
@@ -4263,6 +4334,7 @@ impl GpGuiApp {
                 if let Some(p) = self.channel_peer.get_mut(ch as usize) {
                     *p = Some(frame.src.clone());
                 }
+                self.set_link_outgoing(ch, false);
                 self.note_last_call(ch, &frame.src);
                 if let Some(c) = self.channel_connecting.get_mut(ch as usize) {
                     *c = None;
@@ -4271,7 +4343,7 @@ impl GpGuiApp {
                 self.kiss_clear_sabm_timer(ch);
                 self.kiss_clear_disc_timer(ch);
                 self.kiss_link_activity(ch, true);
-                self.play_connect_bell();
+                self.play_connect_bell(ch);
                 if let Some(pad) = self.pads.get_mut(ch as usize) {
                     pad.push(PadKind::System, format!("*** CONNECTED to {}", frame.src));
                 }
@@ -4771,11 +4843,12 @@ impl GpGuiApp {
         if let Some(p) = self.channel_peer.get_mut(ch as usize) {
             *p = Some(peer.to_string());
         }
+        self.set_link_outgoing(ch, true);
         self.note_last_call(ch, peer);
         self.kiss_clear_sabm_timer(ch);
         self.kiss_link_activity(ch, true);
         self.zero_ax25_seq(ch as usize);
-        self.play_connect_bell();
+        self.play_connect_bell(ch);
         let moved = !requested.is_empty() && !requested.eq_ignore_ascii_case(peer);
         let line = if moved {
             format!("*** CONNECTED to {peer} — {requested} in use")
@@ -5048,25 +5121,9 @@ impl GpGuiApp {
             .get_mut(slot)
             .map(|c| std::mem::take(&mut c.input))
             .unwrap_or_default();
-        // Multi-line paste: fire each complete line, keep a trailing fragment.
-        let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+        let normalized = crate::tnc::normalize_newlines(&raw);
         if normalized.contains('\n') {
-            let ends_nl = normalized.ends_with('\n');
-            let mut parts: Vec<String> = normalized.lines().map(|s| s.to_string()).collect();
-            let remainder = if ends_nl {
-                String::new()
-            } else {
-                parts.pop().unwrap_or_default()
-            };
-            if let Some(c) = self.compose.get_mut(slot) {
-                c.input = remainder;
-            }
-            for part in parts {
-                let line = Self::sanitize_compose_line(&part);
-                if !line.is_empty() {
-                    self.dispatch_compose_line(slot, line, true);
-                }
-            }
+            self.dispatch_compose_paste(slot, &normalized);
             return;
         }
 
@@ -5084,6 +5141,20 @@ impl GpGuiApp {
             return;
         }
         self.dispatch_compose_line(slot, line, carriage_return);
+    }
+
+    /// Multi-line paste: send complete lines; keep a trailing fragment in compose.
+    fn dispatch_compose_paste(&mut self, slot: usize, normalized: &str) {
+        let (parts, remainder) = split_compose_paste(normalized);
+        if let Some(c) = self.compose.get_mut(slot) {
+            c.input = remainder;
+        }
+        for part in parts {
+            let line = Self::sanitize_compose_line(&part);
+            if !line.is_empty() {
+                self.dispatch_compose_line(slot, line, true);
+            }
+        }
     }
 
     fn dispatch_compose_line(&mut self, slot: usize, line: String, carriage_return: bool) {
@@ -5579,7 +5650,11 @@ impl GpGuiApp {
 
     /// Channel bytes. The äöü button selects CP437 or the Latin-1 umlaut table.
     fn write_channel_bytes(&mut self, text: &str, carriage_return: bool) {
-        let mut raw = encode_channel_wire(text, self.session.extended_ascii);
+        let channel = match self.active {
+            ActivePane::Channel(n) => n,
+            _ => 0,
+        };
+        let mut raw = encode_channel_wire(text, self.session.umlaut_for(channel));
         if carriage_return && raw.last() != Some(&b'\r') {
             raw.push(b'\r');
         }
@@ -5587,10 +5662,6 @@ impl GpGuiApp {
             return;
         }
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
-        let channel = match self.active {
-            ActivePane::Channel(n) => n,
-            _ => 0,
-        };
         for chunk in raw.chunks(max) {
             if self.kiss_mode() {
                 self.send_kiss_bytes(chunk, None);
@@ -5755,19 +5826,19 @@ impl GpGuiApp {
                 let on = match args.trim().to_ascii_lowercase().as_str() {
                     "on" | "1" | "yes" => Some(true),
                     "off" | "0" | "no" => Some(false),
-                    "" => Some(!self.session.seven_plus),
-                    _ => None,
-                };
-                match on {
-                    Some(v) => {
-                        self.set_seven_plus(v);
-                        self.send_report(&format!("7+ {}", on_off(v)));
-                    }
-                    None => {
+                    "" => None,
+                    _ => {
                         self.status = "7+ ON or OFF".into();
                         self.send_report("7+ ON or OFF");
+                        self.close_remote(prev);
+                        return;
                     }
-                }
+                };
+                self.set_seven_plus_pane(ActivePane::Channel(channel), on);
+                self.send_report(&format!(
+                    "7+ {}",
+                    on_off(self.session.seven_plus_for(channel))
+                ));
                 self.close_remote(prev);
                 return;
             }
@@ -5869,8 +5940,10 @@ impl GpGuiApp {
                 return;
             }
             RemoteAction::ChannelStatus => {
-                let text = self.cstatus_text(channel);
-                self.send_report_block("Channel status", &text);
+                let ctx = self.macro_ctx();
+                let title = format!("Channel state {} {} {}", ctx.date, ctx.time, ctx.zone);
+                let text = self.cstatus_text();
+                self.send_report_block(&title, &text);
                 self.close_remote(prev);
                 return;
             }
@@ -6303,13 +6376,26 @@ impl GpGuiApp {
         timing_banner_fallback(mycall, &open, &self.cfg.tnc.monitor_mode)
     }
 
-    /// PK-88 `CSTATUS`: one line per channel with link state, peer, via path,
-    /// and an `IO` mark on the channel that issued the remote command.
-    fn cstatus_text(&self, io_channel: u8) -> String {
+    /// GP DOS `//CSTATUS`: linked channels only.
+    ///
+    /// Header is `Channel state` plus the same `%D %T %Z` the macros use.
+    /// `<--` is an incoming call, `-->` is one this station placed.
+    fn cstatus_text(&self) -> String {
         (1..=self.channels)
-            .map(|n| self.cstatus_line(n, n == io_channel))
+            .filter_map(|n| self.channel_state_line(n))
             .collect::<Vec<_>>()
             .join("\r")
+    }
+
+    fn channel_state_line(&self, n: u8) -> Option<String> {
+        let peer = self.channel_peer.get(n as usize).and_then(|p| p.as_ref())?;
+        let my = self.effective_mycall(n);
+        Some(format_channel_state_line(
+            n,
+            &my,
+            self.link_is_outgoing(n),
+            peer,
+        ))
     }
 
     fn cstatus_line(&self, n: u8, io: bool) -> String {
@@ -6698,17 +6784,17 @@ impl GpGuiApp {
             }
             ActivePane::Check => self
                 .bbs_pad
-                .layout_job_channel(columns, self.session.extended_ascii),
+                .layout_job_channel(columns, self.session.umlaut_for(SLOT_BBS)),
             ActivePane::List => self
                 .box_pad
-                .layout_job_channel(columns, self.session.extended_ascii),
+                .layout_job_channel(columns, self.session.umlaut_for(SLOT_LIST)),
             ActivePane::Channel(n) => self
                 .pads
                 .get(n as usize)
                 .map(|pad| {
                     pad.layout_job_channel_show(
                         columns,
-                        self.session.extended_ascii,
+                        self.session.umlaut_for(n),
                         self.session.echo_for(n),
                         Some(self.monitor_info),
                     )
@@ -6992,25 +7078,22 @@ impl GpGuiApp {
 
     fn setup_value(&self, id: RowId) -> String {
         let s = &self.cfg.session;
+        let pane = self.setup_pane;
         match id {
-            RowId::Remote => on_off(self.session.remote).into(),
+            RowId::Remote => on_off(self.session.remote_lit(pane)).into(),
             RowId::Backup => on_off(s.backup).into(),
-            RowId::Echo => on_off(self.session.echo_for(echo_slot(self.setup_pane))).into(),
+            RowId::Echo => on_off(self.session.echo_lit(pane)).into(),
             RowId::RxClick => rx_click_plays(s.rx_click).to_string(),
             RowId::ConnectBell => connect_bell_plays(s.connect_bell).to_string(),
-            RowId::Umlaut => on_off(self.session.extended_ascii).into(),
+            RowId::Umlaut => on_off(self.session.umlaut_lit(pane)).into(),
             RowId::InputColumns => s.input_columns.to_string(),
             RowId::InsertMon => on_off(s.insert_mon_line).into(),
-            RowId::Softscroll => on_off(matches!(
-                self.session.line_step,
-                super::session::LineStep::Smooth
-            ))
-            .into(),
+            RowId::Softscroll => on_off(self.session.softscroll_lit(pane)).into(),
             RowId::Language => s.remote_language.clone(),
             RowId::Zoom => on_off(zoom_bold(s.zoom)).into(),
             RowId::Icons => icon_file_label(&s.icon_file),
             RowId::PacketLen => self.cfg.buffers.packet_payload.to_string(),
-            RowId::AutoSave => on_off(self.session.seven_plus).into(),
+            RowId::AutoSave => on_off(self.session.seven_plus_lit(pane)).into(),
             RowId::WordWrap => s.editor_wrap.to_string(),
             RowId::EditorBak => on_off(s.editor_bak).into(),
             RowId::RefChannel => {
@@ -7032,10 +7115,12 @@ impl GpGuiApp {
 
     fn nudge_setup(&mut self, id: RowId, step: i32) {
         match id {
-            RowId::Remote => self.session.remote = !self.session.remote,
+            RowId::Remote => {
+                self.session.toggle_remote(self.setup_pane);
+            }
             RowId::Backup => self.cfg.session.backup = !self.cfg.session.backup,
             RowId::Echo => {
-                self.session.toggle_echo(echo_slot(self.setup_pane));
+                self.session.toggle_echo(self.setup_pane);
             }
             RowId::RxClick => {
                 let n = (rx_click_plays(self.cfg.session.rx_click) as i32 + step).rem_euclid(3);
@@ -7046,7 +7131,9 @@ impl GpGuiApp {
                     (connect_bell_plays(self.cfg.session.connect_bell) as i32 + step).rem_euclid(5);
                 self.cfg.session.connect_bell = n as u32;
             }
-            RowId::Umlaut => self.session.extended_ascii = !self.session.extended_ascii,
+            RowId::Umlaut => {
+                self.session.toggle_umlaut(self.setup_pane);
+            }
             RowId::InputColumns => {
                 let n = self.cfg.session.input_columns as i32 + step;
                 self.cfg.session.input_columns = n.clamp(20, 255) as u32;
@@ -7055,7 +7142,7 @@ impl GpGuiApp {
                 self.cfg.session.insert_mon_line = !self.cfg.session.insert_mon_line
             }
             RowId::Softscroll => {
-                self.session.line_step = self.session.line_step.cycle();
+                self.session.toggle_softscroll(self.setup_pane);
             }
             RowId::Language => {
                 self.cfg.session.remote_language =
@@ -7079,7 +7166,7 @@ impl GpGuiApp {
                     }
                 }
             }
-            RowId::AutoSave => self.set_seven_plus(!self.session.seven_plus),
+            RowId::AutoSave => self.set_seven_plus_pane(self.setup_pane, None),
             RowId::WordWrap => {
                 let n = self.cfg.session.editor_wrap as i32 + step;
                 self.cfg.session.editor_wrap = n.clamp(20, 255) as u32;
@@ -8969,11 +9056,8 @@ impl GpGuiApp {
             return;
         }
         if eat_key(ctx, alt, egui::Key::R) {
-            self.session.line_step = self.session.line_step.cycle();
-            self.status = softscroll_status(matches!(
-                self.session.line_step,
-                super::session::LineStep::Smooth
-            ));
+            let on = self.session.toggle_softscroll(self.active);
+            self.status = softscroll_status(on);
             self.persist_session_chrome();
             return;
         }
@@ -9620,6 +9704,15 @@ impl GpGuiApp {
     }
 }
 
+/// One GP DOS channel-state row.
+///
+/// `       Chan   1: NL1STK     <--  NL0MSK`
+/// The call column is nine characters. Channel 10 lines up on the colon.
+fn format_channel_state_line(n: u8, mycall: &str, outgoing: bool, peer: &str) -> String {
+    let arrow = if outgoing { "-->" } else { "<--" };
+    format!("       Chan  {n:>2}: {mycall:<9}  {arrow}  {peer}")
+}
+
 /// Comma-separated phrases for setup display / edit (`fm DB0SGL, ctl UI`).
 fn join_csv_phrases(parts: &[String]) -> String {
     parts.join(", ")
@@ -9647,6 +9740,27 @@ fn auto_spy_line_matches(line: &str, auto: &[String], ignore: &[String]) -> bool
     !ignore
         .iter()
         .any(|p| !p.is_empty() && line.contains(p.as_str()))
+}
+
+#[cfg(test)]
+mod channel_state_tests {
+    use super::format_channel_state_line;
+
+    #[test]
+    fn incoming_and_outgoing_arrows_match_gp_dos() {
+        assert_eq!(
+            format_channel_state_line(1, "NL1STK", false, "NL0MSK"),
+            "       Chan   1: NL1STK     <--  NL0MSK"
+        );
+        assert_eq!(
+            format_channel_state_line(1, "NL1STK", true, "NL0MSK"),
+            "       Chan   1: NL1STK     -->  NL0MSK"
+        );
+        assert_eq!(
+            format_channel_state_line(10, "NL1STK-15", true, "NL0MSK-2"),
+            "       Chan  10: NL1STK-15  -->  NL0MSK-2"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -10019,7 +10133,7 @@ impl eframe::App for GpGuiApp {
         if monitor_h > 0.0 {
             let mon_bg = self.monitor_bg;
             let stick = !self.session.scr_lock;
-            let smooth = matches!(self.session.line_step, super::session::LineStep::Smooth);
+            let smooth = self.session.softscroll_for(SLOT_MONITOR);
             let show_bar = self.session.scrollbar;
             egui::TopBottomPanel::bottom("gp_split_monitor")
                 .exact_height(monitor_h)
@@ -10658,23 +10772,8 @@ impl GpGuiApp {
         if !raw.contains('\n') && !raw.contains('\r') {
             return;
         }
-        let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
-        let ends_nl = normalized.ends_with('\n');
-        let mut parts: Vec<String> = normalized.lines().map(|s| s.to_string()).collect();
-        let remainder = if ends_nl {
-            String::new()
-        } else {
-            parts.pop().unwrap_or_default()
-        };
-        if let Some(c) = self.compose.get_mut(slot) {
-            c.input = remainder;
-        }
-        for part in parts {
-            let line = Self::sanitize_compose_line(&part);
-            if !line.is_empty() {
-                self.dispatch_compose_line(slot, line, true);
-            }
-        }
+        let normalized = crate::tnc::normalize_newlines(&raw);
+        self.dispatch_compose_paste(slot, &normalized);
     }
 
     /// Delete the history row currently recalled into the compose box.
@@ -11008,7 +11107,7 @@ impl GpGuiApp {
             if let Some((got, total, name, started)) = sniff.progress() {
                 let path = self.cfg.paths.user_dir.join(&name);
                 return Some(TransferView {
-                    path: path.display().to_string().replace('/', "\\"),
+                    path: crate::paths::display_native(&path),
                     got,
                     total,
                     status: "7+-RX",
@@ -11723,7 +11822,12 @@ impl GpGuiApp {
                                 Sense::click(),
                             );
                             ui.painter().rect_filled(row, 0.0, fill);
-                            let shown = show_channel_text(line, self.session.extended_ascii);
+                            let umlaut = if list {
+                                self.session.umlaut_for(SLOT_LIST)
+                            } else {
+                                self.session.umlaut_for(SLOT_BBS)
+                            };
+                            let shown = show_channel_text(line, umlaut);
                             ui.painter().text(
                                 row.left_center() + Vec2::new(4.0, 0.0),
                                 egui::Align2::LEFT_CENTER,
@@ -11860,7 +11964,7 @@ impl GpGuiApp {
         let nudge = self.session.take_scroll_nudge();
         // ScrLock off → follow last line; on → freeze (QSO and split monitor).
         let stick = !self.session.scr_lock;
-        let smooth = matches!(self.session.line_step, super::session::LineStep::Smooth);
+        let smooth = self.session.softscroll_for(slot_for(self.active));
         let show_bar = self.session.scrollbar;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         // Never enable horizontal scroll — wrap to the viewport instead.
@@ -12400,18 +12504,17 @@ impl GpGuiApp {
                 resp.clone().on_hover_text(hint);
             }
             if matches!(action, SessionClick::Echo) {
-                resp.clone().on_hover_text(echo_hint(
-                    echo_slot(self.active),
-                    self.session.echo_for(echo_slot(self.active)),
-                ));
+                let slot = slot_for(self.active);
+                resp.clone()
+                    .on_hover_text(echo_hint(slot, self.session.echo_for(slot)));
             }
             if matches!(action, SessionClick::Bell) {
-                let state = on_off(self.session.bell);
+                let state = on_off(self.session.bell_lit(self.active));
                 resp.clone()
                     .on_hover_text(format!("♪ {state}\nConnect, disconnect and newline sounds"));
             }
             if matches!(action, SessionClick::Remote) {
-                let hint = if self.session.remote {
+                let hint = if self.session.remote_lit(self.active) {
                     "Remote ON\n//RUN commands are allowed"
                 } else {
                     "Remote OFF\n//RUN commands are refused"
@@ -12495,6 +12598,9 @@ impl GpGuiApp {
         let ct = self.session.ctext_label_for(ct_slot);
         let ct_own = self.session.channel_ctext_path(ct_slot).is_some();
         let ct_w = (ct.len() as f32 * 7.5 + 14.0).clamp(70.0, 160.0);
+        let chrome_slot = slot_for(self.active);
+        let soft = self.session.softscroll_lit(self.active);
+        let step = self.session.line_step_for(chrome_slot);
         let lead_owned = [
             (
                 qrg.as_str(),
@@ -12512,17 +12618,17 @@ impl GpGuiApp {
             ),
             (
                 "äöü",
-                self.session.extended_ascii,
+                self.session.umlaut_lit(self.active),
                 SessionClick::Ascii,
                 34.0,
                 CellGlyph::Text,
             ),
             (
-                self.session.line_step.label(),
-                matches!(self.session.line_step, super::session::LineStep::Smooth),
+                step.label(),
+                soft,
                 SessionClick::LineStep,
                 26.0,
-                if matches!(self.session.line_step, super::session::LineStep::Smooth) {
+                if soft {
                     CellGlyph::Stairs
                 } else {
                     CellGlyph::Text
@@ -12530,14 +12636,14 @@ impl GpGuiApp {
             ),
             (
                 "Echo",
-                self.session.echo_for(echo_slot(self.active)),
+                self.session.echo_lit(self.active),
                 SessionClick::Echo,
                 38.0,
                 CellGlyph::Text,
             ),
             (
                 "♪",
-                self.session.bell,
+                self.session.bell_lit(self.active),
                 SessionClick::Bell,
                 26.0,
                 CellGlyph::Text,
@@ -12578,11 +12684,16 @@ impl GpGuiApp {
                 for (label, lit, action, w) in [
                     (
                         "7+",
-                        self.session.seven_plus,
+                        self.session.seven_plus_for(n),
                         SessionClick::SevenPlus,
                         28.0_f32,
                     ),
-                    ("Remote", self.session.remote, SessionClick::Remote, 50.0),
+                    (
+                        "Remote",
+                        self.session.remote_for(n),
+                        SessionClick::Remote,
+                        50.0,
+                    ),
                     ("BIN-RX", self.session.bin_rx, SessionClick::BinRx, 50.0),
                     ("BIN-TX", self.session.bin_tx, SessionClick::BinTx, 50.0),
                     ("Name", self.peer_name_known(n), SessionClick::Name, 42.0),
@@ -12717,8 +12828,8 @@ impl GpGuiApp {
             SessionClick::Qrg => self.session.open_qrg_dialog(),
             SessionClick::Ctext | SessionClick::CtextPick => self.pick_ctext_file(),
             SessionClick::Ascii => {
-                self.session.extended_ascii = !self.session.extended_ascii;
-                self.status = if self.session.extended_ascii {
+                let on = self.session.toggle_umlaut(self.active);
+                self.status = if on {
                     "Umlaut conversion ON".into()
                 } else {
                     "Umlaut conversion OFF".into()
@@ -12726,22 +12837,19 @@ impl GpGuiApp {
                 self.persist_session_chrome();
             }
             SessionClick::LineStep => {
-                self.session.line_step = self.session.line_step.cycle();
-                self.status = softscroll_status(matches!(
-                    self.session.line_step,
-                    super::session::LineStep::Smooth
-                ));
+                let on = self.session.toggle_softscroll(self.active);
+                self.status = softscroll_status(on);
                 self.persist_session_chrome();
             }
             SessionClick::Echo => {
-                let slot = echo_slot(self.active);
-                let on = self.session.toggle_echo(slot);
+                let slot = slot_for(self.active);
+                let on = self.session.toggle_echo(self.active);
                 self.status = echo_status(slot, on);
                 self.persist_session_chrome();
             }
             SessionClick::Bell => {
-                self.session.bell = !self.session.bell;
-                self.status = if self.session.bell {
+                let on = self.session.toggle_bell(self.active);
+                self.status = if on {
                     "Sounds ON — connect, disconnect, newline".into()
                 } else {
                     "Sounds OFF — connect, disconnect, newline".into()
@@ -12763,11 +12871,11 @@ impl GpGuiApp {
                 };
             }
             SessionClick::SevenPlus => {
-                self.set_seven_plus(!self.session.seven_plus);
+                self.set_seven_plus_pane(self.active, None);
             }
             SessionClick::Remote => {
-                self.session.remote = !self.session.remote;
-                self.status = if self.session.remote {
+                let on = self.session.toggle_remote(self.active);
+                self.status = if on {
                     "Remote ON — //RUN allowed".into()
                 } else {
                     "Remote OFF — //RUN refused".into()
@@ -13122,6 +13230,7 @@ impl GpGuiApp {
         if let Some(peer) = self.channel_peer.get_mut(idx) {
             *peer = None;
         }
+        self.set_link_outgoing(channel, false);
         self.clear_lock(channel);
         if let Some(c) = self.channel_connecting.get_mut(idx) {
             *c = Some(dest.clone());
@@ -13823,6 +13932,18 @@ impl GpGuiApp {
     }
 }
 
+/// Complete lines plus any trailing fragment after a multi-line compose paste.
+fn split_compose_paste(normalized: &str) -> (Vec<String>, String) {
+    let ends_nl = normalized.ends_with('\n');
+    let mut parts: Vec<String> = normalized.lines().map(|s| s.to_string()).collect();
+    let remainder = if ends_nl {
+        String::new()
+    } else {
+        parts.pop().unwrap_or_default()
+    };
+    (parts, remainder)
+}
+
 fn autobin_safe_name(raw: &str) -> String {
     let base = raw.rsplit(['\\', '/']).next().unwrap_or("").trim();
     let safe: String = base
@@ -14328,14 +14449,6 @@ fn on_off(v: bool) -> &'static str {
     }
 }
 
-/// `0` is the Monitor Echo. A channel number is that channel's show/hide.
-fn echo_slot(pane: ActivePane) -> u8 {
-    match pane {
-        ActivePane::Channel(n) => n,
-        _ => 0,
-    }
-}
-
 fn echo_status(channel: u8, on: bool) -> String {
     if channel == 0 {
         return format!("Echo {}", on_off(on));
@@ -14383,6 +14496,12 @@ fn latin1_string(bytes: &[u8]) -> String {
 /// Local 24-hour `hh:mm` with leading zeros, inserted after `fm`.
 fn is_fm_header(line: &str) -> bool {
     ax25::split_monitor_fm(line).is_some()
+}
+
+/// InsertMonLine: blank row before a new `fm` packet when the pad already has
+/// a non-empty last line (payload or previous header).
+fn should_insert_mon_blank(line: &str, prev: Option<&str>) -> bool {
+    is_fm_header(line) && prev.is_some_and(|p| !p.trim().is_empty())
 }
 
 fn frame_calls(src: &str, dest: &str, via: &[String]) -> Vec<String> {
@@ -16046,6 +16165,27 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod insert_mon_line_tests {
+    use super::should_insert_mon_blank;
+
+    #[test]
+    fn blank_only_before_fm_when_pad_has_content() {
+        assert!(!should_insert_mon_blank("fm NL0MSK to CQ ctl UI", None));
+        assert!(!should_insert_mon_blank("fm NL0MSK to CQ ctl UI", Some("")));
+        assert!(!should_insert_mon_blank("fm NL0MSK to CQ ctl UI", Some("   ")));
+        assert!(should_insert_mon_blank(
+            "fm NL0MSK to CQ ctl UI",
+            Some("   hello")
+        ));
+        assert!(should_insert_mon_blank(
+            "fm 12:00 NL0MSK to CQ ctl I01+",
+            Some("fm NL1AS to NL0MSK ctl UA")
+        ));
+        assert!(!should_insert_mon_blank("   payload", Some("fm NL0MSK to CQ ctl UI")));
+    }
 }
 
 #[cfg(test)]

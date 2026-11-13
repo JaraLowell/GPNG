@@ -26,12 +26,7 @@ pub fn mail_dir() -> PathBuf {
 }
 
 pub fn ensure_mail_dir(dir: &Path) -> std::io::Result<()> {
-    crate::paths::ensure_dir(dir)?;
-    let note = dir.join("README.txt");
-    if !note.is_file() {
-        fs::write(note, README)?;
-    }
-    Ok(())
+    crate::paths::ensure_dir_with_readme(dir, "README.txt", README)
 }
 
 /// How a `//Read` / `//DEL` argument relates to the station on this channel.
@@ -134,7 +129,7 @@ pub fn read_text(dir: &Path, call: &str) -> Option<String> {
     } else {
         decode_cp437(&raw)
     };
-    Some(text.replace("\r\n", "\n").replace('\r', "\n"))
+    Some(crate::tnc::normalize_newlines(&text))
 }
 
 /// Add one message. An existing file gets two blank lines, then the new block.
@@ -184,13 +179,7 @@ fn file_path(dir: &Path, call: &str) -> Result<PathBuf, String> {
 }
 
 fn inside(dir: &Path, path: &Path) -> bool {
-    let Ok(dir) = dir.canonicalize() else {
-        return false;
-    };
-    let Ok(path) = path.canonicalize() else {
-        return false;
-    };
-    path.starts_with(&dir)
+    crate::paths::is_under(dir, path)
 }
 
 #[cfg(test)]

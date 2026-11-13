@@ -342,7 +342,7 @@ fn read_pack(path: &Path) -> Option<String> {
     } else {
         decode_cp437(&raw)
     };
-    Some(text.replace("\r\n", "\n").replace('\r', "\n"))
+    Some(crate::tnc::normalize_newlines(&text))
 }
 
 #[cfg(test)]
@@ -353,7 +353,7 @@ mod tests {
     fn english_overview_lists_read_and_help_section() {
         let text = help_for("EN", "");
         assert!(
-            text.starts_with("  //<n> <Text>"),
+            text.starts_with("  //<n> [Text]"),
             "overview keeps the two-space indent: {text}"
         );
         assert!(text.contains("//Read"), "{text}");

@@ -36,7 +36,7 @@ pub enum RemoteAction {
     Send,
     /// `//MAIL` sends this station's mail, or says there is none.
     Mail,
-    /// PK-88-style dump of every channel link state (`//CSTATUS`).
+    /// GP DOS channel state: linked channels only (`//CSTATUS`).
     ChannelStatus,
     Usage,
     Version,
@@ -360,7 +360,7 @@ pub fn report(info: &str) -> String {
 /// Status title on the first line, body on the lines after it.
 ///
 /// `//HELP` → `<GPNG>: Available Help commands` then the list.
-/// `//CSTATUS` → `<GPNG>: Channel status` then each channel line.
+/// `//CSTATUS` → `<GPNG>: Channel state %D %T %Z` then one line per link.
 pub fn report_block(title: &str, body: &str) -> String {
     let title = title.trim();
     let body = body
@@ -373,19 +373,26 @@ pub fn report_block(title: &str, body: &str) -> String {
     }
 }
 
-/// The command word of a `//` line, in uppercase. Arguments are not included.
-///
-/// `None` means the line is chat: `CAT` and `7+` are chat, `//CAT` and `//7+`
-/// are commands. A leading space is prose. `//` with no word is not a command.
-pub fn slash_verb(line: &str) -> Option<String> {
+/// Strip trailing CR/LF, refuse leading whitespace, return the text after `//`.
+fn slash_rest(line: &str) -> Option<String> {
     let line = line.trim_end_matches(['\r', '\n']).trim_end();
     if line.is_empty() || line.bytes().next().is_some_and(|b| b.is_ascii_whitespace()) {
         return None;
     }
     let rest = squeeze_spaces(line.strip_prefix("//")?);
     if rest.is_empty() {
-        return None;
+        None
+    } else {
+        Some(rest)
     }
+}
+
+/// The command word of a `//` line, in uppercase. Arguments are not included.
+///
+/// `None` means the line is chat: `CAT` and `7+` are chat, `//CAT` and `//7+`
+/// are commands. A leading space is prose. `//` with no word is not a command.
+pub fn slash_verb(line: &str) -> Option<String> {
+    let rest = slash_rest(line)?;
     let (verb, _) = split_verb(&rest);
     if verb.is_empty() {
         None
@@ -401,22 +408,12 @@ pub fn slash_verb(line: &str) -> Option<String> {
 /// The command word is uppercased before it is compared. A line with no `//`
 /// is chat and returns `None`.
 pub fn parse_line(line: &str) -> Option<(RemoteAction, String)> {
-    let line = line.trim_end_matches(['\r', '\n']).trim_end();
-    if line.is_empty() {
-        return None;
-    }
-    // Indented ` //cmd` is prose, not remote control.
-    if line.bytes().next().is_some_and(|b| b.is_ascii_whitespace()) {
-        return None;
-    }
-    if line == "#" {
+    let trimmed = line.trim_end_matches(['\r', '\n']).trim_end();
+    if trimmed == "#" {
         return Some((RemoteAction::ChatMode, String::new()));
     }
 
-    let rest = squeeze_spaces(line.strip_prefix("//")?);
-    if rest.is_empty() {
-        return None;
-    }
+    let rest = slash_rest(line)?;
 
     // //7+ ON  (must precede digit-channel check — '7' is also a digit)
     if rest.len() >= 2 && rest.as_bytes()[0] == b'7' && rest.as_bytes()[1] == b'+' {

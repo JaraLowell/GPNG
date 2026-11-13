@@ -145,13 +145,7 @@ fn existing_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 fn inside(dir: &Path, path: &Path) -> bool {
-    let Ok(dir) = dir.canonicalize() else {
-        return false;
-    };
-    let Ok(path) = path.canonicalize() else {
-        return false;
-    };
-    path.starts_with(&dir)
+    crate::paths::is_under(dir, path)
 }
 
 fn patterns(spec: &str) -> Vec<String> {

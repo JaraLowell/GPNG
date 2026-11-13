@@ -169,9 +169,77 @@ pub fn resolve_configured(configured: &str) -> PathBuf {
     PathBuf::from(configured)
 }
 
+/// Create `dir`, then write `readme_name` once if it is missing.
+pub fn ensure_dir_with_readme(dir: &Path, readme_name: &str, contents: &str) -> io::Result<()> {
+    ensure_dir(dir)?;
+    let note = dir.join(readme_name);
+    if !note.is_file() {
+        std::fs::write(note, contents)?;
+    }
+    Ok(())
+}
+
+/// True when `path` resolves inside `dir` (including nested files).
+pub fn is_under(dir: &Path, path: &Path) -> bool {
+    let Ok(dir) = dir.canonicalize() else {
+        return false;
+    };
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    path.starts_with(&dir)
+}
+
+/// True when `path` is a direct child of `dir` (no nested folders).
+pub fn is_direct_child(dir: &Path, path: &Path) -> bool {
+    let Ok(dir) = dir.canonicalize() else {
+        return false;
+    };
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    path.parent() == Some(dir.as_path())
+}
+
+/// Native path text for UI / AutoBin headers (no forced `/` or `\`).
+pub fn display_native(path: &Path) -> String {
+    path.display().to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ensure_dir;
+    use super::{ensure_dir, ensure_dir_with_readme, is_direct_child, is_under};
+    use std::path::PathBuf;
+
+    #[test]
+    fn is_under_accepts_nested_files() {
+        let root = std::env::temp_dir().join(format!("gpng-under-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let nested = root.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("note.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(is_under(&root, &file));
+        assert!(!is_direct_child(&root, &file));
+        assert!(is_direct_child(&nested, &file));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_dir_with_readme_writes_once() {
+        let root = std::env::temp_dir().join(format!("gpng-readme-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        ensure_dir_with_readme(&root, "README.txt", "one").unwrap();
+        ensure_dir_with_readme(&root, "README.txt", "two").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("README.txt")).unwrap(), "one");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn display_native_matches_path_display() {
+        let path = PathBuf::from("data").join("USER").join("a.bin");
+        assert_eq!(super::display_native(&path), path.display().to_string());
+    }
 
     #[test]
     fn a_lowercase_folder_is_renamed_to_the_requested_capitals() {

@@ -202,9 +202,7 @@ impl GpEditor {
     pub fn load_path(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
         let path = path.as_ref();
         let raw = fs::read(path).map_err(|e| format!("load {}: {e}", path.display()))?;
-        self.text = decode_cp437(&raw);
-        // Normalize to `\n` in the buffer; save restores file newlines as CRLF if wanted.
-        self.text = self.text.replace("\r\n", "\n").replace('\r', "\n");
+        self.text = crate::tnc::normalize_newlines(&decode_cp437(&raw));
         self.path = path.to_path_buf();
         self.dirty = false;
         self.cursor_line = 1;
@@ -248,54 +246,56 @@ impl GpEditor {
             .to_string()
     }
 
-    /// Ctrl-Y: lift the cursor line out of the buffer.
-    pub fn cut_cursor_line(&mut self) -> String {
+    /// Split the buffer into editable lines (always at least one).
+    fn lines_vec(&self) -> Vec<String> {
         let mut lines: Vec<String> = self.text.split('\n').map(str::to_string).collect();
         if lines.is_empty() {
             lines.push(String::new());
         }
+        lines
+    }
+
+    fn commit_lines(&mut self, lines: Vec<String>) {
+        self.text = lines.join("\n");
+        self.dirty = true;
+    }
+
+    /// Ctrl-Y: lift the cursor line out of the buffer.
+    pub fn cut_cursor_line(&mut self) -> String {
+        let mut lines = self.lines_vec();
         let i = self.cursor_row().min(lines.len() - 1);
         let line = lines.remove(i);
         if lines.is_empty() {
             lines.push(String::new());
         }
-        self.text = lines.join("\n");
-        self.dirty = true;
         self.cursor_line = (i + 1).min(lines.len());
         self.cursor_col = 1;
+        self.commit_lines(lines);
         line
     }
 
     /// Ctrl-P: put a cut or copied line back at the cursor.
     pub fn paste_line(&mut self, line: &str) {
-        let mut lines: Vec<String> = self.text.split('\n').map(str::to_string).collect();
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
+        let mut lines = self.lines_vec();
         let i = self.cursor_row().min(lines.len() - 1);
         if lines.len() == 1 && lines[0].is_empty() {
             lines[0] = line.to_string();
         } else {
             lines.insert(i, line.to_string());
         }
-        self.text = lines.join("\n");
-        self.dirty = true;
+        self.commit_lines(lines);
     }
 
     /// Ctrl-D / Ctrl-T / Ctrl-O: append to the cursor line.
     pub fn append_on_cursor_line(&mut self, text: &str) {
-        let mut lines: Vec<String> = self.text.split('\n').map(str::to_string).collect();
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
+        let mut lines = self.lines_vec();
         let i = self.cursor_row().min(lines.len() - 1);
         let row = &mut lines[i];
         if !row.is_empty() && !row.ends_with(' ') {
             row.push(' ');
         }
         row.push_str(text);
-        self.text = lines.join("\n");
-        self.dirty = true;
+        self.commit_lines(lines);
     }
 
     pub fn update_cursor_from_galley(&mut self, text: &str, cursor_cc: usize) {

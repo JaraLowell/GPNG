@@ -81,13 +81,12 @@ icon_file = "ICONS-A.GP"
 qrg_mhz = 27.235
 ctext = "D:\\MyPython\\GPNG\\data\\CTEXT.GPI"
 channel_ctext = ["", "", "", "", "", "", "", "", "", "", ""]
-extended_ascii = false
-smooth_scroll = false
-echo = true
-channel_echo = []
-bell = true
-seven_plus = false
-remote = true
+umlaut = 0
+softscroll = 0
+echo = 2047
+bell = 2046
+seven_plus = 0
+remote = 2046
 scr_lock = false
 hour_gong = false
 [buffers]
@@ -216,8 +215,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 318
-y = 87
+x = 1376
+y = 197
 width = 1155
 height = 807
 maximized = false

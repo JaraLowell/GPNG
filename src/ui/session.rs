@@ -13,6 +13,14 @@ use std::time::Duration;
 
 use crate::config::SessionChromeConfig;
 
+use super::channel_bits::{
+    ChannelBits, MASK_BELL, MASK_ECHO, MASK_REMOTE, MASK_SEVEN_PLUS, MASK_SOFTSCROLL, MASK_UMLAUT,
+    SLOT_MONITOR,
+};
+use super::layout::ActivePane;
+
+pub use super::channel_bits::{is_broadcast, slot_for};
+
 /// How new lines arrive in the RX pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineStep {
@@ -23,10 +31,11 @@ pub enum LineStep {
 }
 
 impl LineStep {
-    pub fn cycle(self) -> Self {
-        match self {
-            Self::Hard => Self::Smooth,
-            Self::Smooth => Self::Hard,
+    pub fn from_smooth(smooth: bool) -> Self {
+        if smooth {
+            Self::Smooth
+        } else {
+            Self::Hard
         }
     }
 
@@ -50,18 +59,18 @@ pub struct SessionChrome {
     /// Connect text for a channel. Empty, or no entry, uses `ctext_path`.
     /// Index is the channel number (`1..=10`). Index 0 is unused.
     pub channel_ctext: Vec<PathBuf>,
-    /// `false` = plain ASCII monitor; `true` = extended DOS (CP437 / äöü).
-    pub extended_ascii: bool,
-    pub line_step: LineStep,
-    /// Monitor Echo. Channels with no own choice follow this.
-    pub echo: bool,
-    /// Per channel. `None` follows `echo`. Index is the channel number.
-    pub channel_echo: Vec<Option<bool>>,
-    /// ♪ — connect, disconnect, and newline sounds. One switch for every channel.
-    pub bell: bool,
-    pub seven_plus: bool,
-    /// Remote — `//RUN` from the other station. One switch for every channel.
-    pub remote: bool,
+    /// Per-slot umlaut / CP437 mode ([`MASK_UMLAUT`]).
+    pub umlaut: ChannelBits,
+    /// Per-slot softscroll ([`MASK_SOFTSCROLL`]).
+    pub softscroll: ChannelBits,
+    /// Per-slot echo ([`MASK_ECHO`]).
+    pub echo: ChannelBits,
+    /// Per-channel ♪ — connect, disconnect, BEL, newline ([`MASK_BELL`]).
+    pub bell: ChannelBits,
+    /// Per-channel 7+ AutoSave ([`MASK_SEVEN_PLUS`]).
+    pub seven_plus: ChannelBits,
+    /// Per-channel Remote ([`MASK_REMOTE`]).
+    pub remote: ChannelBits,
     pub bin_rx: bool,
     pub bin_tx: bool,
     /// On: freeze viewport (classic Scroll Lock). Off: always follow new lines.
@@ -98,13 +107,13 @@ impl Default for SessionChrome {
             qrg_log: String::new(),
             ctext_path: PathBuf::from("CTEXT.GPI"),
             channel_ctext: Vec::new(),
-            extended_ascii: false,
-            line_step: LineStep::Hard,
-            echo: true, // classic default — show local TX in the RX pane
-            channel_echo: Vec::new(),
-            bell: true,
-            seven_plus: false,
-            remote: false,
+            umlaut: ChannelBits(0),
+            softscroll: ChannelBits(0),
+            // Classic default — show local TX on every channel + Monitor.
+            echo: ChannelBits(MASK_ECHO),
+            bell: ChannelBits(MASK_BELL),
+            seven_plus: ChannelBits(0),
+            remote: ChannelBits(0),
             bin_rx: false,
             bin_tx: false,
             scr_lock: true,
@@ -138,25 +147,23 @@ impl SessionChrome {
             s.ctext_path = default_ctext_path();
         }
         s.channel_ctext = chrome.channel_ctext.iter().map(PathBuf::from).collect();
-        s.extended_ascii = chrome.extended_ascii;
-        s.line_step = if chrome.smooth_scroll {
-            LineStep::Smooth
-        } else {
-            LineStep::Hard
-        };
-        s.echo = chrome.echo;
-        s.channel_echo = chrome
-            .channel_echo
-            .iter()
-            .map(|code| match code {
-                0 => Some(false),
-                1 => Some(true),
-                _ => None,
-            })
-            .collect();
-        s.bell = chrome.bell;
-        s.seven_plus = chrome.seven_plus;
-        s.remote = chrome.remote;
+        s.umlaut = ChannelBits(chrome.umlaut).clamp(MASK_UMLAUT);
+        s.softscroll = ChannelBits(chrome.softscroll).clamp(MASK_SOFTSCROLL);
+        s.echo = ChannelBits(chrome.echo).clamp(MASK_ECHO);
+        // Legacy `channel_echo` overrides (index = channel). `-1` / missing = leave bit.
+        for (idx, code) in chrome.channel_echo.iter().enumerate() {
+            if idx == 0 || idx > 10 {
+                continue;
+            }
+            match code {
+                0 => s.echo.set(idx as u8, false),
+                1 => s.echo.set(idx as u8, true),
+                _ => {}
+            }
+        }
+        s.bell = ChannelBits(chrome.bell).clamp(MASK_BELL);
+        s.seven_plus = ChannelBits(chrome.seven_plus).clamp(MASK_SEVEN_PLUS);
+        s.remote = ChannelBits(chrome.remote).clamp(MASK_REMOTE);
         s.scr_lock = chrome.scr_lock;
         s.hour_gong = chrome.hour_gong;
         s
@@ -172,23 +179,110 @@ impl SessionChrome {
                 .iter()
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect(),
-            extended_ascii: self.extended_ascii,
-            smooth_scroll: matches!(self.line_step, LineStep::Smooth),
-            echo: self.echo,
-            channel_echo: self
-                .channel_echo
-                .iter()
-                .map(|choice| match choice {
-                    Some(false) => 0,
-                    Some(true) => 1,
-                    None => -1,
-                })
-                .collect(),
-            bell: self.bell,
-            seven_plus: self.seven_plus,
-            remote: self.remote,
+            umlaut: self.umlaut.clamp(MASK_UMLAUT).raw(),
+            softscroll: self.softscroll.clamp(MASK_SOFTSCROLL).raw(),
+            echo: self.echo.clamp(MASK_ECHO).raw(),
+            channel_echo: Vec::new(),
+            bell: self.bell.clamp(MASK_BELL).raw(),
+            seven_plus: self.seven_plus.clamp(MASK_SEVEN_PLUS).raw(),
+            remote: self.remote.clamp(MASK_REMOTE).raw(),
             scr_lock: self.scr_lock,
             hour_gong: self.hour_gong,
+        }
+    }
+
+    pub fn umlaut_for(&self, slot: u8) -> bool {
+        self.umlaut.get(slot)
+    }
+
+    pub fn softscroll_for(&self, slot: u8) -> bool {
+        self.softscroll.get(slot)
+    }
+
+    pub fn line_step_for(&self, slot: u8) -> LineStep {
+        LineStep::from_smooth(self.softscroll_for(slot))
+    }
+
+    pub fn echo_for(&self, slot: u8) -> bool {
+        self.echo.get(slot)
+    }
+
+    pub fn bell_for(&self, slot: u8) -> bool {
+        self.bell.get(slot)
+    }
+
+    pub fn seven_plus_for(&self, slot: u8) -> bool {
+        self.seven_plus.get(slot)
+    }
+
+    pub fn remote_for(&self, slot: u8) -> bool {
+        self.remote.get(slot)
+    }
+
+    /// Session-bar / setup lit state (Monitor = all apply bits on).
+    pub fn umlaut_lit(&self, pane: ActivePane) -> bool {
+        self.umlaut.display(pane, MASK_UMLAUT)
+    }
+
+    pub fn softscroll_lit(&self, pane: ActivePane) -> bool {
+        self.softscroll.display(pane, MASK_SOFTSCROLL)
+    }
+
+    pub fn echo_lit(&self, pane: ActivePane) -> bool {
+        self.echo.display(pane, MASK_ECHO)
+    }
+
+    pub fn bell_lit(&self, pane: ActivePane) -> bool {
+        self.bell.display(pane, MASK_BELL)
+    }
+
+    pub fn seven_plus_lit(&self, pane: ActivePane) -> bool {
+        self.seven_plus.display(pane, MASK_SEVEN_PLUS)
+    }
+
+    pub fn remote_lit(&self, pane: ActivePane) -> bool {
+        self.remote.display(pane, MASK_REMOTE)
+    }
+
+    /// Toggle a bitfield setting for `pane`. Monitor broadcasts across `mask`.
+    pub fn toggle_bits(bits: &mut ChannelBits, pane: ActivePane, mask: u32) -> bool {
+        let slot = slot_for(pane);
+        if is_broadcast(pane) {
+            bits.toggle(SLOT_MONITOR, mask)
+        } else {
+            bits.toggle(slot, mask)
+        }
+    }
+
+    pub fn toggle_umlaut(&mut self, pane: ActivePane) -> bool {
+        Self::toggle_bits(&mut self.umlaut, pane, MASK_UMLAUT)
+    }
+
+    pub fn toggle_softscroll(&mut self, pane: ActivePane) -> bool {
+        Self::toggle_bits(&mut self.softscroll, pane, MASK_SOFTSCROLL)
+    }
+
+    pub fn toggle_echo(&mut self, pane: ActivePane) -> bool {
+        Self::toggle_bits(&mut self.echo, pane, MASK_ECHO)
+    }
+
+    pub fn toggle_bell(&mut self, pane: ActivePane) -> bool {
+        Self::toggle_bits(&mut self.bell, pane, MASK_BELL)
+    }
+
+    pub fn toggle_seven_plus(&mut self, pane: ActivePane) -> bool {
+        Self::toggle_bits(&mut self.seven_plus, pane, MASK_SEVEN_PLUS)
+    }
+
+    pub fn toggle_remote(&mut self, pane: ActivePane) -> bool {
+        Self::toggle_bits(&mut self.remote, pane, MASK_REMOTE)
+    }
+
+    pub fn set_seven_plus_for(&mut self, channel: u8, on: bool) {
+        if channel == SLOT_MONITOR {
+            self.seven_plus.set_masked(MASK_SEVEN_PLUS, on);
+        } else {
+            self.seven_plus.set(channel, on);
         }
     }
 
@@ -250,45 +344,6 @@ impl SessionChrome {
         self.channel_ctext[idx] = path;
     }
 
-    /// `0` is the Monitor switch. A channel uses its own choice, or the Monitor one.
-    pub fn echo_for(&self, channel: u8) -> bool {
-        if channel == 0 {
-            return self.echo;
-        }
-        self.channel_echo
-            .get(channel as usize)
-            .and_then(|choice| *choice)
-            .unwrap_or(self.echo)
-    }
-
-    /// Show or hide this channel's own lines. The rows stay in the pad.
-    pub fn set_echo_for(&mut self, channel: u8, on: bool) {
-        if channel == 0 {
-            self.echo = on;
-            return;
-        }
-        let idx = channel as usize;
-        if self.channel_echo.len() <= idx {
-            self.channel_echo.resize(idx + 1, None);
-        }
-        self.channel_echo[idx] = Some(on);
-    }
-
-    pub fn toggle_echo(&mut self, channel: u8) -> bool {
-        let on = !self.echo_for(channel);
-        self.set_echo_for(channel, on);
-        on
-    }
-}
-
-fn same_ctext_file(picked: &Path, global: &Path) -> bool {
-    match (picked.file_name(), global.file_name()) {
-        (Some(picked), Some(global)) => picked.eq_ignore_ascii_case(global),
-        _ => false,
-    }
-}
-
-impl SessionChrome {
     pub fn ctext_label_for(&self, channel: u8) -> String {
         let name = self
             .ctext_for(channel)
@@ -359,6 +414,13 @@ impl SessionChrome {
         let n = self.scroll_nudge;
         self.scroll_nudge = 0.0;
         n
+    }
+}
+
+fn same_ctext_file(picked: &Path, global: &Path) -> bool {
+    match (picked.file_name(), global.file_name()) {
+        (Some(picked), Some(global)) => picked.eq_ignore_ascii_case(global),
+        _ => false,
     }
 }
 
@@ -667,24 +729,96 @@ mod ctext_tests {
 
 #[cfg(test)]
 mod echo_tests {
+    use super::super::channel_bits::{
+        MASK_ECHO, MASK_REMOTE, MASK_SOFTSCROLL, MASK_UMLAUT, SLOT_MONITOR,
+    };
+    use super::super::layout::ActivePane;
     use super::SessionChrome;
+    use crate::config::SessionChromeConfig;
 
     #[test]
     fn a_channel_can_hide_its_own_text_without_the_others() {
         let mut session = SessionChrome::default();
         assert!(session.echo_for(10));
-        assert!(!session.toggle_echo(10));
+        assert!(!session.toggle_echo(ActivePane::Channel(10)));
         assert!(!session.echo_for(10));
         assert!(session.echo_for(2));
-        assert!(session.echo);
         let restored = SessionChrome::from_config(&session.to_config());
         assert!(!restored.echo_for(10));
         assert!(restored.echo_for(2));
-        session.echo = false;
-        assert!(!session.echo_for(2));
+    }
+
+    #[test]
+    fn monitor_echo_sets_every_channel_bit() {
+        let mut session = SessionChrome::default();
+        assert_eq!(session.echo.raw() & MASK_ECHO, MASK_ECHO);
+        assert!(!session.toggle_echo(ActivePane::Monitor));
+        assert_eq!(session.echo.raw() & MASK_ECHO, 0);
+        assert!(!session.echo_for(1));
         assert!(!session.echo_for(10));
-        session.set_echo_for(10, true);
-        assert!(session.echo_for(10));
-        assert!(!session.echo_for(2));
+        assert!(session.toggle_echo(ActivePane::Monitor));
+        assert!(session.echo_for(5));
+        assert!(!session.toggle_echo(ActivePane::Channel(5)));
+        assert!(!session.echo_for(5));
+        assert!(session.echo_for(6));
+    }
+
+    #[test]
+    fn softscroll_on_spy_is_its_own_bit() {
+        let mut session = SessionChrome::default();
+        assert!(!session.softscroll_for(12));
+        assert!(session.toggle_softscroll(ActivePane::Spy(2)));
+        assert!(session.softscroll_for(12));
+        assert!(!session.softscroll_for(1));
+        assert!(!session.softscroll_for(SLOT_MONITOR));
+    }
+
+    #[test]
+    fn channel_echo_overrides_and_round_trip() {
+        let mut cfg = SessionChromeConfig::default();
+        cfg.umlaut = 0;
+        cfg.softscroll = 0;
+        cfg.echo = MASK_ECHO;
+        cfg.bell = 0;
+        cfg.seven_plus = 0;
+        cfg.remote = MASK_REMOTE;
+        cfg.channel_echo = vec![-1, 0, 1];
+        let session = SessionChrome::from_config(&cfg);
+        assert!(!session.umlaut_for(1));
+        assert!(session.echo_for(0));
+        assert!(!session.echo_for(1));
+        assert!(session.echo_for(2));
+        assert!(session.remote_for(3));
+        assert!(!session.bell_for(1));
+        let round = session.to_config();
+        assert_eq!(round.echo & MASK_ECHO, session.echo.raw() & MASK_ECHO);
+        assert!(round.channel_echo.is_empty());
+    }
+
+    #[test]
+    fn legacy_toml_bools_expand_via_serde() {
+        let text = r#"
+            qrg_mhz = 27.235
+            ctext = ""
+            extended_ascii = true
+            smooth_scroll = true
+            echo = true
+            bell = false
+            seven_plus = false
+            remote = true
+            scr_lock = true
+            hour_gong = true
+        "#;
+        let cfg: SessionChromeConfig = toml::from_str(text).unwrap();
+        assert_eq!(cfg.umlaut & MASK_UMLAUT, MASK_UMLAUT);
+        assert_eq!(cfg.softscroll & MASK_SOFTSCROLL, MASK_SOFTSCROLL);
+        assert_eq!(cfg.echo & MASK_ECHO, MASK_ECHO);
+        assert_eq!(cfg.bell, 0);
+        assert_eq!(cfg.remote & MASK_REMOTE, MASK_REMOTE);
+        let session = SessionChrome::from_config(&cfg);
+        assert!(session.umlaut_for(1));
+        assert!(session.softscroll_for(12));
+        assert!(session.remote_for(5));
+        assert!(!session.bell_for(2));
     }
 }

@@ -6,6 +6,7 @@
 pub mod ansi;
 pub mod app;
 mod beacon;
+pub mod channel_bits;
 pub mod editor;
 pub mod gui;
 pub mod icons;

@@ -218,12 +218,7 @@ impl SevenPlusAutosave {
 
 /// Create USER (and the short explanation) if it is not there yet.
 pub fn ensure_user_dir(dir: &Path) -> io::Result<()> {
-    crate::paths::ensure_dir(dir)?;
-    let note = dir.join("README.txt");
-    if !note.is_file() {
-        fs::write(note, USER_README)?;
-    }
-    Ok(())
+    crate::paths::ensure_dir_with_readme(dir, "README.txt", USER_README)
 }
 
 /// True when this QSO line opens a 7Plus / text / info part.
@@ -374,26 +369,42 @@ fn assemble_parts(
         return Ok(AssembleOutcome::Ignored);
     }
     let present = present_part_mask(dir, &stem, meta.parts);
-    let missing: Vec<String> = (0..meta.parts)
-        .filter(|&i| !present[i])
-        .map(|i| part_disk_name(&stem, i + 1, meta.parts))
-        .collect();
-    if !missing.is_empty() {
-        // AutoSave stays quiet mid-transfer; //7DECODE always lists gaps.
-        let last_seen = meta.part == meta.parts || present[meta.parts - 1];
-        return Ok(AssembleOutcome::Incomplete {
-            missing: if always_list_missing || last_seen {
-                missing
-            } else {
-                Vec::new()
-            },
-        });
+    if let Some(outcome) = incomplete_if_missing(&meta, &stem, &present, always_list_missing) {
+        return Ok(outcome);
     }
     let Some(part_paths) = find_part_files(dir, &stem, meta.parts) else {
         return Ok(AssembleOutcome::Incomplete {
             missing: missing_part_names(dir, &stem, meta.parts),
         });
     };
+    decode_write_and_delete(dir, part_paths)
+}
+
+fn incomplete_if_missing(
+    meta: &sevenplus_codec::PartMeta,
+    stem: &str,
+    present: &[bool],
+    always_list_missing: bool,
+) -> Option<AssembleOutcome> {
+    let missing: Vec<String> = (0..meta.parts)
+        .filter(|&i| !present[i])
+        .map(|i| part_disk_name(stem, i + 1, meta.parts))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    // AutoSave stays quiet mid-transfer; //7DECODE always lists gaps.
+    let last_seen = meta.part == meta.parts || present[meta.parts - 1];
+    Some(AssembleOutcome::Incomplete {
+        missing: if always_list_missing || last_seen {
+            missing
+        } else {
+            Vec::new()
+        },
+    })
+}
+
+fn decode_write_and_delete(dir: &Path, part_paths: Vec<PathBuf>) -> Result<AssembleOutcome, String> {
     let mut bodies = Vec::with_capacity(part_paths.len());
     for path in &part_paths {
         bodies.push(fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?);
@@ -452,34 +463,11 @@ fn resolve_seed_part(dir: &Path, name: &str) -> Result<PathBuf, String> {
         return Err(format!("not in USER: {base}"));
     }
     for candidate in [part_disk_name(&stem, 1, 2), part_disk_name(&stem, 1, 1)] {
-        if let Some(path) = find_named_file(dir, &candidate) {
+        if let Some(path) = crate::paths::find_named_file(dir, &candidate) {
             return Ok(path);
         }
     }
     Err(format!("not in USER: {base}"))
-}
-
-fn find_named_file(dir: &Path, want: &str) -> Option<PathBuf> {
-    let want_l = want.to_ascii_lowercase();
-    let direct = dir.join(want);
-    if direct.is_file() {
-        return Some(direct);
-    }
-    let rd = fs::read_dir(dir).ok()?;
-    for ent in rd.flatten() {
-        let path = ent.path();
-        if !path.is_file() {
-            continue;
-        }
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.eq_ignore_ascii_case(&want_l))
-        {
-            return Some(path);
-        }
-    }
-    None
 }
 
 /// Part file name for index `part` of `parts` (`stem.p09`, `stem.7pl`).

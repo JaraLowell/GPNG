@@ -322,7 +322,7 @@ impl Running {
     }
 
     fn push_out(&mut self, chunk: &str) {
-        let chunk = clean_text(chunk).replace("\r\n", "\n").replace('\r', "\n");
+        let chunk = crate::tnc::normalize_newlines(&clean_text(chunk));
         if chunk.is_empty() {
             return;
         }
@@ -1058,13 +1058,7 @@ fn find_script(dir: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 fn inside(dir: &Path, path: &Path) -> bool {
-    let Ok(dir) = dir.canonicalize() else {
-        return false;
-    };
-    let Ok(path) = path.canonicalize() else {
-        return false;
-    };
-    path.parent() == Some(dir.as_path())
+    crate::paths::is_direct_child(dir, path)
 }
 
 fn kind_of(path: &Path) -> Option<Shebang> {

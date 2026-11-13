@@ -8,11 +8,65 @@
 //!    when loading a legacy-style key=value file.
 //! 3. Normalises both sources into one runtime structure.
 
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::ui::channel_bits::{
+    MASK_BELL, MASK_ECHO, MASK_REMOTE, MASK_SEVEN_PLUS, MASK_SOFTSCROLL, MASK_UMLAUT,
+};
+
+/// Accept a legacy bool (`true` → all bits of `mask`) or an integer bit mask.
+fn deserialize_channel_bits<'de, D>(deserializer: D, mask: u32) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct BitsVisitor {
+        mask: u32,
+    }
+    impl<'de> Visitor<'de> for BitsVisitor {
+        type Value = u32;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "bool or integer channel bit mask")
+        }
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<u32, E> {
+            Ok(if v { self.mask } else { 0 })
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<u32, E> {
+            Ok((v as u32) & self.mask)
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<u32, E> {
+            if v < 0 {
+                return Ok(0);
+            }
+            Ok((v as u32) & self.mask)
+        }
+    }
+    deserializer.deserialize_any(BitsVisitor { mask })
+}
+
+fn de_umlaut<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    deserialize_channel_bits(d, MASK_UMLAUT)
+}
+fn de_softscroll<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    deserialize_channel_bits(d, MASK_SOFTSCROLL)
+}
+fn de_echo<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    deserialize_channel_bits(d, MASK_ECHO)
+}
+fn de_bell<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    deserialize_channel_bits(d, MASK_BELL)
+}
+fn de_seven_plus<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    deserialize_channel_bits(d, MASK_SEVEN_PLUS)
+}
+fn de_remote<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    deserialize_channel_bits(d, MASK_REMOTE)
+}
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -183,7 +237,9 @@ impl Config {
                 "SERBAUD" => self.serial.baud = parse_u32(value, "SERBAUD")?,
                 "SERNR" => {
                     self.serial.com_number = parse_u32(value, "SERNR")?;
-                    // If the operator only set SERNR, synthesise a modern port name.
+                    // Windows: synthesise COMn when the operator only set SERNR.
+                    // Other OSes keep the existing port (or leave it empty).
+                    #[cfg(windows)]
                     if self.serial.port.is_empty() || self.serial.port.starts_with("COM") {
                         self.serial.port = format!("COM{}", self.serial.com_number);
                     }
@@ -469,34 +525,20 @@ impl Config {
             .map(|path| toml_string(path))
             .collect::<Vec<_>>()
             .join(", ");
-        let channel_echo = c
-            .channel_echo
-            .iter()
-            .map(|code| code.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
         let qrg = crate::journal::format_mhz(c.qrg_mhz);
         let body = format!(
             "qrg_mhz = {qrg}\n\
              ctext = {ctext}\n\
              channel_ctext = [{channel_ctext}]\n\
-             extended_ascii = {}\n\
-             smooth_scroll = {}\n\
+             umlaut = {}\n\
+             softscroll = {}\n\
              echo = {}\n\
-             channel_echo = [{channel_echo}]\n\
              bell = {}\n\
              seven_plus = {}\n\
              remote = {}\n\
              scr_lock = {}\n\
              hour_gong = {}\n",
-            c.extended_ascii,
-            c.smooth_scroll,
-            c.echo,
-            c.bell,
-            c.seven_plus,
-            c.remote,
-            c.scr_lock,
-            c.hour_gong,
+            c.umlaut, c.softscroll, c.echo, c.bell, c.seven_plus, c.remote, c.scr_lock, c.hour_gong,
         );
         upsert_toml_section(path, "session.chrome", &body)
     }
@@ -1103,6 +1145,9 @@ impl Default for SessionConfig {
 }
 
 /// Session-strip toggles persisted under `[session.chrome]`.
+///
+/// Umlaut / softscroll / echo / bell / 7+ / remote are compact `u32` bit
+/// masks (see [`crate::ui::channel_bits`]). Legacy bool values still load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionChromeConfig {
@@ -1113,20 +1158,53 @@ pub struct SessionChromeConfig {
     /// Connect text per channel. Index is the channel number. Empty uses `ctext`.
     #[serde(default)]
     pub channel_ctext: Vec<String>,
-    /// `äöü` extended DOS / CP437 mode.
-    pub extended_ascii: bool,
-    /// Smooth (stairs) vs hard (`/`) line step.
-    pub smooth_scroll: bool,
-    pub echo: bool,
-    /// Per channel: `1` show our text, `0` hide it, `-1` follow `echo`.
-    /// Index is the channel number. Missing entries follow `echo`.
+    /// Per-slot umlaut / CP437. Legacy key `extended_ascii` (bool) still loads.
+    #[serde(
+        default = "default_zero_bits",
+        alias = "extended_ascii",
+        deserialize_with = "de_umlaut",
+        serialize_with = "ser_u32"
+    )]
+    pub umlaut: u32,
+    /// Per-slot softscroll. Legacy key `smooth_scroll` (bool) still loads.
+    #[serde(
+        default = "default_zero_bits",
+        alias = "smooth_scroll",
+        deserialize_with = "de_softscroll",
+        serialize_with = "ser_u32"
+    )]
+    pub softscroll: u32,
+    /// Per-slot echo bit mask. Legacy bool still loads.
+    #[serde(
+        default = "default_echo_bits",
+        deserialize_with = "de_echo",
+        serialize_with = "ser_u32"
+    )]
+    pub echo: u32,
+    /// Legacy per-channel echo overrides (`1`/`0`/`-1`). Applied once on load.
     #[serde(default)]
+    #[serde(skip_serializing)]
     pub channel_echo: Vec<i8>,
-    /// Session-bar bell (♪).
-    pub bell: bool,
-    pub seven_plus: bool,
-    /// Channel Remote toggle (not the callsign allow-list).
-    pub remote: bool,
+    /// Per-channel ♪ bit mask. Legacy bool still loads.
+    #[serde(
+        default = "default_bell_bits",
+        deserialize_with = "de_bell",
+        serialize_with = "ser_u32"
+    )]
+    pub bell: u32,
+    #[serde(
+        default = "default_zero_bits",
+        deserialize_with = "de_seven_plus",
+        serialize_with = "ser_u32"
+    )]
+    pub seven_plus: u32,
+    /// Per-channel Remote bit mask (not the callsign allow-list).
+    #[serde(
+        default = "default_zero_bits",
+        deserialize_with = "de_remote",
+        serialize_with = "ser_u32"
+    )]
+    pub remote: u32,
     pub scr_lock: bool,
     /// Clock ♫ hourly chime (ALT-G). Missing in an older file stays on.
     #[serde(default = "default_hour_gong")]
@@ -1137,19 +1215,35 @@ fn default_hour_gong() -> bool {
     true
 }
 
+fn ser_u32<S: serde::Serializer>(v: &u32, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u32(*v)
+}
+
+fn default_zero_bits() -> u32 {
+    0
+}
+
+fn default_echo_bits() -> u32 {
+    MASK_ECHO
+}
+
+fn default_bell_bits() -> u32 {
+    MASK_BELL
+}
+
 impl Default for SessionChromeConfig {
     fn default() -> Self {
         Self {
             qrg_mhz: 27.235,
             ctext: String::new(),
             channel_ctext: Vec::new(),
-            extended_ascii: false,
-            smooth_scroll: false,
-            echo: true,
+            umlaut: 0,
+            softscroll: 0,
+            echo: default_echo_bits(),
             channel_echo: Vec::new(),
-            bell: true,
-            seven_plus: false,
-            remote: false,
+            bell: default_bell_bits(),
+            seven_plus: 0,
+            remote: 0,
             scr_lock: true,
             hour_gong: true,
         }
@@ -1205,12 +1299,13 @@ pub struct PathConfig {
 
 impl Default for PathConfig {
     fn default() -> Self {
+        let data = PathBuf::from("data");
         Self {
-            user_dir: PathBuf::from("data/USER"),
-            external_dir: PathBuf::from("data/EXTERNAL"),
-            save_dir: PathBuf::from("data/SAVE"),
-            log_dir: PathBuf::from("data/LOG"),
-            spy_dir: PathBuf::from("data/SPY"),
+            user_dir: data.join("USER"),
+            external_dir: data.join("EXTERNAL"),
+            save_dir: data.join("SAVE"),
+            log_dir: data.join("LOG"),
+            spy_dir: data.join("SPY"),
         }
     }
 }
@@ -1756,7 +1851,10 @@ mod tests {
         assert_eq!(cfg.station.mycall, vec!["NL0MSK", "NL0MSK-1"]);
         assert_eq!(cfg.serial.baud, 19200);
         assert_eq!(cfg.serial.com_number, 1);
+        #[cfg(windows)]
         assert_eq!(cfg.serial.port, "COM1");
+        #[cfg(not(windows))]
+        assert_eq!(cfg.serial.port, SerialConfig::default().port);
         assert_eq!(cfg.serial.io_port, Some(0x3F8));
         assert_eq!(cfg.session.channels, 8);
         assert_eq!(cfg.tnc.init, vec!["DateTime", "M UISC"]);
