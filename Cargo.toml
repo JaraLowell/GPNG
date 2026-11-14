@@ -1,6 +1,6 @@
 [package]
 name = "graphic-packet"
-version = "2.1.0"
+version = "2.0.2.0"
 edition = "2021"
 description = "Graphic Packet NG — modern rewrite of Graphic Packet (GP), the classic AX.25 terminal by Ulf Saran (DH1DAE)"
 license = "MIT OR Apache-2.0"

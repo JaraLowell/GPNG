@@ -7,7 +7,7 @@
 
 [station]
 # Legacy: MYCALL — monitor call first, then per-channel overrides (comma-separated).
-mycall = ["NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", ""]
+mycall = ["NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL1MSK"]
 
 # Legacy: ZONE / TIME — display timezone offset and PC-clock skew (minutes).
 zone = "UTC"
@@ -215,8 +215,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1342
-y = 34
+x = 10
+y = 471
 width = 1155
-height = 796
+height = 836
 maximized = false

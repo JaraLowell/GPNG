@@ -4034,7 +4034,7 @@ impl GpGuiApp {
         self.apply_channel_peer(&mut ctx, channel);
         let text = gpi::expand_gpi_text(&text, &ctx);
         self.status = format!("Mail {call}");
-        self.reply_on_channel(channel, &text);
+        self.reply_remote_text(channel, &text);
     }
 
     /// Send `{CALL}.GPM` when it exists. Returns false when there is no mail.
@@ -4050,7 +4050,7 @@ impl GpGuiApp {
         self.apply_channel_peer(&mut ctx, channel);
         let text = gpi::expand_gpi_text(&text, &ctx);
         self.status = format!("Mail {call}");
-        self.send_gpi_text(&text);
+        self.send_remote_text(&text);
         true
     }
 
@@ -4062,7 +4062,7 @@ impl GpGuiApp {
         if name.is_empty() {
             let listing = userdir::catalog(&dir, "");
             self.status = "USER".into();
-            self.send_file_bytes(listing.as_bytes());
+            self.send_remote_text(&listing);
             return;
         }
         match userdir::read_file(&dir, name) {
@@ -4091,17 +4091,6 @@ impl GpGuiApp {
                 self.send_report(&err);
             }
         }
-    }
-
-    /// Send a USER file with CR row ends (what DOS 7Plus `-p` puts on packet).
-    fn send_file_bytes(&mut self, raw: &[u8]) {
-        let wire = sevenplus::to_cr_bytes(raw);
-        if wire.is_empty() {
-            self.status = "USER file is empty".into();
-            return;
-        }
-        self.echo_wire_lines(&wire);
-        self.queue_wire_chunks(&wire);
     }
 
     /// `//Read` of a 7+ part: paced TX with Transfer80 `7+-TX` when KISS-linked.
@@ -4260,7 +4249,7 @@ impl GpGuiApp {
         }
         self.note_sysop_command(text);
         if matches!(self.active, ActivePane::Channel(_)) {
-            self.write_channel_bytes(text, carriage_return);
+            self.write_channel_bytes(text, carriage_return, false);
             return;
         }
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
@@ -4297,7 +4286,8 @@ impl GpGuiApp {
 
     /// Channel bytes. The äöü button selects CP437 or the Latin-1 umlaut table.
     /// A line the DOS set cannot hold (emoji, euro) is UTF-8 instead.
-    fn write_channel_bytes(&mut self, text: &str, carriage_return: bool) {
+    /// Remote replies append LF after the usual DOS CR.
+    fn write_channel_bytes(&mut self, text: &str, carriage_return: bool, line_feed: bool) {
         let channel = match self.active {
             ActivePane::Channel(n) => n,
             _ => 0,
@@ -4305,6 +4295,9 @@ impl GpGuiApp {
         let mut raw = encode_channel_wire(text, self.session.umlaut_for(channel));
         if carriage_return && raw.last() != Some(&b'\r') {
             raw.push(b'\r');
+        }
+        if line_feed && !raw.is_empty() {
+            raw.push(b'\n');
         }
         if raw.is_empty() {
             return;
@@ -4361,28 +4354,49 @@ impl GpGuiApp {
             return false;
         };
         self.status = format!("GPI {stem}");
-        self.send_gpi_text(&text);
+        self.send_remote_text(&text);
         true
     }
 
     /// Internal command status on the air: always `<GPNG>: …`.
     fn send_report(&mut self, text: &str) {
-        self.send_gpi_text(&report(text));
+        self.send_remote_text(&report(text));
     }
 
     /// Title on the `<GPNG>:` line, body on the lines after it.
     fn send_report_block(&mut self, title: &str, body: &str) {
-        self.send_gpi_text(&report_block(title, body));
+        self.send_remote_text(&report_block(title, body));
     }
 
     fn send_gpi_text(&mut self, text: &str) {
+        self.send_displayed_text(text, false);
+    }
+
+    fn send_remote_text(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.send_displayed_text(text, true);
+        }
+    }
+
+    fn send_displayed_text(&mut self, text: &str, end_reply: bool) {
         // CTEXT / QRT / mail: many rows on the pad, one newline.wav.
         self.begin_newline_coalesce();
         for line in payload_lines(text) {
             self.echo_own_line(&line);
         }
         self.end_newline_coalesce();
-        self.send_operator_text(text);
+        if end_reply && matches!(self.active, ActivePane::Channel(_)) {
+            self.note_sysop_command(text);
+            self.write_channel_bytes(text, true, true);
+        } else if end_reply {
+            let mut text = crate::tnc::normalize_newlines(text);
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+            self.send_operator_text(&text);
+        } else {
+            self.send_operator_text(text);
+        }
     }
 
     /// Bare `//RTT`. Ask the peer to echo `//rtt #<unix milliseconds>`.
@@ -4398,7 +4412,7 @@ impl GpGuiApp {
             *slot = Some((token, Instant::now()));
         }
         self.status = format!("RTT #{token}");
-        self.send_gpi_text(&format!("//e //rtt #{token}"));
+        self.send_remote_text(&format!("//e //rtt #{token}"));
     }
 
     fn answer_rtt(&mut self, channel: u8, args: &str) {
@@ -4475,7 +4489,7 @@ impl GpGuiApp {
                     if text.trim().is_empty() {
                         self.disconnect_channel(ch);
                     } else {
-                        self.send_gpi_text(&text);
+                        self.send_remote_text(&text);
                         self.arm_qrt_disconnect(ch);
                     }
                 } else {
@@ -4507,7 +4521,7 @@ impl GpGuiApp {
 
         if action == RemoteAction::Info {
             if let Some(text) = gpi::load_info(&ctx) {
-                self.send_gpi_text(&text);
+                self.send_remote_text(&text);
                 self.close_remote(prev);
                 return;
             }
@@ -4518,7 +4532,7 @@ impl GpGuiApp {
 
         if let Some(stem) = gpi::stem_for_action(action) {
             if let Some(text) = gpi::load_expanded(stem, &ctx) {
-                self.send_gpi_text(&text);
+                self.send_remote_text(&text);
                 self.close_remote(prev);
                 return;
             }
@@ -4678,7 +4692,7 @@ impl GpGuiApp {
                 if args.trim().is_empty() {
                     if let Some(text) = gpi::load_expanded("run", &ctx) {
                         self.status = "RUN.GPI".into();
-                        self.send_gpi_text(&text);
+                        self.send_remote_text(&text);
                     } else {
                         self.status = "RUN.GPI not found".into();
                         self.send_report("RUN.GPI not found");
@@ -4699,7 +4713,7 @@ impl GpGuiApp {
                 self.send_report_block("Version", &line);
             }
             RemoteAction::Echo => {
-                self.send_gpi_text(args);
+                self.send_remote_text(args);
             }
             RemoteAction::RoundTrip => {
                 self.answer_rtt(channel, args);
@@ -4808,7 +4822,7 @@ impl GpGuiApp {
 
     fn refuse_remote_run(&mut self, channel: u8) {
         self.status = "Remote commands are turned off by the sysop".into();
-        self.reply_on_channel(channel, REMOTE_OFF);
+        self.reply_remote_text(channel, REMOTE_OFF);
     }
 
     fn stop_external(&mut self, channel: u8) {
@@ -5015,7 +5029,16 @@ impl GpGuiApp {
     }
 
     fn reply_report(&mut self, channel: u8, text: &str) {
-        self.reply_on_channel(channel, &report(text));
+        self.reply_remote_text(channel, &report(text));
+    }
+
+    fn reply_remote_text(&mut self, channel: u8, text: &str) {
+        let prev = self.active;
+        if (1..=self.channels).contains(&channel) {
+            self.active = ActivePane::Channel(channel);
+        }
+        self.send_remote_text(text);
+        self.active = prev;
     }
 
     fn prompt_on_channel(&mut self, channel: u8) {
@@ -5032,7 +5055,7 @@ impl GpGuiApp {
         let _ = sevenplus::ensure_user_dir(&dir);
         let listing = userdir::catalog(&dir, spec);
         self.status = "USER".into();
-        self.send_gpi_text(&listing);
+        self.send_remote_text(&listing);
     }
 
     fn remote_cd(&mut self, args: &str) {
@@ -5283,7 +5306,7 @@ impl GpGuiApp {
             Ok(()) => {
                 let reply = report(&format!("Mail send to {to}"));
                 self.status = reply.clone();
-                self.reply_on_channel(channel, &reply);
+                self.reply_remote_text(channel, &reply);
             }
             Err(err) => {
                 self.status = err.clone();
@@ -14833,6 +14856,61 @@ mod input_tests {
         test(&mut app, &mut rx, &ctx);
         drop(app);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn remote_command_replies_end_in_crlf_across_packet_boundaries() {
+        for protocol in ["wa8ded", "kiss"] {
+            with_offline_app(protocol, |app, rx, _| {
+                app.active = ActivePane::Channel(1);
+                app.channel_peer[1] = Some("N1PEER".into());
+                app.remote_prompt = false;
+                app.cfg.buffers.packet_payload = 16;
+                for (command, prefix) in [
+                    ("//CS", "<GPNG>: Channel state"),
+                    ("//VERSION", "<GPNG>: Version"),
+                    ("//ECHO hello", "hello"),
+                    ("//CAT", "<GPNG>: USER CONTENT"),
+                ] {
+                    let (action, args) = parse_line(command).unwrap();
+                    app.handle_remote_on_channel(1, action, &args);
+                    let mut wire = Vec::new();
+                    while let Ok(command) = rx.try_recv() {
+                        let TncCommand::Session(SessionCommand::Send { channel, data, .. }) =
+                            command
+                        else {
+                            panic!("unexpected radio command");
+                        };
+                        assert_eq!(channel, 1);
+                        assert!(data.len() <= 16);
+                        wire.extend(data);
+                    }
+                    assert!(wire.starts_with(prefix.as_bytes()), "{protocol}: {command}");
+                    assert!(wire.ends_with(b"\r\n"), "{protocol}: {command}: {wire:?}");
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn remote_reply_terminates_existing_line_endings_without_extra_blank_lines() {
+        with_offline_app("wa8ded", |app, rx, _| {
+            app.active = ActivePane::Channel(1);
+            for text in ["hello", "hello\r", "hello\n", "hello\r\n"] {
+                app.send_remote_text(text);
+                let TncCommand::Session(SessionCommand::Send { data, .. }) = rx.try_recv().unwrap()
+                else {
+                    panic!("expected channel text");
+                };
+                assert_eq!(data, b"hello\r\n", "{text:?}");
+            }
+            app.send_gpi_text("streaming");
+            let TncCommand::Session(SessionCommand::Send { data, .. }) = rx.try_recv().unwrap()
+            else {
+                panic!("expected channel text");
+            };
+            assert_eq!(data, b"streaming");
+        });
     }
 
     fn click_first_channel_icon(app: &mut GpGuiApp, ctx: &Context) {

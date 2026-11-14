@@ -56,6 +56,9 @@ So: **targeted string / help-file archaeology**, not a full decompile of `GP2862
 
 Minimum significant letters come from `@TAG,N` in `*.GPH` (e.g. `@VERSION,3` → `VER` matches `VERsion`).
 
+Text replies on connected channels end with CRLF, including GPI and help replies.
+Prompts, external-program streams, and file-transfer data retain their own framing.
+
 | Canonical | Min. prefix (typical) | Notes |
 |-----------|----------------------|--------|
 | `//<n> [text]` | digit | Bare `//n` joins chat on channel *n* (leave with `//0`); with text, one-shot to that channel. Relays both ways on the air. Join/leave: `<GPNG>: CALL (Name) Joined/Left your channel!` |
