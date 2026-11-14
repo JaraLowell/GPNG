@@ -33,7 +33,7 @@ port_detail = "USB-K5G Radio Cable"
 # Legacy: CHANNELS, MAXSPY, buffers, bells, remote, spy, …
 channels = 10
 max_spy = 1
-connect_bell = 3
+connect_bell = 1
 rx_click = 1
 screensave_minutes = 0
 popup_time_seconds = 3
@@ -84,7 +84,7 @@ channel_ctext = ["", "", "", "", "", "", "", "", "", "", ""]
 umlaut = 0
 softscroll = 0
 echo = 2047
-bell = 0
+bell = 2046
 seven_plus = 0
 remote = 2046
 scr_lock = false
@@ -215,8 +215,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 10
-y = 471
+x = 1292
+y = 155
 width = 1155
 height = 836
 maximized = false
