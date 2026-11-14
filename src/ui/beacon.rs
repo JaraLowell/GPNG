@@ -23,13 +23,14 @@ use crate::config::{clip_beacon, BeaconConfig, BEACON_FILE_MAX, BEACON_TEXT_MAX}
 use crate::remote::gpi;
 use crate::remote::macros::{self, MacroContext};
 use crate::tnc::ax25;
-use crate::tnc::TncCommand;
+use crate::tnc::{SessionCommand, TncCommand};
 
 /// Values the paint loop copies in. The thread reads a clone and does not
 /// hold the lock while it reads the beacon file.
 #[derive(Clone)]
 pub struct BeaconSnap {
     pub kiss: bool,
+    pub port: u8,
     pub beacon: BeaconConfig,
     pub my_call: String,
     pub qrg: String,
@@ -206,21 +207,27 @@ fn transmit(snap: &BeaconSnap) -> Attempt {
         return Attempt::Skip("Beacon is empty".into());
     }
     let (dest, vias) = ax25::parse_unproto(&snap.beacon.address);
-    let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-    let frame = ax25::build_ui(&dest, &snap.my_call, &via_ref, text.as_bytes());
-    match snap.cmd_tx.try_send(TncCommand::HostFrame {
-        channel: 0,
-        data: frame,
-    }) {
+    match snap
+        .cmd_tx
+        .try_send(TncCommand::Session(SessionCommand::Unproto {
+            port: snap.port,
+            local: snap.my_call.clone(),
+            remote: dest.clone(),
+            via: vias.clone(),
+            data: text.into_bytes(),
+        })) {
         Ok(()) => {
             let where_to = ax25::unproto_to(&dest, &vias);
-            let note = match queue_mail_beacon(snap, &dest, &via_ref) {
+            let note = match queue_mail_beacon(snap, &dest, &vias) {
                 MailSend::None => format!("beacon {} {}", snap.my_call, where_to),
                 MailSend::Sent(line) => format!("beacon {} {}; {line}", snap.my_call, where_to),
                 // The beacon already left. Do not retry it; the mail line
                 // waits for the next period.
                 MailSend::NotQueued => {
-                    format!("beacon {} {} (mail notice not queued)", snap.my_call, where_to)
+                    format!(
+                        "beacon {} {} (mail notice not queued)",
+                        snap.my_call, where_to
+                    )
                 }
             };
             Attempt::Sent(note)
@@ -237,16 +244,20 @@ enum MailSend {
 
 /// Same destination as the beacon that just queued. No frame when nobody
 /// has a `.GPM` file.
-fn queue_mail_beacon(snap: &BeaconSnap, dest: &str, via: &[&str]) -> MailSend {
+fn queue_mail_beacon(snap: &BeaconSnap, dest: &str, via: &[String]) -> MailSend {
     let calls = crate::remote::mail::waiting_calls(&snap.mail_dir);
     let Some(line) = mail_beacon_line(&snap.my_call, &calls) else {
         return MailSend::None;
     };
-    let frame = ax25::build_ui(dest, &snap.my_call, via, line.as_bytes());
-    match snap.cmd_tx.try_send(TncCommand::HostFrame {
-        channel: 0,
-        data: frame,
-    }) {
+    match snap
+        .cmd_tx
+        .try_send(TncCommand::Session(SessionCommand::Unproto {
+            port: snap.port,
+            local: snap.my_call.clone(),
+            remote: dest.into(),
+            via: via.to_vec(),
+            data: line.as_bytes().to_vec(),
+        })) {
         Ok(()) => MailSend::Sent(line),
         Err(_) => MailSend::NotQueued,
     }
@@ -325,6 +336,7 @@ mod tests {
         (
             BeaconSnap {
                 kiss: true,
+                port: 0,
                 beacon,
                 my_call: "N0CALL".into(),
                 qrg: "145.500".into(),
@@ -340,15 +352,21 @@ mod tests {
     fn manual_beacon_sends_with_timer_disabled() {
         let (snap, mut rx) = snapshot();
         assert!(send_now(&snap).starts_with("beacon N0CALL"));
-        let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
-            panic!("expected beacon frame");
+        let TncCommand::Session(SessionCommand::Unproto {
+            port,
+            local,
+            remote,
+            via,
+            data,
+        }) = rx.try_recv().unwrap()
+        else {
+            panic!("expected unproto request");
         };
-        assert_eq!(channel, 0);
-        let frame = ax25::parse_frame(&data).unwrap();
-        assert_eq!(frame.dest, "CQ");
-        assert_eq!(frame.src, "N0CALL");
-        assert_eq!(frame.via, ["WIDE1-1"]);
-        assert_eq!(frame.info, b"Hello beacon");
+        assert_eq!(port, 0);
+        assert_eq!(remote, "CQ");
+        assert_eq!(local, "N0CALL");
+        assert_eq!(via, ["WIDE1-1"]);
+        assert_eq!(data, b"Hello beacon");
     }
 
     #[test]

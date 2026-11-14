@@ -64,12 +64,14 @@ use crate::tnc::{
     BufferReport, ChannelBuffers, DetectedPort, EscKiss, FrameClass, HostCode, MonitorFilter,
     MonitorInput, RadioLink, TncCommand, TncEvent, TNC_RAM,
 };
+use crate::tnc::{ChannelConfig, SessionCommand, SessionEvent};
 use crate::transfer::autobin::{self, AutoBinState, BinReceiveDone, TxReply};
 use crate::transfer::sevenplus::{self, SevenPlusAutosave};
 use crate::version;
 
 use super::ansi::{expand_sgr_arrows, strip_ansi, AnsiDecoder, AnsiStyle};
 use super::beacon::{BeaconSchedule, BeaconSnap};
+use super::channel_bits::{slot_for, SLOT_BBS, SLOT_LIST, SLOT_MONITOR};
 use super::editor::{
     channel_store_text, decode_channel_bytes, decode_cp437, encode_channel_wire, packet_chunks,
     show_channel_text, GpEditor,
@@ -82,7 +84,6 @@ use super::layout::ActivePane;
 use super::mheard::MheardList;
 use super::padlog::{self, PadKind, TextPad};
 use super::retro;
-use super::channel_bits::{slot_for, SLOT_BBS, SLOT_LIST, SLOT_MONITOR};
 use super::session::{
     chime_strikes, connect_bell_plays, decode_rx_text, default_bell_wav, default_chime_wav,
     default_connect_wav, default_disconnect_wav, default_newline_wav, disconnect_plays,
@@ -93,16 +94,6 @@ use super::setup::{self, ColorSlot, EditKind, RowId, RowKind, View as SetupView}
 use super::theme::vga;
 
 const TYPED_HISTORY: usize = 10;
-/// AX.25 T3 — idle before a keepalive RR poll (command, P=1).
-const AX25_T3_IDLE: Duration = Duration::from_secs(5 * 60);
-/// AX.25 T1 — wait for UA after SABM/DISC, or for the RR Final after a poll.
-const AX25_T1: Duration = Duration::from_secs(5);
-/// Unanswered T3 polls (each waited T1) before the link is dead and we DISC.
-const AX25_POLL_RETRIES: u8 = 3;
-/// Extra SABM sends after the first (then give up — no DISC on air).
-const AX25_SABM_RETRIES: u8 = 3;
-/// Extra DISC sends after the first while waiting for UA, then clear locally.
-const AX25_DISC_RETRIES: u8 = 3;
 const COMPOSE_ROWS: usize = 3;
 /// Pre-write font. Sized so three rows fill the compose strip with no orphan gap.
 const COMPOSE_FONT_SIZE: f32 = 15.0;
@@ -336,39 +327,11 @@ pub struct GpGuiApp {
     channel_connecting: Vec<Option<String>>,
     /// This station placed the call. Incoming links stay false.
     channel_outgoing: Vec<bool>,
-    /// Self-connect in flight: `(caller_ch, answer_ch)`.
-    self_connect_pair: Option<(u8, u8)>,
-    /// Self-connect still linked (until either side disconnects).
-    self_connect_live: Option<(u8, u8)>,
+    disconnecting: Vec<bool>,
+    next_packet_id: u64,
     /// Ephemeral on-air SSID when the same from↔to pair is already up.
     /// Not the channel number, and not written to Config.toml.
     temp_slot_call: Vec<Option<String>>,
-    /// KISS AX.25 send sequence N(S) per channel (`0` unused).
-    ax25_vs: Vec<u8>,
-    /// KISS AX.25 receive sequence N(R) per channel (`0` unused).
-    ax25_vr: Vec<u8>,
-    /// This link has accepted an I-frame since the counters were cleared.
-    ax25_i_ok: Vec<bool>,
-    /// Last REJ on this channel: (N(S) we wanted, N(S) they sent).
-    /// The same pair again means they did not rewind, so the link resets.
-    ax25_rej: Vec<Option<(u8, u8)>>,
-    /// Last I/S/U activity on a linked KISS channel (T3 idle clock).
-    ax25_alive_at: Vec<Option<Instant>>,
-    /// Outstanding RR poll (T1) — `None` = not waiting.
-    ax25_poll_at: Vec<Option<Instant>>,
-    /// RR poll attempts since last peer reply.
-    ax25_poll_tries: Vec<u8>,
-    /// Last SABM send time while connecting (awaiting UA).
-    ax25_sabm_at: Vec<Option<Instant>>,
-    /// SABMs sent for this connect attempt (1 = first).
-    ax25_sabm_tries: Vec<u8>,
-    /// Peer has sent I or RR on this circuit. Until then a repeat SABM is a
-    /// retry of the same link, not a second connect.
-    ax25_peer_heard: Vec<bool>,
-    /// Last DISC send time while waiting for UA (`None` = not disconnecting).
-    ax25_disc_at: Vec<Option<Instant>>,
-    /// DISCs sent for this teardown (1 = first).
-    ax25_disc_tries: Vec<u8>,
     /// Digipeaters for the live KISS link on this channel.
     channel_via: Vec<Vec<String>>,
     /// Node `C` / `C!` lines still to send after the AX.25 link is up.
@@ -422,7 +385,7 @@ pub struct GpGuiApp {
     /// Next info-only monitor row follows a header already judged.
     /// `Some(false)` hides it; `Some(true)` keeps it with that header.
     monitor_follow: Option<bool>,
-    /// Free modem RAM, from the driver (`@B`, or 600 minus bytes still queued).
+    /// Firmware-native `@B` count, or synthetic KISS/TFPCX capacity.
     tnc_free: u32,
     /// Receive frames the modem has not handed up yet (monitor row).
     mon_not_disp: u32,
@@ -567,12 +530,7 @@ pub struct GpGuiApp {
 }
 
 impl GpGuiApp {
-    pub fn new(
-        ctx: &Context,
-        cfg: Config,
-        config_path: PathBuf,
-        radio: RadioLink,
-    ) -> Self {
+    pub fn new(ctx: &Context, cfg: Config, config_path: PathBuf, radio: RadioLink) -> Self {
         let channels = cfg.session.channels.clamp(1, 10) as u8;
         let mon_max = cfg.buffers.text_buffer.first().copied().unwrap_or(600) as usize;
         let ch_max = cfg.buffers.text_buffer.get(1).copied().unwrap_or(300) as usize;
@@ -591,18 +549,6 @@ impl GpGuiApp {
         let mut channel_connecting = Vec::with_capacity(channels as usize + 1);
         let mut channel_outgoing = Vec::with_capacity(channels as usize + 1);
         let mut temp_slot_call = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_vs = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_vr = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_i_ok = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_rej = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_alive_at = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_poll_at = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_poll_tries = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_sabm_at = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_sabm_tries = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_peer_heard = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_disc_at = Vec::with_capacity(channels as usize + 1);
-        let mut ax25_disc_tries = Vec::with_capacity(channels as usize + 1);
         for n in 0..=channels {
             let max = if n == 0 { mon_max } else { ch_max };
             let mut pad = TextPad::new(max);
@@ -621,18 +567,6 @@ impl GpGuiApp {
             channel_connecting.push(None);
             channel_outgoing.push(false);
             temp_slot_call.push(None);
-            ax25_vs.push(0);
-            ax25_vr.push(0);
-            ax25_i_ok.push(false);
-            ax25_rej.push(None);
-            ax25_alive_at.push(None);
-            ax25_poll_at.push(None);
-            ax25_poll_tries.push(0);
-            ax25_sabm_at.push(None);
-            ax25_sabm_tries.push(0);
-            ax25_peer_heard.push(false);
-            ax25_disc_at.push(None);
-            ax25_disc_tries.push(0);
         }
         let mut channel_via = Vec::with_capacity(channels as usize + 1);
         let mut channel_down = Vec::with_capacity(channels as usize + 1);
@@ -682,7 +616,11 @@ impl GpGuiApp {
         let radio_port = cfg.serial.port.clone();
         let radio_saved_port = radio_port.clone();
         let radio_saved_detail = cfg.serial.port_detail.clone();
-        let radio_baud = cfg.serial.baud;
+        let radio_baud = if radio_protocol == HostProtocol::Baycom {
+            1200
+        } else {
+            cfg.serial.baud
+        };
         let radio_host = cfg.tnc.kiss_tcp_host.clone();
         let radio_tcp_port = cfg.tnc.kiss_tcp_port.to_string();
 
@@ -710,7 +648,8 @@ impl GpGuiApp {
         let beacon_sched = BeaconSchedule::start(
             ctx.clone(),
             BeaconSnap {
-                kiss: cfg.tnc.protocol_kind() == HostProtocol::Kiss,
+                kiss: cfg.tnc.protocol_kind().uses_software_ax25(),
+                port: cfg.tnc.kiss_port,
                 beacon: cfg.beacon.clone(),
                 my_call: cfg.primary_mycall().to_string(),
                 qrg: session.qrg_text(),
@@ -799,21 +738,9 @@ impl GpGuiApp {
             last_gpw: String::new(),
             channel_connecting,
             channel_outgoing,
-            self_connect_pair: None,
-            self_connect_live: None,
+            disconnecting: vec![false; channels as usize + 1],
+            next_packet_id: 0,
             temp_slot_call,
-            ax25_vs,
-            ax25_vr,
-            ax25_i_ok,
-            ax25_rej,
-            ax25_alive_at,
-            ax25_poll_at,
-            ax25_poll_tries,
-            ax25_sabm_at,
-            ax25_sabm_tries,
-            ax25_peer_heard,
-            ax25_disc_at,
-            ax25_disc_tries,
             channel_via,
             channel_down,
             channel_down_wait,
@@ -1254,7 +1181,8 @@ impl GpGuiApp {
                     // Serial Kenwood / TCP Soundmodem / hostmode bring-up → green COM badge.
                     let link_up = low.starts_with("serial open")
                         || low.starts_with("tcp open")
-                        || low.contains("wa8ded driver")
+                        || low == "wa8ded tnc2 hostmode ready"
+                        || low == "baycom ft232r ready (experimental)"
                         || low.contains("tfpcx driver");
                     if link_up {
                         let was_open = self.serial_open;
@@ -1262,7 +1190,7 @@ impl GpGuiApp {
                         if low.starts_with("serial open") || low.starts_with("tcp open") {
                             self.log_event(m);
                         }
-                        if !was_open {
+                        if !was_open || low == "wa8ded tnc2 hostmode ready" {
                             self.sync_channel_identities();
                         }
                     }
@@ -1323,6 +1251,7 @@ impl GpGuiApp {
                     }
                 }
                 TncEvent::Buffers(report) => self.apply_buffers(report),
+                TncEvent::Session(event) => self.handle_session_event(event),
                 TncEvent::KissTx { port, frame } => {
                     self.note_kiss_tx(port, &frame);
                 }
@@ -1337,7 +1266,7 @@ impl GpGuiApp {
                     // reply is the monitor line, not a frame to list.
                     if !self.uses_software_monitor()
                         && channel == 0
-                        && matches!(code, HostCode::Data)
+                        && matches!(code, HostCode::CommandReply)
                     {
                         let reply = text.trim().trim_matches('\0').trim();
                         if !reply.is_empty() && reply.split_whitespace().count() <= 9 {
@@ -1354,47 +1283,32 @@ impl GpGuiApp {
                             }
                         }
                     }
-                    // Link status may arrive as LinkStatus *or* plain Monitor/Data text.
-                    let linkish = matches!(code, HostCode::LinkStatus)
-                        || (matches!(
-                            code,
-                            HostCode::Monitor | HostCode::Data | HostCode::Other(_)
-                        ) && looks_like_link_status(&text));
-                    let mut skip_monitor_dup = false;
-                    if linkish {
-                        let status_ch = if channel == 0 {
-                            self.infer_link_status_channel(&text).unwrap_or(0)
-                        } else {
-                            channel
-                        };
-                        if status_ch >= 1 {
-                            self.apply_link_status(status_ch, &text);
-                        }
-                        // Modem link chatter on the monitor (not an `fm` header).
-                        self.pads[0].push_monitor(PadKind::Own, text.trim().to_string());
-                        if channel == 0 {
-                            skip_monitor_dup = true;
-                        }
-                    }
                     let mut spy_src: Option<String> = None;
                     // TNC monitor text (and ch0 text that is not an AX.25 summary).
                     // Those bytes are shown with `<0xNN>` for non-printables.
                     let mut monitor_bytes = false;
                     let (kind, line) = match code {
                         HostCode::Ok => continue,
-                        HostCode::Monitor => {
+                        HostCode::Monitor | HostCode::MonitorHeader | HostCode::MonitorData => {
                             spy_src = extract_heard_call(&text);
                             monitor_bytes = true;
                             (PadKind::Incoming, text)
                         }
-                        HostCode::LinkStatus => (PadKind::System, text),
+                        HostCode::LinkStatus | HostCode::CommandReply | HostCode::Error => {
+                            (PadKind::System, text)
+                        }
                         HostCode::Data => {
                             // KISS: full AX.25 L2 (UI / SABM / I / …) — not hostmode text.
-                            if self.kiss_mode() {
-                                if ax25::parse_frame(&payload).is_some() {
-                                    self.handle_kiss_ax25(&payload, channel);
-                                    continue;
+                            if self.software_ax25() {
+                                if let Some(frame) = ax25::parse_frame(&payload) {
+                                    self.kiss_show_transit(&frame, channel);
+                                } else {
+                                    self.push_mon_line(
+                                        PadKind::Incoming,
+                                        super::session::kiss_monitor_fallback(channel, &payload),
+                                    );
                                 }
+                                continue;
                             }
                             if let Some(frame) = parse_ax25_ui(&payload) {
                                 spy_src = Some(frame.src.clone());
@@ -1451,11 +1365,6 @@ impl GpGuiApp {
                             }
                         }
                     }
-                    // First I-frame / data while still "connecting" → treat as linked
-                    // (some firmwares are light on LinkStatus text).
-                    if channel >= 1 && matches!(code, HostCode::Data) {
-                        self.promote_connecting_on_data(channel);
-                    }
                     // Channel text is rebuilt from newlines across host frames.
                     // A 128-byte cut is not a row break. `//` commands wait for
                     // the newline that finishes the line.
@@ -1469,7 +1378,7 @@ impl GpGuiApp {
                             }
                         }
                         self.accept_rx_text(channel, &decode_channel_bytes(&payload), kind);
-                    } else if !hide_monitor && !(skip_monitor_dup && idx == 0) {
+                    } else if !hide_monitor {
                         if idx == 0 && monitor_bytes {
                             let heard: Vec<(String, String, Vec<String>)> = monitor_rows
                                 .iter()
@@ -1531,123 +1440,6 @@ impl GpGuiApp {
         self.status = format!("active: {}", pane.label());
     }
 
-    /// Update channel button peer from a WA8DED link-status string.
-    fn apply_link_status(&mut self, channel: u8, text: &str) {
-        if !(1..=self.channels).contains(&channel) {
-            return;
-        }
-        let idx = channel as usize;
-        self.last_link_status = text.to_string();
-        let upper = text.to_ascii_uppercase();
-        let was_linked = self
-            .channel_peer
-            .get(idx)
-            .and_then(|p| p.as_ref())
-            .is_some();
-        // Set while this channel is the one that placed the call (`C CALL`).
-        let was_outgoing = self
-            .channel_connecting
-            .get(idx)
-            .and_then(|c| c.as_ref())
-            .is_some();
-
-        if upper.contains("DISCONNECTED")
-            || upper.contains("LINK FAILURE")
-            || upper.contains("LINK FAIL")
-            || upper.contains("BUSY FROM")
-            || upper.contains("FAILURE WITH")
-        {
-            if was_linked {
-                self.play_disconnect_bell(channel);
-            }
-            self.close_journal(channel);
-            self.channel_peer[idx] = None;
-            self.set_link_outgoing(channel, false);
-            self.clear_lock(channel);
-            if let Some(c) = self.channel_connecting.get_mut(idx) {
-                *c = None;
-            }
-            if let Some((c, a)) = self.self_connect_pair {
-                if channel == c || channel == a {
-                    self.self_connect_pair = None;
-                    self.clear_temp_identity(a);
-                }
-            }
-            if let Some((c, a)) = self.self_connect_live {
-                if channel == c || channel == a {
-                    self.self_connect_live = None;
-                    let other = if channel == c { a } else { c };
-                    self.clear_temp_identity(a);
-                    // Drop the other end of a self-connect too.
-                    if self
-                        .channel_peer
-                        .get(other as usize)
-                        .and_then(|p| p.as_ref())
-                        .is_some()
-                    {
-                        self.tx_modem_line(other, "D");
-                        self.close_journal(other);
-                        if let Some(p) = self.channel_peer.get_mut(other as usize) {
-                            *p = None;
-                        }
-                        self.set_link_outgoing(other, false);
-                        self.clear_lock(other);
-                    }
-                }
-            }
-            // All free again → one global `I` (+ any user-dedicated slots).
-            if !self.any_channel_busy() {
-                self.restore_global_identities();
-            }
-            return;
-        }
-        if let Some(pos) = upper.find("CONNECTED TO ") {
-            let after = &text[pos + "CONNECTED TO ".len()..];
-            let call = after
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-                .to_ascii_uppercase();
-            if let Some(c) = self.channel_connecting.get_mut(idx) {
-                *c = None;
-            }
-            if !call.is_empty() {
-                self.note_last_call(channel, &call);
-            }
-            self.channel_peer[idx] = if call.is_empty() {
-                Some("****".into())
-            } else {
-                Some(call)
-            };
-        } else if upper.contains("CONNECTED") {
-            if let Some(c) = self.channel_connecting.get_mut(idx) {
-                *c = None;
-            }
-            if self.channel_peer[idx].is_none() {
-                self.channel_peer[idx] = Some("****".into());
-            }
-        }
-        // Classic: CTEXT goes out only from the station that was connected to.
-        if upper.contains("CONNECTED TO ") || upper.contains("CONNECTED") {
-            if !was_linked {
-                self.play_connect_bell(channel);
-            }
-            self.prepare_busy_redirect_identities();
-            // Self-connect: answer channel sends CTEXT (white there, green on caller).
-            if let Some((caller, answer)) = self.self_connect_pair {
-                if channel == caller || channel == answer {
-                    self.complete_self_connect_ctext(caller, answer);
-                    return;
-                }
-            }
-            if !was_linked {
-                self.set_link_outgoing(channel, was_outgoing);
-                self.finish_link_up(channel, !was_outgoing);
-            }
-        }
-    }
-
     /// Effective MYCALL for a slot (ephemeral self-connect SSID overrides config).
     fn effective_mycall(&self, channel: u8) -> String {
         if let Some(Some(call)) = self.temp_slot_call.get(channel as usize) {
@@ -1663,29 +1455,161 @@ impl GpGuiApp {
     /// Push this slot's effective MYCALL to the TNC (`I call`).
     fn push_channel_identity(&mut self, channel: u8) {
         let call = self.effective_mycall(channel);
-        self.tx_modem_line(channel, &format!("I {call}"));
+        if channel == 0 && !self.software_ax25() {
+            self.tx_modem_line(channel, &format!("I {call}"));
+        }
+        self.configure_sessions();
+    }
+
+    fn configure_sessions(&mut self) -> bool {
+        let configs = (1..=self.channels)
+            .map(|channel| ChannelConfig {
+                channel,
+                port: self.cfg.tnc.channel_port(channel),
+                local: self.effective_mycall(channel),
+            })
+            .collect();
+        self.send_session_command(SessionCommand::Configure(configs))
+    }
+
+    fn send_session_command(&mut self, command: SessionCommand) -> bool {
+        match self.cmd_tx.try_send(TncCommand::Session(command)) {
+            Ok(()) => true,
+            Err(err) => {
+                self.status = format!("radio command not queued: {err}");
+                self.last_error = self.status.clone();
+                self.log_event(self.status.clone());
+                false
+            }
+        }
+    }
+
+    fn handle_session_event(&mut self, event: SessionEvent) {
+        match event {
+            SessionEvent::Error { channel, reason } => {
+                if let Some(ch) = channel.filter(|ch| (1..=self.channels).contains(ch)) {
+                    if !self.channel_linked(ch) {
+                        self.channel_connecting[usize::from(ch)] = None;
+                        self.disconnecting[usize::from(ch)] = false;
+                    }
+                    self.pads[usize::from(ch)].push(PadKind::System, format!("*** {reason}"));
+                    if self
+                        .autobin
+                        .as_ref()
+                        .is_some_and(|live| live.channel == ch && live.tx_id.is_some())
+                    {
+                        self.autobin = None;
+                        self.session.bin_tx = false;
+                    }
+                    if self
+                        .seven_tx
+                        .as_ref()
+                        .is_some_and(|tx| tx.channel == ch && tx.tx_id.is_some())
+                    {
+                        self.seven_tx = None;
+                    }
+                }
+                self.status = reason.clone();
+                self.last_error = reason.clone();
+                self.log_event(format!("! {reason}"));
+            }
+            SessionEvent::Connected {
+                channel,
+                port: _,
+                local,
+                remote,
+                via,
+                outgoing,
+            } => {
+                let idx = usize::from(channel);
+                if idx == 0 || idx > usize::from(self.channels) {
+                    return;
+                }
+                let was_linked = self.channel_linked(channel);
+                self.channel_connecting[idx] = None;
+                self.channel_peer[idx] = Some(remote.clone());
+                self.channel_via[idx] = via;
+                self.disconnecting[idx] = false;
+                if !self.effective_mycall(channel).eq_ignore_ascii_case(&local) {
+                    self.temp_slot_call[idx] = Some(local);
+                }
+                self.set_link_outgoing(channel, outgoing);
+                self.note_last_call(channel, &remote);
+                self.status = format!("*** CONNECTED ch{channel} to {remote}");
+                self.pads[idx].push(PadKind::System, self.status.clone());
+                if !was_linked {
+                    self.play_connect_bell(channel);
+                    self.finish_link_up(channel, !outgoing);
+                }
+            }
+            SessionEvent::Disconnected { channel, reason } => {
+                if !(1..=self.channels).contains(&channel) {
+                    return;
+                }
+                self.finish_disconnect(channel, true);
+                self.pads[usize::from(channel)].push(PadKind::System, format!("*** {reason}"));
+            }
+            SessionEvent::Data {
+                channel,
+                local,
+                remote,
+                data,
+            } => {
+                if !(1..=self.channels).contains(&channel) {
+                    return;
+                }
+                self.note_rx_calls(channel, &remote, &local);
+                if let Some(bytes) = self.autobin_channel_text(channel, &data) {
+                    self.note_seven_payload(channel, &bytes);
+                    self.accept_rx_text(channel, &decode_channel_bytes(&bytes), PadKind::Incoming);
+                }
+            }
+            SessionEvent::Acknowledged { channel, id } => self.note_bin_tx_ack(channel, id),
+            SessionEvent::Reset { channel, reason } => {
+                if !(1..=self.channels).contains(&channel) {
+                    return;
+                }
+                let idx = usize::from(channel);
+                self.channel_connecting[idx] = self.channel_peer[idx].take();
+                self.stop_external(channel);
+                self.cancel_mail_send(channel);
+                if self
+                    .autobin
+                    .as_ref()
+                    .is_some_and(|live| live.channel == channel)
+                {
+                    if let Some(live) = self.autobin.as_mut() {
+                        Self::discard_recv_temp(live);
+                    }
+                    self.autobin = None;
+                    self.session.bin_rx = false;
+                    self.session.bin_tx = false;
+                }
+                if self
+                    .seven_tx
+                    .as_ref()
+                    .is_some_and(|tx| tx.channel == channel)
+                {
+                    self.seven_tx = None;
+                }
+                self.pads[usize::from(channel)]
+                    .push(PadKind::System, format!("*** link reset: {reason}"));
+            }
+        }
     }
 
     /// Give `channel` a user/config MYCALL and put it on the air.
     /// Several channels may share one name; they form one answer pool.
     /// An empty call joins the global pool.
     fn claim_identity(&mut self, channel: u8, call: &str) -> Result<String, String> {
-        if channel != 0 && call.trim().is_empty() {
-            if let Some(t) = self.temp_slot_call.get_mut(channel as usize) {
-                *t = None;
-            }
-            return self.cfg.set_mycall_for_slot(channel, "");
+        if (channel == 0 && self.any_channel_busy()) || self.channel_connected(channel) {
+            return Err("disconnect before changing a channel's callsign".into());
         }
-        let call = crate::config::normalize_mycall(call)?;
-        let primary = self.cfg.primary_mycall().to_string();
+        let call = self.cfg.set_mycall_for_slot(channel, call)?;
         if let Some(t) = self.temp_slot_call.get_mut(channel as usize) {
             *t = None;
         }
-        self.cfg.set_mycall_for_slot(channel, &call)?;
-        // Radio: global lives on ch0; per-channel `I` only for a real override.
-        if channel == 0 || !call.eq_ignore_ascii_case(&primary) {
-            self.push_channel_identity(channel);
-        }
+        self.push_channel_identity(channel);
         Ok(call)
     }
 
@@ -1722,13 +1646,6 @@ impl GpGuiApp {
         (1..=self.channels).any(|n| self.channel_connected(n))
     }
 
-    /// User-set call in Config that is not the global MYCALL (e.g. DB0ABC).
-    fn channel_has_dedicated_mycall(&self, channel: u8) -> bool {
-        let primary = self.cfg.primary_mycall();
-        let call = self.cfg.mycall_for_slot(channel);
-        !call.is_empty() && !call.eq_ignore_ascii_case(primary)
-    }
-
     /// Configured pool name. Empty, or the same as global, is the global pool.
     fn pool_name(&self, channel: u8) -> String {
         let primary = self.cfg.primary_mycall().to_string();
@@ -1738,13 +1655,6 @@ impl GpGuiApp {
         } else {
             call.to_string()
         }
-    }
-
-    /// Channels that share `name`, lowest number first.
-    fn pool_channels(&self, name: &str) -> Vec<u8> {
-        (1..=self.channels)
-            .filter(|&n| self.pool_name(n).eq_ignore_ascii_case(name))
-            .collect()
     }
 
     /// Peer of a linked or still-connecting channel.
@@ -1771,6 +1681,11 @@ impl GpGuiApp {
             if except == Some(n) || !self.pool_name(n).eq_ignore_ascii_case(pool) {
                 continue;
             }
+            if except
+                .is_some_and(|ch| self.cfg.tnc.channel_port(ch) != self.cfg.tnc.channel_port(n))
+            {
+                continue;
+            }
             let Some(other) = self.channel_other_call(n) else {
                 continue;
             };
@@ -1783,66 +1698,6 @@ impl GpGuiApp {
         air_call_for_pair(pool, peer, &refs)
     }
 
-    fn canonical_pool(&self, name: &str) -> Option<String> {
-        (1..=self.channels).find_map(|n| {
-            let pool = self.pool_name(n);
-            if pool.eq_ignore_ascii_case(name) {
-                Some(pool)
-            } else {
-                None
-            }
-        })
-    }
-
-    /// `(pool, asked SSID)`. `None` SSID is the bare name (or `-0`): the
-    /// air call comes from whether this from↔to pair is already up.
-    /// `Some(n)` is a SABM addressed to `NAME-n`. A suffix on a call this
-    /// station does not have is not ours.
-    fn match_pool(&self, dest: &str) -> Option<(String, Option<u8>)> {
-        if let Some(name) = self.canonical_pool(dest) {
-            return Some((name, None));
-        }
-        let (base, ssid) = dest.split_once('-')?;
-        let n: u8 = ssid.parse().ok()?;
-        if n == 0 {
-            return self.canonical_pool(base).map(|name| (name, None));
-        }
-        if n > 15 {
-            return None;
-        }
-        let name = self.canonical_pool(base)?;
-        Some((name, Some(n)))
-    }
-
-    /// Where an incoming call from `peer` to `dest` is answered.
-    /// `except` is the channel placing the call, so it is not offered to itself.
-    ///
-    /// A different station takes the bare name on whatever free channel is
-    /// left. The same station, already linked either way, is answered as
-    /// `NAME-1` (then the next free number) on the next free channel.
-    /// `NAME-n` is answered only when that number is the one this pair
-    /// would use. `Foreign` is a call this client does not have.
-    fn incoming_slot(&self, dest: &str, peer: &str, except: Option<u8>) -> SlotAnswer {
-        let Some((name, specific)) = self.match_pool(dest) else {
-            return SlotAnswer::Foreign;
-        };
-        let call = self.air_call_for_peer(&name, peer, except);
-        if let Some(n) = specific {
-            if occupied_ssid(&call, &name) != Some(n) {
-                return SlotAnswer::Foreign;
-            }
-        }
-        for ch in self.pool_channels(&name) {
-            if except == Some(ch) || self.channel_connected(ch) {
-                continue;
-            }
-            return SlotAnswer::Accept { channel: ch, call };
-        }
-        SlotAnswer::Busy {
-            call: dest.to_string(),
-        }
-    }
-
     fn sync_channel_identities(&mut self) {
         self.restore_global_identities();
     }
@@ -1850,34 +1705,14 @@ impl GpGuiApp {
     /// Idle / link-up: **one** global `I` on the radio, plus any user-dedicated
     /// channel overrides. Auto `-n` SSIDs stay internal / ephemeral only.
     fn restore_global_identities(&mut self) {
-        let primary = self.cfg.primary_mycall().to_string();
         for ch in 1..=self.channels {
-            if let Some(t) = self.temp_slot_call.get_mut(ch as usize) {
-                *t = None;
-            }
-            // Scrub leftover auto `{base}-{n}` entries from older builds.
-            let slot = self.cfg.mycall_for_slot(ch).to_string();
-            let auto = Config::channel_ssid_mycall(&primary, ch);
-            if slot.eq_ignore_ascii_case(&auto) {
-                let _ = self.cfg.set_mycall_for_slot(ch, &primary);
+            if !self.channel_connected(ch) {
+                self.temp_slot_call[ch as usize] = None;
             }
         }
         // Single global identity on the modem. A user call on any channel,
         // including channel 1, stays as they set it.
         self.push_channel_identity(0);
-        // Manual per-channel MYCALL only.
-        for ch in 1..=self.channels {
-            if self.channel_has_dedicated_mycall(ch) {
-                self.push_channel_identity(ch);
-            }
-        }
-        let _ = self.cfg.persist_mycall(&self.config_path);
-    }
-
-    /// After a link is up: do **not** invent `-n` identities for free channels.
-    /// Global MYCALL stays on the radio; temps for self-connect stay as-is.
-    fn prepare_busy_redirect_identities(&mut self) {
-        // Intentionally empty — channel numbers are internal unless user-set.
     }
 
     /// Expand and TX the CT button file (classic `CTEXT.GPI`) on the channel.
@@ -1954,193 +1789,32 @@ impl GpGuiApp {
         }
     }
 
-    /// KISS self-connect: no RF loopback — TX UA as answer, link both ends, CTEXT.
-    fn kiss_finish_self_connect(&mut self, caller: u8, answer: u8) {
-        let answer_call = self.effective_mycall(answer);
-        let caller_call = self.effective_mycall(caller);
-        // Answer SABM with UA (Monitor lists it from KissTx when written).
-        self.tx_kiss_payload(0, &ax25::build_ua(&caller_call, &answer_call, true));
-        if let Some(pad) = self.pads.get_mut(answer as usize) {
-            pad.push(PadKind::System, format!("*** CONNECTED to {caller_call}"));
-        }
-        if let Some(pad) = self.pads.get_mut(caller as usize) {
-            pad.push(PadKind::System, format!("*** CONNECTED to {answer_call}"));
-        }
-        for ch in [caller, answer] {
-            self.zero_ax25_seq(ch as usize);
-            self.kiss_link_activity(ch, true);
-            self.play_connect_bell(ch);
-        }
-        self.kiss_clear_sabm_timer(caller);
-        self.kiss_clear_sabm_timer(answer);
-        self.complete_self_connect_ctext(caller, answer);
-        self.status = format!("KISS linked {caller_call} ↔ {answer_call}");
+    fn channel_disconnecting(&self, channel: u8) -> bool {
+        self.disconnecting
+            .get(usize::from(channel))
+            .copied()
+            .unwrap_or(false)
     }
 
-    /// Self-connect finished: answer side TX CTEXT — white on answer, green on caller.
-    fn complete_self_connect_ctext(&mut self, caller: u8, answer: u8) {
-        // Mark both ends linked (TNC may only report CONNECTED on the caller).
-        let answer_call = self.effective_mycall(answer);
-        // Answer side sees the call this channel actually used, not the global one.
-        let caller_call = self.effective_mycall(caller);
-        self.note_last_call(caller, &answer_call);
-        self.note_last_call(answer, &caller_call);
-        if let Some(p) = self.channel_peer.get_mut(caller as usize) {
-            *p = Some(answer_call);
-        }
-        if let Some(p) = self.channel_peer.get_mut(answer as usize) {
-            *p = Some(caller_call);
-        }
-        self.set_link_outgoing(caller, true);
-        self.set_link_outgoing(answer, false);
-        if let Some(c) = self.channel_connecting.get_mut(caller as usize) {
-            *c = None;
-        }
-        if let Some(c) = self.channel_connecting.get_mut(answer as usize) {
-            *c = None;
-        }
-        self.self_connect_live = Some((caller, answer));
-        self.self_connect_pair = None;
-        self.note_ax25_peer(caller);
-        self.note_ax25_peer(answer);
-        self.note_link_up(caller);
-        self.note_link_up(answer);
-
-        let Some(text) = self.load_connect_text(answer) else {
-            return;
-        };
-        let max = self.cfg.buffers.packet_payload.max(1) as usize;
-        let peer = self.effective_mycall(caller);
-        let my = self.effective_mycall(answer);
-        let kiss = self.kiss_mode();
-        // Sending window is the same terminal: a newline in the file is a
-        // row, and a colour sequence changes the pen. The 128-byte cut does not.
-        // One newline.wav for the whole CTEXT, not one per row or packet cut.
-        let wire = encode_channel_wire(&text, self.session.umlaut_for(answer));
-        let stored = decode_channel_bytes(&wire);
-        self.begin_newline_coalesce();
-        self.seal_term(answer);
-        self.accept_rx_text(answer, &stored, PadKind::Own);
-        self.seal_term(answer);
-        if !kiss {
-            for line in payload_lines(&text) {
-                self.pads[0].push_monitor(PadKind::Own, strip_ansi(&line));
-            }
-        }
-        self.seal_term(caller);
-        for chunk in packet_chunks(&wire, max) {
-            // Caller rebuilds rows from newlines, not from the 128-byte cut.
-            self.accept_rx_text(caller, &decode_channel_bytes(chunk), PadKind::Incoming);
-            if kiss {
-                let ns = *self.ax25_vs.get(answer as usize).unwrap_or(&0);
-                let nr = *self.ax25_vr.get(answer as usize).unwrap_or(&0);
-                let frame = ax25::build_i(&peer, &my, ns, nr, false, chunk);
-                if let Some(vs) = self.ax25_vs.get_mut(answer as usize) {
-                    *vs = (ns + 1) & 7;
-                }
-                self.tx_kiss_payload(0, &frame);
-                // Caller answers this I-frame. No RF loopback, so the RR is
-                // generated here and applied to the send queue.
-                self.tx_local_rr(caller, &my, &peer, ns);
-            } else {
-                let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
-                    channel: answer,
-                    data: chunk.to_vec(),
-                });
-            }
-        }
-        self.end_newline_coalesce();
-        self.status = format!("CTEXT ch{answer} → ch{caller}");
-    }
-
-    /// Hostmode `D` or KISS DISC; tears down self-connect pair too.
-    ///
-    /// On KISS the channel stays up until UA (or DM) answers the DISC, or
-    /// until T1 × N2 expires. A pending connection clears immediately after
-    /// one DISC; self-connect also clears both sides without waiting.
     fn disconnect_channel(&mut self, channel: u8) {
-        if !(1..=self.channels).contains(&channel) {
+        if !(1..=self.channels).contains(&channel) || self.channel_disconnecting(channel) {
+            return;
+        }
+        if !self.channel_connected(channel) {
+            self.clear_channel_link_state(channel);
             return;
         }
         self.stop_external(channel);
         self.cancel_mail_send(channel);
-        if self.channel_disconnecting(channel) {
-            return;
-        }
-        let was_linked = self.channel_linked(channel);
-        if !self.channel_connected(channel) {
-            self.clear_channel_link_state(channel);
-            self.drop_mail_for(channel);
-            self.status = format!("Disconnect ch{channel}");
-            return;
-        }
-
-        let mut also = Vec::new();
-        let mut self_pair = false;
-        if let Some((c, a)) = self.self_connect_live.take() {
-            if channel == c || channel == a {
-                also.push(if channel == c { a } else { c });
-                self_pair = true;
+        if self.send_session_command(SessionCommand::Disconnect { channel }) {
+            if self.channel_linked(channel) {
+                self.disconnecting[usize::from(channel)] = true;
+                self.status = format!("Disconnecting ch{channel}");
             } else {
-                self.self_connect_live = Some((c, a));
+                self.finish_disconnect(channel, false);
+                self.status = format!("Connect cancelled ch{channel}");
             }
         }
-        if let Some((c, a)) = self.self_connect_pair.take() {
-            if channel == c || channel == a {
-                also.push(a);
-                also.push(c);
-                self.clear_temp_identity(a);
-                self_pair = true;
-            } else {
-                self.self_connect_pair = Some((c, a));
-            }
-        }
-
-        if self.kiss_mode() {
-            self.kiss_send_disc(channel);
-            for &other in &also {
-                if other != channel && (1..=self.channels).contains(&other) {
-                    self.kiss_send_disc(other);
-                }
-            }
-            if self_pair || !was_linked {
-                for ch in std::iter::once(channel).chain(also.into_iter()) {
-                    if (1..=self.channels).contains(&ch) {
-                        self.finish_disconnect(ch, true);
-                    }
-                }
-                if !was_linked {
-                    if let Some(pad) = self.pads.get_mut(channel as usize) {
-                        pad.push(PadKind::System, "*** connection attempt cancelled");
-                    }
-                    self.status = format!("Connect cancelled ch{channel}");
-                    self.last_link_status = self.status.clone();
-                }
-            } else {
-                self.kiss_arm_disc_timer(channel);
-                if let Some(pad) = self.pads.get_mut(channel as usize) {
-                    pad.push(PadKind::System, "*** disconnecting — waiting for UA");
-                }
-                self.status = format!("KISS DISC ch{channel}");
-                self.last_link_status = self.status.clone();
-            }
-        } else {
-            self.tx_modem_line(channel, "D");
-            for other in also {
-                if other != channel && (1..=self.channels).contains(&other) {
-                    self.tx_modem_line(other, "D");
-                    self.finish_disconnect(other, true);
-                }
-            }
-            self.finish_disconnect(channel, true);
-        }
-    }
-
-    fn channel_disconnecting(&self, channel: u8) -> bool {
-        self.ax25_disc_at
-            .get(channel as usize)
-            .and_then(|t| *t)
-            .is_some()
     }
 
     /// UA or DM answered our DISC, or T1/N2 gave up.
@@ -2148,7 +1822,7 @@ impl GpGuiApp {
         self.stop_external(channel);
         self.cancel_mail_send(channel);
         let was = self.channel_linked(channel) || self.channel_disconnecting(channel);
-        self.kiss_clear_disc_timer(channel);
+        self.disconnecting[usize::from(channel)] = false;
         self.clear_channel_link_state(channel);
         self.drop_mail_for(channel);
         if self
@@ -2173,6 +1847,13 @@ impl GpGuiApp {
         if self.bin_rx_swallow == Some(channel) {
             self.bin_rx_swallow = None;
         }
+        if self
+            .seven_tx
+            .as_ref()
+            .is_some_and(|tx| tx.channel == channel)
+        {
+            self.seven_tx = None;
+        }
         if was && play {
             self.play_disconnect_bell(channel);
         }
@@ -2188,45 +1869,6 @@ impl GpGuiApp {
         self.status = format!("Disconnect ch{channel}");
     }
 
-    fn kiss_send_disc(&mut self, channel: u8) {
-        let peer = self
-            .channel_peer
-            .get(channel as usize)
-            .and_then(|p| p.clone())
-            .or_else(|| {
-                self.channel_connecting
-                    .get(channel as usize)
-                    .and_then(|p| p.clone())
-            });
-        let Some(peer) = peer else {
-            return;
-        };
-        let src = self.effective_mycall(channel);
-        let vias = self.link_vias(channel);
-        let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-        self.tx_kiss_payload(0, &ax25::build_disc_via(&peer, &src, &via_ref));
-    }
-
-    fn kiss_arm_disc_timer(&mut self, channel: u8) {
-        let idx = channel as usize;
-        if let Some(t) = self.ax25_disc_at.get_mut(idx) {
-            *t = Some(Instant::now());
-        }
-        if let Some(n) = self.ax25_disc_tries.get_mut(idx) {
-            *n = 1;
-        }
-    }
-
-    fn kiss_clear_disc_timer(&mut self, channel: u8) {
-        let idx = channel as usize;
-        if let Some(t) = self.ax25_disc_at.get_mut(idx) {
-            *t = None;
-        }
-        if let Some(n) = self.ax25_disc_tries.get_mut(idx) {
-            *n = 0;
-        }
-    }
-
     fn clear_channel_link_state(&mut self, channel: u8) {
         self.close_journal(channel);
         if self.show_name_dialog && self.name_channel == channel {
@@ -2234,6 +1876,7 @@ impl GpGuiApp {
             self.name_edit.clear();
         }
         let idx = channel as usize;
+        self.disconnecting[idx] = false;
         // Leave notices need the peer call — run before the peer slot is cleared.
         self.drop_chat_on_disconnect(channel);
         if let Some(p) = self.channel_peer.get_mut(idx) {
@@ -2247,25 +1890,6 @@ impl GpGuiApp {
         if let Some(c) = self.channel_connecting.get_mut(idx) {
             *c = None;
         }
-        if let Some(t) = self.ax25_alive_at.get_mut(idx) {
-            *t = None;
-        }
-        if let Some(t) = self.ax25_poll_at.get_mut(idx) {
-            *t = None;
-        }
-        if let Some(n) = self.ax25_poll_tries.get_mut(idx) {
-            *n = 0;
-        }
-        if let Some(t) = self.ax25_sabm_at.get_mut(idx) {
-            *t = None;
-        }
-        if let Some(n) = self.ax25_sabm_tries.get_mut(idx) {
-            *n = 0;
-        }
-        if let Some(h) = self.ax25_peer_heard.get_mut(idx) {
-            *h = false;
-        }
-        self.kiss_clear_disc_timer(channel);
         if let Some(via) = self.channel_via.get_mut(idx) {
             via.clear();
         }
@@ -2278,73 +1902,12 @@ impl GpGuiApp {
         if let Some(q) = self.qrt_disc.get_mut(idx) {
             *q = QrtDiscState::Idle;
         }
-        self.zero_ax25_seq(idx);
         self.seal_term(channel);
         if let Some(dec) = self.rx_ansi.get_mut(idx) {
             *dec = AnsiDecoder::new();
         }
         // Pool overflow (`NL1STK-1`) lasts only for this connection.
         self.clear_temp_identity(channel);
-    }
-
-    fn kiss_arm_sabm_timer(&mut self, channel: u8) {
-        let idx = channel as usize;
-        if let Some(t) = self.ax25_sabm_at.get_mut(idx) {
-            *t = Some(Instant::now());
-        }
-        if let Some(n) = self.ax25_sabm_tries.get_mut(idx) {
-            *n = 1;
-        }
-    }
-
-    fn kiss_clear_sabm_timer(&mut self, channel: u8) {
-        let idx = channel as usize;
-        if let Some(t) = self.ax25_sabm_at.get_mut(idx) {
-            *t = None;
-        }
-        if let Some(n) = self.ax25_sabm_tries.get_mut(idx) {
-            *n = 0;
-        }
-    }
-
-    /// Connecting → linked once we see traffic (or explicit CONNECTED elsewhere).
-    fn promote_connecting_on_data(&mut self, channel: u8) {
-        let idx = channel as usize;
-        if self
-            .channel_peer
-            .get(idx)
-            .and_then(|p| p.as_ref())
-            .is_some()
-        {
-            return;
-        }
-        // Pending self-connect: either side's first data finishes the pair.
-        if let Some((caller, answer)) = self.self_connect_pair {
-            if channel == caller || channel == answer {
-                self.complete_self_connect_ctext(caller, answer);
-                return;
-            }
-        }
-        let Some(dest) = self
-            .channel_connecting
-            .get(idx)
-            .and_then(|c| c.as_ref())
-            .cloned()
-        else {
-            return;
-        };
-        if let Some(c) = self.channel_connecting.get_mut(idx) {
-            *c = None;
-        }
-        if let Some(p) = self.channel_peer.get_mut(idx) {
-            *p = Some(dest.clone());
-        }
-        self.set_link_outgoing(channel, true);
-        self.note_last_call(channel, &dest);
-        self.play_connect_bell(channel);
-        self.prepare_busy_redirect_identities();
-        // First data while we are still calling — we placed this call.
-        self.finish_link_up(channel, false);
     }
 
     fn names_qrg(&self) -> String {
@@ -2596,42 +2159,10 @@ impl GpGuiApp {
         }
     }
 
-    /// Which channel a ch0/monitor link-status line belongs to.
-    fn infer_link_status_channel(&self, text: &str) -> Option<u8> {
-        // "(2) CONNECTED to …" style — trust the modem's channel tag.
-        if let Some(ch) = parse_hostmode_channel_tag(text) {
-            if (1..=self.channels).contains(&ch) {
-                return Some(ch);
-            }
-        }
-        if let Some((c, _)) = self.self_connect_pair {
-            return Some(c); // pending self-connect → caller
-        }
-        // Prefer a channel that is mid-connect.
-        (1..=self.channels)
-            .find(|&n| {
-                self.channel_connecting
-                    .get(n as usize)
-                    .and_then(|p| p.as_ref())
-                    .is_some()
-            })
-            .or_else(|| {
-                let upper = text.to_ascii_uppercase();
-                if upper.contains("CONNECTED") {
-                    match self.active {
-                        ActivePane::Channel(n) => Some(n),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            })
-    }
-
     /// Local TX echo into the RX pad(s). The line is always stored.
     /// Echo on a channel only hides or shows those rows. Hostmode also copies
     /// the line onto the Monitor when Monitor Echo is on. KISS Monitor lines
-    /// come from [`TncEvent::KissTx`] when the frame leaves the modem.
+    /// come from [`TncEvent::KissTx`] after a successful write to the modem.
     fn echo_own_line(&mut self, line: &str) {
         let idx = match self.active {
             ActivePane::Channel(n) => n as usize,
@@ -2652,19 +2183,24 @@ impl GpGuiApp {
                 }
             }
         }
-        if self.kiss_mode() || !self.session.echo_for(SLOT_MONITOR) {
+        if self.software_ax25() || !self.session.echo_for(SLOT_MONITOR) {
             return;
         }
         self.push_mon_line_sgr(PadKind::Own, line);
     }
 
-    /// Monitor listing for a KISS frame that was just written to the modem.
+    /// Monitor listing after a KISS write or completed BayCom burst.
     fn note_kiss_tx(&mut self, port: u8, raw: &[u8]) {
         let Some(frame) = ax25::parse_frame(raw) else {
+            self.push_mon_line(
+                PadKind::Own,
+                super::session::kiss_monitor_fallback(port, raw),
+            );
             return;
         };
         let info = if matches!(frame.kind, Ax25FrameType::Info | Ax25FrameType::Ui) {
-            let body = ax25::bytes_to_monitor_body(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
+            let body =
+                ax25::bytes_to_monitor_body(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
             if body.is_empty() {
                 None
             } else {
@@ -2676,11 +2212,11 @@ impl GpGuiApp {
         self.push_kiss_mon_frame(PadKind::Own, &frame, info.as_deref(), port);
     }
 
-    fn kiss_mode(&self) -> bool {
-        self.cfg.tnc.protocol_kind() == HostProtocol::Kiss
+    fn software_ax25(&self) -> bool {
+        self.cfg.tnc.protocol_kind().uses_software_ax25()
     }
 
-    /// KISS and TFPCX have no `M` in the modem. The monitor view filters.
+    /// KISS, BayCom and TFPCX use the application's monitor filter.
     fn uses_software_monitor(&self) -> bool {
         self.cfg.tnc.protocol_kind() != HostProtocol::Wa8ded
     }
@@ -2795,7 +2331,9 @@ impl GpGuiApp {
         let blank = self.cfg.session.insert_mon_line
             && should_insert_mon_blank(
                 &line,
-                self.pads.first().and_then(|p| p.lines.back().map(|l| l.text.as_str())),
+                self.pads
+                    .first()
+                    .and_then(|p| p.lines.back().map(|l| l.text.as_str())),
             );
         let Some(pad) = self.pads.get_mut(0) else {
             return;
@@ -2849,10 +2387,7 @@ impl GpGuiApp {
     fn note_heard_on_monitor(&mut self, src: &str, dest: &str, via: &[String]) {
         let src = src.trim();
         if src.is_empty()
-            || self
-                .our_air_calls()
-                .iter()
-                .any(|c| c.eq_ignore_ascii_case(src))
+            || (0..=self.channels).any(|ch| self.effective_mycall(ch).eq_ignore_ascii_case(src))
         {
             return;
         }
@@ -2892,94 +2427,6 @@ impl GpGuiApp {
             colored_info.as_deref(),
             port,
         );
-    }
-
-    /// DM (busy) from `from` back to the station that called.
-    fn kiss_send_dm(&mut self, to: &str, from: &str) {
-        self.kiss_send_dm_via(to, from, &[]);
-    }
-
-    fn kiss_send_dm_via(&mut self, to: &str, from: &str, via: &[String]) {
-        let via_ref: Vec<&str> = via.iter().map(String::as_str).collect();
-        self.tx_kiss_payload(0, &ax25::build_dm_via(to, from, true, &via_ref));
-    }
-
-    fn kiss_send_ua_via(&mut self, to: &str, from: &str, via: &[String]) {
-        let via_ref: Vec<&str> = via.iter().map(String::as_str).collect();
-        self.tx_kiss_payload(0, &ax25::build_ua_via(to, from, true, &via_ref));
-    }
-
-    /// Digipeater path for a reply to this frame (reverse of how it arrived).
-    fn reply_path(frame: &Ax25Frame) -> Vec<String> {
-        ax25::reply_via(&frame.via)
-    }
-
-    /// True when `dest` is a call this station answers (pool or live temp).
-    fn is_our_dest(&self, dest: &str) -> bool {
-        if self.match_pool(dest).is_some() {
-            return true;
-        }
-        (1..=self.channels).any(|n| self.effective_mycall(n).eq_ignore_ascii_case(dest))
-    }
-
-    /// Spec: while disconnected, any command other than SABM/UI → DM F=1.
-    fn kiss_dm_if_ours_disconnected(&mut self, frame: &Ax25Frame) {
-        if !frame.command {
-            return;
-        }
-        if !self.is_our_dest(&frame.dest) {
-            return;
-        }
-        if self.channel_for_pair(&frame.src, &frame.dest).is_some() {
-            return;
-        }
-        let via = Self::reply_path(frame);
-        self.kiss_send_dm_via(&frame.src, &frame.dest, &via);
-    }
-
-    /// Raw KISS port payload (already AX.25-framed). Port 0 = Soundmodem radio 1.
-    fn tx_kiss_payload(&mut self, port: u8, payload: &[u8]) {
-        let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
-            channel: port,
-            data: payload.to_vec(),
-        });
-    }
-
-    /// RR response from `i_dest` back to `i_src` for I-frame `ns`.
-    /// Written on the air and fed to the send queue (`LocalAck`), because a
-    /// self-connect does not hear its own frames come back. The driver holds
-    /// it until the I-frame could have left the radio.
-    fn tx_local_rr(&mut self, rx_channel: u8, i_src: &str, i_dest: &str, ns: u8) {
-        let nr = ns.wrapping_add(1) & 7;
-        if let Some(vr) = self.ax25_vr.get_mut(rx_channel as usize) {
-            *vr = nr;
-        }
-        self.kiss_link_activity(rx_channel, true);
-        self.note_ax25_peer(rx_channel);
-        let frame = ax25::build_rr(i_src, i_dest, nr, false, false);
-        let _ = self
-            .cmd_tx
-            .try_send(TncCommand::LocalAck { port: 0, frame });
-    }
-
-    /// Self-connect: other channel sees this text as Incoming (no RF loopback).
-    fn deliver_self_connect_rx(&mut self, from_ch: u8, line: &str, raw: &[u8]) {
-        let Some((c, a)) = self.self_connect_live else {
-            return;
-        };
-        let other = if from_ch == c {
-            a
-        } else if from_ch == a {
-            c
-        } else {
-            return;
-        };
-        let from = self.effective_mycall(from_ch);
-        let to = self.effective_mycall(other);
-        self.note_rx_calls(other, &from, &to);
-        self.note_seven_payload(other, raw);
-        self.accept_rx_text(other, line, PadKind::Incoming);
-        self.kiss_link_activity(other, true);
     }
 
     /// One tick when channel chat appears. Quiet while a multi-line GPI/CTEXT
@@ -3612,7 +3059,7 @@ impl GpGuiApp {
                 channel,
                 state,
                 started: Instant::now(),
-                tx_ns: None,
+                tx_id: None,
                 recv_file: None,
                 recv_part: None,
                 recv_final: None,
@@ -3687,9 +3134,8 @@ impl GpGuiApp {
         live.recv_file = Some(file);
         live.recv_part = Some(part_path);
         live.recv_final = Some(final_path);
-        let my = self.effective_mycall(channel);
         let ack = autobin::format_ok();
-        if !self.send_kiss_i(channel, &my, ack.as_bytes(), "#OK#") {
+        if !self.send_channel_packet(channel, ack.as_bytes()) {
             if let Some(live) = self.autobin.as_mut() {
                 Self::discard_recv_temp(live);
             }
@@ -3716,10 +3162,9 @@ impl GpGuiApp {
         }
         Self::discard_recv_temp(&mut live);
         let channel = live.channel;
-        let my = self.effective_mycall(channel);
         let wire = if receiving { "#ABORT#\r" } else { "#NO#\r" };
         let shown = if receiving { "#ABORT#" } else { "#NO#" };
-        let _ = self.send_kiss_i(channel, &my, wire.as_bytes(), shown);
+        let _ = self.send_channel_packet(channel, wire.as_bytes());
         self.show_proto_line(channel, shown, PadKind::Own);
         self.session.bin_rx = false;
         if receiving {
@@ -3757,7 +3202,7 @@ impl GpGuiApp {
             TxReply::Start => {
                 if let Some(live) = self.autobin.as_mut() {
                     live.started = Instant::now();
-                    live.tx_ns = None;
+                    live.tx_id = None;
                 }
                 if !shown.is_empty() {
                     self.show_proto_line(channel, &shown, PadKind::Incoming);
@@ -3784,25 +3229,26 @@ impl GpGuiApp {
         }
     }
 
-    fn note_bin_tx_ack(&mut self, channel: u8, nr: u8) {
-        let acked = self.autobin.as_ref().is_some_and(|live| {
-            live.channel == channel && live.tx_ns.is_some_and(|ns| nr == (ns.wrapping_add(1) & 7))
-        });
+    fn note_bin_tx_ack(&mut self, channel: u8, id: u64) {
+        let acked = self
+            .autobin
+            .as_ref()
+            .is_some_and(|live| live.channel == channel && live.tx_id == Some(id));
         if acked {
             if let Some(live) = self.autobin.as_mut() {
-                live.tx_ns = None;
+                live.tx_id = None;
             }
             self.pump_bin_tx(channel);
             return;
         }
-        self.note_seven_tx_ack(channel, nr);
+        self.note_seven_tx_ack(channel, id);
     }
 
     fn pump_bin_tx(&mut self, channel: u8) {
         if self
             .autobin
             .as_ref()
-            .is_some_and(|live| live.channel == channel && live.tx_ns.is_some())
+            .is_some_and(|live| live.channel == channel && live.tx_id.is_some())
         {
             return;
         }
@@ -3820,16 +3266,20 @@ impl GpGuiApp {
             self.finish_bin_tx(channel);
             return;
         };
-        let ns = self.ax25_vs.get(channel as usize).copied().unwrap_or(0);
-        let my = self.effective_mycall(channel);
-        if !self.send_kiss_i(channel, &my, &chunk, "") {
+        let id = self.next_packet_id;
+        self.next_packet_id = self.next_packet_id.wrapping_add(1);
+        if !self.send_session_command(SessionCommand::Send {
+            channel,
+            data: chunk,
+            id: Some(id),
+        }) {
             self.autobin = None;
             self.session.bin_tx = false;
             self.status = format!("BIN-TX: channel {channel} has no link");
             return;
         }
         if let Some(live) = self.autobin.as_mut() {
-            live.tx_ns = Some(ns);
+            live.tx_id = Some(id);
         }
     }
 
@@ -3846,9 +3296,8 @@ impl GpGuiApp {
         let line1 = format!("<GPNG>: Binare file transfer OK, CRC={crc}");
         let line2 = format!("      Bytes={got}, Tijd={tijd}, Baud={baud}");
         self.session.bin_tx = false;
-        let my = self.effective_mycall(channel);
         let wire = format!("{line1}\r{line2}\r");
-        let _ = self.send_kiss_i(channel, &my, wire.as_bytes(), "");
+        let _ = self.send_channel_packet(channel, wire.as_bytes());
         self.accept_rx_text(channel, &format!("{line1}\n{line2}\n"), PadKind::Own);
         self.status = format!("BIN-TX sent {got} bytes");
     }
@@ -3968,14 +3417,13 @@ impl GpGuiApp {
             channel,
             state,
             started: Instant::now(),
-            tx_ns: None,
+            tx_id: None,
             recv_file: None,
             recv_part: None,
             recv_final: None,
         });
         self.session.bin_tx = true;
-        let my = self.effective_mycall(channel);
-        if !self.send_kiss_i(channel, &my, header.as_bytes(), "") {
+        if !self.send_channel_packet(channel, header.as_bytes()) {
             self.autobin = None;
             self.session.bin_tx = false;
             self.status = format!("BIN-TX: channel {channel} has no link");
@@ -4012,8 +3460,7 @@ impl GpGuiApp {
             .is_some_and(|tx| tx.channel == channel)
         {
             self.seven_tx = None;
-            let my = self.effective_mycall(channel);
-            let _ = self.send_kiss_i(channel, &my, b"#ABORT#\r", "#ABORT#");
+            let _ = self.send_channel_packet(channel, b"#ABORT#\r");
             self.show_proto_line(channel, "#ABORT#", PadKind::Own);
             self.status = "7+-TX aborted".into();
             self.transfer_cut = true;
@@ -4042,9 +3489,8 @@ impl GpGuiApp {
         self.session.bin_tx = false;
         // The offer is already on the other station. `#ABORT#` lets that
         // side leave the file. We send no further file bytes.
-        let my = self.effective_mycall(channel);
         let abort = autobin::format_abort();
-        let _ = self.send_kiss_i(channel, &my, abort.as_bytes(), "");
+        let _ = self.send_channel_packet(channel, abort.as_bytes());
         self.show_proto_line(channel, "#ABORT#", PadKind::Own);
         self.status = "BIN-TX stopped".into();
     }
@@ -4058,8 +3504,7 @@ impl GpGuiApp {
         if !dropped {
             return;
         }
-        let my = self.effective_mycall(channel);
-        let _ = self.send_kiss_i(channel, &my, b"#ABORT#\r", "#ABORT#");
+        let _ = self.send_channel_packet(channel, b"#ABORT#\r");
         self.show_proto_line(channel, "#ABORT#", PadKind::Own);
         self.status = "7+ aborted".into();
     }
@@ -4074,9 +3519,8 @@ impl GpGuiApp {
             return;
         }
         let channel = live.channel;
-        let my = self.effective_mycall(channel);
         let abort = autobin::format_abort();
-        let _ = self.send_kiss_i(channel, &my, abort.as_bytes(), "");
+        let _ = self.send_channel_packet(channel, abort.as_bytes());
         self.show_proto_line(channel, "#ABORT#", PadKind::Own);
         self.session.bin_tx = false;
         self.status = "BIN-TX aborted".into();
@@ -4148,49 +3592,28 @@ impl GpGuiApp {
         self.accept_rx_text(channel, &format!("{line}\n"), kind);
     }
 
-    /// Connected-mode I frame on one channel. Returns false when that channel
-    /// has no peer.
-    fn send_kiss_i(&mut self, n: u8, my: &str, info: &[u8], shown: &str) -> bool {
-        let Some(peer) = self.channel_peer.get(n as usize).and_then(|p| p.clone()) else {
+    fn send_channel_packet(&mut self, n: u8, info: &[u8]) -> bool {
+        if !self.channel_linked(n) || self.channel_disconnecting(n) {
+            self.status = format!("ch{n}: not connected");
             return false;
-        };
-        let ns = *self.ax25_vs.get(n as usize).unwrap_or(&0);
-        let nr = *self.ax25_vr.get(n as usize).unwrap_or(&0);
-        let vias = self.link_vias(n);
-        let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-        let frame = ax25::build_i_via(&peer, my, ns, nr, false, info, &via_ref);
-        if let Some(vs) = self.ax25_vs.get_mut(n as usize) {
-            *vs = (ns + 1) & 7;
         }
-        self.tx_kiss_payload(0, &frame);
-        self.kiss_link_activity(n, false);
-        self.deliver_self_connect_rx(n, shown, info);
-        if let Some((c, a)) = self.self_connect_live {
-            if n == c || n == a {
-                let other = if n == c { a } else { c };
-                self.tx_local_rr(other, my, &peer, ns);
-            }
-        }
-        true
+        self.send_session_command(SessionCommand::Send {
+            channel: n,
+            data: info.to_vec(),
+            id: None,
+        })
     }
 
     /// One already-packed chunk → AX.25 UI or I-frame. Bytes are sent as-is.
     fn send_kiss_text(&mut self, line: &str) {
-        self.send_kiss_bytes(line.as_bytes(), Some(line));
+        self.send_kiss_bytes(line.as_bytes());
     }
 
-    fn send_kiss_bytes(&mut self, info: &[u8], shown: Option<&str>) {
-        let owned;
-        let shown: &str = if let Some(text) = shown {
-            text
-        } else {
-            owned = decode_channel_bytes(info);
-            &owned
-        };
+    fn send_kiss_bytes(&mut self, info: &[u8]) {
         let my = self.mycall_for_active();
         match self.active {
             ActivePane::Channel(n) if self.channel_linked(n) => {
-                self.send_kiss_i(n, &my, info, shown);
+                self.send_channel_packet(n, info);
             }
             ActivePane::Channel(_) => {
                 let (dest, vias) = ax25::parse_unproto(&self.cfg.beacon.address);
@@ -4201,28 +3624,19 @@ impl GpGuiApp {
             }
             _ => {
                 let (dest, vias) = ax25::parse_unproto(&self.cfg.beacon.address);
-                let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-                let frame = ax25::build_ui(&dest, &my, &via_ref, info);
-                self.tx_kiss_payload(0, &frame);
+                self.send_session_command(SessionCommand::Unproto {
+                    port: self.cfg.tnc.kiss_port,
+                    local: my.clone(),
+                    remote: dest.clone(),
+                    via: vias.clone(),
+                    data: info.to_vec(),
+                });
                 self.status = format!("KISS UI {my} {}", ax25::unproto_to(&dest, &vias));
             }
         }
     }
 
-    /// Calls this station answers and digipeats (monitor call and each channel).
-    fn our_air_calls(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        for n in 0..=self.channels {
-            let call = self.effective_mycall(n);
-            if call.is_empty() || out.iter().any(|c: &String| c.eq_ignore_ascii_case(&call)) {
-                continue;
-            }
-            out.push(call);
-        }
-        out
-    }
-
-    /// Heard frame that is still on its way: list it, do not answer it.
+    /// List every decoded receive independently of endpoint delivery.
     fn kiss_show_transit(&mut self, frame: &Ax25Frame, port: u8) {
         let info_mon =
             ax25::bytes_to_monitor_body(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
@@ -4255,854 +3669,9 @@ impl GpGuiApp {
         }
     }
 
-    /// KISS RX: UI → Monitor; SABM/UA/I/DISC → channel link state.
-    ///
-    /// A via path is still in transit until every H bit is set. We answer only
-    /// then, and only when the destination is our call. If the next unrepeated
-    /// hop is our call, that frame is relayed with our H bit set and is not
-    /// treated as a connect.
-    fn handle_kiss_ax25(&mut self, payload: &[u8], port: u8) {
-        let Some(heard) = ax25::parse_frame(payload) else {
-            return;
-        };
-        let ours = self.our_air_calls();
-        let relay = ax25::repeat_if_ours(payload, &ours);
-        let accept = if let Some(ref out) = relay {
-            let done = ax25::parse_frame(out)
-                .is_some_and(|f| f.path_complete() && self.is_our_dest(&f.dest));
-            self.tx_kiss_payload(0, out);
-            done
-        } else {
-            heard.path_complete() && self.is_our_dest(&heard.dest)
-        };
-        if !accept {
-            self.kiss_show_transit(&heard, port);
-            return;
-        }
-        let frame = heard;
-        let info_text = decode_rx_text(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
-        let info_mon =
-            ax25::bytes_to_monitor_body(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
-        let info_for_mon = if info_mon.is_empty() {
-            None
-        } else {
-            Some(info_mon.as_str())
-        };
-        match frame.kind {
-            Ax25FrameType::Ui => {
-                let ui = Ax25UiFrame {
-                    dest: frame.dest.clone(),
-                    src: frame.src.clone(),
-                    via: frame.via.clone(),
-                    info: info_text.clone(),
-                };
-                self.mheard.hear(&ui);
-                if self.monitor_lists_frame(Ax25FrameType::Ui, &frame.src, &frame.dest, &frame.via)
-                {
-                    self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon, port);
-                    let mon = ax25::tag_kiss_port(&frame.monitor_line(), port);
-                    self.feed_spy_pads(&frame.src, PadKind::Incoming, &mon);
-                    if let Some(line) = ax25::monitor_info_line(&info_mon) {
-                        self.feed_spy_pads(&frame.src, PadKind::Incoming, &line);
-                    }
-                }
-                // UI with P=1 while disconnected → DM (AX.25 §4.3.3.6).
-                let linked = self
-                    .channel_for_pair(&frame.src, &frame.dest)
-                    .is_some_and(|ch| self.channel_linked(ch));
-                if frame.poll && frame.command && self.is_our_dest(&frame.dest) && !linked {
-                    let via = Self::reply_path(&frame);
-                    self.kiss_send_dm_via(&frame.src, &frame.dest, &via);
-                }
-            }
-            Ax25FrameType::Sabm => {
-                // Pending KISS self-connect: this SABM is for our answer SSID —
-                // finish locally (also covers rare TX→RX loopback).
-                if let Some((caller, answer)) = self.self_connect_pair {
-                    let ans = self.effective_mycall(answer);
-                    if frame.dest.eq_ignore_ascii_case(&ans) {
-                        self.kiss_finish_self_connect(caller, answer);
-                        return;
-                    }
-                }
-                // Already linked to this peer on a live self-connect — ignore echo.
-                if let Some((c, a)) = self.self_connect_live {
-                    let ans = self.effective_mycall(a);
-                    let call = self.effective_mycall(c);
-                    if frame.src.eq_ignore_ascii_case(&call)
-                        && frame.dest.eq_ignore_ascii_case(&ans)
-                    {
-                        return;
-                    }
-                }
-                // Same circuit: lost UA, or SABM to clear a broken sequence.
-                // A live QSO answers UA and starts again at N(S) = N(R) = 0.
-                if let Some(ch) = self.sabm_retry_channel(&frame.src, &frame.dest) {
-                    self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
-                    let my = self.effective_mycall(ch);
-                    let via = Self::reply_path(&frame);
-                    self.kiss_send_ua_via(&frame.src, &my, &via);
-                    self.kiss_link_activity(ch, true);
-                    let heard = self
-                        .ax25_peer_heard
-                        .get(ch as usize)
-                        .copied()
-                        .unwrap_or(false);
-                    if heard {
-                        self.zero_ax25_seq(ch as usize);
-                        if let Some(pad) = self.pads.get_mut(ch as usize) {
-                            pad.push(
-                                PadKind::System,
-                                "*** link reset — sequences back to 0".to_string(),
-                            );
-                        }
-                        self.status = format!("KISS link reset ch{ch} ← {}", frame.src);
-                    } else {
-                        self.send_connect_text(ch);
-                        self.status = format!("KISS UA again ch{ch} {my} ← {}", frame.src);
-                    }
-                    return;
-                }
-                let slot = self.incoming_slot(&frame.dest, &frame.src, None);
-                let via = Self::reply_path(&frame);
-                let (ch, my) = match slot {
-                    SlotAnswer::Foreign => return,
-                    SlotAnswer::Busy { call } => {
-                        self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
-                        self.kiss_send_dm_via(&frame.src, &call, &via);
-                        return;
-                    }
-                    SlotAnswer::Accept { channel, call } => {
-                        self.adopt_air_call(channel, &call);
-                        (channel, call)
-                    }
-                };
-                // Heard SABM (even if we refuse).
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
-                // SABM → UA (we answer connect requests).
-                self.kiss_send_ua_via(&frame.src, &my, &via);
-                if let Some(slot) = self.channel_via.get_mut(ch as usize) {
-                    *slot = via;
-                }
-                if let Some(p) = self.channel_peer.get_mut(ch as usize) {
-                    *p = Some(frame.src.clone());
-                }
-                self.set_link_outgoing(ch, false);
-                self.note_last_call(ch, &frame.src);
-                if let Some(c) = self.channel_connecting.get_mut(ch as usize) {
-                    *c = None;
-                }
-                self.zero_ax25_seq(ch as usize);
-                self.kiss_clear_sabm_timer(ch);
-                self.kiss_clear_disc_timer(ch);
-                self.kiss_link_activity(ch, true);
-                self.play_connect_bell(ch);
-                if let Some(pad) = self.pads.get_mut(ch as usize) {
-                    pad.push(PadKind::System, format!("*** CONNECTED to {}", frame.src));
-                }
-                // SABM: they called us, so this side sends CTEXT.
-                self.finish_link_up(ch, true);
-                self.status = format!("KISS linked ch{ch} ← {}", frame.src);
-                self.last_link_status = self.status.clone();
-            }
-            Ax25FrameType::Ua => {
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
-                if let Some(ch) = self.channel_for_pair(&frame.src, &frame.dest) {
-                    if self.channel_disconnecting(ch) {
-                        self.finish_disconnect(ch, true);
-                        return;
-                    }
-                }
-                // SABM to NL0AS, UA from NL0AS-1: same from↔to already up,
-                // answered on the next SSID. That UA is the connect.
-                let mycalls: Vec<String> = (0..=self.channels)
-                    .map(|n| self.effective_mycall(n))
-                    .collect();
-                let ch = channel_for_connect_ua(
-                    self.channels,
-                    &self.channel_connecting,
-                    &mycalls,
-                    &frame.src,
-                    &frame.dest,
-                );
-                let Some(ch) = ch else {
-                    return;
-                };
-                if let Some((caller, answer)) = self.self_connect_pair {
-                    if ch == caller || ch == answer {
-                        self.complete_self_connect_ctext(caller, answer);
-                        self.kiss_link_activity(caller, true);
-                        self.kiss_link_activity(answer, true);
-                        return;
-                    }
-                }
-                self.kiss_link_outgoing(ch, &frame.src);
-            }
-            Ax25FrameType::Info => {
-                // CTEXT can arrive on the redirected SSID, or in the same
-                // burst as the UA, before this channel is marked linked.
-                let ch = if let Some(ch) = self.channel_for_i(&frame.src, &frame.dest) {
-                    ch
-                } else if let Some(ch) = self.channel_awaiting_connect(&frame.src, &frame.dest) {
-                    self.kiss_link_outgoing(ch, &frame.src);
-                    ch
-                } else {
-                    0
-                };
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, info_for_mon, port);
-                if ch >= 1 {
-                    if self.channel_disconnecting(ch) {
-                        return;
-                    }
-                    let expect = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
-                    let accepted = self.ax25_i_ok.get(ch as usize).copied().unwrap_or(false);
-                    let my = self.effective_mycall(ch);
-                    let vias = self.link_vias(ch);
-                    let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-                    match ax25::classify_recv_i(expect, frame.ns, accepted) {
-                        ax25::RecvI::Duplicate => {
-                            // Ack was lost. RR again; the text is already on the channel.
-                            self.tx_kiss_payload(
-                                0,
-                                &ax25::build_rr_via(
-                                    &frame.src, &my, expect, frame.poll, false, &via_ref,
-                                ),
-                            );
-                            self.kiss_link_activity(ch, true);
-                            self.note_ax25_peer(ch);
-                            self.note_bin_tx_ack(ch, frame.nr);
-                        }
-                        ax25::RecvI::Reject { expected, got } => {
-                            let again = self.ax25_rej.get(ch as usize).and_then(|v| *v)
-                                == Some((expected, got));
-                            if again {
-                                self.kiss_reset_link_sequences(
-                                    ch,
-                                    &format!(
-                                        "*** sequence error: got N(S)={got} again, want N(S)={expected} — resetting link"
-                                    ),
-                                );
-                                return;
-                            }
-                            if let Some(slot) = self.ax25_rej.get_mut(ch as usize) {
-                                *slot = Some((expected, got));
-                            }
-                            if let Some(pad) = self.pads.get_mut(ch as usize) {
-                                pad.push(
-                                    PadKind::System,
-                                    format!("*** REJ: got N(S)={got}, want N(S)={expected}"),
-                                );
-                            }
-                            self.tx_kiss_payload(
-                                0,
-                                &ax25::build_rej_via(
-                                    &frame.src, &my, expected, frame.poll, &via_ref,
-                                ),
-                            );
-                            self.kiss_link_activity(ch, true);
-                        }
-                        ax25::RecvI::Accept => {
-                            if let Some(ok) = self.ax25_i_ok.get_mut(ch as usize) {
-                                *ok = true;
-                            }
-                            if let Some(slot) = self.ax25_rej.get_mut(ch as usize) {
-                                *slot = None;
-                            }
-                            if let Some(vr) = self.ax25_vr.get_mut(ch as usize) {
-                                *vr = (frame.ns.wrapping_add(1)) & 7;
-                            }
-                            let nr = *self.ax25_vr.get(ch as usize).unwrap_or(&0);
-                            // Ack I with RR (Final if peer set P).
-                            self.tx_kiss_payload(
-                                0,
-                                &ax25::build_rr_via(
-                                    &frame.src, &my, nr, frame.poll, false, &via_ref,
-                                ),
-                            );
-                            self.kiss_link_activity(ch, true);
-                            self.note_ax25_peer(ch);
-                            self.note_rx_calls(ch, &frame.src, &frame.dest);
-                            if let Some(bytes) = self.autobin_channel_text(ch, &frame.info) {
-                                self.note_seven_payload(ch, &bytes);
-                                self.accept_rx_text(ch, &decode_channel_bytes(&bytes), PadKind::Incoming);
-                            }
-                            self.note_bin_tx_ack(ch, frame.nr);
-                        }
-                    }
-                } else if frame.command {
-                    self.kiss_dm_if_ours_disconnected(&frame);
-                }
-            }
-            Ax25FrameType::Disc => {
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
-                let via = Self::reply_path(&frame);
-                if let Some(ch) = self.channel_for_pair(&frame.src, &frame.dest) {
-                    let my = self.effective_mycall(ch);
-                    self.kiss_send_ua_via(&frame.src, &my, &via);
-                    self.finish_disconnect(ch, true);
-                } else if self.is_our_dest(&frame.dest) {
-                    // Already disconnected — DM, not UA.
-                    self.kiss_send_dm_via(&frame.src, &frame.dest, &via);
-                }
-            }
-            Ax25FrameType::Rr | Ax25FrameType::Rnr | Ax25FrameType::Rej => {
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
-                // P=1 on a command asks for an answer. F=1 on a response is
-                // that answer — it must not be polled again or the two
-                // stations RR each other without a pause.
-                let is_poll = frame.command && frame.poll;
-                let ch = self.kiss_channel_for_frame(&frame.src, &frame.dest);
-                let Some(ch) = ch else {
-                    if is_poll {
-                        self.kiss_dm_if_ours_disconnected(&frame);
-                    }
-                    return;
-                };
-                if self.channel_disconnecting(ch) {
-                    return;
-                }
-                // Peer traffic, including the answer to our poll, restarts
-                // the T3 idle clock on this side.
-                self.kiss_link_activity(ch, true);
-                self.note_ax25_peer(ch);
-                if matches!(frame.kind, Ax25FrameType::Rej) {
-                    let vs = *self.ax25_vs.get(ch as usize).unwrap_or(&0);
-                    if let ax25::RecvRej::Reset {
-                        wanted,
-                        outstanding,
-                    } = ax25::classify_rej(vs, frame.nr)
-                    {
-                        self.kiss_reset_link_sequences(
-                            ch,
-                            &format!(
-                                "*** sequence error: REJ wants N(S)={wanted}, this side sent N(S)={outstanding} — resetting link"
-                            ),
-                        );
-                        return;
-                    }
-                }
-                if matches!(frame.kind, Ax25FrameType::Rnr) {
-                    if let Some(pad) = self.pads.get_mut(ch as usize) {
-                        pad.push(PadKind::System, "*** peer busy (RNR)");
-                    }
-                }
-                if is_poll {
-                    // Answer with RR Final (ready) even after RNR/REJ —
-                    // we are not flow-controlling the peer.
-                    self.kiss_reply_rr_final(ch, &frame.src);
-                }
-                if matches!(frame.kind, Ax25FrameType::Rr) {
-                    self.note_bin_tx_ack(ch, frame.nr);
-                }
-            }
-            Ax25FrameType::Dm => {
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
-                let ch = self.channel_for_pair(&frame.src, &frame.dest);
-                if let Some(ch) = ch {
-                    if self.channel_disconnecting(ch) {
-                        self.finish_disconnect(ch, true);
-                        return;
-                    }
-                    if let Some(pad) = self.pads.get_mut(ch as usize) {
-                        pad.push(
-                            PadKind::System,
-                            format!("*** DM from {} — link refused/busy", frame.src),
-                        );
-                    }
-                    self.kiss_clear_sabm_timer(ch);
-                    self.finish_disconnect(ch, self.channel_linked(ch));
-                }
-            }
-            Ax25FrameType::Frmr => {
-                self.push_kiss_mon_frame(PadKind::Incoming, &frame, None, port);
-                if let Some(ch) = self.channel_for_pair(&frame.src, &frame.dest) {
-                    if let Some(pad) = self.pads.get_mut(ch as usize) {
-                        pad.push(
-                            PadKind::System,
-                            format!("*** FRMR from {} — resetting link", frame.src),
-                        );
-                    }
-                    // Spec recovery: tear down; peer may SABM again.
-                    self.disconnect_channel(ch);
-                }
-            }
-            Ax25FrameType::Other => {
-                // Unknown U-frame (e.g. SABME from a v2.2 station). Refuse
-                // with DM when it is addressed to us and we are disconnected.
-                if frame.command {
-                    self.kiss_dm_if_ours_disconnected(&frame);
-                }
-            }
-        }
-    }
-
-    /// V(S), V(R), and the REJ memory go back to a new link.
-    fn zero_ax25_seq(&mut self, idx: usize) {
-        if let Some(vs) = self.ax25_vs.get_mut(idx) {
-            *vs = 0;
-        }
-        if let Some(vr) = self.ax25_vr.get_mut(idx) {
-            *vr = 0;
-        }
-        if let Some(ok) = self.ax25_i_ok.get_mut(idx) {
-            *ok = false;
-        }
-        if let Some(rej) = self.ax25_rej.get_mut(idx) {
-            *rej = None;
-        }
-    }
-
-    /// Counters no longer match and this side cannot repair them by resending
-    /// one I-frame. SABM starts the link again at N(S) = N(R) = 0.
-    fn kiss_reset_link_sequences(&mut self, ch: u8, reason: &str) {
-        if !(1..=self.channels).contains(&ch) || self.channel_disconnecting(ch) {
-            return;
-        }
-        self.zero_ax25_seq(ch as usize);
-        if let Some(pad) = self.pads.get_mut(ch as usize) {
-            pad.push(PadKind::System, reason.to_string());
-        }
-        self.status = format!("KISS sequence reset ch{ch}");
-        let Some(peer) = self.channel_peer.get(ch as usize).and_then(|p| p.clone()) else {
-            return;
-        };
-        let my = self.effective_mycall(ch);
-        let vias = self.link_vias(ch);
-        let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-        self.tx_kiss_payload(0, &ax25::build_sabm_via(&peer, &my, &via_ref));
-        self.kiss_link_activity(ch, false);
-    }
-
-    /// This circuit has carried a frame from the other station.
-    fn note_ax25_peer(&mut self, channel: u8) {
-        if let Some(h) = self.ax25_peer_heard.get_mut(channel as usize) {
-            *h = true;
-        }
-    }
-
-    /// Mark KISS link alive; peer traffic also clears an outstanding T1 poll.
-    fn kiss_link_activity(&mut self, channel: u8, from_peer: bool) {
-        let idx = channel as usize;
-        if let Some(t) = self.ax25_alive_at.get_mut(idx) {
-            *t = Some(Instant::now());
-        }
-        if from_peer {
-            if let Some(p) = self.ax25_poll_at.get_mut(idx) {
-                *p = None;
-            }
-            if let Some(n) = self.ax25_poll_tries.get_mut(idx) {
-                *n = 0;
-            }
-        }
-    }
-
-    /// SABM / DISC T1 retries; T3 idle RR poll when linked.
-    ///
-    /// T3 (5 min) after the last packet starts one RR poll (command, P=1).
-    /// T1 (5 s) waits for the Final. No answer retries up to N2, then DISC.
-    fn kiss_link_timers(&mut self) {
-        if !self.kiss_mode() {
-            return;
-        }
-        self.kiss_sabm_timers();
-        self.kiss_disc_timers();
-        let now = Instant::now();
-        let mut poll: Vec<u8> = Vec::new();
-        let mut drop: Vec<u8> = Vec::new();
-        for ch in 1..=self.channels {
-            if !self.channel_linked(ch) || self.channel_disconnecting(ch) {
-                continue;
-            }
-            let idx = ch as usize;
-            let alive = self.ax25_alive_at.get(idx).and_then(|t| *t).unwrap_or(now);
-            let pending = self.ax25_poll_at.get(idx).and_then(|t| *t);
-            let tries = *self.ax25_poll_tries.get(idx).unwrap_or(&0);
-            if let Some(sent) = pending {
-                if now.duration_since(sent) >= AX25_T1 {
-                    if tries >= AX25_POLL_RETRIES {
-                        drop.push(ch);
-                    } else {
-                        poll.push(ch);
-                    }
-                }
-            } else if now.duration_since(alive) >= AX25_T3_IDLE {
-                poll.push(ch);
-            }
-        }
-        for ch in poll {
-            self.kiss_send_rr_poll(ch);
-        }
-        for ch in drop {
-            if let Some(pad) = self.pads.get_mut(ch as usize) {
-                pad.push(
-                    PadKind::System,
-                    "*** link dead (no answer to 3 checks) — DISC",
-                );
-            }
-            self.disconnect_channel(ch);
-        }
-    }
-
-    /// No UA after SABM → resend every T1 (up to N2), then local give-up (no DISC).
-    fn kiss_sabm_timers(&mut self) {
-        let now = Instant::now();
-        let mut retry: Vec<u8> = Vec::new();
-        let mut give_up: Vec<u8> = Vec::new();
-        for ch in 1..=self.channels {
-            if self.channel_linked(ch) || self.channel_disconnecting(ch) {
-                continue;
-            }
-            let idx = ch as usize;
-            let connecting = self
-                .channel_connecting
-                .get(idx)
-                .and_then(|p| p.as_ref())
-                .is_some();
-            if !connecting {
-                continue;
-            }
-            // Self-connect finishes immediately — no SABM wait.
-            if self
-                .self_connect_pair
-                .is_some_and(|(c, a)| c == ch || a == ch)
-            {
-                continue;
-            }
-            let Some(sent) = self.ax25_sabm_at.get(idx).and_then(|t| *t) else {
-                continue;
-            };
-            if now.duration_since(sent) < AX25_T1 {
-                continue;
-            }
-            let tries = *self.ax25_sabm_tries.get(idx).unwrap_or(&0);
-            // tries = SABMs already sent; allow 1 initial + AX25_SABM_RETRIES.
-            if tries >= 1 + AX25_SABM_RETRIES {
-                give_up.push(ch);
-            } else {
-                retry.push(ch);
-            }
-        }
-        for ch in retry {
-            self.kiss_resend_sabm(ch);
-        }
-        for ch in give_up {
-            self.kiss_sabm_give_up(ch);
-        }
-    }
-
-    /// No UA after DISC → resend every T1, then clear locally.
-    fn kiss_disc_timers(&mut self) {
-        let now = Instant::now();
-        let mut retry: Vec<u8> = Vec::new();
-        let mut give_up: Vec<u8> = Vec::new();
-        for ch in 1..=self.channels {
-            let idx = ch as usize;
-            let Some(sent) = self.ax25_disc_at.get(idx).and_then(|t| *t) else {
-                continue;
-            };
-            if now.duration_since(sent) < AX25_T1 {
-                continue;
-            }
-            let tries = *self.ax25_disc_tries.get(idx).unwrap_or(&0);
-            if tries >= 1 + AX25_DISC_RETRIES {
-                give_up.push(ch);
-            } else {
-                retry.push(ch);
-            }
-        }
-        for ch in retry {
-            self.kiss_resend_disc(ch);
-        }
-        for ch in give_up {
-            if let Some(pad) = self.pads.get_mut(ch as usize) {
-                pad.push(PadKind::System, "*** no UA to DISC — clearing locally");
-            }
-            self.finish_disconnect(ch, true);
-        }
-    }
-
-    fn kiss_resend_disc(&mut self, channel: u8) {
-        self.kiss_send_disc(channel);
-        let idx = channel as usize;
-        if let Some(t) = self.ax25_disc_at.get_mut(idx) {
-            *t = Some(Instant::now());
-        }
-        if let Some(n) = self.ax25_disc_tries.get_mut(idx) {
-            *n = n.saturating_add(1);
-        }
-        if let Some(pad) = self.pads.get_mut(idx) {
-            pad.push(PadKind::System, "*** retry DISC");
-        }
-        self.status = format!("KISS DISC retry ch{channel}");
-    }
-
-    fn kiss_resend_sabm(&mut self, channel: u8) {
-        let Some(dest) = self
-            .channel_connecting
-            .get(channel as usize)
-            .and_then(|p| p.clone())
-        else {
-            return;
-        };
-        let src = self.effective_mycall(channel);
-        let vias = self.link_vias(channel);
-        let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-        self.tx_kiss_payload(0, &ax25::build_sabm_via(&dest, &src, &via_ref));
-        let idx = channel as usize;
-        if let Some(t) = self.ax25_sabm_at.get_mut(idx) {
-            *t = Some(Instant::now());
-        }
-        if let Some(n) = self.ax25_sabm_tries.get_mut(idx) {
-            *n = n.saturating_add(1);
-        }
-        if let Some(pad) = self.pads.get_mut(idx) {
-            pad.push(PadKind::System, format!("*** retry connect to {dest}"));
-        }
-        self.status = format!("KISS SABM retry ch{channel} → {dest}");
-    }
-
-    /// Connect timed out — clear UI state only (never linked, so no DISC on air).
-    fn kiss_sabm_give_up(&mut self, channel: u8) {
-        let dest = self
-            .channel_connecting
-            .get(channel as usize)
-            .and_then(|p| p.clone())
-            .unwrap_or_else(|| "????".into());
-        self.kiss_clear_sabm_timer(channel);
-        self.clear_channel_link_state(channel);
-        let msg = format!("*** no answer from {dest} — giving up");
-        if let Some(pad) = self.pads.get_mut(channel as usize) {
-            pad.push(PadKind::System, msg.clone());
-        }
-        self.pads[0].push(PadKind::System, msg);
-        self.status = format!("KISS connect failed ch{channel} → {dest}");
-        if !self.any_channel_busy() {
-            self.restore_global_identities();
-        }
-    }
-
-    /// Outgoing connect is up. `peer` is the call that answered, which may
-    /// be the next SSID when the one we called was busy. We placed the call,
-    /// so this side does not send CTEXT — theirs arrives as I-frames.
-    fn kiss_link_outgoing(&mut self, ch: u8, peer: &str) {
-        let requested = self
-            .channel_connecting
-            .get(ch as usize)
-            .and_then(|p| p.clone())
-            .unwrap_or_default();
-        if let Some(c) = self.channel_connecting.get_mut(ch as usize) {
-            *c = None;
-        }
-        if let Some(p) = self.channel_peer.get_mut(ch as usize) {
-            *p = Some(peer.to_string());
-        }
-        self.set_link_outgoing(ch, true);
-        self.note_last_call(ch, peer);
-        self.kiss_clear_sabm_timer(ch);
-        self.kiss_link_activity(ch, true);
-        self.zero_ax25_seq(ch as usize);
-        self.play_connect_bell(ch);
-        let moved = !requested.is_empty() && !requested.eq_ignore_ascii_case(peer);
-        let line = if moved {
-            format!("*** CONNECTED to {peer} — {requested} in use")
-        } else {
-            format!("*** CONNECTED to {peer}")
-        };
-        if let Some(pad) = self.pads.get_mut(ch as usize) {
-            pad.push(PadKind::System, line);
-        }
-        self.note_ax25_peer(ch);
-        self.finish_link_up(ch, false);
-        self.status = format!("KISS linked ch{ch} → {peer}");
-        self.last_link_status = self.status.clone();
-    }
-
-    /// Linked channel this I-frame belongs on.
-    ///
-    /// Exact peer first. A greeting from `NL1AS` still belongs on the channel
-    /// that was moved to `NL1AS-1` when that frame is addressed to us.
-    fn channel_for_i(&self, src: &str, dest: &str) -> Option<u8> {
-        if let Some(n) = self.channel_for_pair(src, dest) {
-            if self.channel_linked(n) {
-                return Some(n);
-            }
-        }
-        let src_base = cipher::base_call(src);
-        let mut same = None;
-        let mut same_many = false;
-        let mut mine = None;
-        let mut mine_many = false;
-        for n in 1..=self.channels {
-            if !self.channel_linked(n) {
-                continue;
-            }
-            if !self.effective_mycall(n).eq_ignore_ascii_case(dest) {
-                continue;
-            }
-            if mine.is_some() {
-                mine_many = true;
-            }
-            mine = Some(n);
-            let peer = self
-                .channel_peer
-                .get(n as usize)
-                .and_then(|p| p.as_ref())
-                .map(|p| cipher::base_call(p))
-                .unwrap_or_default();
-            if peer == src_base {
-                if same.is_some() {
-                    same_many = true;
-                }
-                same = Some(n);
-            }
-        }
-        if let Some(n) = same {
-            if !same_many {
-                return Some(n);
-            }
-        }
-        if mine_many {
-            None
-        } else {
-            mine
-        }
-    }
-
-    /// Channel still waiting on SABM whose UA or first I this frame is.
-    fn channel_awaiting_connect(&self, src: &str, dest: &str) -> Option<u8> {
-        let mycalls: Vec<String> = (0..=self.channels)
-            .map(|n| self.effective_mycall(n))
-            .collect();
-        channel_for_connect_ua(self.channels, &self.channel_connecting, &mycalls, src, dest)
-    }
-
-    /// Channel whose other end is `src` and whose call on air is `dest`.
-    /// `NL1AS` disconnecting from `NL0AS` is not the circuit we have with `NL1AS`.
-    fn channel_for_pair(&self, src: &str, dest: &str) -> Option<u8> {
-        let mut peers = vec![None; self.channels as usize + 1];
-        let mut mine = vec![String::new(); self.channels as usize + 1];
-        for n in 1..=self.channels {
-            peers[n as usize] = self.channel_other_call(n);
-            mine[n as usize] = self.effective_mycall(n);
-        }
-        channel_for_exact_pair(&peers, &mine, src, dest)
-    }
-
-    /// SABM for a circuit we already have with this station.
-    ///
-    /// Lost UA (they have not spoken yet) and a live link are both this
-    /// channel. SABM on a live link clears the sequence counters. A bare
-    /// call we have not heard yet can still be a retry of a redirected SSID.
-    fn sabm_retry_channel(&self, src: &str, dest: &str) -> Option<u8> {
-        let (pool, specific) = self.match_pool(dest)?;
-        let bare = specific.is_none();
-        let mut retry = None;
-        for n in 1..=self.channels {
-            if !self.pool_name(n).eq_ignore_ascii_case(&pool) {
-                continue;
-            }
-            let Some(other) = self.channel_other_call(n) else {
-                continue;
-            };
-            if !other.eq_ignore_ascii_case(src) {
-                continue;
-            }
-            let air = self.effective_mycall(n);
-            let heard = self
-                .ax25_peer_heard
-                .get(n as usize)
-                .copied()
-                .unwrap_or(false);
-            let exact = air.eq_ignore_ascii_case(dest);
-            if exact {
-                return Some(n);
-            }
-            if bare && !heard {
-                retry = Some(n);
-            }
-        }
-        retry
-    }
-
-    /// Linked channel for this pair. A dest owned by one channel is the
-    /// fallback when the peer is not stored yet. Two channels on the same
-    /// call (different stations) are not guessed.
-    fn kiss_channel_for_frame(&self, src: &str, dest: &str) -> Option<u8> {
-        if let Some(n) = self.channel_for_pair(src, dest) {
-            if self.channel_linked(n) || self.channel_connected(n) {
-                return Some(n);
-            }
-        }
-        self.kiss_channel_owning_dest(dest)
-    }
-
-    fn kiss_channel_owning_dest(&self, dest: &str) -> Option<u8> {
-        let mut hit = None;
-        for n in 1..=self.channels {
-            if self.channel_linked(n) && self.effective_mycall(n).eq_ignore_ascii_case(dest) {
-                if hit.is_some() {
-                    return None;
-                }
-                hit = Some(n);
-            }
-        }
-        hit
-    }
-
-    /// RR Final on air + Monitor (answer to peer poll / I+P).
-    fn kiss_reply_rr_final(&mut self, channel: u8, peer: &str) {
-        let my = self.effective_mycall(channel);
-        let nr = *self.ax25_vr.get(channel as usize).unwrap_or(&0);
-        let vias = self.link_vias(channel);
-        let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-        self.tx_kiss_payload(0, &ax25::build_rr_via(peer, &my, nr, true, false, &via_ref));
-        self.kiss_link_activity(channel, false);
-    }
-
-    fn kiss_send_rr_poll(&mut self, channel: u8) {
-        let Some(peer) = self
-            .channel_peer
-            .get(channel as usize)
-            .and_then(|p| p.clone())
-        else {
-            return;
-        };
-        let my = self.effective_mycall(channel);
-        let nr = *self.ax25_vr.get(channel as usize).unwrap_or(&0);
-        let vias = self.link_vias(channel);
-        let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-        // Command RR with P=1 — peer should answer RR F.
-        self.tx_kiss_payload(0, &ax25::build_rr_via(&peer, &my, nr, true, true, &via_ref));
-        let idx = channel as usize;
-        if let Some(p) = self.ax25_poll_at.get_mut(idx) {
-            *p = Some(Instant::now());
-        }
-        if let Some(n) = self.ax25_poll_tries.get_mut(idx) {
-            *n = n.saturating_add(1);
-        }
-        self.status = format!("KISS T3 poll ch{channel}");
-
-        // Self-connect: no RF loopback — answer locally from the other channel.
-        if let Some((c, a)) = self.self_connect_live {
-            let other = if channel == c {
-                a
-            } else if channel == a {
-                c
-            } else {
-                return;
-            };
-            if self.channel_linked(other) {
-                let other_peer = self.effective_mycall(channel); // who polled
-                self.kiss_reply_rr_final(other, &other_peer);
-                // Poll was answered — clear T1 wait on the polling side.
-                self.kiss_link_activity(channel, true);
-            }
-        }
-    }
-
     /// Hostmode/modem command TX — skipped on KISS (identity lives in AX.25 headers).
     fn tx_modem_line(&mut self, channel: u8, line: &str) {
-        if self.kiss_mode() {
+        if self.software_ax25() {
             return;
         }
         let line = line.trim_end_matches('\r').trim_end_matches('\n');
@@ -5292,7 +3861,9 @@ impl GpGuiApp {
             // A linked `//RTT` would make DOS answer `//e //rtt #<short clock>`
             // and then ignore the echo. Send our own millisecond stamp for
             // DOS to echo, so the trip is measured here when it comes back.
-            if linked && action == RemoteAction::RoundTrip && matches!(rtt_ask(&args), RttAsk::Probe)
+            if linked
+                && action == RemoteAction::RoundTrip
+                && matches!(rtt_ask(&args), RttAsk::Probe)
             {
                 if let ActivePane::Channel(n) = self.active {
                     self.start_rtt(n);
@@ -5541,7 +4112,7 @@ impl GpGuiApp {
             return;
         }
         let channel = match self.active_channel() {
-            Some(ch) if self.channel_linked(ch) && self.kiss_mode() => ch,
+            Some(ch) if self.channel_linked(ch) && self.software_ax25() => ch,
             _ => {
                 self.echo_wire_lines(&wire);
                 self.queue_wire_chunks(&wire);
@@ -5560,7 +4131,7 @@ impl GpGuiApp {
             data: wire,
             offset: 0,
             started: Instant::now(),
-            tx_ns: None,
+            tx_id: None,
         });
         self.status = format!("7+-TX: {name}");
         self.pump_seven_tx(channel);
@@ -5582,16 +4153,17 @@ impl GpGuiApp {
     fn queue_wire_chunks(&mut self, wire: &[u8]) {
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
         for chunk in wire.chunks(max) {
-            if self.kiss_mode() {
-                self.send_kiss_bytes(chunk, None);
+            if self.software_ax25() {
+                self.send_kiss_bytes(chunk);
             } else {
                 let channel = match self.active {
                     ActivePane::Channel(n) => n,
                     _ => 0,
                 };
-                let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
+                self.send_session_command(SessionCommand::Send {
                     channel,
                     data: chunk.to_vec(),
+                    id: None,
                 });
             }
         }
@@ -5601,7 +4173,7 @@ impl GpGuiApp {
         if self
             .seven_tx
             .as_ref()
-            .is_some_and(|tx| tx.channel == channel && tx.tx_ns.is_some())
+            .is_some_and(|tx| tx.channel == channel && tx.tx_id.is_some())
         {
             return;
         }
@@ -5626,15 +4198,19 @@ impl GpGuiApp {
             self.finish_seven_tx();
             return;
         };
-        let ns = self.ax25_vs.get(channel as usize).copied().unwrap_or(0);
-        let my = self.effective_mycall(channel);
-        if !self.send_kiss_i(channel, &my, &chunk, "") {
+        let id = self.next_packet_id;
+        self.next_packet_id = self.next_packet_id.wrapping_add(1);
+        if !self.send_session_command(SessionCommand::Send {
+            channel,
+            data: chunk,
+            id: Some(id),
+        }) {
             self.seven_tx = None;
             self.status = format!("7+-TX: channel {channel} has no link");
             return;
         }
         if let Some(tx) = self.seven_tx.as_mut() {
-            tx.tx_ns = Some(ns);
+            tx.tx_id = Some(id);
         }
     }
 
@@ -5650,15 +4226,16 @@ impl GpGuiApp {
         self.log_event(format!("7+-TX {} done, {got} bytes", tx.name));
     }
 
-    fn note_seven_tx_ack(&mut self, channel: u8, nr: u8) {
-        let acked = self.seven_tx.as_ref().is_some_and(|tx| {
-            tx.channel == channel && tx.tx_ns.is_some_and(|ns| nr == (ns.wrapping_add(1) & 7))
-        });
+    fn note_seven_tx_ack(&mut self, channel: u8, id: u64) {
+        let acked = self
+            .seven_tx
+            .as_ref()
+            .is_some_and(|tx| tx.channel == channel && tx.tx_id == Some(id));
         if !acked {
             return;
         }
         if let Some(tx) = self.seven_tx.as_mut() {
-            tx.tx_ns = None;
+            tx.tx_id = None;
         }
         self.pump_seven_tx(channel);
     }
@@ -5702,16 +4279,17 @@ impl GpGuiApp {
             }
         }
         for chunk in chunks {
-            if self.kiss_mode() {
+            if self.software_ax25() {
                 self.send_kiss_text(&chunk);
             } else {
                 let channel = match self.active {
                     ActivePane::Channel(n) => n,
                     _ => 0,
                 };
-                let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
+                self.send_session_command(SessionCommand::Send {
                     channel,
                     data: chunk.into_bytes(),
+                    id: None,
                 });
             }
         }
@@ -5733,12 +4311,13 @@ impl GpGuiApp {
         }
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
         for chunk in packet_chunks(&raw, max) {
-            if self.kiss_mode() {
-                self.send_kiss_bytes(chunk, None);
+            if self.software_ax25() {
+                self.send_kiss_bytes(chunk);
             } else {
-                let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
+                self.send_session_command(SessionCommand::Send {
                     channel,
                     data: chunk.to_vec(),
+                    id: None,
                 });
             }
         }
@@ -5838,12 +4417,13 @@ impl GpGuiApp {
     /// from when we sent it. Any other full Unix time is compared with a
     /// new clock reading. The short DOS clock is reported and not subtracted.
     fn finish_rtt(&mut self, channel: u8, stamp: u64) {
-        let matched = self.rtt_probe.get_mut(channel as usize).and_then(|slot| {
-            match slot {
+        let matched = self
+            .rtt_probe
+            .get_mut(channel as usize)
+            .and_then(|slot| match slot {
                 Some((saved, _)) if *saved == stamp => slot.take().map(|(_, started)| started),
                 _ => None,
-            }
-        });
+            });
         let msg = if let Some(started) = matched {
             rtt_phrase(started.elapsed()).unwrap_or_else(|| "Round trip timed out".into())
         } else {
@@ -6523,7 +5103,7 @@ impl GpGuiApp {
     }
 
     fn fallback_timing_banner(&self, mycall: &str) -> String {
-        if self.kiss_mode() {
+        if self.software_ax25() {
             let path = resolve_kiss_ini(&self.cfg.tnc.kiss_ini);
             if let Some(params) = load_kiss_params(&path) {
                 let lines = kiss_param_lines(&params);
@@ -7315,11 +5895,15 @@ impl GpGuiApp {
             RowId::PacketLen => {
                 let n = self.cfg.buffers.packet_payload as i32 + step;
                 self.cfg.buffers.packet_payload = n.clamp(16, 256) as u32;
-                if self.kiss_mode() {
+                if self.software_ax25() {
                     let n = self.cfg.buffers.packet_payload;
                     let path = resolve_kiss_ini(&self.cfg.tnc.kiss_ini);
                     match store_kiss_paclen(&path, n as u16) {
-                        Ok(()) if self.serial_open && !self.cfg.tnc.kiss_use_tcp() => {
+                        Ok(())
+                            if self.serial_open
+                                && self.cfg.tnc.protocol_kind() == HostProtocol::Kiss
+                                && !self.cfg.tnc.kiss_use_tcp() =>
+                        {
                             self.status = format!(
                                 "PACLEN {n} — payload {n} bytes (radio command on next KISS enter)"
                             );
@@ -7720,9 +6304,8 @@ impl GpGuiApp {
             self.status = format!("channel {channel} is not connected");
             return;
         }
-        if self.kiss_mode() {
-            let my = self.effective_mycall(channel);
-            if self.send_kiss_i(channel, &my, line.as_bytes(), line) {
+        if self.software_ax25() {
+            if self.send_channel_packet(channel, line.as_bytes()) {
                 if let Some(pad) = self.pads.get_mut(channel as usize) {
                     pad.push(PadKind::Own, line.to_string());
                 }
@@ -7968,9 +6551,8 @@ impl GpGuiApp {
         if !raw.ends_with('\r') {
             raw.push('\r');
         }
-        if self.kiss_mode() {
-            let my = self.effective_mycall(channel);
-            if self.send_kiss_i(channel, &my, raw.as_bytes(), line) {
+        if self.software_ax25() {
+            if self.send_channel_packet(channel, raw.as_bytes()) {
                 if let Some(pad) = self.pads.get_mut(channel as usize) {
                     pad.push(PadKind::Own, line.to_string());
                 }
@@ -8917,7 +7499,7 @@ impl GpGuiApp {
                 self.log_event(format!("monitor mode → {}", self.monitor_mode));
             }
         }
-        if self.kiss_mode() {
+        if self.software_ax25() {
             self.send_kiss_esc(cmd);
             return;
         }
@@ -8988,18 +7570,26 @@ impl GpGuiApp {
         };
         let name = def.name.clone();
         let kiss_cmd = def.cmd;
+        if self.cfg.tnc.protocol_kind() == HostProtocol::Baycom {
+            if let Err(e) = crate::tnc::baycom::Settings::default().set_parameter(kiss_cmd, value) {
+                self.status = e.to_string();
+                return;
+            }
+        }
         if let Err(err) = store_kiss_param(&path, letter, value) {
             self.status = err;
             return;
         }
-        let sent = self.serial_open
-            && self
-                .cmd_tx
-                .try_send(TncCommand::KissParam {
-                    cmd: kiss_cmd,
-                    arg: value,
-                })
-                .is_ok();
+        let sent = self.serial_open;
+        if sent {
+            if let Err(e) = self.cmd_tx.try_send(TncCommand::KissParam {
+                cmd: kiss_cmd,
+                arg: value,
+            }) {
+                self.status = format!("{name}={value} stored but not queued: {e}");
+                return;
+            }
+        }
         if let Some(params) = load_kiss_params(&path) {
             let lines = kiss_param_lines(&params);
             let mycall = self.mycall_for_active();
@@ -9009,10 +7599,15 @@ impl GpGuiApp {
                 &self.cfg.tnc.monitor_mode,
             ));
         }
-        self.status = if sent {
-            format!("kiss {name}={value} (Esc {letter}, cmd {kiss_cmd})")
+        let driver = if self.cfg.tnc.protocol_kind() == HostProtocol::Baycom {
+            "Baycom"
         } else {
-            format!("kiss {name}={value} stored — link is not open")
+            "kiss"
+        };
+        self.status = if sent {
+            format!("{driver} {name}={value} (Esc {letter}, cmd {kiss_cmd})")
+        } else {
+            format!("{driver} {name}={value} stored — link is not open")
         };
         self.last_link_status = self.status.clone();
         self.log_event(self.status.clone());
@@ -9028,7 +7623,9 @@ impl GpGuiApp {
         let bytes = kiss_payload_len(paclen);
         self.cfg.buffers.packet_payload = bytes;
         let saved = self.cfg.persist_setup(&self.config_path);
-        let radio_later = self.serial_open && !self.cfg.tnc.kiss_use_tcp();
+        let radio_later = self.serial_open
+            && self.cfg.tnc.protocol_kind() == HostProtocol::Kiss
+            && !self.cfg.tnc.kiss_use_tcp();
         self.status = match (saved, radio_later) {
             (Ok(()), false) => format!("PACLEN {paclen} — payload {bytes} bytes"),
             (Ok(()), true) => format!(
@@ -9046,7 +7643,8 @@ impl GpGuiApp {
     /// sends; this only keeps its copy current while the window is painting.
     fn poll_beacon(&mut self) {
         self.beacon_sched.publish(BeaconSnap {
-            kiss: self.kiss_mode(),
+            kiss: self.software_ax25(),
+            port: self.cfg.tnc.kiss_port,
             beacon: self.cfg.beacon.clone(),
             my_call: self.cfg.primary_mycall().to_string(),
             qrg: self.session.qrg_text(),
@@ -9915,8 +8513,6 @@ fn auto_spy_line_matches(line: &str, auto: &[String], ignore: &[String]) -> bool
         .any(|p| !p.is_empty() && line.contains(p.as_str()))
 }
 
-
-
 fn store_beacon_period(beacon: &mut BeaconConfig, text: &mut String) {
     text.retain(|c| c.is_ascii_digit());
     if text.len() > 4 {
@@ -10127,7 +8723,6 @@ impl eframe::App for GpGuiApp {
         self.track_window(ctx);
         self.poll_external();
         self.drain_tnc();
-        self.kiss_link_timers();
         self.poll_qrt_disconnects();
         self.maybe_hour_gong();
         self.maybe_clean_mheard();
@@ -10440,7 +9035,12 @@ impl GpGuiApp {
                 self.toggle_radio_pick(RadioPick::Port);
             }
             let baud = self.radio_baud.to_string();
-            if menu_open(ui, "Baud to TNC", &baud, row_w) {
+            let label = if self.radio_protocol == HostProtocol::Baycom {
+                "Radio bit rate"
+            } else {
+                "Baud to TNC"
+            };
+            if menu_open(ui, label, &baud, row_w) {
                 self.toggle_radio_pick(RadioPick::Baud);
             }
         } else {
@@ -10459,6 +9059,13 @@ impl GpGuiApp {
         }
 
         let warn = Color32::from_rgb(140, 0, 0);
+        if self.radio_protocol == HostProtocol::Baycom {
+            ui.label(
+                RichText::new(crate::tnc::baycom::EXPERIMENTAL_WARNING)
+                    .color(warn)
+                    .font(menu_font(16.0)),
+            );
+        }
         if serial && self.radio_live_ports == 0 {
             ui.label(
                 RichText::new(
@@ -10500,7 +9107,15 @@ impl GpGuiApp {
             return;
         }
         self.radio_ports_at = Some(Instant::now());
-        let live = detect_serial_ports();
+        let mut live = detect_serial_ports();
+        if self.radio_protocol == HostProtocol::Baycom {
+            match crate::tnc::detect_baycom_ports() {
+                Ok(ports) => live.extend(ports),
+                Err(e) => {
+                    self.radio_error = format!("{e}; see docs/BAYCOM.md for driver setup");
+                }
+            }
+        }
         self.radio_live_ports = live.len();
         self.radio_ports = live;
         self.reconcile_saved_port();
@@ -10568,10 +9183,14 @@ impl GpGuiApp {
     }
 
     fn apply_radio_form_to_cfg(&mut self) -> Result<(), String> {
+        if self.radio_protocol == HostProtocol::Baycom && self.radio_baud != 1200 {
+            return Err("Baycom supports only a 1200 bit/s radio rate".into());
+        }
         let protocol = match self.radio_protocol {
             HostProtocol::Wa8ded => "wa8ded",
             HostProtocol::Tfpcx => "tfpcx",
             HostProtocol::Kiss => "kiss",
+            HostProtocol::Baycom => "baycom",
         };
         let tcp = self.radio_protocol == HostProtocol::Kiss && self.radio_tcp;
         if tcp {
@@ -10676,12 +9295,13 @@ impl GpGuiApp {
             RadioPick::Protocol => "Protocol",
             RadioPick::Connection => "Connection",
             RadioPick::Port => "Port",
+            RadioPick::Baud if self.radio_protocol == HostProtocol::Baycom => "Radio bit rate",
             RadioPick::Baud => "Baud to TNC",
         };
         let options: Vec<String> = match pick {
-            RadioPick::Protocol => ["WA8DED", "TFPCX", "KISS"]
+            RadioPick::Protocol => RADIO_PROTOCOLS
                 .into_iter()
-                .map(str::to_string)
+                .map(|kind| protocol_label(kind).to_string())
                 .collect(),
             RadioPick::Connection => vec!["Serial".into(), "TCP".into()],
             RadioPick::Port => {
@@ -10691,7 +9311,7 @@ impl GpGuiApp {
                     ports.iter().map(DetectedPort::menu_label).collect()
                 }
             }
-            RadioPick::Baud => baud_choices(self.radio_baud)
+            RadioPick::Baud => baud_choices(self.radio_baud, self.radio_protocol)
                 .into_iter()
                 .map(|n| n.to_string())
                 .collect(),
@@ -10756,13 +9376,12 @@ impl GpGuiApp {
     fn apply_radio_pick(&mut self, pick: RadioPick, index: usize, ports: &[DetectedPort]) {
         match pick {
             RadioPick::Protocol => {
-                let order = [
-                    HostProtocol::Wa8ded,
-                    HostProtocol::Tfpcx,
-                    HostProtocol::Kiss,
-                ];
-                if let Some(kind) = order.get(index) {
+                if let Some(kind) = RADIO_PROTOCOLS.get(index) {
                     self.radio_protocol = *kind;
+                    self.radio_ports_at = None;
+                    if *kind == HostProtocol::Baycom {
+                        self.radio_baud = 1200;
+                    }
                 }
             }
             RadioPick::Connection => self.radio_tcp = index == 1,
@@ -10772,7 +9391,7 @@ impl GpGuiApp {
                 }
             }
             RadioPick::Baud => {
-                let rates = baud_choices(self.radio_baud);
+                let rates = baud_choices(self.radio_baud, self.radio_protocol);
                 if let Some(rate) = rates.get(index) {
                     self.radio_baud = *rate;
                 }
@@ -13287,162 +11906,6 @@ impl GpGuiApp {
         Ok((dest, vias))
     }
 
-    /// WA8DED / TF hostmode connect: `C CALL` or `C CALL digi1 digi2…`.
-    /// Does not mark the channel connected until the TNC reports CONNECTED.
-    ///
-    /// Channels that share a configured name are one pool, and every
-    /// station is answered on that bare name. A second link of the same
-    /// from↔to pair (either direction) is answered as `NAME-1`, then the
-    /// next free number, until that link disconnects. The number is not
-    /// the channel. Empty, or the same as global, is the global pool.
-    /// A call to a name this station has is answered here, because
-    /// Soundmodem does not return our own SABM.
-    fn begin_connect(&mut self, channel: u8, dest: &str, vias: &[String], downlinks: Vec<String>) {
-        if !(1..=self.channels).contains(&channel) {
-            self.status = format!("connect: bad channel {channel}");
-            return;
-        }
-
-        let mut dest = dest.to_string();
-        let mut vias = vias.to_vec();
-        let mut outgoing = self.effective_mycall(channel);
-        let mut self_connect = false;
-        let mut local_link = false;
-
-        let caller_air = self.pool_name(channel);
-        if vias.is_empty() {
-            match self.incoming_slot(&dest, &caller_air, Some(channel)) {
-                SlotAnswer::Busy { call } => {
-                    self.status = format!("{call} busy");
-                    if let Some(pad) = self.pads.get_mut(channel as usize) {
-                        pad.push(PadKind::System, format!("*** {call} busy"));
-                    }
-                    if self.kiss_mode() {
-                        self.kiss_send_dm(&outgoing, &call);
-                    }
-                    return;
-                }
-                SlotAnswer::Accept {
-                    channel: answer_ch,
-                    call,
-                } => {
-                    self.adopt_air_call(channel, &caller_air);
-                    outgoing = self.effective_mycall(channel);
-                    self.adopt_air_call(answer_ch, &call);
-                    dest = call;
-                    vias.clear();
-                    self_connect = true;
-                    local_link = true;
-                    self.self_connect_pair = Some((channel, answer_ch));
-                    if let Some(c) = self.channel_connecting.get_mut(answer_ch as usize) {
-                        *c = Some(outgoing.clone());
-                    }
-                    let answer_call = self.effective_mycall(answer_ch);
-                    if let Some(pad) = self.pads.get_mut(answer_ch as usize) {
-                        pad.push(
-                            PadKind::System,
-                            format!("*** incoming {outgoing} → {answer_call} on ch{answer_ch}"),
-                        );
-                    }
-                }
-                SlotAnswer::Foreign => {
-                    self.adopt_air_call(channel, &caller_air);
-                    outgoing = self.effective_mycall(channel);
-                }
-            }
-        } else {
-            self.adopt_air_call(channel, &caller_air);
-            outgoing = self.effective_mycall(channel);
-        }
-
-        self.session.spy_slot = None;
-        self.active = ActivePane::Channel(channel);
-        let idx = channel as usize;
-        if let Some(peer) = self.channel_peer.get_mut(idx) {
-            *peer = None;
-        }
-        self.set_link_outgoing(channel, false);
-        self.clear_lock(channel);
-        if let Some(c) = self.channel_connecting.get_mut(idx) {
-            *c = Some(dest.clone());
-        }
-        self.zero_ax25_seq(idx);
-        if let Some(slot) = self.channel_via.get_mut(idx) {
-            *slot = if self_connect {
-                Vec::new()
-            } else {
-                vias.to_vec()
-            };
-        }
-        if let Some(slot) = self.channel_down.get_mut(idx) {
-            *slot = if self_connect {
-                Vec::new()
-            } else {
-                downlinks.clone()
-            };
-        }
-        if let Some(slot) = self.channel_down_wait.get_mut(idx) {
-            *slot = None;
-        }
-        if let Some(pad) = self.pads.get_mut(idx) {
-            let via_note = if vias.is_empty() {
-                String::new()
-            } else {
-                format!(" via {}", vias.join(","))
-            };
-            let kind = if self_connect && !local_link {
-                "self-connect"
-            } else {
-                "connecting"
-            };
-            pad.push(
-                PadKind::System,
-                format!("*** {kind} {outgoing} to {dest}{via_note}"),
-            );
-            if !self_connect && !downlinks.is_empty() {
-                pad.push(
-                    PadKind::System,
-                    format!("*** autoroute {}", downlinks.join(" / ")),
-                );
-            }
-        }
-        if self.kiss_mode() {
-            let src = outgoing.clone();
-            let via_ref: Vec<&str> = vias.iter().map(String::as_str).collect();
-            let frame = ax25::build_sabm_via(&dest, &src, &via_ref);
-            self.tx_kiss_payload(0, &frame);
-            if self_connect {
-                // Soundmodem / half-duplex will not RX our own SABM — finish the
-                // answer side locally (UA on air + both channels linked + CTEXT).
-                if let Some((caller, answer)) = self.self_connect_pair {
-                    self.kiss_finish_self_connect(caller, answer);
-                }
-            } else {
-                self.kiss_arm_sabm_timer(channel);
-                let via_note = if vias.is_empty() {
-                    String::new()
-                } else {
-                    format!(" via {}", vias.join(","))
-                };
-                self.status = format!("KISS SABM {src} → {dest}{via_note}");
-            }
-        } else {
-            // Hostmode puts the source in the channel MYCALL, not in `C`.
-            self.tx_modem_line(channel, &format!("I {outgoing}"));
-            let cmd = if vias.is_empty() {
-                format!("C {dest}")
-            } else {
-                format!("C {dest} {}", vias.join(" "))
-            };
-            self.tx_modem_line(channel, &cmd);
-            self.status = if self_connect {
-                format!("Self-connect {outgoing} → {dest}")
-            } else {
-                format!("Connecting {outgoing} → {dest}")
-            };
-        }
-    }
-
     /// MHeard CONNECT: selected call → first free channel → `C call`.
     fn connect_from_mheard(&mut self) {
         let Some(i) = self.mheard_selected else {
@@ -13462,6 +11925,58 @@ impl GpGuiApp {
             Ok((dest, vias, down)) => self.begin_connect(ch, &dest, &vias, down),
             Err(err) => self.status = err,
         }
+    }
+
+    fn begin_connect(&mut self, channel: u8, dest: &str, vias: &[String], downlinks: Vec<String>) {
+        if !(1..=self.channels).contains(&channel) || self.channel_connected(channel) {
+            self.status = format!("connect: channel {channel} is unavailable");
+            return;
+        }
+        let pool = self.pool_name(channel);
+        let mut local = self.air_call_for_peer(&pool, dest, Some(channel));
+        if self.software_ax25() && local.eq_ignore_ascii_case(dest) && vias.is_empty() {
+            // A local test still needs two distinct AX.25 endpoints.
+            let base = cipher::base_call(&local);
+            let Some(call) = (1..=15).map(|ssid| format!("{base}-{ssid}")).find(|call| {
+                !(1..=self.channels).any(|ch| {
+                    ch != channel
+                        && self
+                            .channel_other_call(ch)
+                            .is_some_and(|peer| peer.eq_ignore_ascii_case(dest))
+                        && self.effective_mycall(ch).eq_ignore_ascii_case(call)
+                })
+            }) else {
+                self.status = "connect: no unused source SSID".into();
+                return;
+            };
+            local = call;
+        }
+        self.adopt_air_call(channel, &local);
+        if !self.configure_sessions()
+            || !self.send_session_command(SessionCommand::Connect {
+                channel,
+                port: self.cfg.tnc.channel_port(channel),
+                local: local.clone(),
+                remote: dest.into(),
+                via: vias.to_vec(),
+            })
+        {
+            return;
+        }
+        let idx = usize::from(channel);
+        self.channel_connecting[idx] = Some(dest.to_ascii_uppercase());
+        self.channel_via[idx] = vias.to_vec();
+        self.channel_down[idx] = downlinks;
+        self.channel_down_wait[idx] = None;
+        self.set_link_outgoing(channel, true);
+        self.clear_lock(channel);
+        self.session.spy_slot = None;
+        self.active = ActivePane::Channel(channel);
+        self.status = format!(
+            "Connecting {local} to {dest} on port {}",
+            self.cfg.tnc.channel_port(channel)
+        );
+        self.pads[idx].push(PadKind::System, format!("*** {}", self.status));
     }
 
     fn open_connect_dialog_for_channel(&mut self, channel: u8) {
@@ -14154,7 +12669,7 @@ struct LiveAutoBin {
     state: AutoBinState,
     started: Instant,
     /// N(S) of the file chunk in flight. The next chunk waits for N(R).
-    tx_ns: Option<u8>,
+    tx_id: Option<u64>,
     /// Part file the receive is streaming into. Renamed when the length is in.
     recv_file: Option<std::fs::File>,
     recv_part: Option<PathBuf>,
@@ -14168,7 +12683,7 @@ struct LiveSevenTx {
     data: Vec<u8>,
     offset: usize,
     started: Instant,
-    tx_ns: Option<u8>,
+    tx_id: Option<u64>,
 }
 
 /// One frame of the Transfer80 purple strip.
@@ -14361,72 +12876,6 @@ fn call_with_ssid(pool: &str, ssid: u8) -> String {
     } else {
         format!("{base}-{ssid}")
     }
-}
-
-/// Linked or connecting channel where `src` is the other station and `dest`
-/// is the call this station is using. A frame to any other call is not it.
-fn channel_for_exact_pair(
-    peers: &[Option<String>],
-    mine: &[String],
-    src: &str,
-    dest: &str,
-) -> Option<u8> {
-    peers.iter().enumerate().skip(1).find_map(|(idx, peer)| {
-        let other = peer.as_ref()?;
-        let call = mine.get(idx)?;
-        (other.eq_ignore_ascii_case(src) && call.eq_ignore_ascii_case(dest)).then_some(idx as u8)
-    })
-}
-
-/// Channel whose outstanding SABM this UA answers.
-///
-/// An exact source match wins (`SABM` to `NL0AS`, `UA` from `NL0AS`).
-/// When that same from↔to pair is already up, the station answers from
-/// the next SSID (`UA` from `NL0AS-1`). A different station stays on the
-/// bare call. Two channels waiting on the same station, with the same
-/// source call, stay unanswered rather than guessing.
-fn channel_for_connect_ua(
-    channels: u8,
-    connecting: &[Option<String>],
-    mycall_of: &[String],
-    src: &str,
-    dest: &str,
-) -> Option<u8> {
-    let src_base = cipher::base_call(src);
-    let mut exact = None;
-    let mut moved = None;
-    let mut moved_many = false;
-    for n in 1..=channels {
-        let Some(target) = connecting.get(n as usize).and_then(|p| p.as_ref()) else {
-            continue;
-        };
-        let mine = mycall_of.get(n as usize).map(String::as_str).unwrap_or("");
-        if !mine.eq_ignore_ascii_case(dest) {
-            continue;
-        }
-        if target.eq_ignore_ascii_case(src) {
-            exact = Some(n);
-            break;
-        }
-        if cipher::base_call(target) == src_base {
-            if moved.is_some() {
-                moved_many = true;
-            }
-            moved = Some(n);
-        }
-    }
-    exact.or(if moved_many { None } else { moved })
-}
-
-/// Where a call to one of our names is answered.
-enum SlotAnswer {
-    /// Free channel in that name's pool, and the call it uses until disconnect.
-    /// The call is the bare name unless this from↔to pair is already up.
-    Accept { channel: u8, call: String },
-    /// Every channel that carries this call is already in use.
-    Busy { call: String },
-    /// Not a call configured on this station. No answer, no busy.
-    Foreign,
 }
 
 enum ListAnswer {
@@ -14829,38 +13278,6 @@ fn paint_static_cell(
     w + gap
 }
 
-/// Modem / hostmode link chatter (may arrive as Monitor/Data, not only LinkStatus).
-fn looks_like_link_status(s: &str) -> bool {
-    let u = s.to_ascii_uppercase();
-    u.contains("CONNECTED")
-        || u.contains("DISCONNECTED")
-        || u.contains("LINK FAIL")
-        || u.contains("LINK FAILURE")
-        || u.contains("BUSY FROM")
-        || u.contains("FAILURE WITH")
-        || u.contains("RETRY OUT")
-        || u.contains("NO ANSWER")
-}
-
-/// `(2) CONNECTED to CALL` / `2: CONNECTED …` → channel number.
-fn parse_hostmode_channel_tag(text: &str) -> Option<u8> {
-    let t = text.trim_start();
-    if let Some(rest) = t.strip_prefix('(') {
-        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !digits.is_empty() && rest[digits.len()..].starts_with(')') {
-            return digits.parse().ok();
-        }
-    }
-    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if !digits.is_empty() {
-        let rest = &t[digits.len()..];
-        if rest.starts_with(':') || rest.starts_with(' ') {
-            return digits.parse().ok();
-        }
-    }
-    None
-}
-
 /// Room kept under the radio card for the two-line welcome credits.
 const START_CREDITS_H: f32 = 56.0;
 
@@ -14922,15 +13339,26 @@ fn port_menu_label(ports: &[DetectedPort], selected: &str) -> String {
         .unwrap_or_else(|| format!("{selected} — not connected"))
 }
 
+const RADIO_PROTOCOLS: [HostProtocol; 4] = [
+    HostProtocol::Kiss,
+    HostProtocol::Wa8ded,
+    HostProtocol::Baycom,
+    HostProtocol::Tfpcx,
+];
+
 fn protocol_label(kind: HostProtocol) -> &'static str {
     match kind {
-        HostProtocol::Wa8ded => "WA8DED",
+        HostProtocol::Wa8ded => "TAPR TNC-2 WA8DED",
         HostProtocol::Tfpcx => "TFPCX",
         HostProtocol::Kiss => "KISS",
+        HostProtocol::Baycom => "Baycom",
     }
 }
 
-fn baud_choices(current: u32) -> Vec<u32> {
+fn baud_choices(current: u32, protocol: HostProtocol) -> Vec<u32> {
+    if protocol == HostProtocol::Baycom {
+        return vec![1200];
+    }
     let mut rates = vec![1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
     if current > 0 && !rates.contains(&current) {
         rates.push(current);
@@ -16340,6 +14768,43 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
 mod input_tests {
     use super::*;
 
+    #[test]
+    fn radio_protocol_choices_persist_with_baycom_software_sessions_and_radio_rate() {
+        with_offline_app("wa8ded", |app, _, _| {
+            std::fs::write(&app.config_path, toml::to_string(&app.cfg).unwrap()).unwrap();
+            app.radio_call = "N0ME".into();
+            app.radio_port = "COM999".into();
+            app.radio_baud = 9600;
+            for (index, protocol, label) in [
+                (0, "kiss", "KISS"),
+                (1, "wa8ded", "TAPR TNC-2 WA8DED"),
+                (2, "baycom", "Baycom"),
+                (3, "tfpcx", "TFPCX"),
+            ] {
+                app.apply_radio_pick(RadioPick::Protocol, index, &[]);
+                app.store_radio_form().unwrap();
+                let saved: Config =
+                    toml::from_str(&std::fs::read_to_string(&app.config_path).unwrap()).unwrap();
+                assert_eq!(saved.tnc.protocol, protocol);
+                assert_eq!(saved.tnc.protocol_kind(), app.radio_protocol);
+                assert_eq!(protocol_label(saved.tnc.protocol_kind()), label);
+                if saved.tnc.protocol_kind() == HostProtocol::Baycom {
+                    assert_eq!(saved.serial.baud, 1200);
+                    app.apply_radio_pick(RadioPick::Baud, 1, &[]);
+                    assert_eq!(app.radio_baud, 1200);
+                    app.radio_baud = 9600;
+                    assert!(app.store_radio_form().unwrap_err().contains("1200"));
+                    app.radio_baud = 1200;
+                    assert!(app.software_ax25());
+                }
+            }
+        });
+        with_offline_app("baycom", |app, _, _| {
+            assert_eq!(app.radio_protocol, HostProtocol::Baycom);
+            assert_eq!(app.radio_baud, 1200);
+        });
+    }
+
     fn with_offline_app(
         protocol: &str,
         test: impl FnOnce(&mut GpGuiApp, &mut mpsc::Receiver<TncCommand>, &Context),
@@ -16348,7 +14813,8 @@ mod input_tests {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("gpng-connect-{}-{unique}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("gpng-connect-{}-{unique}", std::process::id()));
         let mut cfg = Config::default();
         cfg.tnc.protocol = protocol.into();
         cfg.paths.user_dir = dir.join("USER");
@@ -16397,13 +14863,123 @@ mod input_tests {
     }
 
     #[test]
+    fn software_monitor_lists_both_directions_control_frames_and_repeats_on_each_port() {
+        for protocol in ["kiss", "baycom"] {
+            with_offline_app(protocol, |app, commands, _| {
+                app.pads[0].lines.clear();
+                app.monitor_filter = MonitorFilter::iusc();
+                app.channel_peer[1] = Some("N1TEST".into());
+                let channel_rows = app.pads[1].lines.len();
+                let (events, rx) = mpsc::channel(64);
+                app.events = rx;
+                let frames = [
+                    ax25::build_sabm("N0ME", "N1TEST"),
+                    ax25::build_ua("N0ME", "N1TEST", true),
+                    ax25::build_i("N0ME", "N1TEST", 2, 3, false, b"binary\x00\xDB\xC0"),
+                    ax25::build_rr("N0ME", "N1TEST", 3, true, false),
+                    ax25::build_disc("N0ME", "N1TEST"),
+                ];
+                for port in [0, 3, 12] {
+                    for frame in frames.iter().chain(frames.iter().take(1)) {
+                        events
+                            .try_send(TncEvent::HostFrame {
+                                channel: port,
+                                code: HostCode::Data,
+                                payload: frame.clone(),
+                            })
+                            .unwrap();
+                        events
+                            .try_send(TncEvent::KissTx {
+                                port,
+                                frame: frame.clone(),
+                            })
+                            .unwrap();
+                    }
+                }
+                app.drain_tnc();
+                for kind in [PadKind::Incoming, PadKind::Own] {
+                    assert_eq!(
+                        app.pads[0]
+                            .lines
+                            .iter()
+                            .filter(|line| line.kind == kind && line.text.contains(" ctl "))
+                            .count(),
+                        18
+                    );
+                }
+                assert!(app.pads[0]
+                    .lines
+                    .iter()
+                    .any(|line| line.text.starts_with("fm12 ")));
+                assert_eq!(app.pads[1].lines.len(), channel_rows);
+                assert!(commands.try_recv().is_err());
+
+                app.pads[0].lines.clear();
+                app.monitor_filter = MonitorFilter::default();
+                for event in [
+                    TncEvent::HostFrame {
+                        channel: 12,
+                        code: HostCode::Data,
+                        payload: frames[0].clone(),
+                    },
+                    TncEvent::KissTx {
+                        port: 12,
+                        frame: frames[0].clone(),
+                    },
+                ] {
+                    events.try_send(event).unwrap();
+                }
+                app.drain_tnc();
+                assert!(
+                    app.pads[0].lines.is_empty(),
+                    "M N still hides decoded frames"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn kiss_undecodable_rx_and_tx_remain_visible_as_raw_monitor_diagnostics() {
+        with_offline_app("kiss", |app, _, _| {
+            app.pads[0].lines.clear();
+            let (events, rx) = mpsc::channel(4);
+            app.events = rx;
+            let raw = vec![0x01, 0xDB, 0xC0];
+            events
+                .try_send(TncEvent::HostFrame {
+                    channel: 12,
+                    code: HostCode::Data,
+                    payload: raw.clone(),
+                })
+                .unwrap();
+            events
+                .try_send(TncEvent::KissTx {
+                    port: 12,
+                    frame: raw,
+                })
+                .unwrap();
+            app.drain_tnc();
+            for kind in [PadKind::Incoming, PadKind::Own] {
+                assert!(app.pads[0].lines.iter().any(|line| {
+                    line.kind == kind
+                        && line
+                            .text
+                            .contains("KISS port 12: undecodable AX.25 (3B) 01 DB C0")
+                }));
+            }
+        });
+    }
+
+    #[test]
     fn alt_27_sgr_channel_input_is_sent_and_echoed_as_color() {
         with_offline_app("wa8ded", |app, rx, _| {
             app.active = ActivePane::Channel(1);
             app.compose[1].input = "←[1;31mNot!←[0m normal ←".into();
             app.submit();
 
-            let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
+            let TncCommand::Session(SessionCommand::Send { channel, data, .. }) =
+                rx.try_recv().unwrap()
+            else {
                 panic!("expected channel text");
             };
             assert_eq!(channel, 1);
@@ -16432,7 +15008,8 @@ mod input_tests {
             app.compose[1].input = "←[1;31mNot!".into();
             app.submit();
 
-            let TncCommand::HostFrame { data, .. } = rx.try_recv().unwrap() else {
+            let TncCommand::Session(SessionCommand::Send { data, .. }) = rx.try_recv().unwrap()
+            else {
                 panic!("expected channel text");
             };
             assert_eq!(data, b"\x1b[1;31mNot!\r");
@@ -16468,7 +15045,12 @@ mod input_tests {
             app.compose[0].input = "←[31mGrr and Stuff".into();
             app.submit();
 
-            let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
+            let TncCommand::Session(SessionCommand::Send {
+                channel,
+                data,
+                id: None,
+            }) = rx.try_recv().unwrap()
+            else {
                 panic!("expected monitor text");
             };
             assert_eq!(channel, 0);
@@ -16492,18 +15074,28 @@ mod input_tests {
                     app.events = rx;
                     tx.try_send(TncEvent::HostFrame {
                         channel: 0,
-                        code: HostCode::Monitor,
-                        payload: [b"fm N1AAA to N1BBB\r".as_slice(), payload].concat(),
+                        code: HostCode::MonitorHeader,
+                        payload: b"fm N1AAA to N1BBB".to_vec(),
+                    })
+                    .unwrap();
+                    tx.try_send(TncEvent::HostFrame {
+                        channel: 0,
+                        code: HostCode::MonitorData,
+                        payload: payload.to_vec(),
                     })
                     .unwrap();
                     app.drain_tnc();
                 } else {
                     let raw = ax25::build_ui("N1BBB", "N1AAA", &[], payload);
-                    app.handle_kiss_ax25(&raw, 0);
+                    app.kiss_show_transit(&ax25::parse_frame(&raw).unwrap(), 0);
                 }
                 let payload_color = Color32::from_rgb(3, 4, 5);
-                let job =
-                    app.pads[0].layout_job_monitor(100, Color32::BLUE, payload_color, Color32::YELLOW);
+                let job = app.pads[0].layout_job_monitor(
+                    100,
+                    Color32::BLUE,
+                    payload_color,
+                    Color32::YELLOW,
+                );
                 for (word, color) in [
                     ("Red", Color32::from_rgb(170, 0, 0)),
                     ("Green", Color32::from_rgb(85, 255, 85)),
@@ -16528,7 +15120,7 @@ mod input_tests {
         with_offline_app("kiss", |app, _, _| {
             app.cfg.session.allow_color_ansi = false;
             let raw = ax25::build_ui("N1BBB", "N1AAA", &[], b"\x1b[31mRed\x07");
-            app.handle_kiss_ax25(&raw, 0);
+            app.kiss_show_transit(&ax25::parse_frame(&raw).unwrap(), 0);
             let payload_color = Color32::from_rgb(3, 4, 5);
             let job =
                 app.pads[0].layout_job_monitor(100, Color32::BLUE, payload_color, Color32::YELLOW);
@@ -16547,23 +15139,19 @@ mod input_tests {
             let via = vec!["WIDE1-1".into()];
             app.begin_connect(1, "N1WRNG", &via, Vec::new());
             assert!(!app.channel_linked(1));
-            assert!(app.ax25_sabm_at[1].is_some());
+            assert!(app.channel_connecting[1].is_some());
             while rx.try_recv().is_ok() {}
 
             click_first_channel_icon(app, ctx);
-            let TncCommand::HostFrame { data, .. } = rx.try_recv().unwrap() else {
-                panic!("expected cancellation DISC");
+            let TncCommand::Session(SessionCommand::Disconnect { channel }) =
+                rx.try_recv().unwrap()
+            else {
+                panic!("expected session cancellation");
             };
-            let frame = ax25::parse_frame(&data).unwrap();
-            assert_eq!(frame.kind, Ax25FrameType::Disc);
-            assert_eq!(frame.dest, "N1WRNG");
-            assert_eq!(frame.via, via);
+            assert_eq!(channel, 1);
             assert!(!app.channel_connected(1));
-            assert!(app.ax25_sabm_at[1].is_none());
-            assert!(app.ax25_disc_at[1].is_none());
-            app.kiss_sabm_timers();
-            app.kiss_disc_timers();
-            assert!(rx.try_recv().is_err());
+            assert!(!app.channel_disconnecting(1));
+            while rx.try_recv().is_ok() {}
 
             click_first_channel_icon(app, ctx);
             assert!(app.session.show_connect_dialog);
@@ -16576,11 +15164,12 @@ mod input_tests {
             app.begin_connect(1, "N1WRNG", &[], Vec::new());
             while rx.try_recv().is_ok() {}
             click_first_channel_icon(app, ctx);
-            let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
+            let TncCommand::Session(SessionCommand::Disconnect { channel }) =
+                rx.try_recv().unwrap()
+            else {
                 panic!("expected hostmode disconnect");
             };
             assert_eq!(channel, 1);
-            assert_eq!(data, b"D\r");
             assert!(!app.channel_connected(1));
         });
     }
@@ -16591,10 +15180,12 @@ mod input_tests {
             app.active = ActivePane::Channel(1);
             app.channel_peer[1] = Some("N1PEER".into());
             click_first_channel_icon(app, ctx);
-            let TncCommand::HostFrame { data, .. } = rx.try_recv().unwrap() else {
-                panic!("expected link DISC");
+            let TncCommand::Session(SessionCommand::Disconnect { channel }) =
+                rx.try_recv().unwrap()
+            else {
+                panic!("expected session disconnect");
             };
-            assert_eq!(ax25::parse_frame(&data).unwrap().kind, Ax25FrameType::Disc);
+            assert_eq!(channel, 1);
             assert!(app.channel_linked(1));
             assert!(app.channel_disconnecting(1));
         });

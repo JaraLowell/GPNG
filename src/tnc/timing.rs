@@ -2,8 +2,8 @@
 //!
 //! Hostmode (WA8DED / TFPCX) sends these as text commands (`P 63`, `T 45`, …).
 //! KISS sends the subset the modem understands as TAPR command frames after
-//! `FEND`: TXDELAY / PERSIST / SLOTTIME. Frack / T2 / T3 / MaxUnack stay on
-//! the host (our AX.25 stack) when the wire is KISS.
+//! `FEND`: TXDELAY / PERSIST / SLOTTIME. KISS sessions use configured Frack,
+//! immediate acknowledgements, T3=300 seconds, and a one-frame TX window.
 
 /// Parsed from lines like `P 63`, `W 9`, `T 45`, `O 3`, `F 5`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -14,7 +14,7 @@ pub struct TimingParams {
     pub slottime: Option<u8>,
     /// WA8DED `T` / KISS TXDELAY (10 ms units).
     pub txdelay: Option<u8>,
-    /// WA8DED `O` — max outstanding I-frames (host-side on KISS).
+    /// WA8DED `O` — max outstanding I-frames (KISS currently uses one).
     pub maxunack: Option<u8>,
     /// WA8DED `F` — frack / T1 (seconds or TNC units; host-side on KISS).
     pub frack: Option<u32>,

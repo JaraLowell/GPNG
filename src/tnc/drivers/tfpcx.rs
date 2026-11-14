@@ -1,8 +1,8 @@
 //! TFPCX soft-TNC driver — WA8DED-compatible hostmode framing.
 //!
 //! TFPCX already presents a hostmode interface to GP, so bring-up skips a hard
-//! dependency on hardware `JHOST1` echo. Timed `G0` poll and TNCINI/TNCDEI
-//! match the WA8DED path; shutdown uses deinit only (no required `JHOST0`).
+//! dependency on hardware `JHOST1` echo. Timed channel-0 `G` polling and
+//! TNCINI/TNCDEI are retained; shutdown has no required `JHOST0`.
 //! Buffer counters are built here from the host queue (TFPCX does not send
 //! the WA8DED `L` / `@B` report).
 //!
@@ -16,8 +16,10 @@ use tokio::sync::mpsc;
 
 use crate::config::{SerialConfig, TncConfig};
 
-use super::super::host_delivery::{HostDelivery, HostKind, Tick};
-use super::super::hostmode::{apply_command_list, drain_frames, poll_command, write_host_frame};
+use super::super::host_delivery::{HostDelivery, HostKind, Outgoing, Tick};
+use super::super::hostmode::{
+    apply_command_list, drain_frames, poll_command, write_host_data, write_host_frame,
+};
 use super::super::serial::SerialLink;
 use super::super::timing::timing_from_tnc_config;
 use super::super::wa8ded_ini;
@@ -89,10 +91,10 @@ pub fn run(
                 let chunk = &rx_buf[..n];
                 let _ = events.blocking_send(TncEvent::RawRx(chunk.to_vec()));
                 stream.extend_from_slice(chunk);
-                let replies = drain_frames(&mut stream);
+                let replies = drain_frames(&mut stream)?;
                 if !replies.is_empty() {
                     if let Some(out) = delivery.on_tnc_frame(Instant::now()) {
-                        let _ = write_host_frame(&mut link, out.channel, &out.data);
+                        write_outgoing(&mut link, &out)?;
                     }
                     for reply in replies {
                         let _ = events.blocking_send(TncEvent::HostFrame {
@@ -111,7 +113,7 @@ pub fn run(
 
         match delivery.tick(Instant::now()) {
             Some(Tick::Resend(out)) => {
-                let _ = write_host_frame(&mut link, out.channel, &out.data);
+                write_outgoing(&mut link, &out)?;
             }
             Some(Tick::GaveUp { channel }) => {
                 let _ = events.blocking_send(TncEvent::Warning(format!(
@@ -127,8 +129,8 @@ pub fn run(
             if let Some(out) =
                 delivery.enqueue_kind(0, poll_command().to_vec(), HostKind::Poll, Instant::now())
             {
-                if let Err(err) = write_host_frame(&mut link, out.channel, &out.data) {
-                    let _ = events.blocking_send(TncEvent::Warning(format!("poll G0: {err}")));
+                if let Err(err) = write_outgoing(&mut link, &out) {
+                    let _ = events.blocking_send(TncEvent::Warning(format!("poll G: {err}")));
                 }
             }
             last_poll = Instant::now();
@@ -146,12 +148,20 @@ fn handle_command(
     cmd: TncCommand,
 ) -> Result<bool, TncError> {
     match cmd {
-        TncCommand::LocalAck { .. } => {}
+        TncCommand::Session(_) => {
+            return Err(TncError::Protocol("unadapted session command".into()))
+        }
         TncCommand::HostFrame { channel, data } => {
             if let Some(out) = delivery.enqueue(channel, data, Instant::now()) {
-                if let Err(err) = write_host_frame(link, out.channel, &out.data) {
+                if let Err(err) = write_outgoing(link, &out) {
                     let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
                 }
+            }
+        }
+        TncCommand::HostData { channel, data } => {
+            if let Some(out) = delivery.enqueue_kind(channel, data, HostKind::Data, Instant::now())
+            {
+                write_outgoing(link, &out)?;
             }
         }
         TncCommand::KissParam { .. } => {}
@@ -179,6 +189,14 @@ fn handle_command(
         }
     }
     Ok(false)
+}
+
+fn write_outgoing(link: &mut SerialLink, out: &Outgoing) -> Result<(), TncError> {
+    if out.kind == HostKind::Data {
+        write_host_data(link, out.channel, &out.data)
+    } else {
+        write_host_frame(link, out.channel, &out.data)
+    }
 }
 
 fn publish_tfpcx_timing_banner(tnc_cfg: &TncConfig, events: &mpsc::Sender<TncEvent>) {

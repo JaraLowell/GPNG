@@ -564,6 +564,14 @@ pub fn decode_rx_text(raw: &[u8], extended: bool) -> String {
         .collect()
 }
 
+pub fn kiss_monitor_fallback(port: u8, raw: &[u8]) -> String {
+    format!(
+        "KISS port {port}: undecodable AX.25 ({}B) {}",
+        raw.len(),
+        format_hex_preview(raw, raw.len())
+    )
+}
+
 /// Compact hex for debug RX lines (max `max` bytes).
 pub fn format_hex_preview(raw: &[u8], max: usize) -> String {
     let take = raw.len().min(max);

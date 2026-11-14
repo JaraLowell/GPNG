@@ -1,25 +1,29 @@
-//! TNC / modem interface — config-selected drivers (WA8DED, TFPCX, KISS).
+//! TNC / modem interface — WA8DED TNC2, TFPCX, KISS and FT232R BayCom.
 //!
 //! Only **one** driver is loaded, from `[tnc] protocol`. The pixel UI starts
 //! that driver when the operator presses Use this; `--tui` starts it immediately.
 //! Shared wire helpers live in [`serial`] and [`hostmode`]; each driver owns
 //! its bring-up and poll loop.
+//! The session service sits between UI and driver: host AX.25 for KISS/BayCom,
+//! channel-command translation for WA8DED/TFPCX (whose TNC owns AX.25).
 //!
 //! ```text
-//!   wa8ded / jhost  → timed WA8DED hostmode poll (JHOST1/JHOST0)
+//!   wa8ded / jhost  → TNC2 NORD><LINK TheFirmware hostmode (JHOST1/JHOST0)
 //!   tfpcx           → soft-TNC, same hostmode frames
 //!   kiss            → TAPR KISS over serial or TCP (FEND/FESC)
 //! ```
 
 pub mod ax25;
+pub mod baycom;
 mod drivers;
 mod host_delivery;
 mod hostmode;
-mod kiss_delivery;
 mod kiss_ini;
 mod monitor_filter;
 mod payload;
 mod serial;
+mod session;
+mod session_service;
 mod tcp;
 mod timing;
 mod wa8ded_ini;
@@ -36,6 +40,7 @@ use tracing::{error, info, warn};
 use crate::config::{HostProtocol, SerialConfig, TncConfig};
 
 pub use ax25::{Ax25Frame, Ax25FrameType};
+pub use drivers::baycom::detect_ports as detect_baycom_ports;
 pub use hostmode::HostCode;
 pub use kiss_ini::{
     apply_configured_paclen, load_paclen as load_kiss_paclen, load_params as load_kiss_params,
@@ -48,6 +53,7 @@ pub use payload::{
     take_rx_lines_bytes,
 };
 pub use serial::{detect_serial_ports, DetectedPort};
+pub use session::{ChannelConfig, SessionCommand, SessionEvent};
 pub use wa8ded_ini::{
     resolve_wa8ded_ini, section_lines as wa8ded_section_lines, timing_banner_fallback,
 };
@@ -56,27 +62,25 @@ pub use wa8ded_ini::{
 // Public types (stable UI surface)
 // ---------------------------------------------------------------------------
 
-/// Bytes of transmit RAM a WA8DED TNC usually has. KISS and TFPCX subtract
-/// the packets still waiting to go out; WA8DED reports the real free count
-/// with `@B`.
+/// Synthetic buffer-display reference for KISS/TFPCX; not measured modem RAM.
+/// WA8DED instead reports the firmware-native `@B` count.
 pub const TNC_RAM: u32 = 600;
 
 /// One channel's slice of the WA8DED `L` report.
 ///
-/// `tries` is how many times the current frame has been repeated (0 on the
-/// first transmission). `unack` is how many frames are out waiting for RR.
+/// `tries` is the firmware's attempt counter (KISS reports retransmissions).
+/// `unack` is how many frames are out waiting for RR.
 /// With a window of one, unack is 0 or 1 and stays 1 while tries climbs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelBuffers {
     pub channel: u8,
-    /// Destination call when the queue is KISS and the channel is not known
-    /// until the UI matches a connected peer.
+    /// Peer label only. `channel`, not this callsign, identifies the row.
     pub peer: String,
     /// Receive frames not yet given to the host (`L` field b).
     pub not_disp: u32,
     /// Frames accepted but not yet transmitted (`L` field c).
     pub not_sent: u32,
-    /// Repeats of the frame in flight (`L` field e). 0 until the first retry.
+    /// Firmware attempt counter (`L` field e), or KISS retransmissions.
     pub tries: u32,
     /// Frames transmitted and not yet acknowledged (`L` field d).
     pub unack: u32,
@@ -90,6 +94,7 @@ pub struct ChannelBuffers {
 /// that has finished.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BufferReport {
+    /// Firmware-native hostmode buffer count, or synthetic KISS/TFPCX capacity.
     pub free: Option<u32>,
     /// Monitor "packets not yet displayed" (channel 0, `L` field b).
     pub not_displayed: Option<u32>,
@@ -144,22 +149,24 @@ pub(crate) fn send_buffers_if_changed(
 /// Events emitted by the serial RX task toward the UI / session layer.
 #[derive(Debug, Clone)]
 pub enum TncEvent {
+    Session(SessionEvent),
     /// Raw bytes observed on the wire (pre-decoder / debug).
     RawRx(Vec<u8>),
     /// Bytes moved on the COM port or KISS TCP link, before any decode.
     /// `tx` is host → modem (send). `false` is modem → host (receive).
-    LinkIo { tx: bool },
-    /// A decoded hostmode / KISS frame (channel + payload).
+    LinkIo {
+        tx: bool,
+    },
+    /// A decoded hostmode frame or raw KISS/BayCom AX.25 (radio port + payload).
     HostFrame {
         channel: u8,
         code: HostCode,
         payload: Vec<u8>,
     },
-    /// KISS AX.25 frame that was just written to the modem (monitor TX).
-    /// Queued I-frames raise this only when they leave the radio, so a file
-    /// send is listed next to the peer's RR instead of in one burst up front.
+    /// Software AX.25 TX (legacy name): KISS write or completed BayCom burst.
+    /// Local completion only, not an RF acknowledgement.
     KissTx {
-        /// KISS port nibble this frame was written on. 0 is the first radio.
+        /// Physical radio: KISS port nibble or BayCom port 0.
         port: u8,
         /// Unescaped AX.25 frame bytes (not KISS-wrapped).
         frame: Vec<u8>,
@@ -180,22 +187,26 @@ pub enum TncEvent {
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // TerminalLine / Reinitialize reserved for upcoming UI actions.
 pub enum TncCommand {
-    /// Send a data / command payload on a channel (hostmode) or KISS port.
+    Session(SessionCommand),
+    /// Send a hostmode command, or raw AX.25 on a KISS/BayCom radio port.
     HostFrame {
         channel: u8,
         /// Command / data byte stream (e.g. `b"I NL0MSK"`).
         data: Vec<u8>,
     },
-    /// KISS only. An RR from the other end of a self-connect. The driver
-    /// writes it, and treats it as the acknowledgement, only after the
-    /// I-frame has had time to leave the radio. The TNC does not loop our
-    /// own frames back, but it still has to transmit them.
-    LocalAck { port: u8, frame: Vec<u8> },
+    /// Send connected/unproto information, never interpreted as a TNC command.
+    HostData {
+        channel: u8,
+        data: Vec<u8>,
+    },
     /// Issue a terminal-mode ASCII line (CR-terminated), e.g. before JHOST1.
     TerminalLine(String),
-    /// One TAPR KISS parameter on port 0: `FEND | cmd | arg | FEND`.
+    /// One TAPR KISS parameter on the configured default radio port.
     /// The UI writes the new arg into `KISS.INI` `[params]` before sending.
-    KissParam { cmd: u8, arg: u8 },
+    KissParam {
+        cmd: u8,
+        arg: u8,
+    },
     /// Re-run the configured `TNCINI` sequence.
     Reinitialize,
     /// WA8DED: re-query `F` / `@T2` / `@T3` and emit [`TncEvent::TimingBanner`].
@@ -238,10 +249,11 @@ pub fn spawn_tnc_task(
     tnc_cfg: TncConfig,
 ) -> (TncChannels, tokio::task::JoinHandle<()>) {
     let (event_tx, event_rx) = mpsc::channel::<TncEvent>(256);
-    // A text file is one command per packet (plus a local RR on a
-    // self-connect). The driver now releases those slowly, so the queue has
-    // to hold the whole file instead of dropping the tail.
+    // The session layer queues application packets independently of the
+    // transport worker and releases them as AX.25 acknowledgements arrive.
     let (cmd_tx, cmd_rx) = mpsc::channel::<TncCommand>(256);
+    let (driver_event_tx, driver_event_rx) = mpsc::channel(256);
+    let (driver_cmd_tx, driver_cmd_rx) = mpsc::channel(256);
 
     let channels = TncChannels {
         events: event_rx,
@@ -252,16 +264,39 @@ pub fn spawn_tnc_task(
     SHUTDOWN.store(false, Ordering::SeqCst);
 
     let kind = tnc_cfg.protocol_kind();
-    let join = tokio::task::spawn_blocking(move || {
+    let session_config = tnc_cfg.clone();
+    let driver_join = tokio::task::spawn_blocking(move || {
         info!(?kind, "loading modem driver");
         let result = match kind {
-            HostProtocol::Wa8ded => drivers::wa8ded::run(serial, tnc_cfg, event_tx.clone(), cmd_rx),
-            HostProtocol::Tfpcx => drivers::tfpcx::run(serial, tnc_cfg, event_tx.clone(), cmd_rx),
-            HostProtocol::Kiss => drivers::kiss::run(serial, tnc_cfg, event_tx.clone(), cmd_rx),
+            HostProtocol::Baycom => {
+                drivers::baycom::run(serial, tnc_cfg, driver_event_tx.clone(), driver_cmd_rx)
+            }
+            HostProtocol::Wa8ded => {
+                drivers::wa8ded::run(serial, tnc_cfg, driver_event_tx.clone(), driver_cmd_rx)
+            }
+            HostProtocol::Tfpcx => {
+                drivers::tfpcx::run(serial, tnc_cfg, driver_event_tx.clone(), driver_cmd_rx)
+            }
+            HostProtocol::Kiss => {
+                drivers::kiss::run(serial, tnc_cfg, driver_event_tx.clone(), driver_cmd_rx)
+            }
         };
         if let Err(err) = result {
             warn!("TNC loop exited: {err}");
-            let _ = event_tx.blocking_send(TncEvent::LinkDown(err.to_string()));
+            let _ = driver_event_tx.blocking_send(TncEvent::LinkDown(err.to_string()));
+        }
+    });
+    let join = tokio::spawn(async move {
+        session_service::run(
+            session_config,
+            cmd_rx,
+            event_tx,
+            driver_cmd_tx,
+            driver_event_rx,
+        )
+        .await;
+        if let Err(err) = driver_join.await {
+            error!("TNC driver task failed: {err}");
         }
     });
 

@@ -12,7 +12,7 @@ The drawing is chosen from the weerlive image word (lichtbewolkt, zonnig, ...).
 
 import requests
 
-API_KEY = "<YOUR WU API KEY>"
+API_KEY = "82e91706973448b7a91706973408b770"
 STATION_ID = "IMUSSE20"
 STATION_URL = (
     f"https://api.weather.com/v2/pws/observations/current"

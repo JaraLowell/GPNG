@@ -19,10 +19,9 @@ pub const N2: u32 = 5;
 /// be counted as operator packets on the magenta bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostKind {
+    Command,
     Data,
     Poll,
-    LinkStatus,
-    FreeBuffer,
 }
 
 #[derive(Debug, Clone)]
@@ -59,13 +58,9 @@ impl HostDelivery {
         self.inflight.is_none() && self.queued.is_empty()
     }
 
-    pub fn inflight_kind(&self) -> Option<HostKind> {
-        self.inflight.as_ref().map(|f| f.frame.kind)
-    }
-
     /// Queue operator data. Returns it when it should be written now.
     pub fn enqueue(&mut self, channel: u8, data: Vec<u8>, now: Instant) -> Option<Outgoing> {
-        self.enqueue_kind(channel, data, HostKind::Data, now)
+        self.enqueue_kind(channel, data, HostKind::Command, now)
     }
 
     pub fn enqueue_kind(

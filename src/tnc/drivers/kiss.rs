@@ -8,20 +8,15 @@
 //!
 //! After bring-up, `KISS.INI` `[params]` is sent as TAPR command frames
 //! (`FEND | cmd | arg | FEND`). Esc `T` / `P` / `W` (the letter on each line)
-//! updates that section and sends the one frame. Frack / T2 / T3 / MaxUnack
-//! stay in our AX.25 stack. A file with no `[params]` still falls back to
+//! updates that section and sends the one frame. The session layer uses
+//! configured Frack, immediate acknowledgements, T3=300 s, and window=1.
+//! A file with no `[params]` still falls back to
 //! `T`/`P`/`W` from `WA8DED.INI` `[open]` or `[tnc] init`.
 //!
-//! Connected I-frames are paced here: one outstanding N(S), the next part
-//! goes out only after RR or an I-frame whose N(R) acknowledges it. UI frames
-//! are not acknowledged and are sent at once. A self-connect RR is invented
-//! locally; it is held until the frame could have left the radio, so a file
-//! such as `//news` is not written faster than the TNC can transmit it.
-//! Serial and TCP share this path.
-//! The same queue is what the magenta bar shows: free bytes are 600 minus
-//! packets still waiting, and tries / unack come from the frame in flight.
+//! AX.25 state, retransmissions and channel counters belong to the session
+//! layer. This driver only frames and transports packets on a radio port.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -29,13 +24,12 @@ use tracing::{debug, warn};
 use crate::config::{SerialConfig, TncConfig};
 
 use super::super::hostmode::HostCode;
-use super::super::kiss_delivery::{KissDelivery, Outgoing, Tick};
 use super::super::kiss_ini::{self, resolve_kiss_ini, KissParam};
 use super::super::serial::SerialLink;
 use super::super::tcp::TcpKissLink;
 use super::super::timing::timing_from_tnc_config;
 use super::super::wa8ded_ini;
-use super::super::{send_buffers_if_changed, BufferReport, TncCommand, TncError, TncEvent};
+use super::super::{TncCommand, TncError, TncEvent};
 
 const FEND: u8 = 0xC0;
 const FESC: u8 = 0xDB;
@@ -149,11 +143,11 @@ pub fn run(
         if let Err(err) = run_kiss_init(&mut link, &tnc_cfg) {
             let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
         }
+        link.flush_input();
     }
-    link.flush_input();
     // Modem is in KISS now (serial after INI, TCP already). Push [params].
     let timing = load_kiss_params(&tnc_cfg);
-    apply_kiss_params(&mut link, 0, &timing, &events);
+    apply_configured_params(&mut link, &tnc_cfg, &timing, &events);
 
     let status = if link.is_tcp() {
         format!("TCP OPEN {} — KISS listen", link.label())
@@ -165,17 +159,10 @@ pub fn run(
 
     let mut rx_buf = [0u8; 512];
     let mut stream = Vec::<u8>::new();
-    let mut delivery = KissDelivery::new();
-    let mut last_buffers: Option<BufferReport> = None;
-    let hbaud = if link.is_tcp() {
-        1200
-    } else {
-        kiss_ini::hbaud_from_file(&resolve_kiss_ini(&tnc_cfg.kiss_ini), &tnc_cfg.kiss_section)
-    };
 
     loop {
         while let Ok(cmd) = commands.try_recv() {
-            if handle_command(&mut link, &mut delivery, &serial, &tnc_cfg, &events, cmd)? {
+            if handle_command(&mut link, &serial, &tnc_cfg, &events, cmd)? {
                 return Ok(());
             }
         }
@@ -186,7 +173,7 @@ pub fn run(
                 return Ok(());
             }
             Ok(cmd) => {
-                if handle_command(&mut link, &mut delivery, &serial, &tnc_cfg, &events, cmd)? {
+                if handle_command(&mut link, &serial, &tnc_cfg, &events, cmd)? {
                     return Ok(());
                 }
             }
@@ -200,33 +187,13 @@ pub fn run(
             Ok(n) => {
                 let chunk = &rx_buf[..n];
                 stream.extend_from_slice(chunk);
-                let send = drain_kiss_frames(&mut stream, &mut delivery, &events);
-                for out in send {
-                    let _ = write_kiss_data(&mut link, out.port, &out.frame, &events);
-                }
+                drain_kiss_frames(&mut stream, &events);
             }
             Err(err) => {
                 let _ = events.blocking_send(TncEvent::LinkDown(err.to_string()));
                 return Err(err);
             }
         }
-
-        match delivery.tick(Instant::now()) {
-            Some(Tick::Resend(out)) => {
-                let _ = write_kiss_data(&mut link, out.port, &out.frame, &events);
-            }
-            Some(Tick::GaveUp { port }) => {
-                let _ = events.blocking_send(TncEvent::Warning(format!(
-                    "KISS port {port}: I-frame not acknowledged after {tries} tries",
-                    tries = super::super::kiss_delivery::N2
-                )));
-            }
-            None => {}
-        }
-
-        release_local_ack(&mut link, &mut delivery, &events, hbaud);
-
-        send_buffers_if_changed(&events, &delivery.tx_snapshots(), &mut last_buffers);
     }
 }
 
@@ -299,7 +266,6 @@ fn run_kiss_init(link: &mut KissLink, tnc_cfg: &TncConfig) -> Result<(), TncErro
 
 fn handle_command(
     link: &mut KissLink,
-    delivery: &mut KissDelivery,
     serial: &SerialConfig,
     tnc_cfg: &TncConfig,
     events: &mpsc::Sender<TncEvent>,
@@ -307,18 +273,15 @@ fn handle_command(
 ) -> Result<bool, TncError> {
     match cmd {
         TncCommand::HostFrame { channel, data } => {
-            if let Some(out) = delivery.push(channel, data, Instant::now()) {
-                if let Err(err) = write_kiss_data(link, out.port, &out.frame, events) {
-                    let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
-                }
-            }
+            write_kiss_data(link, channel, &data, events)?;
         }
-        TncCommand::LocalAck { port, frame } => {
-            // Channel 1 ↔ 2 has no RF loopback, but the I-frame was just
-            // handed to the radio. Hold this RR until that frame could have
-            // been transmitted; applying it now would write the next packet
-            // into a full UART ("failed to write whole buffer").
-            delivery.hold_local_ack(port, frame);
+        TncCommand::Session(_) => {
+            return Err(TncError::Protocol("unadapted session command".into()))
+        }
+        TncCommand::HostData { .. } => {
+            return Err(TncError::Protocol(
+                "hostmode data sent to KISS driver".into(),
+            ))
         }
         TncCommand::TerminalLine(line) => {
             if let Err(err) = link.write_terminal(&line) {
@@ -328,7 +291,7 @@ fn handle_command(
         TncCommand::Reinitialize => {
             if link.is_tcp() {
                 *link = KissLink::open(serial, tnc_cfg)?;
-                link.flush_input();
+                link.watch(events.clone());
                 let _ = events.blocking_send(TncEvent::Status(format!(
                     "TCP OPEN {} — KISS listen",
                     link.label()
@@ -340,16 +303,18 @@ fn handle_command(
                 }
             }
             let timing = load_kiss_params(tnc_cfg);
-            apply_kiss_params(link, 0, &timing, events);
+            apply_configured_params(link, tnc_cfg, &timing, events);
             publish_kiss_timing_banner(tnc_cfg, &timing, events);
         }
-        TncCommand::KissParam { cmd, arg } => match write_kiss_command(link, 0, cmd, arg) {
-            Ok(()) => {}
-            Err(err) => {
-                let name = kiss_ini::cmd_label(cmd);
-                let _ = events.blocking_send(TncEvent::Warning(format!("kiss {name}: {err}")));
+        TncCommand::KissParam { cmd, arg } => {
+            match write_kiss_command(link, tnc_cfg.kiss_port, cmd, arg) {
+                Ok(()) => {}
+                Err(err) => {
+                    let name = kiss_ini::cmd_label(cmd);
+                    let _ = events.blocking_send(TncEvent::Warning(format!("kiss {name}: {err}")));
+                }
             }
-        },
+        }
         TncCommand::QueryTiming => {
             let timing = load_kiss_params(tnc_cfg);
             publish_kiss_timing_banner(tnc_cfg, &timing, events);
@@ -362,50 +327,13 @@ fn handle_command(
     Ok(false)
 }
 
-/// Write one invented self-connect RR once the radio has had time to send
-/// the I-frame it acknowledges, then the next queued I-frame.
-fn release_local_ack(
-    link: &mut KissLink,
-    delivery: &mut KissDelivery,
-    events: &mpsc::Sender<TncEvent>,
-    hbaud: u32,
-) {
-    let Some(released) = delivery.poll_local_ack(Instant::now(), hbaud) else {
-        return;
-    };
-    if let Err(err) = write_kiss_data(link, released.ack.port, &released.ack.frame, events) {
-        let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
-    }
-    if let Some(out) = released.next {
-        if let Err(err) = write_kiss_data(link, out.port, &out.frame, events) {
-            let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
-        }
-    }
-}
-
 fn write_kiss_data(
     link: &mut KissLink,
     port: u8,
     payload: &[u8],
     events: &mpsc::Sender<TncEvent>,
 ) -> Result<(), TncError> {
-    let mut frame = Vec::with_capacity(payload.len() * 2 + 4);
-    frame.push(FEND);
-    frame.push(port << 4); // command 0 = data
-    for &b in payload {
-        match b {
-            FEND => {
-                frame.push(FESC);
-                frame.push(TFEND);
-            }
-            FESC => {
-                frame.push(FESC);
-                frame.push(TFESC);
-            }
-            other => frame.push(other),
-        }
-    }
-    frame.push(FEND);
+    let frame = encode_kiss(port, 0, payload)?;
     link.write_all(&frame)?;
     debug!(port, len = payload.len(), "tx kiss frame");
     let _ = events.blocking_send(TncEvent::KissTx {
@@ -417,11 +345,28 @@ fn write_kiss_data(
 
 /// TAPR host→TNC parameter frame: `FEND | (port<<4)|cmd | arg | FEND`.
 fn write_kiss_command(link: &mut KissLink, port: u8, cmd: u8, arg: u8) -> Result<(), TncError> {
-    let type_byte = (port << 4) | (cmd & 0x0F);
-    let frame = [FEND, type_byte, arg, FEND];
+    let frame = encode_kiss(port, cmd, &[arg])?;
     link.write_all(&frame)?;
     debug!(port, cmd, arg, "tx kiss param");
     Ok(())
+}
+
+fn encode_kiss(port: u8, command: u8, payload: &[u8]) -> Result<Vec<u8>, TncError> {
+    if port > 15 || command > 15 {
+        return Err(TncError::Protocol(
+            "KISS port and command must be 0..15".into(),
+        ));
+    }
+    let mut frame = vec![FEND];
+    for b in std::iter::once((port << 4) | command).chain(payload.iter().copied()) {
+        match b {
+            FEND => frame.extend_from_slice(&[FESC, TFEND]),
+            FESC => frame.extend_from_slice(&[FESC, TFESC]),
+            b => frame.push(b),
+        }
+    }
+    frame.push(FEND);
+    Ok(frame)
 }
 
 /// `[params]` when that section exists. Otherwise the old T/P/W lines.
@@ -465,6 +410,20 @@ fn apply_kiss_params(
     }
 }
 
+fn apply_configured_params(
+    link: &mut KissLink,
+    config: &TncConfig,
+    params: &[KissParam],
+    events: &mpsc::Sender<TncEvent>,
+) {
+    let ports: std::collections::BTreeSet<_> = std::iter::once(config.kiss_port)
+        .chain(config.channel_ports.iter().copied())
+        .collect();
+    for port in ports {
+        apply_kiss_params(link, port, params, events);
+    }
+}
+
 fn publish_kiss_timing_banner(
     tnc_cfg: &TncConfig,
     params: &[KissParam],
@@ -475,8 +434,15 @@ fn publish_kiss_timing_banner(
     } else {
         tnc_cfg.runtime_mycall.as_str()
     };
-    let lines = kiss_ini::open_lines(params);
-    let banner = wa8ded_ini::format_timing_banner(call, &[], &lines);
+    let settings = super::super::session::Settings::from_config(tnc_cfg);
+    let mut lines = kiss_ini::open_lines(params);
+    lines.push("O 1".into());
+    let replies = vec![
+        ("F".into(), settings.t1.as_secs().to_string()),
+        ("@T2".into(), "0".into()),
+        ("@T3".into(), settings.t3.as_secs().to_string()),
+    ];
+    let banner = wa8ded_ini::format_timing_banner(call, &replies, &lines);
     let _ = events.blocking_send(TncEvent::TimingBanner(banner.clone()));
     for line in banner.split('\r').filter(|l| !l.is_empty()) {
         let _ = events.blocking_send(TncEvent::Status(format!("*** {line}")));
@@ -507,13 +473,7 @@ fn drain_text_lines(buf: &[u8], events: &mpsc::Sender<TncEvent>) -> usize {
 }
 
 /// Pull complete KISS frames (`FEND … FEND`) from the stream.
-/// Returned frames are I-frames released by an acknowledgement.
-fn drain_kiss_frames(
-    stream: &mut Vec<u8>,
-    delivery: &mut KissDelivery,
-    events: &mpsc::Sender<TncEvent>,
-) -> Vec<Outgoing> {
-    let mut released = Vec::new();
+fn drain_kiss_frames(stream: &mut Vec<u8>, events: &mpsc::Sender<TncEvent>) {
     loop {
         if let Some(start) = stream.iter().position(|&b| b == FEND) {
             if start > 0 {
@@ -528,41 +488,43 @@ fn drain_kiss_frames(
             if stream.len() > MAX_TEXT_PENDING {
                 stream.clear();
             }
-            return released;
+            return;
         }
         if stream.len() < 2 {
-            return released;
+            return;
         }
         let Some(end) = stream[1..].iter().position(|&b| b == FEND) else {
-            return released;
+            return;
         };
         let end = end + 1;
         let raw = stream[1..end].to_vec();
-        stream.drain(..=end);
+        stream.drain(..end);
 
         if raw.is_empty() {
             continue;
         }
-        let Some((port, payload)) = unescape_kiss(&raw) else {
-            continue;
+        let (port, payload) = match unescape_kiss(&raw) {
+            Ok(Some(packet)) => packet,
+            Ok(None) => continue,
+            Err(reason) => {
+                let _ = events.blocking_send(TncEvent::Warning(format!(
+                    "malformed KISS frame: {reason}; {}B {raw:02X?}",
+                    raw.len()
+                )));
+                continue;
+            }
         };
-        let next = delivery.on_rx(&payload, Instant::now());
         let _ = events.blocking_send(TncEvent::HostFrame {
             channel: port,
             code: HostCode::Data,
             payload,
         });
-        if let Some(out) = next {
-            released.push(out);
-        }
     }
 }
 
-fn unescape_kiss(raw: &[u8]) -> Option<(u8, Vec<u8>)> {
-    let type_byte = *raw.first()?;
-    let port = type_byte >> 4;
-    let mut out = Vec::with_capacity(raw.len().saturating_sub(1));
-    let mut i = 1;
+fn unescape_kiss(raw: &[u8]) -> Result<Option<(u8, Vec<u8>)>, &'static str> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
     while i < raw.len() {
         match raw[i] {
             FESC => {
@@ -570,12 +532,169 @@ fn unescape_kiss(raw: &[u8]) -> Option<(u8, Vec<u8>)> {
                 match raw.get(i) {
                     Some(&TFEND) => out.push(FEND),
                     Some(&TFESC) => out.push(FESC),
-                    _ => return None,
+                    _ => return Err("invalid or incomplete escape"),
                 }
             }
             b => out.push(b),
         }
         i += 1;
     }
-    Some((port, out))
+    let (&type_byte, payload) = out.split_first().ok_or("missing type byte")?;
+    if type_byte & 0x0F != 0 {
+        return Ok(None);
+    }
+    Ok(Some((type_byte >> 4, payload.to_vec())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kiss_multiport_type_and_parameter_bytes_are_escaped() {
+        let encoded = encode_kiss(12, 0, &[FEND, FESC, 7]).unwrap();
+        assert_eq!(
+            encoded,
+            [FEND, FESC, TFEND, FESC, TFEND, FESC, TFESC, 7, FEND]
+        );
+        assert_eq!(
+            unescape_kiss(&encoded[1..encoded.len() - 1]),
+            Ok(Some((12, vec![FEND, FESC, 7])))
+        );
+        assert_eq!(
+            encode_kiss(2, 1, &[FEND]).unwrap(),
+            [FEND, 0x21, FESC, TFEND, FEND]
+        );
+        assert!(encode_kiss(16, 0, b"").is_err());
+    }
+
+    #[test]
+    fn kiss_shared_delimiter_and_fragmented_frames_preserve_radio_ports() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut stream = encode_kiss(12, 0, b"one").unwrap();
+        stream.extend_from_slice(&encode_kiss(3, 0, b"two").unwrap()[1..]);
+        let tail = stream.split_off(stream.len() - 2);
+        drain_kiss_frames(&mut stream, &tx);
+        assert!(
+            matches!(rx.try_recv().unwrap(), TncEvent::HostFrame { channel: 12, payload, .. } if payload == b"one")
+        );
+        assert!(rx.try_recv().is_err());
+        stream.extend_from_slice(&tail);
+        drain_kiss_frames(&mut stream, &tx);
+        assert!(
+            matches!(rx.try_recv().unwrap(), TncEvent::HostFrame { channel: 3, payload, .. } if payload == b"two")
+        );
+    }
+
+    #[test]
+    fn kiss_parameter_replies_are_not_delivered_as_ax25_packets() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut stream = encode_kiss(1, 2, b"not data").unwrap();
+        stream.extend_from_slice(&encode_kiss(1, 0, b"data").unwrap());
+        drain_kiss_frames(&mut stream, &tx);
+        assert!(
+            matches!(rx.try_recv().unwrap(), TncEvent::HostFrame { channel: 1, payload, .. } if payload == b"data")
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(unescape_kiss(&[0, FESC, 0]).is_err());
+    }
+
+    #[tokio::test]
+    async fn kiss_tcp_preserves_startup_rx_bursts_and_reports_each_successful_tx() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let packet = crate::tnc::ax25::build_ui("CQ", "N1TEST", &[], b"early\xDB\xC0");
+        let outgoing = packet.clone();
+        let incoming = packet.clone();
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut burst = Vec::new();
+            for index in 0..72 {
+                burst.extend_from_slice(&encode_kiss(index % 16, 0, &incoming).unwrap());
+            }
+            burst.extend_from_slice(&[FEND, 0, FESC, 1, FEND]);
+            burst.extend_from_slice(&encode_kiss(12, 0, b"undecodable").unwrap());
+            socket.write_all(&burst).unwrap();
+            let mut written = Vec::new();
+            socket.read_to_end(&mut written).unwrap();
+            written
+        });
+        let config = TncConfig {
+            protocol: "kiss".into(),
+            kiss_transport: "tcp".into(),
+            kiss_tcp_host: "127.0.0.1".into(),
+            kiss_tcp_port: port,
+            ..TncConfig::default()
+        };
+        let (events, mut rx) = mpsc::channel(8);
+        let (commands, commands_rx) = mpsc::channel(8);
+        let driver = tokio::task::spawn_blocking(move || {
+            run(SerialConfig::default(), config, events, commands_rx)
+        });
+        for _ in 0..2 {
+            commands
+                .send(TncCommand::HostFrame {
+                    channel: 12,
+                    data: outgoing.clone(),
+                })
+                .await
+                .unwrap();
+        }
+        let mut received = Vec::new();
+        let mut transmitted = Vec::new();
+        let mut warnings = Vec::new();
+        let completed = tokio::time::timeout(Duration::from_secs(3), async {
+            while received.len() < 73 || transmitted.len() < 2 || warnings.is_empty() {
+                match rx.recv().await.unwrap() {
+                    TncEvent::HostFrame {
+                        channel,
+                        code: HostCode::Data,
+                        payload,
+                    } => {
+                        received.push((channel, payload));
+                    }
+                    TncEvent::KissTx { port, frame } => transmitted.push((port, frame)),
+                    TncEvent::Warning(reason) => warnings.push(reason),
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        commands.send(TncCommand::Shutdown).await.unwrap();
+        // Drain shutdown events too: a full observer queue must not stall cleanup.
+        while rx.recv().await.is_some() {}
+        driver.await.unwrap().unwrap();
+        let written = peer.join().unwrap();
+
+        assert!(
+            completed.is_ok(),
+            "RX={}, TX={}, warnings={warnings:?}",
+            received.len(),
+            transmitted.len()
+        );
+        let mut expected: Vec<_> = (0..72).map(|index| (index % 16, packet.clone())).collect();
+        expected.push((12, b"undecodable".to_vec()));
+        assert_eq!(received, expected);
+        assert_eq!(
+            transmitted,
+            vec![(12, outgoing.clone()), (12, outgoing.clone())]
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("malformed KISS frame"));
+        let written_packets: Vec<_> = written
+            .split(|b| *b == FEND)
+            .filter(|raw| !raw.is_empty())
+            .filter_map(|raw| unescape_kiss(raw).unwrap())
+            .collect();
+        assert_eq!(
+            written_packets,
+            vec![(12, outgoing.clone()), (12, outgoing)]
+        );
+    }
 }

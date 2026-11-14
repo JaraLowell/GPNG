@@ -35,6 +35,7 @@ toml = "0.8"
 
 # Cross-platform USB-to-serial / classic COM-port access for TNCs.
 serialport = "4"
+libftd2xx = { version = "0.33", features = ["static"] }
 
 # Ergonomic error propagation for I/O and config loading.
 thiserror = "2"

@@ -25,11 +25,15 @@ use ratatui::Terminal;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::config::{Config, HostProtocol};
+use crate::config::Config;
 use crate::remote::commands::{parse_line, RemoteAction};
-use crate::tnc::{pack_text_payloads, HostCode, TncCommand, TncEvent};
+use crate::tnc::{
+    ax25, pack_text_payloads, ChannelConfig, HostCode, SessionCommand, SessionEvent, TncCommand,
+    TncEvent,
+};
 
 use super::beacon::{self, BeaconSnap};
+use super::channel_bits::{ChannelBits, SLOT_MONITOR};
 use super::icons::{IconLibrary, TOOLBAR_LABELS};
 use super::layout::{compute, toolbar_caption, ActivePane, PaneRects, SplitState};
 use super::theme::Theme;
@@ -153,6 +157,12 @@ impl UiApp {
 
     pub fn handle_tnc_event(&mut self, ev: TncEvent) {
         match ev {
+            TncEvent::Session(SessionEvent::Data { channel, data, .. }) => {
+                if let Some(pad) = self.pads.get_mut(usize::from(channel)) {
+                    pad.push(String::from_utf8_lossy(&data).into_owned());
+                }
+            }
+            TncEvent::Session(event) => self.status = format!("{event:?}"),
             TncEvent::Status(msg) => self.status = msg,
             TncEvent::TimingBanner(banner) => {
                 self.status = "timing parameters".into();
@@ -160,7 +170,10 @@ impl UiApp {
                     self.pads[0].push(format!("*** {line}"));
                 }
             }
-            TncEvent::Warning(msg) => self.status = format!("! {msg}"),
+            TncEvent::Warning(msg) => {
+                self.status = format!("! {msg}");
+                self.pads[0].push(format!("*** {msg}"));
+            }
             TncEvent::LinkDown(msg) => {
                 self.status = format!("link down: {msg}");
                 self.pads[0].push(format!("*** link down: {msg}"));
@@ -170,15 +183,27 @@ impl UiApp {
             }
             TncEvent::LinkIo { .. } => {}
             TncEvent::Buffers(_) => {}
-            TncEvent::KissTx { .. } => {}
+            TncEvent::KissTx { port, frame } => {
+                self.monitor_kiss_packet("TX", port, &frame);
+            }
             TncEvent::HostFrame {
                 channel,
                 code,
                 payload,
             } => {
+                if self.cfg.tnc.protocol_kind().uses_software_ax25()
+                    && matches!(code, HostCode::Data)
+                {
+                    self.monitor_kiss_packet("RX", channel, &payload);
+                    return;
+                }
                 let text = String::from_utf8_lossy(&payload).to_string();
                 let line = match code {
-                    HostCode::Monitor => format!("[MON] {text}"),
+                    HostCode::Monitor | HostCode::MonitorHeader | HostCode::MonitorData => {
+                        format!("[MON] {text}")
+                    }
+                    HostCode::CommandReply => format!("[CMD] {text}"),
+                    HostCode::Error => format!("[ERROR] {text}"),
                     HostCode::Data => format!("[DATA] {text}"),
                     HostCode::LinkStatus => format!("[LINK] {text}"),
                     HostCode::Ok => return,
@@ -198,6 +223,27 @@ impl UiApp {
                     self.status = format!("traffic on {}", target.label());
                 }
             }
+        }
+    }
+
+    fn monitor_kiss_packet(&mut self, direction: &str, port: u8, raw: &[u8]) {
+        let Some(frame) = ax25::parse_frame(raw) else {
+            self.pads[0].push(format!(
+                "[{direction}] {}",
+                super::session::kiss_monitor_fallback(port, raw)
+            ));
+            return;
+        };
+        self.pads[0].push(format!(
+            "[{direction}] {}",
+            ax25::tag_kiss_port(&frame.monitor_line(), port)
+        ));
+        let body = ax25::bytes_to_monitor_body(
+            &frame.info,
+            ChannelBits::new(self.cfg.session.chrome.umlaut).get(SLOT_MONITOR),
+        );
+        if !body.is_empty() {
+            self.pads[0].push(format!("   {body}"));
         }
     }
 
@@ -223,7 +269,8 @@ impl UiApp {
                         self.cfg.session.qrg_text.clone()
                     };
                     self.status = beacon::send_now(&BeaconSnap {
-                        kiss: self.cfg.tnc.protocol_kind() == HostProtocol::Kiss,
+                        kiss: self.cfg.tnc.protocol_kind().uses_software_ax25(),
+                        port: self.cfg.tnc.kiss_port,
                         beacon: self.cfg.beacon.clone(),
                         my_call: self.cfg.primary_mycall().to_string(),
                         qrg,
@@ -287,10 +334,31 @@ impl UiApp {
         };
         let max = self.cfg.buffers.packet_payload.max(1) as usize;
         for chunk in pack_text_payloads(&line, max) {
-            let _ = cmd_tx.try_send(TncCommand::HostFrame {
-                channel,
-                data: chunk.into_bytes(),
-            });
+            let command = if channel != 0 {
+                TncCommand::Session(SessionCommand::Send {
+                    channel,
+                    data: chunk.into_bytes(),
+                    id: None,
+                })
+            } else if self.cfg.tnc.protocol_kind().uses_software_ax25() {
+                let (remote, via) = crate::tnc::ax25::parse_unproto(&self.cfg.beacon.address);
+                TncCommand::Session(SessionCommand::Unproto {
+                    port: self.cfg.tnc.kiss_port,
+                    local: self.cfg.primary_mycall().into(),
+                    remote,
+                    via,
+                    data: chunk.into_bytes(),
+                })
+            } else {
+                TncCommand::HostFrame {
+                    channel,
+                    data: chunk.into_bytes(),
+                }
+            };
+            if let Err(err) = cmd_tx.try_send(command) {
+                self.status = format!("radio command not queued: {err}");
+                break;
+            }
         }
     }
 
@@ -623,19 +691,24 @@ pub fn run(
     mut events: mpsc::Receiver<TncEvent>,
     cmd_tx: mpsc::Sender<TncCommand>,
 ) -> Result<()> {
+    let mut app = UiApp::new(cfg);
+    cmd_tx
+        .blocking_send(TncCommand::Session(SessionCommand::Configure(
+            (1..=app.channels)
+                .map(|channel| ChannelConfig {
+                    channel,
+                    port: app.cfg.tnc.channel_port(channel),
+                    local: app.cfg.mycall_for_slot(channel).into(),
+                })
+                .collect(),
+        )))
+        .map_err(|err| anyhow::anyhow!("radio session configuration: {err}"))?;
+
     enable_raw_mode()?;
     let mut out: Stdout = stdout();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
-
-    let mut app = UiApp::new(cfg);
-
-    let mycall = app.cfg.primary_mycall().to_string();
-    let _ = cmd_tx.blocking_send(TncCommand::HostFrame {
-        channel: 0,
-        data: format!("I {mycall}").into_bytes(),
-    });
 
     info!("TUI online — click channels/toolbar; ALT-X or Ctrl-C to quit");
 
@@ -695,6 +768,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kiss_rx_and_tx_use_monitor_not_logical_channel_pads() {
+        let mut cfg = Config::default();
+        cfg.tnc.protocol = "kiss".into();
+        let mut app = UiApp::new(cfg);
+        app.pads[0].lines.clear();
+        let frames = [
+            ax25::build_ui("CQ", "N1TEST", &[], b"hello\x00\xDB\xC0"),
+            ax25::build_rr("N0ME", "N1TEST", 3, true, false),
+            vec![0x01, 0xDB, 0xC0],
+        ];
+        for port in [0, 3, 12] {
+            for frame in &frames {
+                app.handle_tnc_event(TncEvent::HostFrame {
+                    channel: port,
+                    code: HostCode::Data,
+                    payload: frame.clone(),
+                });
+                app.handle_tnc_event(TncEvent::KissTx {
+                    port,
+                    frame: frame.clone(),
+                });
+            }
+        }
+        for direction in ["RX", "TX"] {
+            assert_eq!(
+                app.pads[0]
+                    .lines
+                    .iter()
+                    .filter(|line| line.starts_with(&format!("[{direction}]")))
+                    .count(),
+                9
+            );
+        }
+        assert!(app.pads[0]
+            .lines
+            .iter()
+            .any(|line| line.contains("fm12 N1TEST")));
+        assert!(app.pads[0]
+            .lines
+            .iter()
+            .any(|line| line.contains("01 DB C0")));
+        assert!(app.pads.iter().skip(1).all(|pad| pad.lines.is_empty()));
+    }
+
+    #[test]
     fn alt_a_sends_beacon_and_alt_b_toggles_scrollbar() {
         let mut cfg = Config::default();
         cfg.tnc.protocol = "kiss".into();
@@ -702,14 +820,13 @@ mod tests {
         let mut app = UiApp::new(cfg);
         let (tx, mut rx) = mpsc::channel(2);
         app.on_key(KeyCode::Char('a'), KeyModifiers::ALT, &tx);
-        let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
-            panic!("expected beacon frame");
+        let TncCommand::Session(SessionCommand::Unproto { port, data, .. }) =
+            rx.try_recv().unwrap()
+        else {
+            panic!("expected unproto request");
         };
-        assert_eq!(channel, 0);
-        assert_eq!(
-            crate::tnc::ax25::parse_frame(&data).unwrap().info,
-            b"Test beacon"
-        );
+        assert_eq!(port, 0);
+        assert_eq!(data, b"Test beacon");
         assert!(app.scrollbar);
         app.on_key(KeyCode::Char('b'), KeyModifiers::ALT, &tx);
         assert!(!app.scrollbar);

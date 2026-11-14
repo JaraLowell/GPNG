@@ -4,13 +4,12 @@
 //! payload (see your Python `ser.write(b'\x00\x01…')` sequences).
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use super::hostmode::{self, sync_datetime, write_host_frame, HostCode};
-use super::serial::SerialLink;
+use super::hostmode::{exchange, expand_command, HostCode, HostIo};
 use super::{TncError, TncEvent};
 
 pub fn resolve_wa8ded_ini(configured: &str) -> PathBuf {
@@ -31,16 +30,15 @@ pub fn expand_placeholders(line: &str, monitor_mode: &str) -> String {
 ///
 /// Returns collected reply payloads for `[status]` queries (F / @T2 / @T3…).
 pub fn apply_section(
-    link: &mut SerialLink,
+    link: &mut impl HostIo,
+    stream: &mut Vec<u8>,
     path: &Path,
     section: &str,
     line_delay_ms: u64,
     monitor_mode: &str,
     events: Option<&mpsc::Sender<TncEvent>>,
 ) -> Result<Vec<(String, String)>, TncError> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| TncError::Protocol(format!("wa8ded ini {}: {e}", path.display())))?;
-    let lines = extract_section(&text, section).ok_or_else(|| {
+    let lines = read_section(path, section)?.ok_or_else(|| {
         TncError::Protocol(format!(
             "wa8ded ini {}: section [{section}] not found",
             path.display()
@@ -64,7 +62,6 @@ pub fn apply_section(
     });
 
     let mut replies = Vec::new();
-    let mut stream = Vec::new();
 
     for raw in &lines {
         let cmd = expand_placeholders(raw.trim(), monitor_mode);
@@ -76,28 +73,23 @@ pub fn apply_section(
                 .ok()
         });
 
-        if cmd.eq_ignore_ascii_case("DateTime") {
-            sync_datetime(link)?;
-        } else if cmd.eq_ignore_ascii_case("JHOST0") {
-            // Hostmode leave: frame + ASCII fallback (classic GP).
-            let _ = write_host_frame(link, 0, b"JHOST0");
-            let _ = link.write_terminal("JHOST0");
-        } else {
-            write_host_frame(link, 0, cmd.as_bytes())?;
-        }
-
-        let reply = wait_reply(link, &mut stream, events, line_delay_ms);
-        if let Some(text) = reply {
+        for wire in expand_command(&cmd) {
+            let reply = exchange(link, stream, 0, true, wire.as_bytes(), events)?;
+            let text = String::from_utf8_lossy(&reply.payload).into_owned();
+            if !matches!(reply.code, HostCode::Ok | HostCode::CommandReply) {
+                return Err(TncError::Protocol(format!(
+                    "{wire}: {:?} {text}",
+                    reply.code
+                )));
+            }
             let _ = events.and_then(|e| {
                 e.blocking_send(TncEvent::Status(format!("wa8ded RX ‹ {text}")))
                     .ok()
             });
-            replies.push((cmd.to_string(), text));
-        } else {
-            let _ = events.and_then(|e| {
-                e.blocking_send(TncEvent::Status("wa8ded RX ‹ (no reply)".into()))
-                    .ok()
-            });
+            replies.push((wire, text));
+            if line_delay_ms > 0 {
+                std::thread::sleep(Duration::from_millis(line_delay_ms));
+            }
         }
         debug!(cmd, "wa8ded ini line done");
     }
@@ -157,63 +149,6 @@ pub fn timing_banner_fallback(mycall: &str, open_or_init: &[String], monitor_mod
     format_timing_banner(mycall, &[], &open)
 }
 
-fn wait_reply(
-    link: &mut SerialLink,
-    stream: &mut Vec<u8>,
-    events: Option<&mpsc::Sender<TncEvent>>,
-    wait_ms: u64,
-) -> Option<String> {
-    let deadline = Instant::now() + Duration::from_millis(wait_ms.max(50));
-    let mut buf = [0u8; 256];
-    let mut got: Option<String> = None;
-
-    while Instant::now() < deadline {
-        match link.try_read(&mut buf) {
-            Ok(0) => std::thread::sleep(Duration::from_millis(15)),
-            Ok(n) => {
-                let chunk = &buf[..n];
-                if let Some(e) = events {
-                    let _ = e.blocking_send(TncEvent::RawRx(chunk.to_vec()));
-                }
-                stream.extend_from_slice(chunk);
-                // Pull frames; keep last Data/Ok payload as the "readline" text.
-                loop {
-                    if stream.len() < 3 {
-                        break;
-                    }
-                    let len = stream[2] as usize;
-                    if stream.len() < 3 + len {
-                        break;
-                    }
-                    let code = HostCode::from_u8(stream[1]);
-                    let payload = stream[3..3 + len].to_vec();
-                    stream.drain(..3 + len);
-                    if let Some(e) = events {
-                        let _ = e.blocking_send(TncEvent::HostFrame {
-                            channel: 0,
-                            code,
-                            payload: payload.clone(),
-                        });
-                    }
-                    if matches!(code, HostCode::Data | HostCode::Ok | HostCode::Other(_))
-                        && !payload.is_empty()
-                    {
-                        let s = String::from_utf8_lossy(&payload)
-                            .trim_matches(|c: char| c == '\0' || c.is_whitespace())
-                            .to_string();
-                        if !s.is_empty() {
-                            got = Some(s);
-                        }
-                    }
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    // Prefer a successful reply; Ok with empty payload is common for SETs.
-    got
-}
-
 fn extract_section(text: &str, section: &str) -> Option<Vec<String>> {
     let want = section.trim().to_ascii_lowercase();
     let mut in_section = false;
@@ -271,7 +206,8 @@ pub fn section_lines(path: &Path, section: &str) -> Vec<String> {
     extract_section(&text, section).unwrap_or_default()
 }
 
-#[allow(dead_code)]
-pub fn apply_command_list_fallback(link: &mut SerialLink, cmds: &[String]) -> Result<(), TncError> {
-    hostmode::apply_command_list(link, cmds)
+pub fn read_section(path: &Path, section: &str) -> Result<Option<Vec<String>>, TncError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| TncError::Protocol(format!("wa8ded ini {}: {e}", path.display())))?;
+    Ok(extract_section(&text, section))
 }

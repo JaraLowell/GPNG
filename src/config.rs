@@ -1320,7 +1320,7 @@ pub struct TncConfig {
     pub deinit: Vec<String>,
     /// Legacy `TNCDOS` rows (applied around an external shell).
     pub dos_shell: Vec<String>,
-    /// `"wa8ded"` / `"jhost"`, `"tfpcx"`, or `"kiss"`.
+    /// `"wa8ded"` / `"jhost"` (TNC2 TheFirmware), `"tfpcx"`, `"kiss"`, or `"baycom"` (hardware unavailable).
     pub protocol: String,
     /// KISSINIT-style file (default `KISS.INI`) — used when `protocol = "kiss"`.
     pub kiss_ini: String,
@@ -1346,6 +1346,11 @@ pub struct TncConfig {
     pub kiss_tcp_host: String,
     /// TCP KISS port — UZ7HO Soundmodem often `8100`, Direwolf `8001`.
     pub kiss_tcp_port: u16,
+    /// KISS radio port for monitor/unproto and modem parameters (0..15).
+    pub kiss_port: u8,
+    /// KISS radio port per terminal channel, starting at channel 1.
+    /// Missing entries use `kiss_port`. Hostmode adapters currently require port 0.
+    pub channel_ports: Vec<u8>,
     /// Filled at load from `[station].mycall` for the timing banner (not in TOML).
     #[serde(skip)]
     pub runtime_mycall: String,
@@ -1370,16 +1375,26 @@ impl Default for TncConfig {
             kiss_transport: "serial".into(),
             kiss_tcp_host: "127.0.0.1".into(),
             kiss_tcp_port: 8100,
+            kiss_port: 0,
+            channel_ports: Vec::new(),
             runtime_mycall: String::new(),
         }
     }
 }
 
 impl TncConfig {
+    pub fn channel_port(&self, channel: u8) -> u8 {
+        channel
+            .checked_sub(1)
+            .and_then(|i| self.channel_ports.get(usize::from(i)).copied())
+            .unwrap_or(self.kiss_port)
+    }
+
     pub fn protocol_kind(&self) -> HostProtocol {
-        match self.protocol.to_ascii_lowercase().as_str() {
+        match self.protocol.trim().to_ascii_lowercase().as_str() {
             "tfpcx" => HostProtocol::Tfpcx,
             "kiss" => HostProtocol::Kiss,
+            "baycom" => HostProtocol::Baycom,
             // `wa8ded`, `jhost`, `hostmode`, or anything else → WA8DED.
             _ => HostProtocol::Wa8ded,
         }
@@ -1400,12 +1415,20 @@ impl TncConfig {
 /// Which modem driver to construct at startup (only one is loaded).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostProtocol {
-    /// Classic WA8DED binary hostmode + timed poll (`JHOST1` / `JHOST0`).
+    /// WA8DED TNC2 / NORD><LINK TheFirmware hostmode (`JHOST1` / `JHOST0`).
     Wa8ded,
-    /// TFPCX soft-TNC (BayCom-class); WA8DED-compatible framing.
+    /// Legacy TFPCX hostmode path; not direct BayCom hardware support.
     Tfpcx,
     /// TAPR KISS over serial or TCP (`FEND` / `FESC`).
     Kiss,
+    /// Experimental FT232R direct-USB BayCom ser12 backend (1200 bit/s).
+    Baycom,
+}
+
+impl HostProtocol {
+    pub fn uses_software_ax25(self) -> bool {
+        matches!(self, Self::Kiss | Self::Baycom)
+    }
 }
 
 fn default_white_name() -> String {

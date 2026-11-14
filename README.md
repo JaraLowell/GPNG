@@ -13,8 +13,10 @@ as expected. KISS is currently being tested; the WA8DED and TFPCX drivers are
 not yet tested on hardware.
 
 Day-to-day settings no longer need a hand-edited config for normal use. On
-startup the **Radio setup** card picks callsign, protocol (KISS / WA8DED /
-TFPCX), serial port and baud, or TCP host and port for Soundmodem / Direwolf.
+startup the **Radio setup** card picks callsign, protocol (**KISS** /
+**TAPR TNC-2 WA8DED** / **Baycom** / **TFPCX**), serial port and baud, or TCP
+host and port for Soundmodem / Direwolf. Baycom can be selected and saved, but
+its hardware connection is explicitly unavailable and Apply is disabled.
 **Use this** opens the link and writes those values back. Inside the session,
 **ALT-U** / the **SETUP** icon opens Program parameters for the current
 window (colours, remote, echo, bells, beacon, language, packet length, and
@@ -35,7 +37,7 @@ hostmode TNC-Statistics, and a few transfer resume paths). Mail is closer to
 | Path | Role |
 |------|------|
 | `src/config.rs` | Typed `Config` + `Config.toml` persistence; maps legacy `CONFIG.GP` keys. Operators change most values from Radio setup and ALT-U |
-| `src/tnc/` | Modem drivers — WA8DED / TFPCX / KISS serial or TCP (chosen on the startup Radio setup card, stored as `[tnc] protocol`) |
+| `src/tnc/` | Modem drivers — WA8DED / TFPCX / KISS serial or TCP / experimental FT232R BayCom (selected in Radio setup, stored as `[tnc] protocol`) |
 | `src/ui/` | Pixel UI (egui): startup Radio setup, ALT-U Program parameters, session chrome. `--tui` is the thinner text UI |
 | `docs/LAYOUT.md` | Pane map from V1.63 screenshot + docs |
 | `docs/ICONS.md` | Decoded `ICONS.GP` format (70×40 planar VGA, 17 icons) |
@@ -82,7 +84,7 @@ cargo run -- --tui
    active window. Colours, remote, echo, bells, beacon (on Monitor), language,
    packet length, and related rows write back when you leave with **Use these
    values**.
-4. Press **ALT-A** to send the configured beacon immediately in KISS mode,
+4. Press **ALT-A** to send the configured beacon immediately in KISS or Baycom mode,
    even when its period is zero. This does not reset the automatic timer.
    The DOS icon in the pixel UI sends the beacon too.
 5. Press **ALT-S** to use the current window's **SAVE** action, including
@@ -117,9 +119,89 @@ Only **one** modem driver is constructed when you confirm Radio setup (stored as
 
 | `protocol` | Driver | Notes |
 |------------|--------|-------|
-| `wa8ded` (aliases `jhost`, `hostmode`) | Timed WA8DED hostmode poll | L2 lives in the TNC; host sends `I`/`C`/`D` hostmode. `JHOST1` → `WA8DED.INI`; exit `[close]`; poll `G0` |
-| `tfpcx` | Soft-TNC hostmode | Same hostmode framing; more host-side L2 later (deferred — no BayCom on hand) |
 | `kiss` | TAPR KISS | Host builds AX.25 via the [`ax25`](https://crates.io/crates/ax25) crate; `FEND`/`FESC`; serial **or** TCP (`kiss_transport`) |
+| `wa8ded` (aliases `jhost`, `hostmode`) | TAPR TNC-2 WA8DED (NORD><LINK TheFirmware) | L2 lives in the TNC; typed command/data requests, extended `G` polling with classic fallback; `WA8DED.INI` open/status/close sections |
+| `baycom` | Baycom | Experimental FT232R direct USB, 1200 bit/s ser12; shared software AX.25 |
+| `tfpcx` | TFPCX | Legacy hostmode path, retained for later review; not a Kantronics KPC driver |
+
+The **WA8DED TNC2** driver targets TNC2 modems running NORD><LINK/TheFirmware.
+The existing `wa8ded`, `jhost`, and `hostmode` configuration names remain valid.
+TNC3-specific behavior is outside this target; add a separate driver if TNC3
+support is requested rather than mixing its extensions into the TNC2 driver.
+
+The implementation follows the supplied TF2.7/TNC2 source and TF2.6 command
+reference, checked against serial captures and the earlier Python implementation:
+
+- Startup expects **terminal mode**, sends the escape/JHOST1 sequence, and
+  requires a binary version reply before initialization. The GUI becomes ready
+  only after successful setup; wrong baud, rejected setup, and missing replies
+  are errors. After a crash that leaves the TNC in hostmode, restart the modem
+  into terminal mode before reconnecting; existing RF sessions are not resumed.
+- Host requests are `channel | command/data | length-minus-one | payload`.
+  Command is `01`, data is `00`, and payloads contain 1..256 bytes. Success
+  replies are two bytes; response types 1..5 are NUL-terminated, while 6/7 carry
+  length-minus-one binary data. Serial read boundaries do not delimit replies.
+- Only one request is outstanding. An ambiguous timeout stops the driver
+  without replaying a possibly accepted data block. Firmware rejection is
+  reported, not silently counted as delivery; rejected identity/range setup
+  stops the driver before queued connections can use incorrect settings.
+- Extended `FF 01 00 47` polling discovers pending logical channels, including
+  monitor channel 0. Firmware rejecting extended polling falls back to `G`
+  on channels 0..10. `@B` and per-channel `L` counters are queried separately;
+  `@B` is the firmware's buffer count, **not free bytes of RAM**.
+- Channel numbers are binary: logical channel 10 is `0A`, advertised as `0B`
+  in an extended pending-channel list. The earlier field report requiring `10`
+  is unresolved; this driver follows the supplied firmware, without a guessed
+  remapping. Physical-radio selection is limited to port 0.
+- Incoming connects are disabled during setup, then enabled by the configured
+  logical-channel range after channel identities are set. Identity changes
+  temporarily disable incoming connects too. Per-channel callsigns are restored after global
+  `I`/`F`/`N`/`O` commands reset idle firmware link blocks. `[open]` disables
+  firmware connect text (`U0`) because the application supplies it.
+- Close runs `[close]` and acknowledges `JHOST0` last. If no INI exists,
+  `init[]`/`deinit[]` are used; an existing INI must contain `[open]` and `[close]`.
+  Missing optional `[status]` uses `F`, `@T2`, and `@T3`.
+
+Automated tests exercise the real driver and shared session service against a
+fragmenting simulated TNC: simultaneous channels 1 and 10, connect/disconnect,
+binary RX, 256-byte TX, monitor header/body, counters, classic polling fallback,
+and rejected initialization/identity setup. This is **not physical-modem or
+on-air interoperability certification**. Hostmode RF delivery receipts for file
+transfers and structured unproto/beacon requests remain unavailable; TFPCX has
+not received equivalent driver-level validation.
+
+### BayCom (experimental FT232R USB backend)
+
+BayCom is separate from the existing TFPCX hostmode driver. The in-project
+Rust core in `src/tnc/baycom.rs` has no Linux kernel-driver dependency. Linux
+v6.6's [BayCom hardware driver](https://github.com/torvalds/linux/blob/v6.6/drivers/net/hamradio/baycom_ser_hdx.c)
+and [HDLC driver](https://github.com/torvalds/linux/blob/v6.6/drivers/net/hamradio/hdlcdrv.c)
+serve as behavioral references only:
+
+- Streaming HDLC flags, bit stuffing, AX.25 FCS, and NRZI helpers.
+- Bounded RX and TX buffering, with explicit corruption/overflow/full errors.
+- One FIFO per physical radio shared by all logical channels, carrier sensing,
+  slotted p-persistence, flag preamble/tail, PTT confirmation and RX turnaround.
+- Explicit physical-transmit completion, distinct from an RF acknowledgement;
+  failed active frames are reported and not automatically replayed.
+
+The backend uses FTDI D2XX hardware-clocked GPIO, CTS clock recovery, and
+buffered NRZI transmission. Select **Baycom**, the exact serial port or
+`FTDI:<USB-serial-number>` device, and **1200 bit/s**. One physical radio
+(port 0) supports multiple logical AX.25 connections through the same session
+engine as KISS. Incoming valid frames and completed outgoing bursts reach the
+normal monitor; local completion is not an RF acknowledgement.
+
+Only full-handshake **FT232R/FT232RL RS232** adapters are targeted. PL2303,
+TTL-only cables, three-wire adapters and 9600-bit/s BayCom hardware are not
+supported. Generic COM-byte I/O cannot provide this interface.
+
+Read [BayCom hardware, platform-driver setup and safe field tests](docs/BAYCOM.md)
+before connecting a transmitter. The D2XX dependency targets Windows, macOS
+and Linux, but validation so far is Windows x64 compilation and simulation,
+**not physical-modem or on-air testing on any OS**. USB sampling gaps are not
+fully observable; wiring, polarity, power, timing and driver ownership still
+need bench verification. TFPCX remains separate and unchanged.
 
 ### KISS transport
 
@@ -149,12 +231,61 @@ KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` str
 |------|-------|-----------|
 | Monitor (unproto) | UI | `MYCALL` → `CQ` |
 | Channel connect | SABM → peer; answer SABM with **UA** (or **DM** if busy) | `MYCALL` ↔ peer |
-| Channel linked | I (+ RR on RX); idle **RR poll every 5 min**, drop after 3×30 s no reply | `MYCALL` ↔ peer |
+| Channel linked | I (+ RR on RX); idle **RR poll every 5 min**, T1 from Frack (default 5 s), 10 retries | `MYCALL` ↔ peer |
 | Channel hangup | DISC (+ UA on peer DISC) | |
+
+### Sessions, radio ports, and channels
+
+The GUI sends channel-level connect, disconnect, and data requests to a shared
+session service. For KISS, that service owns AX.25 modulo-8 sequencing, queued
+data, acknowledgements, busy/retry recovery, and per-channel counters. The KISS
+driver only transports frames. WA8DED/TFPCX adapters expose the same session
+events while leaving RF AX.25 control inside the TNC; host-command acceptance
+is **not** treated as an RF acknowledgement.
+
+KISS receive frames are sent to the monitor independently of session matching,
+including traffic for other stations. Each successful data-frame write to the
+modem produces a TX monitor entry, including control frames and retransmissions.
+This confirms a modem write, not an over-the-air transmission. The GUI's `M`
+filter still applies to decoded frames; `M IUSC` lists all supported classes,
+also while connected. Undecodable AX.25 packets appear as raw hex diagnostics
+with their port, and malformed KISS escapes produce warnings rather than
+silently disappearing. The terminal UI also lists RX and TX on its monitor,
+not on pads selected by radio port. Monitor history remains bounded.
+
+A KISS circuit is the exact **radio port + local callsign/SSID + remote
+callsign/SSID**. Terminal channel numbers are separate. A reply from another
+SSID is not a redirect; unmatched traffic cannot update another link's state.
+Different peers can share our callsign, and the same pair can use different
+radio ports independently. An additional outgoing circuit on the same port
+may select an unused local source SSID, but never changes the remote endpoint.
+
+Configure radio ports in `[tnc]` and restart the radio connection:
+
+```toml
+kiss_port = 0             # Monitor, beacons, and parameter changes
+channel_ports = [0, 1, 1] # Channels 1, 2, 3; missing entries use kiss_port
+```
+
+KISS ports are 0..15. Replies use the receiving circuit's port. WA8DED/TFPCX
+currently require port 0: their multi-radio selection has not been verified.
+KISS uses a one-frame TX window, immediate acknowledgements, and synthetic
+buffer accounting, not a measurement of modem RAM. Local self-connections
+between configured endpoints are simulated inside the session service and
+do not transmit invented acknowledgements over RF.
+
+Automated tests cover link and port isolation, sequence wrap, queued data,
+RR/RNR/REJ, polls, resets, disconnects, KISS framing, and monitor delivery.
+A loopback TCP test covers startup RX bursts and successful TX notifications;
+it does not require a physical modem. This is not hardware
+certification or full AX.25 v2.2 support (extended mode/XID/SREJ are not
+implemented). WA8DED and TFPCX still need hardware interoperability testing;
+RF delivery receipts for their file-transfer adapters are explicitly unavailable.
 
 - **JHOST1** — enter WA8DED binary hostmode from terminal mode  
 - **JHOST0** — leave hostmode (WA8DED path)  
-- Hostmode frame shape: `channel \| code \| len \| payload[len]`  
+- Hostmode requests: `channel | command/data | length-minus-one | payload`;
+  replies use response-specific framing as described above.
 - `[serial] fast_poll` (`on` / `off` / `auto`) sets the WA8DED/TFPCX poll interval
 
 ## Credits
