@@ -25,10 +25,11 @@ use ratatui::Terminal;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::config::Config;
+use crate::config::{Config, HostProtocol};
 use crate::remote::commands::{parse_line, RemoteAction};
 use crate::tnc::{pack_text_payloads, HostCode, TncCommand, TncEvent};
 
+use super::beacon::{self, BeaconSnap};
 use super::icons::{IconLibrary, TOOLBAR_LABELS};
 use super::layout::{compute, toolbar_caption, ActivePane, PaneRects, SplitState};
 use super::theme::Theme;
@@ -200,6 +201,8 @@ impl UiApp {
         }
     }
 
+    // To DO: Alt + P for Spy Menu (SLot 1)
+    //        Alt + K for Kill Spy
     fn on_key(
         &mut self,
         code: KeyCode,
@@ -211,7 +214,24 @@ impl UiApp {
                 KeyCode::Char('x') | KeyCode::Char('X') => self.should_quit = true,
                 KeyCode::Char('m') | KeyCode::Char('M') => self.select_pane(ActivePane::Monitor),
                 KeyCode::Char('e') | KeyCode::Char('E') => self.select_pane(ActivePane::Editor),
+                KeyCode::Char('s') | KeyCode::Char('S') => self.save_active(),
                 KeyCode::Char('b') | KeyCode::Char('B') => self.scrollbar = !self.scrollbar,
+                KeyCode::Char('a') | KeyCode::Char('A') => {
+                    let qrg = if self.cfg.session.qrg_text.trim().is_empty() {
+                        super::session::SessionChrome::default().qrg_text()
+                    } else {
+                        self.cfg.session.qrg_text.clone()
+                    };
+                    self.status = beacon::send_now(&BeaconSnap {
+                        kiss: self.cfg.tnc.protocol_kind() == HostProtocol::Kiss,
+                        beacon: self.cfg.beacon.clone(),
+                        my_call: self.cfg.primary_mycall().to_string(),
+                        qrg,
+                        version: crate::version::APP_VERSION.into(),
+                        cmd_tx: cmd_tx.clone(),
+                        mail_dir: crate::remote::mail::mail_dir(),
+                    });
+                }
                 KeyCode::F(8) => self.split.enabled = !self.split.enabled,
                 KeyCode::F(9) => self.split.nudge(-0.05),
                 KeyCode::F(10) => self.split.nudge(0.05),
@@ -274,6 +294,10 @@ impl UiApp {
         }
     }
 
+    fn save_active(&mut self) {
+        self.status = "Save — placeholder".into();
+    }
+
     fn on_mouse(&mut self, col: u16, row: u16) {
         if let Some(hit) = self
             .hits
@@ -296,7 +320,7 @@ impl UiApp {
                         "EXIT" => self.should_quit = true,
                         "SETUP" => self.status = "Setup — not yet implemented".into(),
                         "DOS" => self.status = "DOS shell — not in modern port".into(),
-                        "SAVE" => self.status = "Save — placeholder".into(),
+                        "SAVE" => self.save_active(),
                         "MYCALL" => {
                             self.status = format!("MYCALL {}", self.cfg.primary_mycall());
                         }
@@ -664,4 +688,53 @@ pub fn run(
     )?;
     terminal.show_cursor()?;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alt_a_sends_beacon_and_alt_b_toggles_scrollbar() {
+        let mut cfg = Config::default();
+        cfg.tnc.protocol = "kiss".into();
+        cfg.beacon.text = "Test beacon".into();
+        let mut app = UiApp::new(cfg);
+        let (tx, mut rx) = mpsc::channel(2);
+        app.on_key(KeyCode::Char('a'), KeyModifiers::ALT, &tx);
+        let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
+            panic!("expected beacon frame");
+        };
+        assert_eq!(channel, 0);
+        assert_eq!(
+            crate::tnc::ax25::parse_frame(&data).unwrap().info,
+            b"Test beacon"
+        );
+        assert!(app.scrollbar);
+        app.on_key(KeyCode::Char('b'), KeyModifiers::ALT, &tx);
+        assert!(!app.scrollbar);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn alt_s_matches_save_toolbar_action() {
+        let mut app = UiApp::new(Config::default());
+        let (tx, _rx) = mpsc::channel(1);
+        let save_index = TOOLBAR_LABELS
+            .iter()
+            .position(|label| *label == "SAVE")
+            .unwrap();
+        app.hits.push(HitRegion {
+            area: Rect::new(0, 0, 1, 1),
+            action: HitAction::Toolbar(save_index),
+        });
+        for pane in [ActivePane::Monitor, ActivePane::Editor, ActivePane::Check] {
+            app.active = pane;
+            app.on_mouse(0, 0);
+            let icon_status = app.status.clone();
+            app.status.clear();
+            app.on_key(KeyCode::Char('s'), KeyModifiers::ALT, &tx);
+            assert_eq!(app.status, icon_status);
+        }
+    }
 }

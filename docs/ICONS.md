@@ -54,6 +54,9 @@ See `src/ui/icons.rs`. Canonical library: **`data/ICONS.GP`**.
 | 7 | MYCALL | 16 | FIND |
 | 8 | EMPTY | | |
 
+The pixel UI uses the DOS slot (2) to send a beacon, like ALT-A; its bitmap
+still comes from the icon file.
+
 Per-screen strips (`toolbar_for` in `icons.rs`):
 
 - Monitor: MHEARD EDIT SETUP MONITOR DOS SAVE MYCALL EXIT

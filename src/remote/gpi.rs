@@ -43,7 +43,7 @@ fn resolve_named(file_name: &str) -> Option<PathBuf> {
 /// Load raw file text (CRLF normalized to `\n`).
 pub fn read_file(path: &Path) -> Option<String> {
     let raw = fs::read_to_string(path).ok()?;
-    Some(crate::tnc::normalize_newlines(&raw))
+    Some(crate::tnc::normalize_newlines(raw.trim_start_matches('\u{feff}')))
 }
 
 /// Random non-empty line from `ORIGIN.GPI` for `%O`.

@@ -1,4 +1,4 @@
-//! Simple GP text editor for `*.GPI` — IBM code page 437 load/save.
+//! Simple GP text editor for `*.GPI` — CP437, or BOM-marked UTF-8 when needed.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -128,8 +128,7 @@ pub fn encode_channel(text: &str, umlaut_on: bool) -> Vec<u8> {
 ///
 /// A line that fits the DOS set stays one byte per character, so `6°C` is
 /// `0x36 0xF8 0x43` and a DOS station still shows the degree sign. A line
-/// with anything else (emoji, euro, an en-dash) goes out as UTF-8. The GPI
-/// editor does not use this; it still stores `?` for those characters.
+/// with anything else (emoji, euro, an en-dash) goes out as UTF-8.
 pub fn encode_channel_wire(text: &str, umlaut_on: bool) -> Vec<u8> {
     if !channel_fits_dos(text, umlaut_on) {
         return encode_utf8_wire(text);
@@ -323,16 +322,26 @@ impl GpEditor {
             .to_string()
     }
 
-    /// CP437 size of the buffer. Each character is one byte, and Enter (`\n`)
-    /// counts, so the status total moves as the text is edited.
+    /// Buffer size in the encoding that would be used to save it.
     pub fn byte_count(&self) -> usize {
-        self.text.chars().count()
+        if channel_fits_dos(&self.text, false) {
+            self.text.chars().count()
+        } else {
+            self.text.len()
+        }
     }
 
     pub fn load_path(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
         let path = path.as_ref();
         let raw = fs::read(path).map_err(|e| format!("load {}: {e}", path.display()))?;
-        self.text = crate::tnc::normalize_newlines(&decode_cp437(&raw));
+        let text = if let Some(utf8) = raw.strip_prefix(b"\xef\xbb\xbf") {
+            std::str::from_utf8(utf8)
+                .map_err(|e| format!("load {}: invalid UTF-8 ({e})", path.display()))?
+                .to_owned()
+        } else {
+            decode_cp437(&raw)
+        };
+        self.text = crate::tnc::normalize_newlines(&text);
         self.path = path.to_path_buf();
         self.dirty = false;
         self.cursor_line = 1;
@@ -355,7 +364,13 @@ impl GpEditor {
         // Classic GPI on DOS used CRLF.
         let normalized = self.text.replace('\r', "");
         let dos = normalized.replace('\n', "\r\n");
-        let bytes = encode_cp437(&dos);
+        let bytes = if channel_fits_dos(&dos, false) {
+            encode_cp437(&dos)
+        } else {
+            let mut bytes = b"\xef\xbb\xbf".to_vec();
+            bytes.extend_from_slice(dos.as_bytes());
+            bytes
+        };
         fs::write(path, bytes).map_err(|e| format!("save {}: {e}", path.display()))?;
         self.path = path.to_path_buf();
         self.dirty = false;
@@ -445,5 +460,49 @@ impl GpEditor {
             .next()
             .map(|s| s.chars().count() + 1)
             .unwrap_or(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_round_trips_cp437_and_utf8_gpi_text() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gpng-editor-{}-{unique}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("test.GPI");
+        let mut editor = GpEditor::default();
+
+        // These CP437 bytes also happen to be valid UTF-8.
+        editor.text = "├⌐ °".into();
+        editor.save_as(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), [0xc3, 0xa9, b' ', 0xf8]);
+        editor.load_path(&path).unwrap();
+        assert_eq!(editor.text, "├⌐ °");
+
+        editor.text = "Hi 😈\nSecond line".into();
+        editor.save_as(&path).unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"\xef\xbb\xbfHi \xf0\x9f\x98\x88\r\nSecond line"
+        );
+        editor.load_path(&path).unwrap();
+        assert_eq!(editor.text, "Hi 😈\nSecond line");
+        assert_eq!(crate::remote::gpi::read_file(&path).unwrap(), editor.text);
+
+        let beacon = crate::config::BeaconConfig {
+            source: "file".into(),
+            file: path.to_string_lossy().into_owned(),
+            period_minutes: 1,
+            ..Default::default()
+        };
+        assert_eq!(beacon.body().unwrap().unwrap(), "Hi 😈 Second line");
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(dir).unwrap();
     }
 }

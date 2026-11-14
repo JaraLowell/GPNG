@@ -69,6 +69,12 @@ impl BeaconSchedule {
         lock(&self.shared).snap = snap;
     }
 
+    /// Send independently of the scheduled clock.
+    pub fn send_now(&self) -> String {
+        let snap = lock(&self.shared).snap.clone();
+        send_now(&snap)
+    }
+
     /// Status from the last send. One take, so a later frame does not repeat it.
     pub fn take_note(&self) -> Option<String> {
         lock(&self.shared).note.take()
@@ -173,8 +179,19 @@ enum Attempt {
     Retry,
 }
 
+/// Send once even when the periodic beacon is disabled.
+pub fn send_now(snap: &BeaconSnap) -> String {
+    if !snap.kiss {
+        return "Manual beacon requires KISS mode".into();
+    }
+    match transmit(snap) {
+        Attempt::Sent(note) | Attempt::Skip(note) => note,
+        Attempt::Retry => "Beacon not queued: radio queue is full or closed".into(),
+    }
+}
+
 fn transmit(snap: &BeaconSnap) -> Attempt {
-    let raw = match snap.beacon.body() {
+    let raw = match snap.beacon.body_for_transmit() {
         Ok(Some(text)) => text,
         Ok(None) => {
             if snap.beacon.uses_file() {
@@ -292,4 +309,77 @@ pub fn beacon_on_air(raw: &str, from_file: bool, ctx: &MacroContext) -> String {
         BEACON_TEXT_MAX
     };
     clip_beacon(macros::expand(raw, ctx).trim(), max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot() -> (BeaconSnap, mpsc::Receiver<TncCommand>) {
+        let (cmd_tx, rx) = mpsc::channel(2);
+        let beacon = BeaconConfig {
+            address: "CQ WIDE1-1".into(),
+            text: "Hello beacon".into(),
+            ..BeaconConfig::default()
+        };
+        (
+            BeaconSnap {
+                kiss: true,
+                beacon,
+                my_call: "N0CALL".into(),
+                qrg: "145.500".into(),
+                version: "test".into(),
+                cmd_tx,
+                mail_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+            },
+            rx,
+        )
+    }
+
+    #[test]
+    fn manual_beacon_sends_with_timer_disabled() {
+        let (snap, mut rx) = snapshot();
+        assert!(send_now(&snap).starts_with("beacon N0CALL"));
+        let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
+            panic!("expected beacon frame");
+        };
+        assert_eq!(channel, 0);
+        let frame = ax25::parse_frame(&data).unwrap();
+        assert_eq!(frame.dest, "CQ");
+        assert_eq!(frame.src, "N0CALL");
+        assert_eq!(frame.via, ["WIDE1-1"]);
+        assert_eq!(frame.info, b"Hello beacon");
+    }
+
+    #[test]
+    fn manual_beacon_does_not_change_schedule() {
+        let (mut snap, _rx) = snapshot();
+        snap.beacon.period_minutes = 1;
+        let start = SystemTime::UNIX_EPOCH;
+        let mut clock = BeaconClock::default();
+        let period = period_of(&snap.beacon);
+        assert!(!clock.due(period, start));
+        assert!(send_now(&snap).starts_with("beacon N0CALL"));
+        assert!(!clock.due(period, start + Duration::from_secs(59)));
+        assert!(clock.due(period, start + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn manual_beacon_reports_unsupported_empty_and_full_queue() {
+        let (mut snap, mut rx) = snapshot();
+        snap.kiss = false;
+        assert_eq!(send_now(&snap), "Manual beacon requires KISS mode");
+        assert!(rx.try_recv().is_err());
+        snap.kiss = true;
+        snap.beacon.text.clear();
+        assert_eq!(send_now(&snap), "Beacon is empty");
+        assert!(rx.try_recv().is_err());
+        snap.beacon.text = "Hello beacon".into();
+        assert!(send_now(&snap).starts_with("beacon N0CALL"));
+        assert!(send_now(&snap).starts_with("beacon N0CALL"));
+        assert_eq!(
+            send_now(&snap),
+            "Beacon not queued: radio queue is full or closed"
+        );
+    }
 }

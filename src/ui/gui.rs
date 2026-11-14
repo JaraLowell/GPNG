@@ -9243,6 +9243,10 @@ impl GpGuiApp {
             self.hotkey_connect_text();
             return;
         }
+        if eat_key(ctx, alt, egui::Key::A) {
+            self.status = self.beacon_sched.send_now();
+            return;
+        }
         if eat_key(ctx, alt, egui::Key::B) {
             self.session.scr_lock = !self.session.scr_lock;
             self.status = format!("ScrLock {}", on_off(self.session.scr_lock));
@@ -9250,7 +9254,7 @@ impl GpGuiApp {
             return;
         }
         if eat_key(ctx, alt, egui::Key::S) {
-            self.hotkey_alt_s();
+            self.save_active();
             return;
         }
         if eat_key(ctx, alt, egui::Key::F) {
@@ -9409,12 +9413,18 @@ impl GpGuiApp {
         self.status = "connect text sent".into();
     }
 
-    fn hotkey_alt_s(&mut self) {
+    fn save_active(&mut self) {
         match self.active {
             ActivePane::Editor => self.editor_save(),
-            ActivePane::Check => self.sort_bbs(),
-            ActivePane::Channel(_) => self.save_screen_transcript(),
-            _ => self.status = "Continuous save is not built yet".into(),
+            ActivePane::Channel(n) => {
+                if !self.accept_autobin(n) {
+                    self.save_screen_transcript();
+                }
+            }
+            ActivePane::Monitor | ActivePane::Check | ActivePane::List | ActivePane::Spy(_) => {
+                self.save_screen_transcript()
+            }
+            _ => self.status = "Save — this window has no transcript".into(),
         }
     }
 
@@ -13912,6 +13922,11 @@ impl GpGuiApp {
                 let cell = Rect::from_min_size(Pos2::new(x, y), Vec2::new(icon_w, icon_h));
                 let id = ui.id().with(("icon", icon_idx, label));
                 let resp = ui.interact(cell, id, Sense::click());
+                let resp = if label == "DOS" {
+                    resp.on_hover_text("Send beacon (Alt+A)")
+                } else {
+                    resp
+                };
                 // Grey raised button face (classic GP), then the bitmap.
                 ui.painter().rect_filled(cell, 0.0, VGA_GRAY);
                 if label == "EMPTY" || self.icon_tex.get(icon_idx).is_none() {
@@ -13967,19 +13982,7 @@ impl GpGuiApp {
                 }
                 "MONITOR" => self.select(ActivePane::Monitor),
                 "EDIT" => self.open_ctext_editor(),
-                "SAVE" => match self.active {
-                    ActivePane::Editor => self.editor_save(),
-                    ActivePane::Channel(n) => {
-                        if !self.accept_autobin(n) {
-                            self.save_screen_transcript();
-                        }
-                    }
-                    ActivePane::Monitor
-                    | ActivePane::Check
-                    | ActivePane::List
-                    | ActivePane::Spy(_) => self.save_screen_transcript(),
-                    _ => self.status = "Save — this window has no transcript".into(),
-                },
+                "SAVE" => self.save_active(),
                 "LOAD" => self.editor_load_dialog(),
                 "MHEARD" => self.select(ActivePane::Mh),
                 "SPY" => {
@@ -13991,12 +13994,7 @@ impl GpGuiApp {
                 }
                 "KILL SPY" => self.kill_spy_call(),
                 "EXIT" => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
-                // Classic GP shelled to DOS; here we just minimize (can't stay resident).
-                "DOS" => {
-                    ui.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                    self.status = "minimized".into();
-                }
+                "DOS" => self.status = self.beacon_sched.send_now(),
                 "MYCALL" => self.open_mycall_dialog(),
                 "CONNECT" => match self.active {
                     ActivePane::Mh => self.connect_from_mheard(),
@@ -15261,6 +15259,8 @@ fn read_first_font(candidates: &[&str]) -> Option<(String, Vec<u8>)> {
 const JETBRAINS_MONO: &[u8] = include_bytes!("../../assets/fonts/ttf/JetBrainsMonoNL-Regular.ttf");
 const JETBRAINS_MONO_BOLD: &[u8] =
     include_bytes!("../../assets/fonts/ttf/JetBrainsMonoNL-Bold.ttf");
+const VARIATION_SELECTORS: &[u8] =
+    include_bytes!("../../assets/fonts/ttf/GPNG-VariationSelectors.ttf");
 
 /// DOS `Zoom`. `1` (and anything below `2`) is the regular face.
 fn zoom_bold(zoom: u32) -> bool {
@@ -15287,6 +15287,17 @@ fn install_console_font(ctx: &Context, bold: bool) {
         .entry(FontFamily::Monospace)
         .or_default()
         .insert(0, "gp_console".into());
+    fonts.font_data.insert(
+        "gp_variation_selectors".into(),
+        FontData::from_static(VARIATION_SELECTORS),
+    );
+    for family in [FontFamily::Monospace, FontFamily::Proportional] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("gp_variation_selectors".into());
+    }
     tracing::info!(
         "console font: JetBrains Mono {} (embedded)",
         if bold { "Bold" } else { "Regular" }
@@ -15905,7 +15916,7 @@ fn paint_dos_arrow(painter: &egui::Painter, rect: Rect, up: bool, pressed: bool)
 /// wrapped to the live viewport width inside the vertical scroll area.
 ///
 /// The vertical bar is the DOS one from CHANNEL1.png (cyan shaft, arrows,
-/// gray thumb), not egui's overlay. ALT-B hides it and gives the columns back.
+/// gray thumb), not egui's overlay. The session-bar B control hides it.
 ///
 /// With ScrLock off, `/` jumps to a new line and the stair crawls there.
 fn paint_text_pane(
@@ -16292,4 +16303,27 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+
+    #[test]
+    fn emoji_variation_selectors_are_invisible_in_text() {
+        let ctx = Context::default();
+        install_console_font(&ctx, false);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            for family in [FontFamily::Monospace, FontFamily::Proportional] {
+                let font = FontId::new(16.0, family);
+                ctx.fonts(|fonts| {
+                    for selector in ['\u{fe0e}', '\u{fe0f}'] {
+                        assert!(fonts.has_glyph(&font, selector));
+                        assert_eq!(fonts.glyph_width(&font, selector), 0.0);
+                    }
+                    assert!(fonts.glyph_width(&font, '❤') > 0.0);
+                });
+            }
+        });
+    }
 }

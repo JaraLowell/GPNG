@@ -82,6 +82,18 @@ cargo run -- --tui
    active window. Colours, remote, echo, bells, beacon (on Monitor), language,
    packet length, and related rows write back when you leave with **Use these
    values**.
+4. Press **ALT-A** to send the configured beacon immediately in KISS mode,
+   even when its period is zero. This does not reset the automatic timer.
+   The DOS icon in the pixel UI sends the beacon too.
+5. Press **ALT-S** to use the current window's **SAVE** action, including
+   accepting a pending AutoBin offer on a channel.
+
+The GPI editor saves CP437 where possible; text containing other characters,
+such as emoji, is saved as UTF-8 with a BOM. UTF-8 GPI files may not be
+compatible with classic DOS GP.
+
+The pinned local winit backend preserves Windows Alt+numpad character input;
+other platforms continue to use their native input methods.
 
 You do not need to edit `Config.toml` for ordinary station / radio / session
 settings. Hand-editing is still fine for paths, buffer sizes, `TNCINI` lines,

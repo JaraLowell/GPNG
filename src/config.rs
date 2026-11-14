@@ -1490,6 +1490,10 @@ impl BeaconConfig {
         if self.period_minutes == 0 {
             return Ok(None);
         }
+        self.body_for_transmit()
+    }
+
+    pub(crate) fn body_for_transmit(&self) -> Result<Option<String>, String> {
         if self.uses_file() {
             let path = self.file.trim();
             if path.is_empty() {
@@ -1498,7 +1502,10 @@ impl BeaconConfig {
             let bytes =
                 std::fs::read(path).map_err(|e| format!("Beacon file cannot be read ({e})"))?;
             let text = String::from_utf8_lossy(&bytes);
-            let flat = text.replace("\r\n", " ").replace(['\n', '\r'], " ");
+            let flat = text
+                .trim_start_matches('\u{feff}')
+                .replace("\r\n", " ")
+                .replace(['\n', '\r'], " ");
             let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
             if flat.is_empty() {
                 return Ok(None);

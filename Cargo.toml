@@ -67,6 +67,10 @@ crossterm = "0.28"
 image = { version = "0.25", default-features = false, features = ["png", "ico"] }
 ax25 = "0.4.0"
 
+[patch.crates-io]
+# Preserve Windows character messages generated when an Alt code is released.
+winit = { path = "winit-patched" }
+
 [build-dependencies]
 # Embed assets/GPNG.ico into the Windows .exe resource.
 winresource = "0.1"

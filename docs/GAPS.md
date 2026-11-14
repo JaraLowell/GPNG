@@ -24,7 +24,7 @@ macros), and `docs/TRANSFER.md` (AutoBin / 7Plus).
 |-----|--------|-------|
 | ALT-T send menu (text / raw / AutoBin / editor) | **Missing** | AutoBin and 7+ already run via session bar / `//RPrg` / `//WPrg` / `//Read` |
 | Transfer resume after quit | **Missing** | Progress strip is live; resume is not |
-| ALT-S continuous channel save | **Missing** | On BBS menu ALT-S sorts; elsewhere unanswered |
+| Continuous channel save | **Missing** | ALT-S invokes the current window's SAVE action instead |
 | ALT-F send file (channel) | **Missing** | On BBS/Box-List ALT-F finds |
 | Marked QSO → editor (Ctrl-K / drag-select) | **Missing** | |
 | Print to LPT / DefaultPrint | **Missing** | Keys parsed in legacy config only |
@@ -161,7 +161,7 @@ DieBox PRIV (if ever needed): PWLIST 1620 chars (60×27); four chars from
 
 1. F6FBB/BPQ BBS-Menu parser (LinBPQ TCP KISS capture → fixtures).
 2. OpenBCM CHECK/LIST capture → parser or confirm DieBox match.
-3. ALT-T / ALT-S / ALT-F / transfer resume.
+3. ALT-T / continuous channel save / ALT-F / transfer resume.
 4. Stub remotes (`//RTt`, `//C`) or drop from the help packs.
 5. `REMOTE=` allow-list + type `B` remote block.
 6. Hostmode hardware pass + Ctrl+PrintScreen TNC-Statistics.
