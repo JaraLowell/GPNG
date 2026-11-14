@@ -87,7 +87,7 @@ use super::retro;
 use super::session::{
     chime_strikes, connect_bell_plays, decode_rx_text, default_bell_wav, default_chime_wav,
     default_connect_wav, default_disconnect_wav, default_newline_wav, disconnect_plays,
-    format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav, play_wav_times, rx_click_plays,
+    format_hex_preview, parse_ax25_ui, play_bell_wav, play_wav_at, play_wav_times, rx_click_plays,
     Ax25UiFrame, SessionChrome,
 };
 use super::setup::{self, ColorSlot, EditKind, RowId, RowKind, View as SetupView};
@@ -1148,8 +1148,8 @@ impl GpGuiApp {
         play_wav_times(
             &self.chime_wav,
             chime_strikes(hour24),
-            Duration::from_millis(40),
-            1.0,
+            Duration::ZERO,
+            0.25,
         );
     }
 
@@ -2467,7 +2467,7 @@ impl GpGuiApp {
             &self.newline_wav,
             rx_click_plays(self.cfg.session.rx_click),
             Duration::from_secs(1),
-            0.5,
+            0.25,
         );
     }
 
@@ -2482,7 +2482,7 @@ impl GpGuiApp {
             &self.connect_wav,
             connect_bell_plays(self.cfg.session.connect_bell),
             Duration::ZERO,
-            1.0,
+            0.25,
         );
     }
 
@@ -2492,7 +2492,7 @@ impl GpGuiApp {
         if !self.session.bell_for(channel) || !disconnect_plays(self.cfg.session.connect_bell) {
             return;
         }
-        play_wav(&self.disconnect_wav);
+        play_wav_at(&self.disconnect_wav, 0.25)
     }
 
     /// Terminal write. Bytes append to the open row. `\n` / `\r` end that row.
