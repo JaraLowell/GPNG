@@ -33,7 +33,7 @@ jobs:
             asset: GPNG-macos-arm64.zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -106,7 +106,7 @@ jobs:
         if: runner.os != 'Windows'
         run: (cd stage && zip -r "../${{ matrix.asset }}" .)
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
