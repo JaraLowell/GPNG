@@ -67,6 +67,11 @@ Per-screen strips (`toolbar_for` in `icons.rs`):
 - Box-List: MHEARD EDIT SETUP MONITOR DOS SAVE FIND EXIT
 - Spy: MHEARD EDIT SETUP MONITOR SAVE SPY KILLSPY EXIT
 
+On a channel, DISCONNECT replaces CONNECT as soon as a connection attempt
+starts. Press it to cancel before the handshake completes. KISS cancellation
+sends one DISC, stops connection retries, and frees the channel immediately;
+an established KISS link still waits for the normal disconnect acknowledgment.
+
 Channel tabs `1:`…`10:`, `BBS-Menu`, `Box-List` are **drawn chrome**, not
 `ICONS.GP` bitmaps. The analog clock is BGI vector drawing, also not an icon.
 

@@ -568,7 +568,7 @@ pub struct GpGuiApp {
 
 impl GpGuiApp {
     pub fn new(
-        cc: &eframe::CreationContext<'_>,
+        ctx: &Context,
         cfg: Config,
         config_path: PathBuf,
         radio: RadioLink,
@@ -663,10 +663,10 @@ impl GpGuiApp {
 
         let slots = channels as usize + 1;
         let console_bold = zoom_bold(cfg.session.zoom);
-        install_console_font(&cc.egui_ctx, console_bold);
-        let icon_tex = load_icon_textures(&cc.egui_ctx, &cfg.session.icon_file);
-        let start_screen = load_start_screen(&cc.egui_ctx);
-        let link_tex = load_link_lamps(&cc.egui_ctx);
+        install_console_font(ctx, console_bold);
+        let icon_tex = load_icon_textures(ctx, &cfg.session.icon_file);
+        let start_screen = load_start_screen(ctx);
+        let link_tex = load_link_lamps(ctx);
         let status = if icon_tex.is_empty() {
             "data/ICONS.GP not found".into()
         } else {
@@ -708,7 +708,7 @@ impl GpGuiApp {
             tracing::warn!("EXTERNAL dir: {err}");
         }
         let beacon_sched = BeaconSchedule::start(
-            cc.egui_ctx.clone(),
+            ctx.clone(),
             BeaconSnap {
                 kiss: cfg.tnc.protocol_kind() == HostProtocol::Kiss,
                 beacon: cfg.beacon.clone(),
@@ -2048,8 +2048,8 @@ impl GpGuiApp {
     /// Hostmode `D` or KISS DISC; tears down self-connect pair too.
     ///
     /// On KISS the channel stays up until UA (or DM) answers the DISC, or
-    /// until T1 × N2 expires. Self-connect has no RF loopback, so both
-    /// sides clear at once after the DISC is written.
+    /// until T1 × N2 expires. A pending connection clears immediately after
+    /// one DISC; self-connect also clears both sides without waiting.
     fn disconnect_channel(&mut self, channel: u8) {
         if !(1..=self.channels).contains(&channel) {
             return;
@@ -2059,8 +2059,8 @@ impl GpGuiApp {
         if self.channel_disconnecting(channel) {
             return;
         }
-        let was_linked = self.channel_linked(channel) || self.channel_connected(channel);
-        if !was_linked {
+        let was_linked = self.channel_linked(channel);
+        if !self.channel_connected(channel) {
             self.clear_channel_link_state(channel);
             self.drop_mail_for(channel);
             self.status = format!("Disconnect ch{channel}");
@@ -2095,11 +2095,18 @@ impl GpGuiApp {
                     self.kiss_send_disc(other);
                 }
             }
-            if self_pair {
+            if self_pair || !was_linked {
                 for ch in std::iter::once(channel).chain(also.into_iter()) {
                     if (1..=self.channels).contains(&ch) {
                         self.finish_disconnect(ch, true);
                     }
+                }
+                if !was_linked {
+                    if let Some(pad) = self.pads.get_mut(channel as usize) {
+                        pad.push(PadKind::System, "*** connection attempt cancelled");
+                    }
+                    self.status = format!("Connect cancelled ch{channel}");
+                    self.last_link_status = self.status.clone();
                 }
             } else {
                 self.kiss_arm_disc_timer(channel);
@@ -2532,7 +2539,7 @@ impl GpGuiApp {
                 .is_some()
     }
 
-    /// True when the channel strip should show DISCONNECT (fully linked).
+    /// True only after the connection handshake completes.
     fn channel_linked(&self, n: u8) -> bool {
         self.channel_peer
             .get(n as usize)
@@ -13900,7 +13907,7 @@ impl GpGuiApp {
         }
 
         let toolbar = match self.active {
-            ActivePane::Channel(n) => toolbar_for_channel(self.channel_linked(n)),
+            ActivePane::Channel(n) => toolbar_for_channel(self.channel_connected(n)),
             other => toolbar_for(other),
         };
         let n = toolbar.len().max(1);
@@ -16297,7 +16304,7 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
         &title,
         native,
         Box::new(move |cc| {
-            let app = GpGuiApp::new(cc, (*cfg).clone(), (*config_path).clone(), radio);
+            let app = GpGuiApp::new(&cc.egui_ctx, (*cfg).clone(), (*config_path).clone(), radio);
             Ok(Box::new(app))
         }),
     )
@@ -16308,6 +16315,121 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
 #[cfg(test)]
 mod input_tests {
     use super::*;
+
+    fn with_offline_app(
+        protocol: &str,
+        test: impl FnOnce(&mut GpGuiApp, &mut mpsc::Receiver<TncCommand>, &Context),
+    ) {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gpng-connect-{}-{unique}", std::process::id()));
+        let mut cfg = Config::default();
+        cfg.tnc.protocol = protocol.into();
+        cfg.paths.user_dir = dir.join("USER");
+        cfg.paths.external_dir = dir.join("EXTERNAL");
+        cfg.paths.log_dir = dir.join("LOG");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let ctx = Context::default();
+        let mut app = GpGuiApp::new(
+            &ctx,
+            cfg,
+            dir.join("Config.toml"),
+            RadioLink::new(rt.handle().clone()),
+        );
+        let (tx, mut rx) = mpsc::channel(32);
+        app.cmd_tx = tx;
+        test(&mut app, &mut rx, &ctx);
+        drop(app);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn click_first_channel_icon(app: &mut GpGuiApp, ctx: &Context) {
+        let mut position = Pos2::ZERO;
+        for pressed in [None, Some(true), Some(false)] {
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 200.0))),
+                ..Default::default()
+            };
+            if let Some(pressed) = pressed {
+                input.events.push(egui::Event::PointerMoved(position));
+                input.events.push(egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let size = icon_display_size(ctx.pixels_per_point());
+                    let width = 8.0 * size.x + 7.0 * ICON_STRIP_GAP;
+                    position = ui.cursor().min + Vec2::new(size.x * 0.5, size.y * 0.5);
+                    app.icon_strip(ui, width, size.y);
+                });
+            });
+        }
+    }
+
+    #[test]
+    fn disconnect_icon_cancels_pending_kiss_connect_without_retries() {
+        with_offline_app("kiss", |app, rx, ctx| {
+            let via = vec!["WIDE1-1".into()];
+            app.begin_connect(1, "N1WRNG", &via, Vec::new());
+            assert!(!app.channel_linked(1));
+            assert!(app.ax25_sabm_at[1].is_some());
+            while rx.try_recv().is_ok() {}
+
+            click_first_channel_icon(app, ctx);
+            let TncCommand::HostFrame { data, .. } = rx.try_recv().unwrap() else {
+                panic!("expected cancellation DISC");
+            };
+            let frame = ax25::parse_frame(&data).unwrap();
+            assert_eq!(frame.kind, Ax25FrameType::Disc);
+            assert_eq!(frame.dest, "N1WRNG");
+            assert_eq!(frame.via, via);
+            assert!(!app.channel_connected(1));
+            assert!(app.ax25_sabm_at[1].is_none());
+            assert!(app.ax25_disc_at[1].is_none());
+            app.kiss_sabm_timers();
+            app.kiss_disc_timers();
+            assert!(rx.try_recv().is_err());
+
+            click_first_channel_icon(app, ctx);
+            assert!(app.session.show_connect_dialog);
+        });
+    }
+
+    #[test]
+    fn disconnect_icon_cancels_pending_hostmode_connect() {
+        with_offline_app("wa8ded", |app, rx, ctx| {
+            app.begin_connect(1, "N1WRNG", &[], Vec::new());
+            while rx.try_recv().is_ok() {}
+            click_first_channel_icon(app, ctx);
+            let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
+                panic!("expected hostmode disconnect");
+            };
+            assert_eq!(channel, 1);
+            assert_eq!(data, b"D\r");
+            assert!(!app.channel_connected(1));
+        });
+    }
+
+    #[test]
+    fn disconnecting_established_kiss_link_still_waits_for_acknowledgment() {
+        with_offline_app("kiss", |app, rx, ctx| {
+            app.active = ActivePane::Channel(1);
+            app.channel_peer[1] = Some("N1PEER".into());
+            click_first_channel_icon(app, ctx);
+            let TncCommand::HostFrame { data, .. } = rx.try_recv().unwrap() else {
+                panic!("expected link DISC");
+            };
+            assert_eq!(ax25::parse_frame(&data).unwrap().kind, Ax25FrameType::Disc);
+            assert!(app.channel_linked(1));
+            assert!(app.channel_disconnecting(1));
+        });
+    }
 
     #[test]
     fn emoji_variation_selectors_are_invisible_in_text() {
