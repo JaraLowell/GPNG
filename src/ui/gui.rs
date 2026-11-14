@@ -68,7 +68,7 @@ use crate::transfer::autobin::{self, AutoBinState, BinReceiveDone, TxReply};
 use crate::transfer::sevenplus::{self, SevenPlusAutosave};
 use crate::version;
 
-use super::ansi::{strip_ansi, AnsiDecoder, AnsiStyle};
+use super::ansi::{expand_sgr_arrows, strip_ansi, AnsiDecoder, AnsiStyle};
 use super::beacon::{BeaconSchedule, BeaconSnap};
 use super::editor::{
     channel_store_text, decode_channel_bytes, decode_cp437, encode_channel_wire, packet_chunks,
@@ -1478,8 +1478,16 @@ impl GpGuiApp {
                             for (src, dest, via) in &heard {
                                 self.note_heard_on_monitor(src, dest, via);
                             }
-                            for part in &monitor_rows {
-                                self.push_mon_line(kind, stamp_monitor_fm(part));
+                            let sgr_rows = ax25::monitor_display_lines_sgr(
+                                &payload,
+                                self.session.umlaut_for(SLOT_MONITOR),
+                            );
+                            for part in &sgr_rows {
+                                if is_fm_header(part) {
+                                    self.push_mon_line(kind, stamp_monitor_fm(part));
+                                } else {
+                                    self.push_mon_line_sgr(kind, part);
+                                }
                             }
                         } else {
                             let parts = payload_lines(&line);
@@ -2647,7 +2655,7 @@ impl GpGuiApp {
         if self.kiss_mode() || !self.session.echo_for(SLOT_MONITOR) {
             return;
         }
-        self.pads[0].push_monitor(PadKind::Own, strip_ansi(line));
+        self.push_mon_line_sgr(PadKind::Own, line);
     }
 
     /// Monitor listing for a KISS frame that was just written to the modem.
@@ -2798,6 +2806,10 @@ impl GpGuiApp {
         pad.push_monitor(kind, line);
     }
 
+    fn push_mon_line_sgr(&mut self, kind: PadKind, line: &str) {
+        self.pads[0].push_monitor_sgr(kind, line, self.cfg.session.allow_color_ansi);
+    }
+
     /// GP DOS / axlisten monitor header on pad 0 (`fm … ctl …`).
     fn push_kiss_mon(
         &mut self,
@@ -2823,9 +2835,12 @@ impl GpGuiApp {
         ));
         self.push_mon_line(kind, hdr);
         if let Some(text) = info_text {
-            if let Some(line) = ax25::monitor_info_line(text) {
-                self.push_mon_line(kind, line);
-            }
+            let line = if text.starts_with("   ") {
+                text.to_string()
+            } else {
+                format!("   {text}")
+            };
+            self.push_mon_line_sgr(kind, &line);
         }
     }
 
@@ -2861,6 +2876,9 @@ impl GpGuiApp {
         info_text: Option<&str>,
         port: u8,
     ) {
+        let colored_info = info_text.map(|_| {
+            ax25::bytes_to_monitor_body_sgr(&frame.info, self.session.umlaut_for(SLOT_MONITOR))
+        });
         self.push_kiss_mon(
             kind,
             &frame.src,
@@ -2871,7 +2889,7 @@ impl GpGuiApp {
             frame.nr,
             frame.poll,
             frame.command,
-            info_text,
+            colored_info.as_deref(),
             port,
         );
     }
@@ -5194,6 +5212,11 @@ impl GpGuiApp {
 
     fn dispatch_compose_line(&mut self, slot: usize, line: String, carriage_return: bool) {
         self.push_compose_history(slot, line.clone());
+        let channel_line = if matches!(self.active, ActivePane::Channel(_) | ActivePane::Monitor) {
+            expand_sgr_arrows(&line)
+        } else {
+            line.clone()
+        };
 
         // Channel transcript is always stored. Echo only hides our rows.
         // BIN-RX paints `#OK#` / `#NO#` itself, so Echo must not add a second copy.
@@ -5203,7 +5226,7 @@ impl GpGuiApp {
                 && (t.eq_ignore_ascii_case("#OK#") || t.eq_ignore_ascii_case("#NO#"))
         });
         if !wire_answer {
-            self.echo_own_line(&line);
+            self.echo_own_line(&channel_line);
         }
 
         let write_ch = match self.active {
@@ -5282,12 +5305,13 @@ impl GpGuiApp {
             return;
         }
 
+        let line = &channel_line;
         if let ActivePane::Channel(n) = self.active {
             if self.channel_lock.get(n as usize).copied().unwrap_or(false) {
-                if let Some(sealed) = self.seal_channel_line(n, &line) {
+                if let Some(sealed) = self.seal_channel_line(n, line) {
                     self.write_operator_text(&sealed, carriage_return);
                     if n >= 1 && self.channel_linked(n) && !line.trim().is_empty() {
-                        self.relay_chat_from(n, &line, false);
+                        self.relay_chat_from(n, line, false);
                     }
                 } else {
                     self.status = "Lock needs a linked call".into();
@@ -5295,10 +5319,10 @@ impl GpGuiApp {
                 return;
             }
         }
-        self.write_operator_text(&line, carriage_return);
+        self.write_operator_text(line, carriage_return);
         if let ActivePane::Channel(n) = self.active {
             if n >= 1 && self.channel_linked(n) && !line.trim().is_empty() {
-                self.relay_chat_from(n, &line, false);
+                self.relay_chat_from(n, line, false);
             }
         }
     }
@@ -16370,6 +16394,151 @@ mod input_tests {
                 });
             });
         }
+    }
+
+    #[test]
+    fn alt_27_sgr_channel_input_is_sent_and_echoed_as_color() {
+        with_offline_app("wa8ded", |app, rx, _| {
+            app.active = ActivePane::Channel(1);
+            app.compose[1].input = "←[1;31mNot!←[0m normal ←".into();
+            app.submit();
+
+            let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
+                panic!("expected channel text");
+            };
+            assert_eq!(channel, 1);
+            assert_eq!(data, "\x1b[1;31mNot!\x1b[0m normal ←\r".as_bytes());
+            assert_eq!(
+                app.compose[1].history.back().unwrap(),
+                "←[1;31mNot!←[0m normal ←"
+            );
+            let job = app.pads[1].layout_job_channel(100, false);
+            assert!(job.sections.iter().any(|section| {
+                &job.text[section.byte_range.clone()] == "Not!"
+                    && section.format.color == Color32::from_rgb(255, 85, 85)
+            }));
+            assert!(job.sections.iter().any(|section| {
+                job.text[section.byte_range.clone()].contains("normal")
+                    && section.format.color == PadKind::Own.color()
+            }));
+        });
+    }
+
+    #[test]
+    fn alt_27_sgr_channel_input_still_sends_escape_when_color_is_disabled() {
+        with_offline_app("wa8ded", |app, rx, _| {
+            app.active = ActivePane::Channel(1);
+            app.cfg.session.allow_color_ansi = false;
+            app.compose[1].input = "←[1;31mNot!".into();
+            app.submit();
+
+            let TncCommand::HostFrame { data, .. } = rx.try_recv().unwrap() else {
+                panic!("expected channel text");
+            };
+            assert_eq!(data, b"\x1b[1;31mNot!\r");
+            let job = app.pads[1].layout_job_channel(100, false);
+            assert!(job.sections.iter().any(|section| {
+                &job.text[section.byte_range.clone()] == "Not!"
+                    && section.format.color == PadKind::Own.color()
+            }));
+        });
+    }
+
+    #[test]
+    fn sgr_received_channel_colors_across_packet_cuts() {
+        with_offline_app("wa8ded", |app, _, _| {
+            app.accept_rx_text(1, "\x1b[3", PadKind::Incoming);
+            app.accept_rx_text(1, "1mGrr\x1b[0m plain\r", PadKind::Incoming);
+            let job = app.pads[1].layout_job_channel(100, false);
+            assert!(job.sections.iter().any(|section| {
+                job.text[section.byte_range.clone()].contains("Grr")
+                    && section.format.color == Color32::from_rgb(170, 0, 0)
+            }));
+            assert!(job.sections.iter().any(|section| {
+                job.text[section.byte_range.clone()].contains("plain")
+                    && section.format.color == PadKind::Incoming.color()
+            }));
+        });
+    }
+
+    #[test]
+    fn alt_27_sgr_monitor_input_sends_escape_and_colors_echo() {
+        with_offline_app("wa8ded", |app, rx, _| {
+            app.active = ActivePane::Monitor;
+            app.compose[0].input = "←[31mGrr and Stuff".into();
+            app.submit();
+
+            let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
+                panic!("expected monitor text");
+            };
+            assert_eq!(channel, 0);
+            assert_eq!(data, b"\x1b[31mGrr and Stuff\r");
+            let job =
+                app.pads[0].layout_job_monitor(100, Color32::BLUE, Color32::WHITE, Color32::YELLOW);
+            assert!(job.sections.iter().any(|section| {
+                job.text[section.byte_range.clone()].contains("Grr and Stuff")
+                    && section.format.color == Color32::from_rgb(170, 0, 0)
+            }));
+        });
+    }
+
+    #[test]
+    fn sgr_monitor_received_host_and_kiss_payloads_keep_other_controls() {
+        for protocol in ["wa8ded", "kiss"] {
+            with_offline_app(protocol, |app, _, _| {
+                let payload = b"\x1b[31mRed\x1b[1;32mGreen\x1b[0m plain\x07\x1b[2J";
+                if protocol == "wa8ded" {
+                    let (tx, rx) = mpsc::channel(8);
+                    app.events = rx;
+                    tx.try_send(TncEvent::HostFrame {
+                        channel: 0,
+                        code: HostCode::Monitor,
+                        payload: [b"fm N1AAA to N1BBB\r".as_slice(), payload].concat(),
+                    })
+                    .unwrap();
+                    app.drain_tnc();
+                } else {
+                    let raw = ax25::build_ui("N1BBB", "N1AAA", &[], payload);
+                    app.handle_kiss_ax25(&raw, 0);
+                }
+                let payload_color = Color32::from_rgb(3, 4, 5);
+                let job =
+                    app.pads[0].layout_job_monitor(100, Color32::BLUE, payload_color, Color32::YELLOW);
+                for (word, color) in [
+                    ("Red", Color32::from_rgb(170, 0, 0)),
+                    ("Green", Color32::from_rgb(85, 255, 85)),
+                    ("plain", payload_color),
+                ] {
+                    assert!(
+                        job.sections.iter().any(|section| {
+                            job.text[section.byte_range.clone()].contains(word)
+                                && section.format.color == color
+                        }),
+                        "{protocol}: missing {word} in {job:?}"
+                    );
+                }
+                assert!(job.text.contains("<0x07>"));
+                assert!(job.text.contains("<0x1b>[2J"));
+            });
+        }
+    }
+
+    #[test]
+    fn sgr_monitor_disabled_strips_colors_without_changing_other_bytes() {
+        with_offline_app("kiss", |app, _, _| {
+            app.cfg.session.allow_color_ansi = false;
+            let raw = ax25::build_ui("N1BBB", "N1AAA", &[], b"\x1b[31mRed\x07");
+            app.handle_kiss_ax25(&raw, 0);
+            let payload_color = Color32::from_rgb(3, 4, 5);
+            let job =
+                app.pads[0].layout_job_monitor(100, Color32::BLUE, payload_color, Color32::YELLOW);
+            assert!(job.sections.iter().any(|section| {
+                job.text[section.byte_range.clone()].contains("Red")
+                    && section.format.color == payload_color
+            }));
+            assert!(job.text.contains("<0x07>"));
+            assert!(!job.text.contains("<0x1b>"));
+        });
     }
 
     #[test]

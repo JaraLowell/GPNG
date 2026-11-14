@@ -1084,7 +1084,7 @@ pub struct SessionConfig {
     /// are removed about once an hour. `0` disables. Maximum 365.
     #[serde(default)]
     pub mheard_clean_days: u32,
-    /// Channel window: apply ESC `[0m` / `[1m` / `[30m`–`[37m` in a payload.
+    /// Channel and monitor: apply ESC `[0m` / `[1m` / `[30m`–`[37m` in a payload.
     /// Background codes are always removed. `false` strips every colour sequence.
     #[serde(default = "default_allow_color_ansi")]
     pub allow_color_ansi: bool,

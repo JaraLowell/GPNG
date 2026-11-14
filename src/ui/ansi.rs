@@ -260,6 +260,39 @@ fn apply_sgr(style: &mut AnsiStyle, params: &[u8]) {
     }
 }
 
+/// Turn the DOS-style Alt+27 arrow into ESC only for complete SGR sequences.
+pub fn expand_sgr_arrows(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut start = 0;
+    for (index, _) in text.match_indices('←') {
+        let rest = &text[index + '←'.len_utf8()..];
+        let Some(params) = rest.strip_prefix('[') else {
+            continue;
+        };
+        let length = params
+            .bytes()
+            .take_while(|b| b.is_ascii_digit() || *b == b';')
+            .count();
+        if length <= 64 && params.as_bytes().get(length) == Some(&b'm') {
+            out.push_str(&text[start..index]);
+            out.push('\x1b');
+            start = index + '←'.len_utf8();
+        }
+    }
+    out.push_str(&text[start..]);
+    out
+}
+
+/// Length of a complete numeric SGR sequence at the start of `bytes`.
+pub fn sgr_sequence_len(bytes: &[u8]) -> Option<usize> {
+    let params = bytes.strip_prefix(b"\x1b[")?;
+    let len = params
+        .iter()
+        .take_while(|b| b.is_ascii_digit() || **b == b';')
+        .count();
+    (len <= 64 && params.get(len) == Some(&b'm')).then_some(len + 3)
+}
+
 /// Remove colour sequences. A trailing unfinished sequence is dropped.
 pub fn strip_ansi(text: &str) -> String {
     let mut dec = AnsiDecoder::new();
@@ -268,4 +301,21 @@ pub fn strip_ansi(text: &str) -> String {
         out.push_str(&piece);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sgr_arrows_only_expand_complete_color_sequences() {
+        assert_eq!(
+            expand_sgr_arrows("←[1;31mNot!←[0m ← arrow ←[2J ←[31"),
+            "\x1b[1;31mNot!\x1b[0m ← arrow ←[2J ←[31"
+        );
+        assert_eq!(
+            expand_sgr_arrows(&format!("←[{}m", "1".repeat(65))),
+            format!("←[{}m", "1".repeat(65))
+        );
+    }
 }

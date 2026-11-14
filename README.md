@@ -95,6 +95,12 @@ compatible with classic DOS GP.
 The pinned local winit backend preserves Windows Alt+numpad character input;
 other platforms continue to use their native input methods.
 
+In channel or Monitor input, Alt+27's `←` before a complete ANSI color
+sequence is sent as ESC. For example, `←[1;31mNot!←[0m` sends bright red
+text and then resets the color. Other arrows remain ordinary text. Channel
+and Monitor ANSI color is controlled by `[session] allow_color_ansi` in
+`Config.toml`. Monitor colors are interpreted independently for each frame.
+
 You do not need to edit `Config.toml` for ordinary station / radio / session
 settings. Hand-editing is still fine for paths, buffer sizes, `TNCINI` lines,
 `KISS.INI` sections, and other keys the menus do not expose. An optional

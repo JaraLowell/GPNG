@@ -208,15 +208,15 @@ address = "CQ"
 source = "file"
 text = ""
 file = "D:\\MyPython\\GPNG\\data\\BEACON.GPI"
-period_minutes = 15
+period_minutes = 60
 [print]
 # Legacy ESC/P printer attribute byte sequences.
 default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1315
-y = 291
+x = 3322
+y = 361
 width = 1155
-height = 807
+height = 796
 maximized = false

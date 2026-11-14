@@ -63,6 +63,7 @@ impl PadKind {
 pub struct PadRun {
     pub text: String,
     pub color: Color32,
+    ansi: Option<crate::ui::ansi::AnsiStyle>,
 }
 
 pub struct PadLine {
@@ -128,6 +129,35 @@ impl TextPad {
         }
     }
 
+    /// A monitor payload with complete SGR sequences retained by the byte decoder.
+    pub fn push_monitor_sgr(&mut self, kind: PadKind, line: &str, allow_color: bool) {
+        let mut decoder = crate::ui::ansi::AnsiDecoder::new();
+        let mut text = String::new();
+        let mut runs = Vec::new();
+        for (part, style) in decoder.push_text(line, allow_color) {
+            let part = crate::tnc::ax25::escape_monitor_text(&part);
+            text.push_str(&part);
+            for mut run in monitor_paint_runs(&part, MONITOR_PAYLOAD) {
+                if run.color != MONITOR_HEX && (style.fg.is_some() || style.bold) {
+                    run.ansi = Some(style);
+                }
+                runs.push(run);
+            }
+        }
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.lines.push_back(PadLine {
+            kind,
+            text,
+            runs,
+            seq,
+            nowrap: false,
+        });
+        while self.lines.len() > self.max_lines {
+            self.lines.pop_front();
+        }
+    }
+
     /// Drop every row. The caller rewrites the pad's log so a restart stays empty.
     pub fn clear(&mut self) {
         self.lines.clear();
@@ -171,6 +201,7 @@ impl TextPad {
                 line.runs.push(PadRun {
                     text: prefix,
                     color: line.kind.color(),
+                    ansi: None,
                 });
             }
         }
@@ -183,6 +214,7 @@ impl TextPad {
         line.runs.push(PadRun {
             text: more.to_string(),
             color,
+            ansi: None,
         });
         true
     }
@@ -198,6 +230,7 @@ impl TextPad {
             vec![PadRun {
                 text: text.clone(),
                 color,
+                ansi: None,
             }]
         };
         self.lines.push_back(PadLine {
@@ -325,25 +358,48 @@ impl TextPad {
                 0
             };
             let shifted;
-            let shifted_runs;
-            let (text, runs) = if umlaut {
+            let text = if umlaut {
                 shifted = crate::ui::editor::show_channel_text(&line.text, true);
+                shifted.as_str()
+            } else {
+                line.text.as_str()
+            };
+            let shifted_runs;
+            let runs = if umlaut || monitor_colors.is_some() {
                 shifted_runs = line
                     .runs
                     .iter()
-                    .map(|run| PadRun {
-                        text: crate::ui::editor::show_channel_text(&run.text, true),
-                        color: run.color,
+                    .map(|run| {
+                        let color = match monitor_colors {
+                            Some((header, payload)) => match run.ansi {
+                                Some(style) => style.paint(payload),
+                                None => monitor_paint_color(run.color, header, payload),
+                            },
+                            None => run.color,
+                        };
+                        PadRun {
+                            text: if umlaut {
+                                crate::ui::editor::show_channel_text(&run.text, true)
+                            } else {
+                                run.text.clone()
+                            },
+                            color,
+                            ansi: None,
+                        }
                     })
                     .collect::<Vec<_>>();
-                (shifted.as_str(), shifted_runs.as_slice())
+                shifted_runs.as_slice()
             } else {
-                (line.text.as_str(), line.runs.as_slice())
+                line.runs.as_slice()
             };
-            let base = if runs.is_empty() {
+            let base = if line.runs.is_empty() {
                 line.kind.color()
             } else {
                 monitor_color(text)
+            };
+            let base = match monitor_colors {
+                Some((header, payload)) => monitor_paint_color(base, header, payload),
+                None => base,
             };
             let rows = if line.nowrap {
                 // Keep hard `\n` breaks, but still fold each segment to the pane.
@@ -378,10 +434,7 @@ impl TextPad {
                     continue;
                 }
                 for run in row {
-                    let mut color = match monitor_colors {
-                        Some((header, payload)) => monitor_paint_color(run.color, header, payload),
-                        None => run.color,
-                    };
+                    let mut color = run.color;
                     if run.color == PAD_SYSTEM {
                         if let Some(info) = system_color {
                             color = info;
@@ -622,6 +675,7 @@ fn fixed_rows(text: &str, color: Color32) -> Vec<Vec<PadRun>> {
                 vec![PadRun {
                     text: part.to_string(),
                     color,
+                    ansi: None,
                 }]
             }
         })
@@ -731,6 +785,7 @@ impl WrapRow {
         self.runs.push(PadRun {
             text: text.to_string(),
             color,
+            ansi: None,
         });
     }
 }
@@ -741,6 +796,7 @@ fn pieces_of(text: &str, runs: &[PadRun], fallback: Color32) -> Vec<Piece> {
         owned = vec![PadRun {
             text: text.to_string(),
             color: fallback,
+            ansi: None,
         }];
         owned.as_slice()
     } else {
@@ -802,5 +858,9 @@ fn push_run(runs: &mut Vec<PadRun>, text: String, color: Color32) {
             return;
         }
     }
-    runs.push(PadRun { text, color });
+    runs.push(PadRun {
+        text,
+        color,
+        ansi: None,
+    });
 }

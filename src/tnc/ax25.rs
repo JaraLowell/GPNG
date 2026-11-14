@@ -243,12 +243,21 @@ pub fn escape_monitor_text(text: &str) -> String {
 /// frame structure and is not drawn. Everything after it, including further
 /// CR/LF, is one indented info row with non-printables shown as hex.
 pub fn monitor_display_lines_from_bytes(raw: &[u8], extended: bool) -> Vec<String> {
+    monitor_display_lines(raw, extended, false)
+}
+
+/// As above, retaining complete SGR sequences for monitor rendering.
+pub fn monitor_display_lines_sgr(raw: &[u8], extended: bool) -> Vec<String> {
+    monitor_display_lines(raw, extended, true)
+}
+
+fn monitor_display_lines(raw: &[u8], extended: bool, sgr: bool) -> Vec<String> {
     let raw = trim_trailing_crlf(raw);
     if raw.is_empty() {
         return Vec::new();
     }
     if !starts_with_fm(raw) {
-        return info_row(raw, extended).into_iter().collect();
+        return info_row(raw, extended, sgr).into_iter().collect();
     }
     let Some(header_end) = raw.iter().position(|&b| b == b'\r' || b == b'\n') else {
         return info_header(raw, extended).into_iter().collect();
@@ -261,7 +270,7 @@ pub fn monitor_display_lines_from_bytes(raw: &[u8], extended: bool) -> Vec<Strin
     if raw[header_end] == b'\r' && raw.get(i) == Some(&b'\n') {
         i += 1;
     }
-    if let Some(info) = info_row(trim_trailing_crlf(&raw[i..]), extended) {
+    if let Some(info) = info_row(trim_trailing_crlf(&raw[i..]), extended, sgr) {
         lines.push(info);
     }
     lines
@@ -275,13 +284,19 @@ pub fn monitor_display_lines_from_bytes(raw: &[u8], extended: bool) -> Vec<Strin
 /// C0 controls and DEL become `<0xNN>`.
 pub fn bytes_to_monitor_body(raw: &[u8], extended: bool) -> String {
     let mut out = String::new();
-    append_monitor_bytes(&mut out, trim_trailing_crlf(raw), extended);
+    append_monitor_bytes(&mut out, trim_trailing_crlf(raw), extended, false);
+    out
+}
+
+pub fn bytes_to_monitor_body_sgr(raw: &[u8], extended: bool) -> String {
+    let mut out = String::new();
+    append_monitor_bytes(&mut out, trim_trailing_crlf(raw), extended, true);
     out
 }
 
 fn info_header(raw: &[u8], extended: bool) -> Option<String> {
     let mut out = String::new();
-    append_monitor_bytes(&mut out, raw, extended);
+    append_monitor_bytes(&mut out, raw, extended, false);
     if out.is_empty() {
         None
     } else {
@@ -289,9 +304,9 @@ fn info_header(raw: &[u8], extended: bool) -> Option<String> {
     }
 }
 
-fn info_row(raw: &[u8], extended: bool) -> Option<String> {
+fn info_row(raw: &[u8], extended: bool, sgr: bool) -> Option<String> {
     let mut out = String::new();
-    append_monitor_bytes(&mut out, raw, extended);
+    append_monitor_bytes(&mut out, raw, extended, sgr);
     if out.is_empty() {
         None
     } else {
@@ -339,10 +354,17 @@ fn push_cp437_byte(out: &mut String, b: u8, umlaut: bool) {
     }
 }
 
-fn append_monitor_bytes(out: &mut String, raw: &[u8], extended: bool) {
+fn append_monitor_bytes(out: &mut String, raw: &[u8], extended: bool, sgr: bool) {
     let mut i = 0;
     while i < raw.len() {
         let b = raw[i];
+        if sgr && b == 0x1b {
+            if let Some(len) = crate::ui::ansi::sgr_sequence_len(&raw[i..]) {
+                out.push_str(std::str::from_utf8(&raw[i..i + len]).expect("ASCII SGR"));
+                i += len;
+                continue;
+            }
+        }
         // C0 + DEL — never a console text glyph on the monitor.
         if b < 0x20 || b == 0x7F {
             out.push_str(&monitor_nonprint_token(u32::from(b)));
