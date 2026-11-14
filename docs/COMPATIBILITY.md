@@ -61,7 +61,7 @@ Prompts, external-program streams, and file-transfer data retain their own frami
 
 | Canonical | Min. prefix (typical) | Notes |
 |-----------|----------------------|--------|
-| `//<n> [text]` | digit | Bare `//n` joins chat on channel *n* (leave with `//0`); with text, one-shot to that channel. Relays both ways on the air. Join/leave: `<GPNG>: CALL (Name) Joined/Left your channel!` |
+| `//<n> [text]` | digit | Bare `//n` joins chat on channel *n* (leave with `//0`); with text, one-shot to that channel. Relays chat both ways as packets arrive, with or without CR/LF; `//` commands still wait for a line ending. Join/leave: `<GPNG>: CALL (Name) Joined/Left your channel!` |
 | `//7+ <ON/OFF>` | `7+` | 7Plus AutoSave |
 | `//Activity` | `AC…` | Last sysop key/mouse activity |
 | `//Bell` | `B` | Ring sysop |

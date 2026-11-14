@@ -1365,9 +1365,8 @@ impl GpGuiApp {
                             }
                         }
                     }
-                    // Channel text is rebuilt from newlines across host frames.
-                    // A 128-byte cut is not a row break. `//` commands wait for
-                    // the newline that finishes the line.
+                    // Ordinary terminal text and `//` commands are rebuilt
+                    // across frames. Programs and chat consume packets now.
                     let reassemble = channel >= 1 && matches!(code, HostCode::Data);
                     if reassemble {
                         if kind == PadKind::Incoming {
@@ -2496,7 +2495,7 @@ impl GpGuiApp {
     }
 
     /// Terminal write. Bytes append to the open row. `\n` / `\r` end that row.
-    /// The end of a packet does not.
+    /// Packet input is also completed for programs and chat bridges.
     fn accept_rx_text(&mut self, channel: u8, chunk: &str, kind: PadKind) {
         // BEL (Ctrl-G, 0x07) rings only on the station that received it,
         // and only while the session bell is on.
@@ -2570,9 +2569,7 @@ impl GpGuiApp {
         // Show the `//` line, close it, then answer. Do not answer before paint.
         if kind == PadKind::Incoming && channel >= 1 {
             self.finish_pending_remote_command(channel);
-            // A running program must see this packet now. Chat still waits
-            // for Enter, because a long line can continue in the next frame.
-            self.finish_program_line(channel);
+            self.finish_packet_input_line(channel);
         }
         // A packet that ends on CR keeps the row open (the next byte may be LF).
         // A sealed line is already complete, so show the plaintext now.
@@ -2713,15 +2710,34 @@ impl GpGuiApp {
         }
     }
 
-    /// The other station's packet is one command for the program that is
-    /// waiting. Do not hold it until their next line arrives.
-    fn finish_program_line(&mut self, channel: u8) {
-        if channel < 1 || !self.external_busy(channel) {
+    /// Programs and chat bridges consume packets without waiting for Enter.
+    fn finish_packet_input_line(&mut self, channel: u8) {
+        if channel < 1 {
             return;
         }
         let idx = channel as usize;
-        if self.rx_row.get(idx).copied().flatten().is_none() {
+        let Some(seq) = self.rx_row.get(idx).copied().flatten() else {
             return;
+        };
+        if !self.external_busy(channel) {
+            let in_chat = self.chat_target(channel).is_some()
+                || (1..=self.channels).any(|ch| self.chat_target(ch) == Some(channel));
+            if !in_chat
+                || self.channel_transfer_busy(channel)
+                || self.mail_send_open(channel)
+                || self.user_write.get(idx).is_some_and(Option::is_some)
+            {
+                return;
+            }
+            // Remote commands may span packets, even in chat mode.
+            if self
+                .pads
+                .get(idx)
+                .and_then(|pad| pad.text_if_seq(seq))
+                .is_some_and(|text| text.starts_with("//"))
+            {
+                return;
+            }
         }
         let ended_cr = self.rx_cr.get(idx).copied().unwrap_or(false);
         if ended_cr {
@@ -14856,6 +14872,64 @@ mod input_tests {
         test(&mut app, &mut rx, &ctx);
         drop(app);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn chat_relay_receives_packets_without_waiting_for_line_endings() {
+        for protocol in ["wa8ded", "kiss", "baycom"] {
+            with_offline_app(protocol, |app, rx, _| {
+                app.channel_peer[1] = Some("N1PEER".into());
+                app.channel_peer[2] = Some("N2PEER".into());
+                if !app.session.remote_for(1) {
+                    app.session.toggle_remote(ActivePane::Channel(1));
+                }
+                app.accept_rx_text(1, "//2\r", PadKind::Incoming);
+                assert_eq!(app.chat_target(1), Some(2));
+                while rx.try_recv().is_ok() {}
+
+                for (from, to) in [(1, 2), (2, 1)] {
+                    for ending in ["", "\r", "\n", "\r\n"] {
+                        app.accept_rx_text(from, &format!("hello{ending}"), PadKind::Incoming);
+                        let command = rx.try_recv().expect("chat must relay immediately");
+                        let (channel, data) = match command {
+                            TncCommand::HostFrame { channel, data }
+                            | TncCommand::Session(SessionCommand::Send { channel, data, .. }) => {
+                                (channel, data)
+                            }
+                            other => panic!("unexpected radio command: {other:?}"),
+                        };
+                        assert_eq!(channel, to);
+                        assert_eq!(data, format!("N{from}PEER: hello\r").as_bytes());
+                        assert!(rx.try_recv().is_err(), "chat relayed more than once");
+                        app.accept_rx_text(from, "\n", PadKind::Incoming);
+                        assert!(rx.try_recv().is_err(), "late newline repeated chat");
+                    }
+                }
+
+                app.accept_rx_text(1, "//", PadKind::Incoming);
+                assert_eq!(app.chat_target(1), Some(2));
+                assert!(rx.try_recv().is_err());
+                app.accept_rx_text(1, "0\r", PadKind::Incoming);
+                assert_eq!(app.chat_target(1), None);
+                while rx.try_recv().is_ok() {}
+                app.accept_rx_text(2, "after leaving", PadKind::Incoming);
+                assert!(rx.try_recv().is_err());
+            });
+        }
+    }
+
+    #[test]
+    fn non_relay_chat_keeps_reassembling_packets() {
+        with_offline_app("wa8ded", |app, rx, _| {
+            app.channel_peer[1] = Some("N1PEER".into());
+            app.accept_rx_text(1, "hello", PadKind::Incoming);
+            app.accept_rx_text(1, " world", PadKind::Incoming);
+            let seq = app.rx_row[1].expect("ordinary chat row stays open");
+            assert_eq!(app.pads[1].text_if_seq(seq).unwrap(), "hello world");
+            app.accept_rx_text(1, "\r\n", PadKind::Incoming);
+            assert!(app.rx_row[1].is_none());
+            assert!(rx.try_recv().is_err());
+        });
     }
 
     #[test]
