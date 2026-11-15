@@ -5608,7 +5608,8 @@ impl GpGuiApp {
     }
 
     fn modal_open(&self) -> bool {
-        self.session.show_qrg_dialog
+        self.icon_editor.is_some()
+            || self.session.show_qrg_dialog
             || self.session.show_connect_dialog
             || self.session.show_mycall_dialog
             || self.session.show_spy_dialog
@@ -7723,6 +7724,9 @@ impl GpGuiApp {
 
     /// DOS chapter 4 keys. A key with no product yet answers on the status line.
     fn poll_hotkeys(&mut self, ctx: &Context) {
+        if self.icon_editor.is_some() {
+            return;
+        }
         let alt = egui::Modifiers::ALT;
         let none = egui::Modifiers::NONE;
         // ALT-Enter: exclusive fullscreen (title bar off). Works on every screen.
@@ -8276,7 +8280,10 @@ impl GpGuiApp {
     }
 
     fn note_split_right_click(&mut self, ui: &Ui, rect: Rect) {
-        if !matches!(self.active, ActivePane::Channel(_)) {
+        if !ui.is_enabled()
+            || self.icon_editor.is_some()
+            || !matches!(self.active, ActivePane::Channel(_))
+        {
             return;
         }
         let hit = ui.input(|i| {
@@ -8749,9 +8756,17 @@ fn name_selector(
 }
 
 fn name_select_row(ui: &mut Ui, label: &str, selected: bool, dropdown: bool) -> egui::Response {
+    let fg = if selected {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), menu_font(17.0), fg);
     let width = ui.available_width();
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(width, retro::ROW_H * 0.75), Sense::click());
+    let height = (retro::ROW_H * 0.75).max(galley.mesh_bounds.height() + 4.0);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     let fill = if selected {
         VGA_BLUE
     } else if response.hovered() {
@@ -8788,14 +8803,6 @@ fn name_select_row(ui: &mut Ui, label: &str, selected: bool, dropdown: bool) -> 
             Stroke::NONE,
         ));
     }
-    let fg = if selected {
-        Color32::WHITE
-    } else {
-        Color32::BLACK
-    };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_string(), menu_font(13.5), fg);
     let text_width = galley.size().x;
     // Center the visible glyphs, not the menu font's extra leading.
     let ink = galley.mesh_bounds;
@@ -8942,6 +8949,9 @@ impl eframe::App for GpGuiApp {
             .show_separator_line(false)
             .frame(Frame::none().fill(self.menu_bg))
             .show(ctx, |ui| {
+                if self.icon_editor.is_some() {
+                    ui.disable();
+                }
                 self.top_stack_with_clock(
                     ui,
                     ui.available_width(),
@@ -8960,6 +8970,9 @@ impl eframe::App for GpGuiApp {
             .show_separator_line(false)
             .frame(Frame::none().fill(self.menu_bg))
             .show(ctx, |ui| {
+                if self.icon_editor.is_some() {
+                    ui.disable();
+                }
                 let h = ui.available_height();
                 let w = ui.available_width();
                 self.icon_strip(ui, w, h);
@@ -8985,6 +8998,9 @@ impl eframe::App for GpGuiApp {
                 .show_separator_line(false)
                 .frame(Frame::none().fill(mon_bg))
                 .show(ctx, |ui| {
+                    if self.icon_editor.is_some() {
+                        ui.disable();
+                    }
                     let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
                     paint_text_pane(
                         ui,
@@ -9012,6 +9028,9 @@ impl eframe::App for GpGuiApp {
                 .show_separator_line(false)
                 .frame(Frame::none().fill(VGA_GRAY))
                 .show(ctx, |ui| {
+                    if self.icon_editor.is_some() {
+                        ui.disable();
+                    }
                     self.session_bar(ui, ui.available_width(), ui.available_height());
                 });
         }
@@ -9019,8 +9038,14 @@ impl eframe::App for GpGuiApp {
         egui::CentralPanel::default()
             .frame(Frame::none().fill(VGA_BLUE))
             .show(ctx, |ui| {
+                if self.icon_editor.is_some() {
+                    ui.disable();
+                }
                 let panel = ui.max_rect();
                 self.rx_pane(ui, panel.width(), panel.height());
+                if self.icon_editor.is_some() {
+                    return;
+                }
                 self.draw_run_terminal(ui, panel);
                 self.qrg_dialog(ctx);
                 self.mycall_dialog(ctx);
@@ -9030,8 +9055,17 @@ impl eframe::App for GpGuiApp {
                 self.connect_names_window(ctx);
                 self.name_dialog(ctx);
             });
-        self.paint_setup(ctx);
+        if self.icon_editor.is_none() {
+            self.paint_setup(ctx);
+        }
+        let icon_editor_open = self.icon_editor.is_some();
         self.paint_icon_editor(ctx);
+        if icon_editor_open {
+            self.split_dragging = false;
+            self.split_drag_dy = 0.0;
+            self.sync_console_font(ctx);
+            return;
+        }
         self.paint_tnc_command(ctx);
         self.paint_list_offer(ctx);
         self.paint_autobin_offer(ctx);
@@ -9791,10 +9825,11 @@ impl GpGuiApp {
                     }
                     let focus_id = compose_id_for(slot);
                     // Any click on the purple field focuses the compose line.
-                    let in_purple = ui.input(|i| {
-                        i.pointer.any_click()
-                            && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))
-                    });
+                    let in_purple = ui.is_enabled()
+                        && ui.input(|i| {
+                            i.pointer.any_click()
+                                && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))
+                        });
                     if in_purple {
                         ui.memory_mut(|m| m.request_focus(focus_id));
                     }
@@ -11655,7 +11690,7 @@ impl GpGuiApp {
             self.link_rx_until.is_some_and(|t| t > now),
         );
 
-        if let Some(resp) = split_bar {
+        if let Some(resp) = split_bar.filter(|_| ui.is_enabled()) {
             let (hover, down, pressed, origin, delta, abort) = ui.input(|i| {
                 (
                     i.pointer.hover_pos(),
@@ -13765,7 +13800,11 @@ fn paint_icon_grid(ui: &mut Ui, edit: &mut IconEdit) {
         Vec2::new(w as f32 * cell, h as f32 * cell),
         Sense::click_and_drag(),
     );
-    let color = edit.color & 15;
+    let color = if ui.input(|i| i.pointer.secondary_down()) {
+        edit.right_color
+    } else {
+        edit.color
+    } & 15;
     if resp.is_pointer_button_down_on() {
         if let Some(pos) = resp.interact_pointer_pos() {
             if let Some((x, y)) = icon_cell(rect, pos, w, h) {
@@ -13847,36 +13886,43 @@ fn icon_editor_side(
                     .color(Color32::BLACK),
             );
         }
-        ui.label(
-            RichText::new("Color:")
-                .font(menu_font(16.0))
-                .color(Color32::BLACK),
-        );
-        let pen = (edit.color as usize) & 15;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            let (swatch, _) = ui.allocate_exact_size(Vec2::new(72.0, 40.0), Sense::hover());
-            let (r, g, b) = VGA16_RGB[pen];
-            ui.painter()
-                .rect_filled(swatch, 0.0, Color32::from_rgb(r, g, b));
-            ui.painter()
-                .rect_stroke(swatch, 0.0, Stroke::new(1.0, Color32::BLACK));
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                if retro::button(ui, "Up", 52.0, 28.0, menu_font(15.0)) {
-                    edit.color = (pen as u8 + 15) % 16;
-                }
-                if retro::button(ui, "Down", 52.0, 28.0, menu_font(15.0)) {
-                    edit.color = (pen as u8 + 1) % 16;
-                }
+        for (label, color) in [
+            ("Left-click color:", &mut edit.color),
+            ("Right-click color:", &mut edit.right_color),
+        ] {
+            ui.label(
+                RichText::new(label)
+                    .font(menu_font(16.0))
+                    .color(Color32::BLACK),
+            );
+            let pen = (*color as usize) & 15;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (swatch, _) = ui.allocate_exact_size(Vec2::new(72.0, 40.0), Sense::hover());
+                let (r, g, b) = VGA16_RGB[pen];
+                ui.painter()
+                    .rect_filled(swatch, 0.0, Color32::from_rgb(r, g, b));
+                ui.painter()
+                    .rect_stroke(swatch, 0.0, Stroke::new(1.0, Color32::BLACK));
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    if retro::button(ui, "Up", 52.0, 28.0, menu_font(15.0)) {
+                        *color = (pen as u8 + 15) % 16;
+                    }
+                    if retro::button(ui, "Down", 52.0, 28.0, menu_font(15.0)) {
+                        *color = (pen as u8 + 1) % 16;
+                    }
+                });
             });
-        });
-        let name = setup::VGA_NAMES.get(pen).copied().unwrap_or("");
-        ui.label(
-            RichText::new(name)
-                .font(menu_font(16.0))
-                .color(Color32::BLACK),
-        );
+            let name = setup::VGA_NAMES.get(pen).copied().unwrap_or("");
+            ui.label(
+                RichText::new(name)
+                    .font(menu_font(16.0))
+                    .color(Color32::BLACK),
+            );
+        }
+        ui.label(RichText::new("Palette: left / right click sets that pen").font(menu_font(14.0)));
+        let pen = (edit.color as usize) & 15;
         let (pal, pal_resp) =
             ui.allocate_exact_size(Vec2::new(8.0 * 22.0, 2.0 * 22.0), Sense::click());
         for i in 0..16 {
@@ -13896,12 +13942,17 @@ fn icon_editor_side(
             };
             ui.painter().rect_stroke(cell, 0.0, stroke);
         }
-        if pal_resp.clicked() {
+        if pal_resp.clicked() || pal_resp.secondary_clicked() {
             if let Some(pos) = pal_resp.interact_pointer_pos() {
                 let col = ((pos.x - pal.left()) / 22.0) as usize;
                 let row = ((pos.y - pal.top()) / 22.0) as usize;
                 if col < 8 && row < 2 {
-                    edit.color = (row * 8 + col) as u8;
+                    let color = (row * 8 + col) as u8;
+                    if pal_resp.secondary_clicked() {
+                        edit.right_color = color;
+                    } else {
+                        edit.color = color;
+                    }
                 }
             }
         }
@@ -14504,8 +14555,8 @@ fn dos_bar_input(
     response.on_hover_cursor(egui::CursorIcon::Default);
 
     let pointer = ui.input(|i| i.pointer.interact_pos());
-    let down = ui.input(|i| i.pointer.primary_down());
-    let pressed = ui.input(|i| i.pointer.primary_pressed());
+    let down = ui.is_enabled() && ui.input(|i| i.pointer.primary_down());
+    let pressed = ui.is_enabled() && ui.input(|i| i.pointer.primary_pressed());
     let now = ui.input(|i| i.time);
     let key = scroll_id.with("dos_press");
     let ctx = ui.ctx();
@@ -15107,6 +15158,166 @@ mod input_tests {
     use super::*;
 
     #[test]
+    fn icon_editor_draws_independent_left_and_right_colors_without_background_actions() {
+        with_offline_app("wa8ded", |app, _, ctx| {
+            app.active = ActivePane::Channel(1);
+            app.icon_editor = Some(IconEdit {
+                path: app.config_path.with_file_name("ICONS.GP"),
+                raw: Vec::new(),
+                icons: vec![crate::ui::icons::GpIcon {
+                    width: 70,
+                    height: 40,
+                    pixels: vec![7; 70 * 40],
+                }],
+                index: 0,
+                color: 4,
+                right_color: 1,
+            });
+            for (button, color) in [
+                (egui::PointerButton::Primary, 10u8),
+                (egui::PointerButton::Secondary, 12u8),
+            ] {
+                let mut target = Pos2::ZERO;
+                for pressed in [None, Some(true), Some(false)] {
+                    let mut input = egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            Pos2::ZERO,
+                            Vec2::new(1000.0, 700.0),
+                        )),
+                        ..Default::default()
+                    };
+                    if let Some(pressed) = pressed {
+                        input.events = vec![
+                            egui::Event::PointerMoved(target),
+                            egui::Event::PointerButton {
+                                pos: target,
+                                button,
+                                pressed,
+                                modifiers: egui::Modifiers::default(),
+                            },
+                        ];
+                    }
+                    let output = ctx.run(input, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            icon_editor_side(
+                                ui,
+                                app.icon_editor.as_mut().unwrap(),
+                                &mut false,
+                                &mut None,
+                                &mut None,
+                            );
+                        });
+                    });
+                    let (r, g, b) = VGA16_RGB[color as usize];
+                    target = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Rect(rect)
+                                if rect.rect.size() == Vec2::splat(20.0)
+                                    && rect.fill == Color32::from_rgb(r, g, b) =>
+                            {
+                                Some(rect.rect.center())
+                            }
+                            _ => None,
+                        })
+                        .expect("palette color is rendered");
+                }
+                let edit = app.icon_editor.as_ref().unwrap();
+                assert_eq!(
+                    if button == egui::PointerButton::Primary {
+                        edit.color
+                    } else {
+                        edit.right_color
+                    },
+                    color
+                );
+            }
+            app.icon_editor.as_mut().unwrap().color = 4;
+            app.icon_editor.as_mut().unwrap().right_color = 1;
+            assert!(app.modal_open());
+            assert!(app.popup_chrome_open());
+            let split = app.split_on;
+            let mut grid = Rect::NOTHING;
+            for (button, x, color) in [
+                (egui::PointerButton::Primary, 2, 4),
+                (egui::PointerButton::Secondary, 3, 1),
+            ] {
+                for pressed in [None, Some(true), Some(true), Some(false)] {
+                    let pos = grid.min + Vec2::new(x as f32 * 8.0 + 4.0, 12.0);
+                    let mut input = egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            Pos2::ZERO,
+                            Vec2::new(1000.0, 700.0),
+                        )),
+                        ..Default::default()
+                    };
+                    if let Some(pressed) = pressed {
+                        input.events = vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button,
+                                pressed,
+                                modifiers: egui::Modifiers::default(),
+                            },
+                        ];
+                    }
+                    let _ = ctx.run(input, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            grid = Rect::from_min_size(ui.cursor().min, Vec2::new(560.0, 320.0));
+                            paint_icon_grid(ui, app.icon_editor.as_mut().unwrap());
+                            ui.scope(|ui| {
+                                ui.disable();
+                                app.note_split_right_click(ui, grid);
+                                app.session_bar(ui, 900.0, 26.0);
+                                let bar = Rect::from_min_size(grid.min, Vec2::new(40.0, 300.0));
+                                let parts = dos_bar_parts(bar, 100.0, 500.0, 100.0);
+                                let (offset, moved, _) = dos_bar_input(
+                                    ui,
+                                    egui::Id::new("icon_background"),
+                                    &parts,
+                                    bar,
+                                    100.0,
+                                    500.0,
+                                    100.0,
+                                    10.0,
+                                );
+                                assert_eq!(offset, 100.0);
+                                assert!(
+                                    !moved,
+                                    "held grid input must not scroll behind the editor"
+                                );
+                            });
+                        });
+                    });
+                }
+                assert_eq!(
+                    app.icon_editor.as_ref().unwrap().icons[0].pixels[70 + x],
+                    color
+                );
+                assert_eq!(app.split_on, split);
+                assert!(!app.split_dragging);
+            }
+            assert_eq!(app.icon_editor.as_ref().unwrap().icons[0].pixels[70 + 2], 4);
+            let _ = ctx.run(
+                egui::RawInput {
+                    events: vec![egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::ALT,
+                    }],
+                    ..Default::default()
+                },
+                |ctx| app.poll_hotkeys(ctx),
+            );
+            assert!(app.icon_editor.is_some());
+        });
+    }
+
+    #[test]
     fn connect_names_window_shows_all_qrgs_before_the_active_mhz_list() {
         with_offline_app("wa8ded", |app, _, ctx| {
             let path = app.config_path.with_file_name("NAMES.GP");
@@ -15323,7 +15534,8 @@ mod input_tests {
                 },
             );
             for response in responses.iter().chain(&rows) {
-                assert_eq!(response.rect.height(), retro::ROW_H * 0.75);
+                assert!(response.rect.height() >= retro::ROW_H * 0.75);
+                assert!(response.rect.height() <= retro::ROW_H);
             }
             for label in labels {
                 let text = output
@@ -15335,6 +15547,14 @@ mod input_tests {
                     })
                     .expect("selector label is rendered");
                 assert_eq!(text.galley.rows.len(), 1, "{label}");
+                assert!(
+                    text.galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|section| section.format.font_id == menu_font(17.0)),
+                    "{label}"
+                );
                 assert!(
                     text.galley.size().x < responses[0].rect.width() - 32.0,
                     "{label}"

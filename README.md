@@ -77,8 +77,9 @@ disconnected. Select an existing station or **New station**, then enter CALL,
 NAME, VIA, station type, and optionally IDENT and a QRG restriction.
 **Remove selected station** deletes only the selected saved entry, leaving
 the same CALL's entries on other QRGs intact. The editor's dropdown fields
-and options use compact, square 3D bevels and single-line labels. Long labels
-stay on one line and show their full text on hover if they do not fit.
+and options use the same 17-point menu font as SETUP, compact square 3D bevels,
+and single-line labels. Row heights accommodate the font without clipping.
+Long labels stay on one line and show their full text on hover if they do not fit.
 
 VIA accepts plain digipeater calls separated by spaces or commas, or the
 original typed paths such as `N>DB0ABC D>DB0XYZ T>N0CALL`. Typed paths retain

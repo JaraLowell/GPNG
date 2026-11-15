@@ -128,6 +128,7 @@ pub struct IconEdit {
     pub icons: Vec<GpIcon>,
     pub index: usize,
     pub color: u8,
+    pub right_color: u8,
 }
 
 impl IconEdit {
@@ -143,6 +144,7 @@ impl IconEdit {
             icons: lib.icons,
             index: 0,
             color: 0,
+            right_color: 15,
         })
     }
 
