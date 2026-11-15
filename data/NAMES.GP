@@ -1,7 +1,10 @@
-*** Rufzeichenliste fr Graphic-Packet ***
+*** Rufzeichenliste fï¿½r Graphic-Packet ***
 
 
 T>NL0MSK Jara;
-T>NL1AS  Bas;
-T>NL1WNB Wim;
-T>NL0PEL Tale;
+T>NL0AS:NL1AS Bas; 
+
+<IF 27>
+T>NL1WNB Wim; 
+T>NL0PEL Tale; 
+<END>

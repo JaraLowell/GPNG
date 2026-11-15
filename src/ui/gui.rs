@@ -43,7 +43,7 @@ use crate::config::{
 };
 use crate::gpw::{self, Reply as GpwReply};
 use crate::journal::{self, OpenQso};
-use crate::names::{ListedName, NamesFile, Route, StationKind};
+use crate::names::{qrg_key, ListedName, NameEntry, NameScope, NamesFile, Route, StationKind};
 use crate::remote::commands::{
     parse_line, report, report_block, rtt_ask, rtt_from_stamps, rtt_phrase, slash_verb,
     split_cross_channel, typed_runs_locally, unix_millis, RemoteAction, RttAsk, RttRead,
@@ -340,9 +340,11 @@ pub struct GpGuiApp {
     channel_down_wait: Vec<Option<String>>,
     /// `data/NAMES.GP` — names and autorouter paths.
     names: NamesFile,
-    /// ALT-N: store the connected station in `NAMES.GP`.
+    /// ALT-N / Name: edit station details in `NAMES.GP`.
     show_name_dialog: bool,
-    name_edit: String,
+    name_edit: NameEntry,
+    name_source: Option<usize>,
+    name_error: String,
     name_channel: u8,
     name_dialog_focus: bool,
     /// Focus the connect dialog call field once when opened.
@@ -746,7 +748,9 @@ impl GpGuiApp {
             channel_down_wait,
             names: NamesFile::load_default(),
             show_name_dialog: false,
-            name_edit: String::new(),
+            name_edit: NameEntry::default(),
+            name_source: None,
+            name_error: String::new(),
             name_channel: 1,
             name_dialog_focus: false,
             connect_dialog_focus: false,
@@ -1870,10 +1874,6 @@ impl GpGuiApp {
 
     fn clear_channel_link_state(&mut self, channel: u8) {
         self.close_journal(channel);
-        if self.show_name_dialog && self.name_channel == channel {
-            self.show_name_dialog = false;
-            self.name_edit.clear();
-        }
         let idx = channel as usize;
         self.disconnecting[idx] = false;
         // Leave notices need the peer call — run before the peer slot is cleared.
@@ -8708,6 +8708,115 @@ fn centered_popup<'a>(
     }
 }
 
+fn name_selector(
+    ui: &mut Ui,
+    id: &str,
+    selected: impl AsRef<str>,
+    contents: impl FnOnce(&mut Ui),
+) -> egui::Response {
+    ui.scope(|ui| {
+        let style = ui.style_mut();
+        style.visuals.menu_rounding = egui::Rounding::ZERO;
+        style.visuals.popup_shadow = egui::epaint::Shadow::NONE;
+        style.visuals.window_fill = VGA_GRAY;
+        let response = ui
+            .push_id(id, |ui| name_select_row(ui, selected.as_ref(), false, true))
+            .inner;
+        let popup_id = response.id.with("popup");
+        if response.clicked()
+            || (response.has_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Space)))
+        {
+            ui.memory_mut(|m| m.toggle_popup(popup_id));
+        }
+        egui::popup::popup_below_widget(
+            ui,
+            popup_id,
+            &response,
+            egui::popup::PopupCloseBehavior::CloseOnClick,
+            |ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .auto_shrink([false, true])
+                    .show(ui, contents);
+                retro::border(ui.painter(), ui.min_rect().expand(4.0));
+            },
+        );
+        response
+    })
+    .inner
+}
+
+fn name_select_row(ui: &mut Ui, label: &str, selected: bool, dropdown: bool) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, retro::ROW_H * 0.75), Sense::click());
+    let fill = if selected {
+        VGA_BLUE
+    } else if response.hovered() {
+        Color32::from_rgb(214, 214, 214)
+    } else {
+        VGA_GRAY
+    };
+    retro::paint(
+        ui.painter(),
+        rect,
+        fill,
+        selected || response.is_pointer_button_down_on(),
+        0.0,
+    );
+    let mut text_rect = rect.shrink2(Vec2::new(6.0, 2.0));
+    if dropdown {
+        text_rect.max.x -= 20.0;
+        let arrow_rect = Rect::from_min_max(Pos2::new(rect.right() - 20.0, rect.top()), rect.max);
+        retro::paint(
+            ui.painter(),
+            arrow_rect,
+            fill,
+            response.is_pointer_button_down_on(),
+            0.0,
+        );
+        let c = arrow_rect.center();
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![
+                c + Vec2::new(-4.0, -2.0),
+                c + Vec2::new(4.0, -2.0),
+                c + Vec2::new(0.0, 3.0),
+            ],
+            Color32::BLACK,
+            Stroke::NONE,
+        ));
+    }
+    let fg = if selected {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), menu_font(13.5), fg);
+    let text_width = galley.size().x;
+    // Center the visible glyphs, not the menu font's extra leading.
+    let ink = galley.mesh_bounds;
+    ui.painter().with_clip_rect(text_rect).galley(
+        Pos2::new(
+            text_rect.left() - ink.left(),
+            text_rect.center().y - ink.center().y,
+        ),
+        galley,
+        fg,
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if text_width > text_rect.width() {
+        response.on_hover_text(label)
+    } else {
+        response
+    }
+}
+
 /// Colour rows in the dialog, not counting Apply.
 fn color_choice_count(slot: ColorSlot, info: bool) -> usize {
     match slot {
@@ -11146,6 +11255,16 @@ impl GpGuiApp {
         let y = rect.top() + 2.0;
         let h = (rect.height() - 4.0).max(16.0);
         let gap = 2.0;
+        let (name_label, name_known) = match self.active {
+            ActivePane::Channel(channel) => self.peer_name_label(channel),
+            _ => (String::new(), false),
+        };
+        let name_width = ui
+            .painter()
+            .layout_no_wrap(name_label.clone(), FontId::proportional(11.0), text_c)
+            .size()
+            .x
+            + 14.0;
 
         let mut clicks: Vec<SessionClick> = Vec::new();
         let mut controls: Vec<Rect> = Vec::new();
@@ -11381,6 +11500,11 @@ impl GpGuiApp {
         // Leading controls stay on the left.
         let mut x = rect.left() + 2.0;
         let left_limit = (rect.right() - trail_w - right_mid_w - 8.0).max(x + 40.0);
+        let settings_limit = if on_channel {
+            left_limit - name_width - gap
+        } else {
+            left_limit
+        };
 
         let qrg = self.session.qrg_label();
         let ct_slot = self.ctext_slot();
@@ -11440,7 +11564,7 @@ impl GpGuiApp {
             ("Clear", false, SessionClick::Clear, 46.0, CellGlyph::Text),
         ];
         for (label, lit, action, w, glyph) in lead_owned {
-            if x + w > left_limit {
+            if x + w > settings_limit {
                 break;
             }
             x += paint_cell(ui, x, label, lit, action, w, glyph);
@@ -11485,13 +11609,21 @@ impl GpGuiApp {
                     ),
                     ("BIN-RX", self.session.bin_rx, SessionClick::BinRx, 50.0),
                     ("BIN-TX", self.session.bin_tx, SessionClick::BinTx, 50.0),
-                    ("Name", self.peer_name_known(n), SessionClick::Name, 42.0),
                 ] {
-                    if x + w > left_limit {
+                    if x + w > settings_limit {
                         break;
                     }
                     x += paint_cell(ui, x, label, lit, action, w, CellGlyph::Text);
                 }
+                paint_cell(
+                    ui,
+                    x,
+                    &name_label,
+                    name_known,
+                    SessionClick::Name,
+                    name_width,
+                    CellGlyph::Text,
+                );
                 let trail_left = rect.right() - trail_w - 2.0;
                 let lit = self.channel_linked(n)
                     && self.channel_lock.get(n as usize).copied().unwrap_or(false);
@@ -12034,15 +12166,16 @@ impl GpGuiApp {
         Ok(())
     }
 
-    /// True while linked and that peer has a non-empty name in `NAMES.GP`.
-    /// Goes dark as soon as the channel disconnects.
-    fn peer_name_known(&self, channel: u8) -> bool {
-        if !self.channel_linked(channel) {
-            return false;
+    fn peer_name_label(&self, channel: u8) -> (String, bool) {
+        if self.channel_linked(channel) {
+            if let Some(name) = self
+                .linked_call(channel)
+                .and_then(|call| self.names.name_for(&call, &self.names_qrg()))
+            {
+                return (format!("Name: {name}"), true);
+            }
         }
-        self.linked_call(channel)
-            .and_then(|call| self.names.name_for(&call, &self.names_qrg()))
-            .is_some()
+        ("Name".into(), false)
     }
 
     fn open_name_dialog(&mut self) {
@@ -12050,36 +12183,57 @@ impl GpGuiApp {
             self.status = "Name — select a channel".into();
             return;
         };
-        let call = self
-            .channel_peer
-            .get(ch as usize)
-            .and_then(|p| p.clone())
-            .filter(|c| !c.is_empty() && c != "****");
-        let Some(call) = call else {
-            self.status = "Name — connect a station first".into();
-            return;
-        };
-        self.name_edit = self
-            .names
-            .name_for(&call, &self.names_qrg())
-            .unwrap_or_default();
+        let call = self.linked_call(ch).unwrap_or_default();
+        let qrg = self.names_qrg();
+        let entries = self.names.entries();
+        let existing = entries
+            .iter()
+            .find(|(_, entry)| entry.call.eq_ignore_ascii_case(&call) && entry.scope.matches(&qrg))
+            .or_else(|| {
+                entries.iter().find(|(_, entry)| {
+                    cipher::base_call(&entry.call).eq_ignore_ascii_case(&cipher::base_call(&call))
+                        && !call.is_empty()
+                        && entry.scope.matches(&qrg)
+                })
+            });
+        if let Some((index, entry)) = existing {
+            self.name_source = Some(*index);
+            self.name_edit = entry.clone();
+        } else {
+            self.name_source = None;
+            self.name_edit = NameEntry {
+                call,
+                via: self.link_vias(ch).join(" "),
+                ..NameEntry::default()
+            };
+        }
+        self.name_error.clear();
         self.name_channel = ch;
         self.show_name_dialog = true;
         self.name_dialog_focus = true;
-        self.status = format!("Name for {call}");
+        self.status = "NAMES.GP station editor".into();
     }
 
     fn apply_name_from_edit(&mut self) -> Result<(), String> {
-        let ch = self.name_channel;
-        let call = self
-            .channel_peer
-            .get(ch as usize)
-            .and_then(|p| p.clone())
-            .filter(|c| !c.is_empty() && c != "****")
-            .ok_or_else(|| "Name — connect a station first".to_string())?;
-        let stored = self.names.set_name(&call, &self.name_edit)?;
+        self.names.save_entry(self.name_source, &self.name_edit)?;
         self.show_name_dialog = false;
-        self.status = format!("NAMES.GP {call} = {stored}");
+        self.status = format!(
+            "NAMES.GP {} saved",
+            self.name_edit.call.to_ascii_uppercase()
+        );
+        Ok(())
+    }
+
+    fn remove_name_from_edit(&mut self) -> Result<(), String> {
+        let source = self
+            .name_source
+            .ok_or_else(|| "NAMES.GP: select a saved station to remove".to_string())?;
+        let call = self.names.remove_entry(source)?;
+        self.name_source = None;
+        self.name_edit = NameEntry::default();
+        self.name_error.clear();
+        self.name_dialog_focus = true;
+        self.status = format!("NAMES.GP {call} removed");
         Ok(())
     }
 
@@ -12087,37 +12241,166 @@ impl GpGuiApp {
         if !self.show_name_dialog {
             return;
         }
-        let ch = self.name_channel;
-        let call = self
-            .channel_peer
-            .get(ch as usize)
-            .and_then(|p| p.clone())
-            .unwrap_or_default();
         let mut open = true;
         centered_popup(
-            format!("Name — {call}"),
-            egui::Id::new(("gp_name_dialog", ch)),
+            "NAMES.GP station editor",
+            egui::Id::new(("gp_name_dialog", self.name_channel)),
             &mut open,
         )
         .show(ctx, |ui| {
-            ui.set_min_width(320.0);
-            ui.label(
-                RichText::new("Name in NAMES.GP. A path after ; is the via.").font(menu_font(16.0)),
-            );
-            let te = retro::field(
+            ui.set_min_width(440.0);
+            let entries = self.names.entries();
+            name_selector(
                 ui,
-                &mut self.name_edit,
-                ui.available_width(),
-                "Bas",
-                menu_font(17.0),
+                "name_entry",
+                self.name_source
+                    .and_then(|index| {
+                        entries
+                            .iter()
+                            .find(|(i, _)| *i == index)
+                            .map(|(_, entry)| format!("{} - {}", entry.call, entry.scope.label()))
+                    })
+                    .unwrap_or_else(|| "New station".into()),
+                |ui| {
+                    if name_select_row(ui, "New station", self.name_source.is_none(), false)
+                        .clicked()
+                    {
+                        self.name_source = None;
+                        self.name_edit = NameEntry::default();
+                        self.name_error.clear();
+                    }
+                    for (index, entry) in &entries {
+                        if name_select_row(
+                            ui,
+                            &format!("{} ({}) - {}", entry.call, entry.name, entry.scope.label()),
+                            self.name_source == Some(*index),
+                            false,
+                        )
+                        .clicked()
+                        {
+                            self.name_source = Some(*index);
+                            self.name_edit = entry.clone();
+                            self.name_error.clear();
+                        }
+                    }
+                },
             );
-            if self.name_dialog_focus {
-                te.request_focus();
-                self.name_dialog_focus = false;
+            let mut enter = false;
+            for (label, text, hint) in [
+                ("CALL", &mut self.name_edit.call, "N0CALL"),
+                ("NAME", &mut self.name_edit.name, "Name (22 characters)"),
+                (
+                    "VIA",
+                    &mut self.name_edit.via,
+                    "DB0ABC or N>DB0ABC D>DB0XYZ",
+                ),
+                ("IDENT (optional)", &mut self.name_edit.ident, "Alias"),
+            ] {
+                ui.label(RichText::new(label).font(menu_font(16.0)));
+                let te = retro::field(ui, text, ui.available_width(), hint, menu_font(17.0));
+                if self.name_dialog_focus && label == "CALL" {
+                    te.request_focus();
+                    self.name_dialog_focus = false;
+                }
+                enter |= te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             }
-            let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.label(RichText::new("Station type").font(menu_font(16.0)));
+            name_selector(ui, "name_kind", self.name_edit.kind.label(), |ui| {
+                for kind in StationKind::ALL {
+                    if name_select_row(ui, kind.label(), self.name_edit.kind == kind, false)
+                        .clicked()
+                    {
+                        self.name_edit.kind = kind;
+                    }
+                }
+            });
+            ui.label(RichText::new("QRG band / integer MHz").font(menu_font(16.0)));
+            name_selector(ui, "name_scope", self.name_edit.scope.label(), |ui| {
+                if name_select_row(
+                    ui,
+                    "All QRGs",
+                    self.name_edit.scope == NameScope::All,
+                    false,
+                )
+                .clicked()
+                {
+                    self.name_edit.scope = NameScope::All;
+                }
+                let current = qrg_key(&self.names_qrg()).to_string();
+                if name_select_row(
+                    ui,
+                    &format!("Current QRG ({current})"),
+                    self.name_edit.scope == NameScope::Qrg(current.clone()),
+                    false,
+                )
+                .clicked()
+                {
+                    self.name_edit.scope = NameScope::Qrg(current);
+                }
+                for (label, key) in [
+                    ("160 m - 1 MHz", "1"),
+                    ("80 m - 3 MHz", "3"),
+                    ("60 m - 5 MHz", "5"),
+                    ("40 m - 7 MHz", "7"),
+                    ("30 m - 10 MHz", "10"),
+                    ("20 m - 14 MHz", "14"),
+                    ("17 m - 18 MHz", "18"),
+                    ("15 m - 21 MHz", "21"),
+                    ("12 m - 24 MHz", "24"),
+                    ("11 m - 27 MHz", "27"),
+                    ("10 m - 28 MHz", "28"),
+                    ("10 m - 29 MHz", "29"),
+                    ("6 m - 50 MHz", "50"),
+                    ("4 m - 70 MHz", "70"),
+                    ("2 m - 144 MHz", "144"),
+                    ("2 m - 145 MHz", "145"),
+                    ("2 m - 146 MHz", "146"),
+                    ("1.25 m - 222 MHz", "222"),
+                    ("70 cm - 430 MHz", "430"),
+                    ("70 cm - 433 MHz", "433"),
+                    ("70 cm - 440 MHz", "440"),
+                    ("23 cm - 1240 MHz", "1240"),
+                ] {
+                    if name_select_row(
+                        ui,
+                        label,
+                        self.name_edit.scope == NameScope::Qrg(key.into()),
+                        false,
+                    )
+                    .clicked()
+                    {
+                        self.name_edit.scope = NameScope::Qrg(key.into());
+                    }
+                }
+            });
+            match &mut self.name_edit.scope {
+                NameScope::Qrg(key) | NameScope::OtherQrg(key) => {
+                    ui.label("MHz number (custom QRG allowed; only the part before . is used)");
+                    retro::field(ui, key, ui.available_width(), "145", menu_font(17.0));
+                }
+                NameScope::All => {}
+            }
+            ui.label("VIA: plain calls are L2 digis; TYPE>CALL preserves node routing.");
+            if self.name_source.is_some()
+                && retro::button(
+                    ui,
+                    "Remove selected station",
+                    ui.available_width(),
+                    26.0,
+                    menu_font(17.0),
+                )
+            {
+                if let Err(e) = self.remove_name_from_edit() {
+                    self.name_error = e.clone();
+                    self.status = e;
+                }
+            }
+            if !self.name_error.is_empty() {
+                ui.label(RichText::new(&self.name_error).color(Color32::DARK_RED));
+            }
             if retro::apply(ui, false, menu_font(20.0)) || enter {
                 if let Err(e) = self.apply_name_from_edit() {
+                    self.name_error = e.clone();
                     self.status = e;
                 }
             }
@@ -12217,13 +12500,15 @@ impl GpGuiApp {
     }
 
     /// Click a stored station to connect. The button shows the call, and the
-    /// name in parentheses when one is stored. The connect uses the call and,
-    /// when the line has one, the via path. Ten rows show at once.
+    /// name in parentheses when one is stored. Global names precede the active
+    /// QRG list; selecting a row uses that entry's complete saved route.
     fn connect_names_window(&mut self, ctx: &Context) {
         if !self.show_connect_names || !self.session.show_connect_dialog {
             return;
         }
-        let picks = self.names.name_list(&self.names_qrg());
+        let qrg = self.names_qrg();
+        let picks = self.names.name_list(&qrg);
+        let qrg_heading = format!("{}MHz List", qrg_key(&qrg));
         let mut chosen: Option<ListedName> = None;
         let mut open = true;
         centered_popup(
@@ -12235,19 +12520,25 @@ impl GpGuiApp {
         .show(ctx, |ui| {
             ui.set_min_width(360.0);
             ui.spacing_mut().item_spacing.y = 4.0;
-            if picks.is_empty() {
-                ui.label(RichText::new("No names in NAMES.GP").font(menu_font(16.0)));
-            } else {
-                let gap = 4.0;
-                let rows = 10.0;
-                let max_h = retro::ROW_H * rows + gap * (rows - 1.0);
-                egui::ScrollArea::vertical()
-                    .max_height(max_h)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = gap;
-                        let width = ui.available_width().max(320.0);
-                        for entry in &picks {
+            let gap = 4.0;
+            let rows = 10.0;
+            let max_h = retro::ROW_H * rows + gap * (rows - 1.0);
+            egui::ScrollArea::vertical()
+                .max_height(max_h)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = gap;
+                    let width = ui.available_width().max(320.0);
+                    for (global, heading) in [(true, "All QRGs"), (false, qrg_heading.as_str())] {
+                        ui.label(RichText::new(heading).font(menu_font(16.0)));
+                        let entries: Vec<_> = picks
+                            .iter()
+                            .filter(|entry| (entry.scope == NameScope::All) == global)
+                            .collect();
+                        if entries.is_empty() {
+                            ui.label(RichText::new("No stations").font(menu_font(14.0)));
+                        }
+                        for entry in entries {
                             let row = retro::entry(
                                 ui,
                                 &entry.button_label(),
@@ -12261,8 +12552,8 @@ impl GpGuiApp {
                                 chosen = Some(entry.clone());
                             }
                         }
-                    });
-            }
+                    }
+                });
         });
         if !open {
             self.show_connect_names = false;
@@ -12273,10 +12564,18 @@ impl GpGuiApp {
     }
 
     fn connect_listed(&mut self, entry: &ListedName) {
+        let route = match &entry.route {
+            Ok(route) => route.clone(),
+            Err(error) => {
+                self.status = error.clone();
+                return;
+            }
+        };
         let ch = self.session.connect_channel.clamp(1, self.channels);
         self.show_connect_names = false;
         self.session.show_connect_dialog = false;
-        self.begin_connect(ch, &entry.call, &entry.via, Vec::new());
+        let (dest, via, downlinks) = route_parts(route);
+        self.begin_connect(ch, &dest, &via, downlinks);
     }
 
     fn assign_spy_first_empty(&mut self, call: &str) -> Result<u8, String> {
@@ -14806,6 +15105,314 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
 #[cfg(test)]
 mod input_tests {
     use super::*;
+
+    #[test]
+    fn connect_names_window_shows_all_qrgs_before_the_active_mhz_list() {
+        with_offline_app("wa8ded", |app, _, ctx| {
+            let path = app.config_path.with_file_name("NAMES.GP");
+            std::fs::write(
+                &path,
+                "<IF 27>\nT>N0AAA Band;\n<END>\n\
+                T>N1BBB Global;\n<IF 145>\nT>N2CCC Hidden;\n<END>",
+            )
+            .unwrap();
+            app.names = NamesFile::load_from(path);
+            app.session.qrg_log = "27.235".into();
+            app.session.show_connect_dialog = true;
+            app.show_connect_names = true;
+            for pass in 0..2 {
+                let output = ctx.run(
+                    egui::RawInput {
+                        time: Some(pass as f64),
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                        ..Default::default()
+                    },
+                    |ctx| app.connect_names_window(ctx),
+                );
+                if pass == 1 {
+                    let texts: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) => Some((text.galley.text(), text.pos.y)),
+                            _ => None,
+                        })
+                        .collect();
+                    let y = |label| texts.iter().find(|(text, _)| *text == label).unwrap().1;
+                    assert!(y("All QRGs") < y("N1BBB (Global)"));
+                    assert!(y("N1BBB (Global)") < y("27MHz List"));
+                    assert!(y("27MHz List") < y("N0AAA (Band)"));
+                    assert!(!texts.iter().any(|(text, _)| *text == "N2CCC (Hidden)"));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn connect_names_selection_passes_exact_via_and_queues_node_routes_without_silent_fallback() {
+        for protocol in ["wa8ded", "kiss", "baycom"] {
+            with_offline_app(protocol, |app, commands, _| {
+                let path = app.config_path.with_file_name("NAMES.GP");
+                std::fs::write(
+                    &path,
+                    "T>N0PEER Global; D>N0DIGI\n\
+                    <IF 27>\nT>N0PEER Band; D>N1DIGI\n\
+                    T>N1PEER Node; D>N2DIGI N>N0NODE !>N1NODE T>N1PEER\n\
+                    T>N2PEER Broken; D>%DIGI%\n<END>",
+                )
+                .unwrap();
+                app.names = NamesFile::load_from(path);
+                app.session.qrg_log = "27.235".into();
+                let listed = app.names.name_list(&app.names_qrg());
+                for (name, target, via, downlinks) in [
+                    ("Global", "N0PEER", "N0DIGI", Vec::<String>::new()),
+                    ("Band", "N0PEER", "N1DIGI", Vec::new()),
+                    (
+                        "Node",
+                        "N0NODE",
+                        "N2DIGI",
+                        vec!["C! N1NODE".into(), "C N1PEER".into()],
+                    ),
+                ] {
+                    app.clear_channel_link_state(1);
+                    app.session.connect_channel = 1;
+                    app.session.show_connect_dialog = true;
+                    app.show_connect_names = true;
+                    let entry = listed.iter().find(|entry| entry.name == name).unwrap();
+                    app.connect_listed(entry);
+                    let mut sent = None;
+                    while let Ok(command) = commands.try_recv() {
+                        if let TncCommand::Session(SessionCommand::Connect {
+                            channel,
+                            remote,
+                            via,
+                            ..
+                        }) = command
+                        {
+                            assert_eq!(channel, 1);
+                            sent = Some((remote, via));
+                        }
+                    }
+                    assert_eq!(
+                        sent,
+                        Some((target.into(), vec![via.into()])),
+                        "{protocol}: {name}"
+                    );
+                    assert_eq!(app.channel_down[1], downlinks, "{protocol}: {name}");
+                    assert!(!app.session.show_connect_dialog);
+                    assert!(!app.show_connect_names);
+                }
+                app.clear_channel_link_state(1);
+                app.session.show_connect_dialog = true;
+                app.show_connect_names = true;
+                app.connect_listed(listed.iter().find(|entry| entry.name == "Broken").unwrap());
+                assert!(app.status.contains("no PORT matches QRG"));
+                assert!(app.session.show_connect_dialog);
+                assert!(app.show_connect_names);
+                assert!(commands.try_recv().is_err());
+                assert!(app.channel_connecting[1].is_none());
+            });
+        }
+    }
+
+    #[test]
+    fn station_editor_saves_manual_entries_and_tracks_known_connected_names() {
+        with_offline_app("wa8ded", |app, _, ctx| {
+            app.names = NamesFile::load_from(app.config_path.with_file_name("NAMES.GP"));
+            app.active = ActivePane::Channel(1);
+            assert_eq!(app.peer_name_label(1), ("Name".into(), false));
+            app.open_name_dialog();
+            assert!(app.show_name_dialog);
+            assert!(app.name_edit.call.is_empty());
+            app.name_edit = NameEntry {
+                call: "N0PEER".into(),
+                name: "Known".into(),
+                kind: StationKind::Mailbox,
+                via: "N0DIGI".into(),
+                scope: NameScope::Qrg("145".into()),
+                ..NameEntry::default()
+            };
+            let _ = ctx.run(egui::RawInput::default(), |ctx| app.name_dialog(ctx));
+            app.apply_name_from_edit().unwrap();
+            app.names = NamesFile::load_from(app.names.path().to_path_buf());
+            app.session.qrg_log = "145.825".into();
+            app.channel_peer[1] = Some("N0PEER-2".into());
+            assert_eq!(app.peer_name_label(1), ("Name: Known".into(), true));
+            app.open_name_dialog();
+            assert_eq!(app.name_edit.call, "N0PEER");
+            assert_eq!(app.name_edit.kind, StationKind::Mailbox);
+            assert_eq!(app.name_edit.via, "N0DIGI");
+            app.clear_channel_link_state(1);
+            assert!(
+                app.show_name_dialog,
+                "disconnect must not discard the editor draft"
+            );
+            assert_eq!(app.peer_name_label(1), ("Name".into(), false));
+            app.name_edit.name = "Updated".into();
+            app.apply_name_from_edit().unwrap();
+            assert_eq!(
+                app.names.name_for("N0PEER", "145").as_deref(),
+                Some("Updated")
+            );
+            app.channel_peer[1] = Some("N1NEW".into());
+            assert_eq!(app.peer_name_label(1), ("Name".into(), false));
+            app.open_name_dialog();
+            assert_eq!(app.name_edit.call, "N1NEW");
+            assert!(app.name_source.is_none());
+            assert!(app.remove_name_from_edit().is_err());
+            app.name_edit.name = "Eleven".into();
+            app.name_edit.scope = NameScope::Qrg("27".into());
+            app.apply_name_from_edit().unwrap();
+            app.session.qrg_log = "27.235".into();
+            assert_eq!(app.peer_name_label(1), ("Name: Eleven".into(), true));
+            app.open_name_dialog();
+            app.name_edit.call = "N2DRAFT".into();
+            app.remove_name_from_edit().unwrap();
+            assert_eq!(app.status, "NAMES.GP N1NEW removed");
+            assert_eq!(app.peer_name_label(1), ("Name".into(), false));
+            assert!(app.name_source.is_none());
+            assert!(app.name_edit.call.is_empty());
+            let reloaded = NamesFile::load_from(app.names.path().to_path_buf());
+            assert!(reloaded.name_for("N1NEW", "27.235").is_none());
+            assert_eq!(
+                reloaded.name_for("N0PEER", "145").as_deref(),
+                Some("Updated")
+            );
+        });
+    }
+
+    #[test]
+    fn station_names_selectors_are_compact_square_bevelled_and_single_line() {
+        let ctx = Context::default();
+        install_console_font(&ctx, false);
+        let labels = [
+            "NL0MSK (Jara) - All QRGs",
+            "B - Mailbox / BBS",
+            "11 m - 27 MHz",
+        ];
+        let mut responses: Vec<egui::Response> = Vec::new();
+        let mut rows = Vec::new();
+        for frame in 0..7 {
+            if frame % 2 == 1 {
+                ctx.memory_mut(|m| m.open_popup(responses[frame / 2].id.with("popup")));
+            }
+            responses.clear();
+            let output = ctx.run(
+                egui::RawInput {
+                    time: Some(frame as f64),
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(520.0, 800.0))),
+                    ..egui::RawInput::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.set_max_width(440.0);
+                        let spacing = ui.spacing().clone();
+                        for (index, label) in labels.iter().enumerate() {
+                            responses.push(name_selector(
+                                ui,
+                                &format!("names_{index}"),
+                                *label,
+                                |ui| {
+                                    rows.push(name_select_row(ui, label, false, false));
+                                },
+                            ));
+                        }
+                        assert_eq!(ui.spacing().interact_size, spacing.interact_size);
+                        assert_eq!(ui.spacing().button_padding, spacing.button_padding);
+                    });
+                },
+            );
+            for response in responses.iter().chain(&rows) {
+                assert_eq!(response.rect.height(), retro::ROW_H * 0.75);
+            }
+            for label in labels {
+                let text = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == label => Some(text),
+                        _ => None,
+                    })
+                    .expect("selector label is rendered");
+                assert_eq!(text.galley.rows.len(), 1, "{label}");
+                assert!(
+                    text.galley.size().x < responses[0].rect.width() - 32.0,
+                    "{label}"
+                );
+                assert!(
+                    text.galley.mesh_bounds.height() <= responses[0].rect.height() - 4.0,
+                    "{label}: ink height {}",
+                    text.galley.mesh_bounds.height()
+                );
+            }
+            for response in responses
+                .iter()
+                .chain(rows.last().filter(|_| frame > 0 && frame % 2 == 0))
+            {
+                let edges: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect) if response.rect.contains_rect(rect.rect) => {
+                            Some(rect)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert!(edges
+                    .iter()
+                    .all(|edge| edge.rounding == egui::Rounding::ZERO));
+                assert!(
+                    edges.iter().any(|edge| edge.fill == Color32::WHITE),
+                    "frame {frame}, rect {:?}, edges {:?}",
+                    response.rect,
+                    edges
+                        .iter()
+                        .map(|edge| (edge.rect, edge.fill))
+                        .collect::<Vec<_>>()
+                );
+                assert!(edges.iter().any(|edge| edge.fill == Color32::BLACK));
+            }
+        }
+        assert_eq!(
+            rows.len(),
+            6,
+            "each popup gets a sizing pass and a visible pass"
+        );
+        let target = rows.last().unwrap().rect.center();
+        let mut chosen = None;
+        for pressed in [true, false] {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(520.0, 800.0))),
+                    events: vec![
+                        egui::Event::PointerMoved(target),
+                        egui::Event::PointerButton {
+                            pos: target,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::default(),
+                        },
+                    ],
+                    ..egui::RawInput::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.set_max_width(440.0);
+                        for (index, label) in labels.iter().enumerate() {
+                            name_selector(ui, &format!("names_{index}"), *label, |ui| {
+                                if name_select_row(ui, label, false, false).clicked() {
+                                    chosen = Some(index);
+                                }
+                            });
+                        }
+                    });
+                },
+            );
+        }
+        assert_eq!(chosen, Some(2));
+        assert!(!ctx.memory(|m| m.is_popup_open(responses[2].id.with("popup"))));
+    }
 
     #[test]
     fn radio_protocol_choices_persist_with_baycom_software_sessions_and_radio_rate() {

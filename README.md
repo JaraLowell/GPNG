@@ -68,6 +68,43 @@ Classic GP used Borland graphics (EGA 640×350 / VGA 640×480). We recreate the
 input, icon strip) in a native window. Prefer docs + `CONFIG.GP` colour
 regions over reverse-engineering `GP2862K.EXE` drawing code.
 
+### Station names and routes
+
+Click **Name** on a channel's session bar (or press **Alt-N**) to edit
+`data/NAMES.GP`. The button shows **Name: {known name}** while connected to a
+named station; otherwise it stays grey and clickable, including while
+disconnected. Select an existing station or **New station**, then enter CALL,
+NAME, VIA, station type, and optionally IDENT and a QRG restriction.
+**Remove selected station** deletes only the selected saved entry, leaving
+the same CALL's entries on other QRGs intact. The editor's dropdown fields
+and options use compact, square 3D bevels and single-line labels. Long labels
+stay on one line and show their full text on hover if they do not fit.
+
+VIA accepts plain digipeater calls separated by spaces or commas, or the
+original typed paths such as `N>DB0ABC D>DB0XYZ T>N0CALL`. Typed paths retain
+node connections, recursive routing, and `%DIGI%`. The editor preserves
+unrelated lines, comments, PORT settings, DOS CP437 encoding and line endings.
+Names saved by the editor are limited to 22 characters.
+
+Choose **All QRGs**, a band preset (including **11 m - 27 MHz**),
+**Current QRG**, or enter a
+custom integer MHz number. IF conditions match only the number before the dot:
+`<IF 145>` and legacy `<IF 145.500>` both match `145.825`, but not `144.800`.
+This is an integer-MHz restriction, not the entire amateur allocation (for
+example, 144 and 145 are separate choices within 2 m). Existing ELSE entries
+remain editable and keep their exclusion unless their scope is changed.
+Saving groups stations with the same integer QRG into one IF block, reusing
+an existing block and merging older duplicate blocks. ELSE entries stay in
+the ELSE branch of that shared block.
+PORT / `%DIGI%` frequency matching remains exact.
+
+In **Connect → click for NAMES.GP**, **All QRGs** is listed first, followed
+by the active QRG's section (for example **27MHz List**). Entries for other
+QRGs are hidden; applicable ELSE entries appear in the active section.
+Selecting a station uses that exact entry's VIA path, including digipeaters
+and queued node connections. A route error is reported instead of connecting
+directly without its required VIA.
+
 ## Quick start
 
 ```bash

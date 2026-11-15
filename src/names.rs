@@ -11,7 +11,7 @@
 //! or `T` terminal. A path hop is the same `TYPE>CALL`. A hop that names
 //! another station is replaced by that station's path. `D>0` is an SP-gateway
 //! port, not a digipeater. `<IF qrg>` … `<END>` keeps a block only when `qrg`
-//! equals the session QRG string (`430.625`, not the comma form). `PORTx`
+//! matches the integer MHz part of the session QRG (`430` for `430.625`). `PORTx`
 //! supplies `%DIGI%`.
 
 use std::fs;
@@ -35,6 +35,40 @@ pub enum StationKind {
 }
 
 impl StationKind {
+    pub const ALL: [Self; 7] = [
+        Self::Terminal,
+        Self::Mailbox,
+        Self::Digi,
+        Self::Flex,
+        Self::NetRom,
+        Self::Ware,
+        Self::Bang,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Terminal => "T - Terminal",
+            Self::Mailbox => "B - Mailbox / BBS",
+            Self::Digi => "D - L2 digipeater",
+            Self::Flex => "F - FlexNet",
+            Self::NetRom => "N - NetRom",
+            Self::Ware => "W - DigiWare",
+            Self::Bang => "! - C! node",
+        }
+    }
+
+    fn code(self) -> char {
+        match self {
+            Self::Terminal => 'T',
+            Self::Mailbox => 'B',
+            Self::Digi => 'D',
+            Self::Flex => 'F',
+            Self::NetRom => 'N',
+            Self::Ware => 'W',
+            Self::Bang => '!',
+        }
+    }
+
     fn from_char(c: char) -> Option<Self> {
         match c.to_ascii_uppercase() {
             'B' => Some(Self::Mailbox),
@@ -45,6 +79,56 @@ impl StationKind {
             '!' => Some(Self::Bang),
             'T' => Some(Self::Terminal),
             _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum NameScope {
+    #[default]
+    All,
+    Qrg(String),
+    OtherQrg(String),
+}
+
+impl NameScope {
+    pub fn label(&self) -> String {
+        match self {
+            Self::All => "All QRGs".into(),
+            Self::Qrg(qrg) => format!("QRG {}", qrg_key(qrg)),
+            Self::OtherQrg(qrg) => format!("Other QRGs (not {})", qrg_key(qrg)),
+        }
+    }
+
+    pub fn matches(&self, qrg: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Qrg(key) => qrg_key(key) == qrg_key(qrg),
+            Self::OtherQrg(key) => qrg_key(key) != qrg_key(qrg),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameEntry {
+    pub kind: StationKind,
+    pub call: String,
+    pub ident: String,
+    pub name: String,
+    /// Raw DOS path, retaining typed node hops and macros.
+    pub via: String,
+    pub scope: NameScope,
+}
+
+impl Default for NameEntry {
+    fn default() -> Self {
+        Self {
+            kind: StationKind::Terminal,
+            call: String::new(),
+            ident: String::new(),
+            name: String::new(),
+            via: String::new(),
+            scope: NameScope::All,
         }
     }
 }
@@ -86,8 +170,9 @@ pub struct Route {
 pub struct ListedName {
     pub call: String,
     pub name: String,
-    /// Digipeaters stored after `;`. Empty when the station is direct.
-    pub via: Vec<String>,
+    pub scope: NameScope,
+    /// Route for this exact entry, not another entry with the same CALL.
+    pub route: Result<Route, String>,
 }
 
 impl ListedName {
@@ -107,6 +192,13 @@ pub struct NamesFile {
     path: PathBuf,
     lines: Vec<String>,
     newline: String,
+}
+
+struct IfBlock {
+    start: usize,
+    otherwise: Option<usize>,
+    end: usize,
+    key: String,
 }
 
 impl NamesFile {
@@ -134,7 +226,274 @@ impl NamesFile {
         &self.path
     }
 
-    /// Name stored for `call` at this QRG (`430.625`). Empty QRG still sees
+    /// Editable stations, including inactive IF/ELSE blocks. The index identifies
+    /// the original line so editing never overwrites another QRG's entry.
+    pub fn entries(&self) -> Vec<(usize, NameEntry)> {
+        let mut scope = NameScope::All;
+        let mut out = Vec::new();
+        for (index, line) in self.lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if let Some(key) = if_key(trimmed) {
+                scope = NameScope::Qrg(key.to_string());
+            } else if is_tag(trimmed, "ELSE") {
+                if let NameScope::Qrg(key) = &scope {
+                    scope = NameScope::OtherQrg(key.clone());
+                }
+            } else if is_tag(trimmed, "END") {
+                scope = NameScope::All;
+            } else if let Some(station) = parse_station(trimmed) {
+                out.push((
+                    index,
+                    NameEntry {
+                        kind: station.kind,
+                        call: station.call,
+                        ident: station.ident.unwrap_or_default(),
+                        name: station.name,
+                        via: trimmed
+                            .split_once(';')
+                            .map(|(_, via)| via.trim())
+                            .unwrap_or("")
+                            .to_string(),
+                        scope: scope.clone(),
+                    },
+                ));
+            }
+        }
+        out
+    }
+
+    pub fn save_entry(&mut self, source: Option<usize>, entry: &NameEntry) -> Result<(), String> {
+        let call = normalize_mycall(&entry.call)?;
+        let name = clip_name(&entry.name);
+        if entry.name.contains([';', '>', '\r', '\n']) {
+            return Err("NAMES.GP: name cannot contain ;, > or a newline".into());
+        }
+        let ident = entry.ident.trim().to_ascii_uppercase();
+        if ident
+            .chars()
+            .any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+        {
+            return Err("NAMES.GP: ident must contain only letters, digits, - or _".into());
+        }
+        let scope = match &entry.scope {
+            NameScope::All => NameScope::All,
+            NameScope::Qrg(key) | NameScope::OtherQrg(key) => {
+                let key = qrg_key(key);
+                if key.is_empty() || !key.chars().all(|c| c.is_ascii_digit()) {
+                    return Err("NAMES.GP: QRG must be an integer MHz number".into());
+                }
+                if matches!(entry.scope, NameScope::OtherQrg(_)) {
+                    NameScope::OtherQrg(key.to_string())
+                } else {
+                    NameScope::Qrg(key.to_string())
+                }
+            }
+        };
+        let via = entry.via.trim().to_ascii_uppercase();
+        if entry.via.contains([';', '\r', '\n', '<'])
+            || via.split_whitespace().any(|hop| {
+                if !hop.contains('>') {
+                    return false;
+                }
+                let Some((_, token)) = split_type(hop) else {
+                    return true;
+                };
+                token.is_empty()
+                    || token.contains('>')
+                    || (token.contains(':') && split_ident_call(token).is_none())
+                    || (token.contains('-')
+                        && !token.contains(':')
+                        && normalize_mycall(token).is_err()
+                        && !self.entries().iter().any(|(_, entry)| entry.ident == token))
+                    || (!token.eq_ignore_ascii_case("%DIGI%")
+                        && !token
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':')))
+            })
+        {
+            return Err("NAMES.GP: VIA must contain calls or TYPE>CALL hops".into());
+        }
+        let token = if ident.is_empty() {
+            call.clone()
+        } else {
+            format!("{ident}:{call}")
+        };
+        let line = format!("{}>{token} {name}; {via}", entry.kind.code());
+        if parse_station(&line).is_none_or(|station| !via.is_empty() && station.hops.is_empty()) {
+            return Err("NAMES.GP: invalid VIA path".into());
+        }
+        if decode_cp437(&encode_cp437(&line)) != line {
+            return Err("NAMES.GP: use characters available in DOS CP437".into());
+        }
+        let entries = self.entries();
+        let original = source
+            .map(|index| {
+                entries
+                    .iter()
+                    .find(|(i, _)| *i == index)
+                    .ok_or_else(|| "NAMES.GP: selected entry no longer exists".to_string())
+            })
+            .transpose()?;
+        let same_scope = |other: &NameScope| match (&scope, other) {
+            (NameScope::All, NameScope::All) => true,
+            (NameScope::Qrg(a), NameScope::Qrg(b))
+            | (NameScope::OtherQrg(a), NameScope::OtherQrg(b)) => qrg_key(a) == qrg_key(b),
+            _ => false,
+        };
+        if entries.iter().any(|(i, other)| {
+            Some(*i) != source && other.call.eq_ignore_ascii_case(&call) && same_scope(&other.scope)
+        }) {
+            return Err(
+                "NAMES.GP: that CALL already exists for this QRG; select it to edit".into(),
+            );
+        }
+        let mut next = self.clone();
+        let mut insert = None;
+        if let Some((index, _)) = original.filter(|(_, old)| same_scope(&old.scope)) {
+            next.lines[*index] = line;
+        } else {
+            if let Some((index, _)) = original {
+                next.lines.remove(*index);
+            }
+            insert = Some(line);
+        }
+        next.merge_if_blocks()?;
+        if let Some(line) = insert {
+            next.insert_scoped_line(&scope, line)?;
+        }
+        next.save()?;
+        *self = next;
+        Ok(())
+    }
+
+    fn if_blocks(&self) -> Result<Vec<IfBlock>, String> {
+        let mut blocks = Vec::new();
+        let mut current: Option<IfBlock> = None;
+        for (index, line) in self.lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if let Some(key) = if_key(trimmed) {
+                if current.is_some() {
+                    return Err(format!("NAMES.GP: nested IF at line {}", index + 1));
+                }
+                current = Some(IfBlock {
+                    start: index,
+                    otherwise: None,
+                    end: index,
+                    key: qrg_key(key).to_string(),
+                });
+            } else if is_tag(trimmed, "ELSE") {
+                let block = current
+                    .as_mut()
+                    .ok_or_else(|| format!("NAMES.GP: ELSE without IF at line {}", index + 1))?;
+                if block.otherwise.replace(index).is_some() {
+                    return Err(format!("NAMES.GP: repeated ELSE at line {}", index + 1));
+                }
+            } else if is_tag(trimmed, "END") {
+                let mut block = current
+                    .take()
+                    .ok_or_else(|| format!("NAMES.GP: END without IF at line {}", index + 1))?;
+                block.end = index;
+                blocks.push(block);
+            }
+        }
+        if let Some(block) = current {
+            return Err(format!(
+                "NAMES.GP: IF at line {} has no END",
+                block.start + 1
+            ));
+        }
+        Ok(blocks)
+    }
+
+    fn merge_if_blocks(&mut self) -> Result<(), String> {
+        let blocks = self.if_blocks()?;
+        let mut lines = Vec::new();
+        let mut cursor = 0;
+        for (index, block) in blocks.iter().enumerate() {
+            lines.extend_from_slice(&self.lines[cursor..block.start]);
+            cursor = block.end + 1;
+            if blocks[..index].iter().any(|other| other.key == block.key) {
+                continue;
+            }
+            let group: Vec<_> = blocks
+                .iter()
+                .filter(|other| other.key == block.key)
+                .collect();
+            if group.len() == 1 {
+                lines.extend_from_slice(&self.lines[block.start..=block.end]);
+                continue;
+            }
+            lines.push(self.lines[block.start].clone());
+            for other in &group {
+                lines.extend_from_slice(
+                    &self.lines[other.start + 1..other.otherwise.unwrap_or(other.end)],
+                );
+            }
+            if let Some(otherwise) = group.iter().find_map(|other| other.otherwise) {
+                lines.push(self.lines[otherwise].clone());
+                for other in &group {
+                    if let Some(otherwise) = other.otherwise {
+                        lines.extend_from_slice(&self.lines[otherwise + 1..other.end]);
+                    }
+                }
+            }
+            lines.push(self.lines[block.end].clone());
+        }
+        lines.extend_from_slice(&self.lines[cursor..]);
+        self.lines = lines;
+        Ok(())
+    }
+
+    fn insert_scoped_line(&mut self, scope: &NameScope, line: String) -> Result<(), String> {
+        if let NameScope::Qrg(key) | NameScope::OtherQrg(key) = scope {
+            if let Some(block) = self
+                .if_blocks()?
+                .into_iter()
+                .find(|block| block.key == *key)
+            {
+                if matches!(scope, NameScope::Qrg(_)) {
+                    self.lines
+                        .insert(block.otherwise.unwrap_or(block.end), line);
+                } else if block.otherwise.is_some() {
+                    self.lines.insert(block.end, line);
+                } else {
+                    self.lines
+                        .splice(block.end..block.end, ["<ELSE>".into(), line]);
+                }
+                return Ok(());
+            }
+        }
+        if self.lines.last().is_some_and(|l| !l.is_empty()) {
+            self.lines.push(String::new());
+        }
+        match scope {
+            NameScope::All => self.lines.push(line),
+            NameScope::Qrg(key) => self
+                .lines
+                .extend([format!("<IF {key}>"), line, "<END>".into()]),
+            NameScope::OtherQrg(key) => {
+                self.lines
+                    .extend([format!("<IF {key}>"), "<ELSE>".into(), line, "<END>".into()])
+            }
+        }
+        Ok(())
+    }
+
+    pub fn remove_entry(&mut self, source: usize) -> Result<String, String> {
+        let call = self
+            .entries()
+            .into_iter()
+            .find(|(index, _)| *index == source)
+            .map(|(_, entry)| entry.call)
+            .ok_or_else(|| "NAMES.GP: selected entry no longer exists".to_string())?;
+        let mut next = self.clone();
+        next.lines.remove(source);
+        next.save()?;
+        *self = next;
+        Ok(call)
+    }
+
+    /// Name stored for `call` at this QRG (integer MHz). Empty QRG still sees
     /// lines that sit outside `<IF>`.
     ///
     /// A redirected connect arrives as `NL1AS-1`. That uses the name stored
@@ -169,21 +528,31 @@ impl NamesFile {
             .map(|s| s.kind)
     }
 
-    /// Stations on this QRG, in file order. A click on the connect dialog's
-    /// Name field lists these. `via` is the digipeater path after `;`.
+    /// Global stations first, then stations active on this QRG. File order is
+    /// retained within each group. Routing errors stay attached to their row.
     /// A station with no name is still listed; the button shows the call only.
     pub fn name_list(&self, qrg: &str) -> Vec<ListedName> {
-        self.active(qrg)
+        let mut listed: Vec<_> = self
+            .entries()
             .into_iter()
-            .map(|st| {
-                let via = self.digi_via(&st.call, qrg);
+            .filter(|(_, entry)| entry.scope.matches(qrg))
+            .map(|(index, entry)| {
+                let route = self
+                    .lines
+                    .get(index)
+                    .and_then(|line| parse_station(line))
+                    .ok_or_else(|| "NAMES.GP: invalid selected station".to_string())
+                    .and_then(|station| self.route_for_station(&station, qrg));
                 ListedName {
-                    call: st.call,
-                    name: st.name,
-                    via,
+                    call: entry.call,
+                    name: entry.name,
+                    scope: entry.scope,
+                    route,
                 }
             })
-            .collect()
+            .collect();
+        listed.sort_by_key(|entry| entry.scope != NameScope::All);
+        listed
     }
 
     /// Call, ident, or name → route. `Ok(None)` means the token is not in the file.
@@ -191,8 +560,12 @@ impl NamesFile {
         let Some(station) = self.find_query(query, qrg) else {
             return Ok(None);
         };
-        let hops = self.expand_station(&station.call, qrg, &mut Vec::new())?;
-        Ok(Some(plan(&station, &hops)))
+        self.route_for_station(&station, qrg).map(Some)
+    }
+
+    fn route_for_station(&self, station: &Station, qrg: &str) -> Result<Route, String> {
+        let hops = self.expand_hops(station, &self.active(qrg), qrg, &mut Vec::new())?;
+        Ok(plan(station, &hops))
     }
 
     /// ALT-N / `//Name`. Updates the first line with this call, or appends
@@ -219,7 +592,7 @@ impl NamesFile {
 
     fn save(&self) -> Result<(), String> {
         if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent).map_err(|e| format!("NAMES.GP: {e}"))?;
         }
         let text = self.lines.join(&self.newline);
         let bytes = encode_cp437(&text);
@@ -240,7 +613,7 @@ impl NamesFile {
             let trimmed = line.trim();
             if let Some(key) = if_key(trimmed) {
                 in_if = true;
-                include = key == qrg.trim();
+                include = qrg_key(key) == qrg_key(qrg);
                 continue;
             }
             if is_tag(trimmed, "ELSE") && in_if {
@@ -315,6 +688,17 @@ impl NamesFile {
         let Some(st) = self.by_call(&stations, call) else {
             return Ok(Vec::new());
         };
+        self.expand_hops(st, &stations, qrg, stack)
+    }
+
+    fn expand_hops(
+        &self,
+        st: &Station,
+        stations: &[Station],
+        qrg: &str,
+        stack: &mut Vec<String>,
+    ) -> Result<Vec<Hop>, String> {
+        let call = &st.call;
         if st.hops.is_empty() {
             return Ok(vec![Hop {
                 kind: st.kind,
@@ -330,7 +714,7 @@ impl NamesFile {
         stack.push(call.to_string());
         let mut out = Vec::new();
         for hop in &st.hops {
-            let token = self.subst_token(&hop.token, qrg, &stations)?;
+            let token = self.subst_token(&hop.token, qrg, stations)?;
             if token.eq_ignore_ascii_case(call) {
                 out.push(Hop {
                     kind: hop.kind,
@@ -338,7 +722,7 @@ impl NamesFile {
                 });
                 continue;
             }
-            let known = self.by_call(&stations, &token);
+            let known = self.by_call(stations, &token);
             if known.is_some_and(|s| !s.hops.is_empty())
                 && !stack.iter().any(|c| c.eq_ignore_ascii_case(&token))
             {
@@ -363,6 +747,11 @@ impl NamesFile {
                 .map(|p| p.digi)
                 .ok_or_else(|| format!("NAMES.GP: no PORT matches QRG {qrg}"));
         }
+        if token.contains(':') {
+            return split_ident_call(token)
+                .map(|(_, call)| call)
+                .ok_or_else(|| format!("NAMES.GP: invalid path hop {token}"));
+        }
         if let Some(st) = self.by_ident(stations, token) {
             return Ok(st.call.clone());
         }
@@ -371,13 +760,13 @@ impl NamesFile {
         }
         Ok(token.to_ascii_uppercase())
     }
+}
 
-    fn digi_via(&self, call: &str, qrg: &str) -> Vec<String> {
-        match self.route_for(call, qrg) {
-            Ok(Some(route)) => route.link_digis,
-            _ => Vec::new(),
-        }
-    }
+pub fn qrg_key(qrg: &str) -> &str {
+    qrg.trim()
+        .split_once('.')
+        .map(|(mhz, _)| mhz)
+        .unwrap_or(qrg.trim())
 }
 
 fn plan(station: &Station, hops: &[Hop]) -> Route {
@@ -631,4 +1020,350 @@ fn split_lines(text: &str) -> Vec<String> {
     text.split('\n')
         .map(|l| l.trim_end_matches('\r').to_string())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_names(text: &str, test: impl FnOnce(&mut NamesFile)) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("gpng-names-{}-{unique}.GP", std::process::id()));
+        fs::write(&path, encode_cp437(text)).unwrap();
+        let mut names = NamesFile::load_from(path.clone());
+        test(&mut names);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn qrg_integer_matching_selects_if_else_and_typed_routes() {
+        with_names(
+            "<IF 145.500>\nT>N0PEER VHF; N>NODE:N0NODE-1 D>N0DIGI T>N0PEER\n\
+                <ELSE>\nT>N0PEER UHF; D>N1DIGI\n<END>\nT>N2PEER Global;",
+            |names| {
+                assert_eq!(
+                    names.name_for("N0PEER-2", "145.825").as_deref(),
+                    Some("VHF")
+                );
+                assert_eq!(names.name_for("N0PEER", "430.625").as_deref(), Some("UHF"));
+                assert_eq!(names.name_for("N2PEER", "").as_deref(), Some("Global"));
+                let route = names.route_for("N0PEER", "145").unwrap().unwrap();
+                assert_eq!(route.link_call, "N0NODE-1");
+                assert_eq!(route.downlinks, ["C N0PEER N0DIGI"]);
+            },
+        );
+    }
+
+    #[test]
+    fn editing_one_qrg_preserves_other_entries_comments_ports_and_cp437() {
+        with_names(
+            "*** Comment\r\nPORT0 = N0DIGI,145.500\r\n\
+                <IF 145.500>\r\nT>N0PEER Old; D>N0DIGI\r\n<END>\r\n\
+                <IF 430>\r\nT>N0PEER UHF; D>N1DIGI\r\n<END>\r\n",
+            |names| {
+                let (index, mut entry) = names.entries().remove(0);
+                entry.name = "André".into();
+                entry.kind = StationKind::Mailbox;
+                entry.via = "N>N2NODE B>N0PEER".into();
+                entry.ident = "PEER".into();
+                entry.via = "N>NODE:N2NODE-1 B>N0PEER".into();
+                names.save_entry(Some(index), &entry).unwrap();
+                let reloaded = NamesFile::load_from(names.path.clone());
+                assert_eq!(
+                    reloaded.name_for("N0PEER", "145.825").as_deref(),
+                    Some("André")
+                );
+                assert_eq!(
+                    reloaded.kind_of("N0PEER", "145"),
+                    Some(StationKind::Mailbox)
+                );
+                assert_eq!(
+                    reloaded.name_for("N0PEER", "430.625").as_deref(),
+                    Some("UHF")
+                );
+                let text = decode_cp437(&fs::read(names.path()).unwrap());
+                assert!(text.starts_with("*** Comment\r\nPORT0 = N0DIGI,145.500\r\n"));
+                assert!(text.contains("<IF 430>\r\nT>N0PEER UHF; D>N1DIGI\r\n<END>\r\n"));
+                assert_eq!(
+                    reloaded
+                        .route_for("PEER", "145")
+                        .unwrap()
+                        .unwrap()
+                        .link_call,
+                    "N2NODE-1"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn adding_and_moving_scopes_preserves_else_semantics() {
+        with_names(
+            "<IF 145>\nT>N0PEER VHF;\n<ELSE>\nT>N1PEER Other;\n<END>",
+            |names| {
+                let (index, mut entry) = names.entries().remove(1);
+                entry.name = "Renamed".into();
+                names.save_entry(Some(index), &entry).unwrap();
+                assert_eq!(names.name_for("N1PEER", "430").as_deref(), Some("Renamed"));
+                assert!(names.name_for("N1PEER", "145").is_none());
+                entry.scope = NameScope::Qrg("430.625".into());
+                names.save_entry(Some(index), &entry).unwrap();
+                assert!(names.name_for("N1PEER", "144").is_none());
+                assert_eq!(
+                    names.name_for("N1PEER", "430.825").as_deref(),
+                    Some("Renamed")
+                );
+                let new = NameEntry {
+                    call: "N2PEER".into(),
+                    name: "Manual".into(),
+                    via: "n0digi,n1digi".into(),
+                    ..NameEntry::default()
+                };
+                names.save_entry(None, &new).unwrap();
+                let reloaded = NamesFile::load_from(names.path.clone());
+                assert_eq!(
+                    reloaded
+                        .route_for("N2PEER", "145")
+                        .unwrap()
+                        .unwrap()
+                        .link_digis,
+                    ["N0DIGI", "N1DIGI"]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn connect_names_list_groups_globals_before_active_qrg_and_keeps_each_rows_route() {
+        with_names(
+            "<IF 27>\nT>N0AAA Band; D>N0BAND\n<END>\n\
+            T>N1BBB Global first; D>N0DIGI\nT>N0AAA Global twin; D>N1DIGI\n\
+            <IF 145>\nT>N2CCC Hidden;\n<ELSE>\nT>N3DDD Fallback;\n<END>\n\
+            T>N4EEE Global last;",
+            |names| {
+                let listed = names.name_list("27.235");
+                let labels: Vec<_> = listed.iter().map(|entry| entry.button_label()).collect();
+                assert_eq!(
+                    labels,
+                    [
+                        "N1BBB (Global first)",
+                        "N0AAA (Global twin)",
+                        "N4EEE (Global last)",
+                        "N0AAA (Band)",
+                        "N3DDD (Fallback)",
+                    ]
+                );
+                assert!(listed[..3]
+                    .iter()
+                    .all(|entry| entry.scope == NameScope::All));
+                assert!(listed[3..]
+                    .iter()
+                    .all(|entry| entry.scope != NameScope::All));
+                assert_eq!(listed[1].route.as_ref().unwrap().link_digis, ["N1DIGI"]);
+                assert_eq!(listed[3].route.as_ref().unwrap().link_digis, ["N0BAND"]);
+                assert!(names
+                    .name_list("145.825")
+                    .iter()
+                    .any(|entry| entry.name == "Hidden"));
+                assert!(!names
+                    .name_list("145.825")
+                    .iter()
+                    .any(|entry| entry.name == "Band" || entry.name == "Fallback"));
+            },
+        );
+    }
+
+    #[test]
+    fn saving_reuses_and_merges_qrg_blocks_when_adding_editing_and_moving_stations() {
+        with_names(
+            "*** Comment\r\nPORT0 = N0DIGI,27.235\r\n\
+            <IF 27.235>\r\nT>N0AAA First; D>N0DIGI\r\n<END>\r\n\
+            T>N3DDD Global;\r\n\
+            <IF 145>\r\nT>N2CCC Move;\r\n<END>\r\n\
+            <IF 27>\r\n*** Second block\r\nT>N1BBB Second;\r\n<END>\r\n",
+            |names| {
+                let entry = NameEntry {
+                    call: "N4EEE".into(),
+                    name: "New".into(),
+                    scope: NameScope::Qrg("27.825".into()),
+                    ..NameEntry::default()
+                };
+                names.save_entry(None, &entry).unwrap();
+                let blocks = names.if_blocks().unwrap();
+                assert_eq!(blocks.iter().filter(|block| block.key == "27").count(), 1);
+                let block = blocks.iter().find(|block| block.key == "27").unwrap();
+                let calls: Vec<_> = names.lines[block.start + 1..block.end]
+                    .iter()
+                    .filter_map(|line| parse_station(line).map(|station| station.call))
+                    .collect();
+                assert_eq!(calls, ["N0AAA", "N1BBB", "N4EEE"]);
+                let (index, mut second) = names
+                    .entries()
+                    .into_iter()
+                    .find(|(_, entry)| entry.call == "N1BBB")
+                    .unwrap();
+                second.name = "Edited".into();
+                names.save_entry(Some(index), &second).unwrap();
+                let (index, mut moved) = names
+                    .entries()
+                    .into_iter()
+                    .find(|(_, entry)| entry.call == "N2CCC")
+                    .unwrap();
+                moved.scope = NameScope::Qrg("27".into());
+                names.save_entry(Some(index), &moved).unwrap();
+                let reloaded = NamesFile::load_from(names.path.clone());
+                assert_eq!(
+                    reloaded
+                        .if_blocks()
+                        .unwrap()
+                        .iter()
+                        .filter(|block| block.key == "27")
+                        .count(),
+                    1
+                );
+                for (call, name) in [
+                    ("N0AAA", "First"),
+                    ("N1BBB", "Edited"),
+                    ("N2CCC", "Move"),
+                    ("N4EEE", "New"),
+                ] {
+                    assert_eq!(reloaded.name_for(call, "27.235").as_deref(), Some(name));
+                    assert!(reloaded.name_for(call, "145").is_none());
+                }
+                assert_eq!(reloaded.name_for("N3DDD", "145").as_deref(), Some("Global"));
+                assert_eq!(
+                    reloaded
+                        .route_for("N0AAA", "27.235")
+                        .unwrap()
+                        .unwrap()
+                        .link_digis,
+                    ["N0DIGI"]
+                );
+                let text = decode_cp437(&fs::read(names.path()).unwrap());
+                assert!(text.starts_with("*** Comment\r\nPORT0 = N0DIGI,27.235\r\n"));
+                assert!(text.contains("*** Second block\r\n"));
+                assert!(!text.replace("\r\n", "").contains('\n'));
+            },
+        );
+    }
+
+    #[test]
+    fn merged_if_else_blocks_keep_branches_and_accept_entries_in_both() {
+        with_names(
+            "<IF 27>\nT>N0AAA First;\n<ELSE>\nT>N1BBB Other;\n<END>\n\
+            <IF 27.235>\nT>N2CCC Second;\n<ELSE>\nT>N3DDD Fallback;\n<END>",
+            |names| {
+                let mut entry = NameEntry {
+                    call: "N4EEE".into(),
+                    name: "Added".into(),
+                    scope: NameScope::Qrg("27".into()),
+                    ..NameEntry::default()
+                };
+                names.save_entry(None, &entry).unwrap();
+                entry.call = "N5FFF".into();
+                entry.scope = NameScope::OtherQrg("27".into());
+                names.save_entry(None, &entry).unwrap();
+                let reloaded = NamesFile::load_from(names.path.clone());
+                assert_eq!(reloaded.if_blocks().unwrap().len(), 1);
+                assert_eq!(
+                    reloaded
+                        .lines
+                        .iter()
+                        .filter(|line| is_tag(line, "ELSE"))
+                        .count(),
+                    1
+                );
+                for call in ["N0AAA", "N2CCC", "N4EEE"] {
+                    assert!(reloaded.name_for(call, "27.825").is_some());
+                    assert!(reloaded.name_for(call, "145").is_none());
+                }
+                for call in ["N1BBB", "N3DDD", "N5FFF"] {
+                    assert!(reloaded.name_for(call, "27.825").is_none());
+                    assert!(reloaded.name_for(call, "145").is_some());
+                }
+                let block = &reloaded.if_blocks().unwrap()[0];
+                let before_else: Vec<_> = reloaded.lines[block.start + 1..block.otherwise.unwrap()]
+                    .iter()
+                    .filter_map(|line| parse_station(line).map(|s| s.call))
+                    .collect();
+                assert_eq!(before_else, ["N0AAA", "N2CCC", "N4EEE"]);
+            },
+        );
+    }
+
+    #[test]
+    fn saving_unclosed_if_blocks_reports_error_without_overwriting_file() {
+        with_names("<IF 27>\nT>N0AAA First;", |names| {
+            let before = names.lines.clone();
+            let bytes = fs::read(names.path()).unwrap();
+            let entry = NameEntry {
+                call: "N1BBB".into(),
+                scope: NameScope::Qrg("27".into()),
+                ..NameEntry::default()
+            };
+            assert!(names
+                .save_entry(None, &entry)
+                .unwrap_err()
+                .contains("has no END"));
+            assert_eq!(names.lines, before);
+            assert_eq!(fs::read(names.path()).unwrap(), bytes);
+        });
+    }
+
+    #[test]
+    fn removing_selected_station_preserves_other_qrgs_and_dos_file_structure() {
+        let text = "*** Comment\r\nPORT0 = N0DIGI,27.235\r\n\
+            <IF 27>\r\nT>N0PEER Eleven; D>N0DIGI\r\n<END>\r\n\
+            <IF 145>\r\nT>N0PEER VHF;\r\n<END>\r\n";
+        with_names(text, |names| {
+            let index = names.entries()[0].0;
+            names.remove_entry(index).unwrap();
+            let expected = text.replace("T>N0PEER Eleven; D>N0DIGI\r\n", "");
+            assert_eq!(fs::read(names.path()).unwrap(), encode_cp437(&expected));
+            let reloaded = NamesFile::load_from(names.path.clone());
+            assert!(reloaded.name_for("N0PEER", "27.235").is_none());
+            assert_eq!(
+                reloaded.name_for("N0PEER", "145.825").as_deref(),
+                Some("VHF")
+            );
+        });
+    }
+
+    #[test]
+    fn invalid_entries_and_write_failures_do_not_change_the_loaded_names() {
+        with_names("T>N0PEER Existing;", |names| {
+            let before = names.lines.clone();
+            let bytes = fs::read(names.path()).unwrap();
+            for via in ["D>", "D>N0DIGI\nT>N1PEER", "D>N0DIGI-16", ",", "D>N0DIGI;"] {
+                let entry = NameEntry {
+                    call: "N1PEER".into(),
+                    via: via.into(),
+                    ..NameEntry::default()
+                };
+                assert!(names.save_entry(None, &entry).is_err(), "{via}");
+            }
+            let duplicate = NameEntry {
+                call: "N0PEER".into(),
+                ..NameEntry::default()
+            };
+            assert!(names.save_entry(None, &duplicate).is_err());
+            assert!(names.remove_entry(99).is_err());
+            assert_eq!(names.lines, before);
+            assert_eq!(fs::read(names.path()).unwrap(), bytes);
+            let original_path = names.path.clone();
+            names.path = original_path.join("NAMES.GP");
+            let entry = NameEntry {
+                call: "N1PEER".into(),
+                ..NameEntry::default()
+            };
+            assert!(names.save_entry(None, &entry).is_err());
+            assert!(names.remove_entry(0).is_err());
+            assert_eq!(names.lines, before);
+            names.path = original_path;
+        });
+    }
 }

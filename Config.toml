@@ -84,11 +84,11 @@ channel_ctext = ["", "", "", "", "", "", "", "", "", "", ""]
 umlaut = 0
 softscroll = 0
 echo = 2047
-bell = 2046
+bell = 0
 seven_plus = 0
 remote = 2046
 scr_lock = false
-hour_gong = true
+hour_gong = false
 [buffers]
 # Legacy line counts (≈80 columns each in classic GP).
 text_buffer = [600, 300]   # TEXTBUFFER: monitor scrollback, then channel scrollback
@@ -102,7 +102,7 @@ input_buffer = 200
 # KISS uses data/KISS.INI [params] PACLEN for this size (0 means 256).
 # Newlines are `\n` and stay inside the packet; they do not each start one.
 # 144Mhz 255 and up
-packet_payload = 254
+packet_payload = 128
 
 [paths]
 # Legacy: USERDIR, EXTERNALDIR, SAVEDIR, LOGDIR, SPYDIR
@@ -215,8 +215,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1292
-y = 155
+x = 964
+y = 393
 width = 1155
 height = 836
 maximized = false
