@@ -13866,10 +13866,10 @@ fn icon_editor_side(
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 if retro::button(ui, "Up", 52.0, 28.0, menu_font(15.0)) {
-                    edit.step(-1);
+                    edit.step(1);
                 }
                 if retro::button(ui, "Down", 52.0, 28.0, menu_font(15.0)) {
-                    edit.step(1);
+                    edit.step(-1);
                 }
             });
         });
@@ -13907,10 +13907,10 @@ fn icon_editor_side(
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     if retro::button(ui, "Up", 52.0, 28.0, menu_font(15.0)) {
-                        *color = (pen as u8 + 15) % 16;
+                        *color = (pen as u8 + 1) % 16;
                     }
                     if retro::button(ui, "Down", 52.0, 28.0, menu_font(15.0)) {
-                        *color = (pen as u8 + 1) % 16;
+                        *color = (pen as u8 + 15) % 16;
                     }
                 });
             });
@@ -15156,6 +15156,72 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
 #[cfg(test)]
 mod input_tests {
     use super::*;
+
+    #[test]
+    fn icon_editor_up_increases_and_down_decreases_icons_and_both_colors() {
+        with_offline_app("wa8ded", |app, _, ctx| {
+            let icon = crate::ui::icons::GpIcon {
+                width: 70,
+                height: 40,
+                pixels: vec![7; 70 * 40],
+            };
+            let mut edit = IconEdit {
+                path: app.config_path.with_file_name("ICONS.GP"),
+                raw: Vec::new(),
+                icons: vec![icon; 17],
+                index: 0,
+                color: 0,
+                right_color: 0,
+            };
+            for (label, occurrence, expected) in [
+                ("Up", 0, (1, 0, 0)),
+                ("Down", 0, (0, 0, 0)),
+                ("Down", 0, (16, 0, 0)),
+                ("Up", 0, (0, 0, 0)),
+                ("Up", 1, (0, 1, 0)),
+                ("Down", 1, (0, 0, 0)),
+                ("Down", 1, (0, 15, 0)),
+                ("Up", 1, (0, 0, 0)),
+                ("Up", 2, (0, 0, 1)),
+                ("Down", 2, (0, 0, 0)),
+                ("Down", 2, (0, 0, 15)),
+                ("Up", 2, (0, 0, 0)),
+            ] {
+                let mut target = Pos2::ZERO;
+                for pressed in [None, Some(true), Some(false)] {
+                    let mut input = egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            Pos2::ZERO, Vec2::new(1000.0, 900.0))),
+                        ..Default::default()
+                    };
+                    if let Some(pressed) = pressed {
+                        input.events = vec![
+                            egui::Event::PointerMoved(target),
+                            egui::Event::PointerButton {
+                                pos: target,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::default(),
+                            },
+                        ];
+                    }
+                    let output = ctx.run(input, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            icon_editor_side(ui, &mut edit, &mut false, &mut None, &mut None);
+                        });
+                    });
+                    target = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == label => {
+                            Some(text.pos + text.galley.size() * 0.5)
+                        }
+                        _ => None,
+                    }).nth(occurrence).expect("cycle button rendered");
+                }
+                assert_eq!((edit.index, edit.color, edit.right_color), expected,
+                    "{label} control {occurrence}");
+            }
+        });
+    }
 
     #[test]
     fn icon_editor_draws_independent_left_and_right_colors_without_background_actions() {

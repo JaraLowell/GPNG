@@ -81,7 +81,9 @@ The icon editor blocks input to the terminal and controls behind it while
 open. Left and right mouse buttons have independent VGA drawing colors
 (initially black and white). Click the palette with the corresponding button
 to set its color, or use the separate color controls. Hold either button on
-the pixel grid to draw. Save writes the library; Apply closes the editor.
+the pixel grid to draw. Up increases the icon number or color index; Down
+decreases it. Both wrap at the ends. Save writes the library; Apply closes
+the editor.
 
 1. Decode → RGBA at runtime (MSB-first planes; icons already use LightGray paper).
 2. Pixel UI blits 70×40 (scaled) onto a grey bevelled cell on the dark-red strip.
