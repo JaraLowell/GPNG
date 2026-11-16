@@ -1308,7 +1308,7 @@ impl GpGuiApp {
                                     self.kiss_show_transit(&frame, channel);
                                 } else {
                                     self.push_mon_line(
-                                        PadKind::Incoming,
+                                        PadKind::System,
                                         super::session::kiss_monitor_fallback(channel, &payload),
                                     );
                                 }
@@ -2192,7 +2192,7 @@ impl GpGuiApp {
     fn note_kiss_tx(&mut self, port: u8, raw: &[u8]) {
         let Some(frame) = ax25::parse_frame(raw) else {
             self.push_mon_line(
-                PadKind::Own,
+                PadKind::System,
                 super::session::kiss_monitor_fallback(port, raw),
             );
             return;
@@ -16004,14 +16004,22 @@ mod input_tests {
                 })
                 .unwrap();
             app.drain_tnc();
-            for kind in [PadKind::Incoming, PadKind::Own] {
-                assert!(app.pads[0].lines.iter().any(|line| {
-                    line.kind == kind
-                        && line
-                            .text
-                            .contains("KISS port 12: undecodable AX.25 (3B) 01 DB C0")
-                }));
+            let lines: Vec<_> = app.pads[0].lines.iter().collect();
+            assert_eq!(lines.len(), 2);
+            for line in lines {
+                assert_eq!(line.kind, PadKind::System);
+                let rest = line.text.strip_prefix("gp ").unwrap();
+                let (time, message) = rest.split_once(' ').unwrap();
+                assert!(chrono::NaiveTime::parse_from_str(time, "%H:%M").is_ok());
+                assert_eq!(message, "KISS port 12: undecodable AX.25 (3B) 01 DB C0");
             }
+            let info = Color32::from_rgb(255, 168, 0);
+            let job = app.pads[0].layout_job_monitor(100, Color32::BLUE, Color32::WHITE, info);
+            assert!(job
+                .sections
+                .iter()
+                .all(|section| section.format.color == info));
+            assert!(app.pads[0].transcript_text().is_empty());
         });
     }
 

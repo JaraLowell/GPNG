@@ -286,10 +286,12 @@ including traffic for other stations. Each successful data-frame write to the
 modem produces a TX monitor entry, including control frames and retransmissions.
 This confirms a modem write, not an over-the-air transmission. The GUI's `M`
 filter still applies to decoded frames; `M IUSC` lists all supported classes,
-also while connected. Undecodable AX.25 packets appear as raw hex diagnostics
-with their port, and malformed KISS escapes produce warnings rather than
-silently disappearing. The terminal UI also lists RX and TX on its monitor,
-not on pads selected by radio port. Monitor history remains bounded.
+also while connected. Undecodable AX.25 packets appear as system-coloured raw
+hex diagnostics with their port. GUI system messages have a local-time
+`gp HH:MM` prefix and are not saved in pad history. Malformed KISS escapes
+produce warnings rather than silently disappearing. The terminal UI also lists
+RX and TX on its monitor, not on pads selected by radio port. Monitor history
+remains bounded.
 
 A KISS circuit is the exact **radio port + local callsign/SSID + remote
 callsign/SSID**. Terminal channel numbers are separate. A reply from another

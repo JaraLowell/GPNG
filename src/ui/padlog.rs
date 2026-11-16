@@ -17,6 +17,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use chrono::Local;
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{Color32, FontId};
 
@@ -169,6 +170,11 @@ impl TextPad {
     }
 
     fn push_line(&mut self, kind: PadKind, text: String, nowrap: bool) -> u64 {
+        let text = if kind == PadKind::System {
+            format!("gp {} {text}", Local::now().format("%H:%M"))
+        } else {
+            text
+        };
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
         self.lines.push_back(PadLine {
@@ -863,4 +869,33 @@ fn push_run(runs: &mut Vec<PadRun>, text: String, color: Color32) {
         color,
         ansi: None,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_messages_are_stamped_without_changing_traffic() {
+        let mut pad = TextPad::new(5);
+        pad.push(PadKind::System, "channel status");
+        pad.push_monitor(PadKind::System, "monitor warning");
+        pad.push_unwrapped(PadKind::System, "banner");
+        pad.push(PadKind::Incoming, "received");
+        pad.push(PadKind::Own, "sent");
+
+        for (line, message) in
+            pad.lines
+                .iter()
+                .take(3)
+                .zip(["channel status", "monitor warning", "banner"])
+        {
+            let rest = line.text.strip_prefix("gp ").unwrap();
+            let (time, text) = rest.split_once(' ').unwrap();
+            assert!(chrono::NaiveTime::parse_from_str(time, "%H:%M").is_ok());
+            assert_eq!(text, message);
+            assert_eq!(line.kind.color(), PAD_SYSTEM);
+        }
+        assert_eq!(pad.transcript_text(), "received\r\nsent\r\n");
+    }
 }
