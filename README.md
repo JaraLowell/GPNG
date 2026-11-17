@@ -1,34 +1,34 @@
-# Graphic Packet (New Generation)
+# Graphic Packet NG (GPNG)
 
-Asynchronous Rust foundation for a cross-platform rewrite of **Graphic Packet (GP)**, the classic 1990s MS-DOS AX.25 HAM Packet Radio terminal by Ulf Saran (DH1DAE).
+GPNG is a modern, cross-platform continuation of **Graphic Packet (GP)**, the
+classic MS-DOS packet terminal by Ulf Saran (DH1DAE). It is for licensed
+amateur-radio operators who want to make AX.25 packet contacts using a serial
+TNC or a software TNC over TCP. You can run it as a normal windowed program;
+the optional text screen is available with `--tui`.
 
-This crate targets modern Windows / macOS / Linux hosts talking to USB-to-serial TNCs (WA8DED hostmode, TFPCX, Kenwood KISS) and soft TNCs over **TCP KISS** (Soundmodem, Direwolf, …).
+The program is still under active development. KISS is being tested, and the
+WA8DED and TFPCX drivers have not yet been proved on a real TNC. Read the
+hardware notes below before connecting a transmitter.
+
+Ready to try it? Jump to [Getting GPNG running](#getting-gpng-running) for
+release downloads or build instructions, then follow the [quick start](#quick-start)
+to set up your station.
 
 ![afbeelding](https://i.gyazo.com/d8bde765d19db1ee5ba339240dbeb1f7.jpg)
 
-## Development status
+Use **Radio setup** when GPNG starts to enter your call sign and choose the
+TNC: KISS, TAPR TNC-2 WA8DED, Baycom, or TFPCX. Select a serial port and speed,
+or the TCP address and port for a software TNC such as Soundmodem or Direwolf.
+Press **Use this** to open the link and save the settings. During a session,
+**ALT-U** or **SETUP** opens the parameters for the active window. Most routine
+settings are saved for next time; `Config.toml` remains available for the
+settings that are not on a menu.
 
-This project is still under active development, and some features may not work
-as expected. KISS is currently being tested; the WA8DED and TFPCX drivers are
-not yet tested on hardware.
-
-Day-to-day settings no longer need a hand-edited config for normal use. On
-startup the **Radio setup** card picks callsign, protocol (**KISS** /
-**TAPR TNC-2 WA8DED** / **Baycom** / **TFPCX**), serial port and baud, or TCP
-host and port for Soundmodem / Direwolf. Baycom can be selected and saved, but
-its hardware connection is explicitly unavailable and Apply is disabled.
-**Use this** opens the link and writes those values back. Inside the session,
-**ALT-U** / the **SETUP** icon opens Program parameters for the current
-window (colours, remote, echo, bells, beacon, language, packet length, and
-the other live rows). Session-bar switches and channel MYCALL dialogs also
-persist. `Config.toml` is still the on-disk store, and an optional
-`CONFIG.GP` overlay is merged on load for migration.
-
-Connect, disconnect, chat, Shift-F macros, MHeard, DieBox BBS-Menu / Box-List,
-`//` remotes, and AutoBin file transfer are in. Still ahead are some legacy GP
-corners (other mailbox list formats, continuous save / file-send ALT keys,
-hostmode TNC-Statistics, and a few transfer resume paths). Mail is closer to
-“leave a note” (`*.GPM`) than a full BBS. See `docs/GAPS.md` for the checklist.
+Connect and disconnect, packet chat, Shift-F macros, MHeard, DieBox
+BBS-Menu / Box-List, `//` remote commands, and AutoBin file transfer are
+available. Some of the old GP functions are still being worked on. Mail is
+currently a simple “leave a note” service (`*.GPM`), not a full BBS. The
+remaining compatibility work is listed in `docs/GAPS.md`.
 
 ![Language](https://img.shields.io/badge/language-RUST-dea584.svg) 
 
@@ -106,6 +106,102 @@ Selecting a station uses that exact entry's VIA path, including digipeaters
 and queued node connections. A route error is reported instead of connecting
 directly without its required VIA.
 
+## Getting GPNG running
+
+### Download a ready-to-run copy
+
+When a release is published, download the archive for your operating system
+from [GPNG Releases](https://github.com/JaraLowell/GPNG/releases). Extract the
+whole archive and keep the program, `Config.toml`, and `data` folder together;
+do not copy out just the executable.
+
+| Computer | Release package and minimum |
+|----------|-----------------------------|
+| Windows PC | `GPNG-windows-x64.zip`. Windows 10 **64-bit**, version 1903 (May 2019 Update) or newer. This is the project's minimum supported Windows version. |
+| Linux PC | `GPNG-linux-x64.zip`, built on Ubuntu 22.04 for 64-bit x86 Linux. Your desktop and the usual ALSA, udev, X11/Wayland system libraries must be installed; older systems may lack some of them. |
+| Mac | `GPNG-macos-arm64.zip` for Apple Silicon Macs. The published package is not for Intel Macs; the minimum macOS version has not yet been established. |
+
+These are native programs, not a DOS emulator. You do not need to install Rust
+to run a release package, and Python is only needed if you want to run Python
+programs from `data/EXTERNAL`. Windows release builds include the C runtime;
+no separate Visual C++ runtime installer should be needed.
+
+On Windows, open `GPNG.exe` from the extracted folder. On Linux or macOS, open
+a terminal in the extracted folder and run:
+
+```sh
+./GPNG
+```
+
+The supplied `Config.toml` and `data` folder contain the starter station
+settings, help, sounds, and sample programs. Change the example call sign and
+radio settings in **Radio setup** before going on the air. Select the correct
+TNC driver and port; a USB serial adapter's operating-system driver may also
+be required. Baycom has additional hardware and safety requirements; see
+[`docs/BAYCOM.md`](docs/BAYCOM.md).
+
+### Build from the source
+
+Install Rust's official `rustup` toolchain from
+[rust-lang.org/tools/install](https://www.rust-lang.org/tools/install). Use
+the current **stable** toolchain. The build is for the computer on which you
+run Cargo; the resulting program is not a universal binary for every OS.
+
+On Linux and macOS, install Rust with the official rustup installer:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+**Windows:** download and run `rustup-init.exe` from the Rust install page and
+choose the 64-bit MSVC toolchain. Install Microsoft's
+[Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+with the **Desktop development with C++** workload so Cargo has the linker.
+In PowerShell, from the checked-out source folder:
+
+```powershell
+cargo run
+cargo build --release
+```
+
+The release executable is `target\release\GPNG.exe`.
+
+**Linux:** on Ubuntu or Debian, install the native build libraries:
+
+```sh
+sudo apt-get update
+sudo apt-get install build-essential pkg-config libudev-dev libasound2-dev \
+  libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libxcursor-dev \
+  libxrandr-dev libxi-dev libgl1-mesa-dev
+```
+
+Then, from the source folder:
+
+```sh
+cargo run
+cargo build --release
+```
+
+Other Linux distributions need the equivalent development packages.
+
+**macOS:** install Apple's Command Line Tools and follow the install prompt:
+
+```sh
+xcode-select --install
+```
+
+Then, from the source folder:
+
+```sh
+cargo run
+cargo build --release
+```
+
+Run Cargo from the source folder on each system. `cargo run` starts the normal
+windowed program; `cargo run -- --tui` starts the text interface. The optimized
+executable is placed under `target/release` (with `.exe` on Windows). The
+checked-out `Config.toml` and `data` folder are used while developing.
+
 ## Quick start
 
 ```bash
@@ -146,9 +242,62 @@ settings. Hand-editing is still fine for paths, buffer sizes, `TNCINI` lines,
 `KISS.INI` sections, and other keys the menus do not expose. An optional
 classic `CONFIG.GP` beside `Config.toml` merges recognised keys on load.
 
-```bash
+For extra diagnostic detail, start a debug run with:
+
+```sh
 RUST_LOG=debug cargo run
 ```
+
+In Windows PowerShell, use:
+
+```powershell
+$env:RUST_LOG = "debug"
+cargo run
+```
+
+## Running the sample Python programs
+
+GPNG can run text-only programs from `data/EXTERNAL` on behalf of a connected
+station. The included `FREE`, `QSLINFO`, `SWPC`, and `WEATHER` samples are
+Python 3 scripts. You do **not** need Python to run GPNG itself.
+
+Install Python 3 from [python.org/downloads](https://www.python.org/downloads/)
+on Windows or macOS. On Windows, enable **Add python.exe to PATH** in the
+installer. On Linux, use your distribution's package manager to install
+`python3`. GPNG looks for Python on `PATH` (the Windows `py` launcher is also
+recognized).
+
+`FREE` and `QSLINFO` use Python's standard library. `SWPC` and `WEATHER` also
+need the `requests` package. Install it with:
+
+```powershell
+py -3 -m pip install requests
+```
+
+On Linux or macOS, use `python3 -m pip install requests`. On Debian or Ubuntu,
+if pip will not install into the system Python, install the packaged
+alternative with `sudo apt-get install python3-requests`. `QSLINFO`, `SWPC`,
+and `WEATHER` contact internet services, so they also need an internet
+connection.
+
+You can try a sample at a terminal before using it over packet:
+
+```powershell
+py -3 data\EXTERNAL\FREE
+py -3 data\EXTERNAL\QSLINFO N1UIR
+```
+
+On Linux or macOS, use `python3 data/EXTERNAL/FREE` and
+`python3 data/EXTERNAL/QSLINFO N1UIR`.
+
+To run one from a connected channel, the sysop must enable **Remote** for that
+channel. Enter `//RUN ?` to see the available programs and detected languages,
+then try `//RUN FREE` or `//RUN QSLINFO N1UIR`. The report is returned as
+channel text. For your own script, save a `.py` file in `data/EXTERNAL` and
+start it with `//RUN name.py`. A running script can receive a line from the
+station; it is stopped when the link drops or after five minutes with no new
+input or output. Only put scripts there that you are prepared to let remote
+stations run.
 
 ## Protocol notes
 

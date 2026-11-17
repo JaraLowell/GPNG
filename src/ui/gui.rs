@@ -130,7 +130,7 @@ enum QrtDiscState {
 
 /// Classic VGA chrome (from GP V1.63 / DOSBox reference).
 const VGA_BLUE: Color32 = Color32::from_rgb(0, 0, 170);
-const VGA_DARK_GREEN: Color32 = Color32::from_rgb(0, 85, 0);
+const VGA_DOS: Color32 = Color32::from_rgb(12, 0, 0);
 const VGA_GREEN: Color32 = Color32::from_rgb(0, 170, 0);
 const VGA_GRAY: Color32 = Color32::from_rgb(170, 170, 170);
 const VGA_DARK_GRAY: Color32 = Color32::from_rgb(85, 85, 85);
@@ -10782,16 +10782,11 @@ impl GpGuiApp {
             .get(channel as usize)
             .map(|s| s.as_str())
             .unwrap_or("");
-        let width = panel.width() * 0.25;
-        let height = (panel.height() * 0.36).clamp(96.0, 168.0);
-        if width < 48.0 || panel.height() < 48.0 {
-            return;
-        }
         let rect = Rect::from_min_size(
-            Pos2::new(panel.right() - width, panel.top()),
-            Vec2::new(width, height.min(panel.height())),
+            Pos2::new(panel.right() - 410.0, panel.top()),
+            Vec2::new(410.0, 200.0),
         );
-        let font = FontId::monospace(11.0);
+        let font = FontId::monospace(8.0);
         let ink = Color32::from_rgb(255, 255, 85);
         let mut job = LayoutJob::default();
         let mut first = true;
@@ -10821,7 +10816,7 @@ impl GpGuiApp {
         }
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
             Frame::none()
-                .fill(VGA_DARK_GREEN)
+                .fill(VGA_DOS)
                 .stroke(Stroke::new(1.0, Color32::WHITE))
                 .inner_margin(4.0)
                 .show(ui, |ui| {
