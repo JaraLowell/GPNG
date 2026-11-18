@@ -17,18 +17,18 @@ time_offset_minutes = 0
 # Legacy: SERNR / SERPORT / SERIRQ / SERBAUD
 # Prefer a modern device path (USB-serial). SERPORT/SERIRQ remain optional
 # for documentation / migration from DOS IO-port based setups.
-port = "COM6" # Linux/macOS examples: "/dev/ttyUSB0", "/dev/tty.usbserial-*"
+port = "COM7" # Linux/macOS examples: "/dev/ttyUSB0", "/dev/tty.usbserial-*"
 # TM-D710 KISS: Kenwood docs use 9600 here — must match radio Menu PC PORT SPEED
 # (9600/19200/38400/57600). Only set 19200 if the radio menu is also 19200.
-baud = 9600 # SERBAUD
-com_number = 6 # SERNR (informational when `port` is set)
+baud = 19200 # SERBAUD
+com_number = 7 # SERNR (informational when `port` is set)
 # Optional DOS legacy fields (omit when unused — TOML has no null):
 # io_port = 0x3F8      # SERPORT — unused on modern USB-serial
 # irq = 4              # SERIRQ — unused on modern USB-serial
 fast_poll = "auto"     # FASTPOLL: "auto" | "on" | "off"
 multiport = "auto"     # MULTIPORT: "auto" | "on" | "off"
 
-port_detail = "USB-K5G Radio Cable"
+port_detail = "USB Serial Port"
 [session]
 # Legacy: CHANNELS, MAXSPY, buffers, bells, remote, spy, …
 channels = 10
@@ -215,8 +215,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 323
-y = 194
-width = 1162
+x = 483
+y = 58
+width = 1241
 height = 841
 maximized = false

@@ -1383,13 +1383,7 @@ impl GpGuiApp {
                         self.accept_rx_text(channel, &decode_channel_bytes(&payload), kind);
                     } else if !hide_monitor {
                         if idx == 0 && monitor_bytes {
-                            let heard: Vec<(String, String, Vec<String>)> = monitor_rows
-                                .iter()
-                                .filter_map(|part| heard_from_fm(part))
-                                .collect();
-                            for (src, dest, via) in &heard {
-                                self.note_heard_on_monitor(src, dest, via);
-                            }
+                            self.note_heard_lines(&monitor_rows);
                             let sgr_rows = ax25::monitor_display_lines_sgr(
                                 &payload,
                                 self.session.umlaut_for(SLOT_MONITOR),
@@ -1404,11 +1398,7 @@ impl GpGuiApp {
                         } else {
                             let parts = payload_lines(&line);
                             if idx == 0 {
-                                for part in &parts {
-                                    if let Some((src, dest, via)) = heard_from_fm(part) {
-                                        self.note_heard_on_monitor(&src, &dest, &via);
-                                    }
-                                }
+                                self.note_heard_lines(&parts);
                                 for part in parts {
                                     self.push_mon_line(kind, stamp_monitor_fm(&part));
                                 }
@@ -2208,7 +2198,13 @@ impl GpGuiApp {
         } else {
             None
         };
-        self.push_kiss_mon_frame(PadKind::Own, &frame, info.as_deref(), port);
+        self.push_kiss_mon_frame(
+            PadKind::Own,
+            &frame,
+            info.as_deref(),
+            info.as_deref().unwrap_or(""),
+            port,
+        );
     }
 
     fn software_ax25(&self) -> bool {
@@ -2360,12 +2356,13 @@ impl GpGuiApp {
         poll: bool,
         command: bool,
         info_text: Option<&str>,
+        heard_info: &str,
         port: u8,
     ) {
         if !self.monitor_lists_frame(frame_kind, src, dest, via) {
             return;
         }
-        self.note_heard_on_monitor(src, dest, via);
+        self.note_heard_on_monitor(src, dest, via, heard_info);
         let hdr = stamp_monitor_fm(&ax25::tag_kiss_port(
             &ax25::monitor_ctl_line(src, dest, via, frame_kind, ns, nr, poll, command),
             port,
@@ -2383,7 +2380,8 @@ impl GpGuiApp {
 
     /// Every monitor `fm` line updates MHeard from its source call.
     /// Our own transmissions are not stations we heard.
-    fn note_heard_on_monitor(&mut self, src: &str, dest: &str, via: &[String]) {
+    /// `info` is the payload row after the header, or empty when there is none.
+    fn note_heard_on_monitor(&mut self, src: &str, dest: &str, via: &[String], info: &str) {
         let src = src.trim();
         if src.is_empty()
             || (0..=self.channels).any(|ch| self.effective_mycall(ch).eq_ignore_ascii_case(src))
@@ -2399,8 +2397,23 @@ impl GpGuiApp {
             dest: dest.to_string(),
             src: src.to_string(),
             via,
-            info: String::new(),
+            info: info.to_string(),
         });
+    }
+
+    /// `fm` headers in `lines`, each with the following payload row as its text.
+    fn note_heard_lines(&mut self, lines: &[String]) {
+        for (i, line) in lines.iter().enumerate() {
+            let Some((src, dest, via)) = heard_from_fm(line) else {
+                continue;
+            };
+            let info = lines
+                .get(i + 1)
+                .map(String::as_str)
+                .filter(|next| !is_fm_header(next))
+                .unwrap_or("");
+            self.note_heard_on_monitor(&src, &dest, &via, info);
+        }
     }
 
     fn push_kiss_mon_frame(
@@ -2408,6 +2421,7 @@ impl GpGuiApp {
         kind: PadKind,
         frame: &Ax25Frame,
         info_text: Option<&str>,
+        heard_info: &str,
         port: u8,
     ) {
         let colored_info = info_text.map(|_| {
@@ -2424,6 +2438,7 @@ impl GpGuiApp {
             frame.poll,
             frame.command,
             colored_info.as_deref(),
+            heard_info,
             port,
         );
     }
@@ -3661,19 +3676,21 @@ impl GpGuiApp {
         } else {
             Some(info_mon.as_str())
         };
-        if matches!(frame.kind, Ax25FrameType::Ui) {
-            let info_text = decode_rx_text(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
-            self.mheard.hear(&Ax25UiFrame {
-                dest: frame.dest.clone(),
-                src: frame.src.clone(),
-                via: frame.via.clone(),
-                info: info_text,
-            });
-        }
+        let info_text = decode_rx_text(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
         if !self.monitor_lists_frame(frame.kind, &frame.src, &frame.dest, &frame.via) {
+            // Hidden UI frames never reach the monitor header, which is the
+            // other place a packet is counted. Record them here, once.
+            if matches!(frame.kind, Ax25FrameType::Ui) {
+                self.mheard.hear(&Ax25UiFrame {
+                    dest: frame.dest.clone(),
+                    src: frame.src.clone(),
+                    via: frame.via.clone(),
+                    info: info_text,
+                });
+            }
             return;
         }
-        self.push_kiss_mon_frame(PadKind::Incoming, frame, info_for_mon, port);
+        self.push_kiss_mon_frame(PadKind::Incoming, frame, info_for_mon, &info_text, port);
         if matches!(frame.kind, Ax25FrameType::Ui) {
             let mon = ax25::tag_kiss_port(&frame.monitor_line(), port);
             self.feed_spy_pads(&frame.src, PadKind::Incoming, &mon);
