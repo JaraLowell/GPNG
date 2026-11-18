@@ -1,29 +1,27 @@
-//! TFPCX soft-TNC driver — WA8DED-compatible hostmode framing.
+//! TFPCX switch. Up to three KISS or WA8DED modems, each started with the
+//! existing driver. Port numbers are rewritten here. The drivers are not modified.
 //!
-//! TFPCX already presents a hostmode interface to GP, so bring-up skips a hard
-//! dependency on hardware `JHOST1` echo. Timed channel-0 `G` polling and
-//! TNCINI/TNCDEI are retained; shutdown has no required `JHOST0`.
-//! Buffer counters are built here from the host queue (TFPCX does not send
-//! the WA8DED `L` / `@B` report).
-//!
-//! Timing (`P` / `W` / `T` / `O` / `F` from `[tnc] init`) is sent as hostmode
-//! text — TFPCX is the soft modem, so CSMA/TXDELAY live in that process, not
-//! as KISS param frames. `//P` reports the configured values (no live `@T2`).
+//! A KISS link's hardware ports are 0, 1, … in the order the operator chose.
+//! WA8DED stays a single logical port and still receives ordinary hostmode commands.
 
-use std::time::{Duration, Instant};
+use std::thread;
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::config::{SerialConfig, TncConfig};
+use crate::config::{SerialConfig, TncConfig, TncLink};
 
-use super::super::host_delivery::{HostDelivery, HostKind, Outgoing, Tick};
-use super::super::hostmode::{
-    apply_command_list, drain_frames, poll_command, write_host_data, write_host_frame,
-};
-use super::super::serial::SerialLink;
-use super::super::timing::timing_from_tnc_config;
-use super::super::wa8ded_ini;
-use super::super::{send_buffers_if_changed, BufferReport, TncCommand, TncError, TncEvent};
+use super::super::ax25;
+use super::super::hostmode::HostCode;
+use super::super::known_hosts::{self, KnownHosts, Route};
+use super::super::{TncCommand, TncError, TncEvent};
+
+struct Plugin {
+    wa8ded: bool,
+    /// Logical ports in hardware order. Wire port 0 is `ports[0]`.
+    ports: Vec<u8>,
+    commands: mpsc::Sender<TncCommand>,
+}
 
 pub fn run(
     serial: SerialConfig,
@@ -31,188 +29,364 @@ pub fn run(
     events: mpsc::Sender<TncEvent>,
     mut commands: mpsc::Receiver<TncCommand>,
 ) -> Result<(), TncError> {
-    let poll_ms = serial.poll_interval_ms();
-    let mut link = SerialLink::open(&serial)?;
-    link.watch(events.clone());
-    let _ = events.blocking_send(TncEvent::Status(format!(
-        "tfpcx driver on {} ({} baud, poll {} ms)",
-        link.port_name, link.baud, poll_ms
-    )));
-
-    // Soft-TNC: brief settle, optional best-effort JHOST1, then TNCINI.
-    std::thread::sleep(Duration::from_millis(100));
-    let _ = link.write_terminal("JHOST1");
-
-    let init_cmds: Vec<String> = tnc_cfg
-        .init
-        .iter()
-        .map(|c| wa8ded_ini::expand_placeholders(c, &tnc_cfg.monitor_mode))
-        .collect();
-    if let Err(err) = apply_command_list(&mut link, &init_cmds) {
-        let _ = events.blocking_send(TncEvent::Warning(format!("TNCINI failed: {err}")));
-    } else {
-        let _ = events.blocking_send(TncEvent::Status(
-            "tfpcx hostmode active — TNCINI applied".into(),
-        ));
+    let links = tnc_cfg.validated_links().map_err(TncError::Protocol)?;
+    let mut hosts = KnownHosts::load(known_hosts::default_path(), &tnc_cfg.runtime_own_calls);
+    for call in &tnc_cfg.runtime_own_calls {
+        hosts.own(call);
     }
-    publish_tfpcx_timing_banner(&tnc_cfg, &events);
 
-    let mut rx_buf = [0u8; 512];
-    let mut stream = Vec::<u8>::new();
-    let mut delivery = HostDelivery::new();
-    let mut last_buffers: Option<BufferReport> = None;
-    let mut last_poll = Instant::now()
-        .checked_sub(Duration::from_millis(poll_ms))
-        .unwrap_or_else(Instant::now);
+    let mut plugins = Vec::new();
+    let mut incoming = Vec::new();
+    for (index, link) in links.iter().enumerate() {
+        let (event_tx, event_rx) = mpsc::channel(256);
+        let (cmd_tx, cmd_rx) = mpsc::channel(64);
+        let slot = index + 1;
+        let child_events = event_tx.clone();
+        let child_serial = child_serial(&serial, link);
+        let child_tnc = child_tnc(&tnc_cfg, link);
+        let wa8ded = link.is_wa8ded();
+        let join = thread::Builder::new()
+            .name(format!("tfpcx-link-{slot}"))
+            .spawn(move || {
+                let result = if wa8ded {
+                    super::wa8ded::run(child_serial, child_tnc, child_events.clone(), cmd_rx)
+                } else {
+                    super::kiss::run(child_serial, child_tnc, child_events.clone(), cmd_rx)
+                };
+                if let Err(err) = result {
+                    let _ = child_events.blocking_send(TncEvent::Warning(format!(
+                        "link {slot}: {err}"
+                    )));
+                }
+            })
+            .map_err(|err| TncError::Protocol(format!("link {slot}: {err}")))?;
+        // Detach. Shutdown is a command on the child's channel.
+        drop(join);
+        let _ = events.blocking_send(TncEvent::Status(link_status(slot, link)));
+        plugins.push(Plugin {
+            wa8ded,
+            ports: link.ports.clone(),
+            commands: cmd_tx,
+        });
+        incoming.push(event_rx);
+    }
+
+    let kiss_ports: Vec<u8> = plugins
+        .iter()
+        .filter(|plugin| !plugin.wa8ded)
+        .flat_map(|plugin| plugin.ports.iter().copied())
+        .collect();
 
     loop {
-        while let Ok(cmd) = commands.try_recv() {
-            if handle_command(&mut link, &mut delivery, &tnc_cfg, &events, cmd)? {
-                return Ok(());
-            }
-        }
-
-        match commands.try_recv() {
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                let _ = apply_command_list(&mut link, &tnc_cfg.deinit);
-                return Ok(());
-            }
-            Ok(cmd) => {
-                if handle_command(&mut link, &mut delivery, &tnc_cfg, &events, cmd)? {
+        loop {
+            match commands.try_recv() {
+                Ok(cmd) => {
+                    if dispatch(&plugins, &kiss_ports, &mut hosts, &events, cmd)? {
+                        return Ok(());
+                    }
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    let _ = shutdown(&plugins);
                     return Ok(());
                 }
-            }
-            Err(mpsc::error::TryRecvError::Empty) => {}
-        }
-
-        match link.try_read(&mut rx_buf) {
-            Ok(0) => {}
-            Ok(n) => {
-                let chunk = &rx_buf[..n];
-                let _ = events.blocking_send(TncEvent::RawRx(chunk.to_vec()));
-                stream.extend_from_slice(chunk);
-                let replies = drain_frames(&mut stream)?;
-                if !replies.is_empty() {
-                    if let Some(out) = delivery.on_tnc_frame(Instant::now()) {
-                        write_outgoing(&mut link, &out)?;
-                    }
-                    for reply in replies {
-                        let _ = events.blocking_send(TncEvent::HostFrame {
-                            channel: reply.channel,
-                            code: reply.code,
-                            payload: reply.payload,
-                        });
-                    }
-                }
-            }
-            Err(err) => {
-                let _ = events.blocking_send(TncEvent::LinkDown(err.to_string()));
-                return Err(err);
+                Err(mpsc::error::TryRecvError::Empty) => break,
             }
         }
 
-        match delivery.tick(Instant::now()) {
-            Some(Tick::Resend(out)) => {
-                write_outgoing(&mut link, &out)?;
+        for (index, rx) in incoming.iter_mut().enumerate() {
+            while let Ok(event) = rx.try_recv() {
+                lift(&plugins[index], &mut hosts, &events, event);
             }
-            Some(Tick::GaveUp { channel }) => {
-                let _ = events.blocking_send(TncEvent::Warning(format!(
-                    "tfpcx ch{channel}: TNC did not accept the block"
-                )));
-            }
-            None => {}
         }
-
-        send_buffers_if_changed(&events, &delivery.tx_snapshots(), &mut last_buffers);
-
-        if delivery.idle() && last_poll.elapsed() >= Duration::from_millis(poll_ms) {
-            if let Some(out) =
-                delivery.enqueue_kind(0, poll_command().to_vec(), HostKind::Poll, Instant::now())
-            {
-                if let Err(err) = write_outgoing(&mut link, &out) {
-                    let _ = events.blocking_send(TncEvent::Warning(format!("poll G: {err}")));
-                }
-            }
-            last_poll = Instant::now();
-        }
-
-        std::thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
-fn handle_command(
-    link: &mut SerialLink,
-    delivery: &mut HostDelivery,
-    tnc_cfg: &TncConfig,
+fn dispatch(
+    plugins: &[Plugin],
+    kiss_ports: &[u8],
+    hosts: &mut KnownHosts,
     events: &mpsc::Sender<TncEvent>,
     cmd: TncCommand,
 ) -> Result<bool, TncError> {
     match cmd {
-        TncCommand::Session(_) => {
-            return Err(TncError::Protocol("unadapted session command".into()))
+        TncCommand::Shutdown => {
+            shutdown(plugins)?;
+            let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
+            return Ok(true);
         }
-        TncCommand::HostFrame { channel, data } => {
-            if let Some(out) = delivery.enqueue(channel, data, Instant::now()) {
-                if let Err(err) = write_outgoing(link, &out) {
-                    let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
-                }
+        TncCommand::Reinitialize | TncCommand::QueryTiming => {
+            for plugin in plugins {
+                let _ = plugin.commands.blocking_send(cmd.clone());
+            }
+        }
+        TncCommand::TerminalLine(line) => {
+            let targets: Vec<_> = plugins.iter().filter(|plugin| plugin.wa8ded).collect();
+            let targets: Vec<_> = if targets.is_empty() {
+                plugins.iter().collect()
+            } else {
+                targets
+            };
+            for plugin in targets {
+                let _ = plugin
+                    .commands
+                    .blocking_send(TncCommand::TerminalLine(line.clone()));
+            }
+        }
+        TncCommand::KissParam { cmd, arg } => {
+            for plugin in plugins.iter().filter(|plugin| !plugin.wa8ded) {
+                let _ = plugin
+                    .commands
+                    .blocking_send(TncCommand::KissParam { cmd, arg });
             }
         }
         TncCommand::HostData { channel, data } => {
-            if let Some(out) = delivery.enqueue_kind(channel, data, HostKind::Data, Instant::now())
-            {
-                write_outgoing(link, &out)?;
-            }
+            send_wa8ded(plugins, events, TncCommand::HostData { channel, data })?;
         }
-        TncCommand::KissParam { .. } => {}
-        TncCommand::TerminalLine(line) => {
-            if let Err(err) = link.write_terminal(&line) {
-                let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
-            }
+        TncCommand::HostFrame { channel, data } if host_command(&data) => {
+            send_wa8ded(
+                plugins,
+                events,
+                TncCommand::HostFrame { channel, data },
+            )?;
         }
-        TncCommand::Reinitialize => {
-            let cmds: Vec<String> = tnc_cfg
-                .init
-                .iter()
-                .map(|c| wa8ded_ini::expand_placeholders(c, &tnc_cfg.monitor_mode))
-                .collect();
-            let _ = apply_command_list(link, &cmds);
-            publish_tfpcx_timing_banner(tnc_cfg, events);
+        TncCommand::HostFrame { channel, data } => {
+            send_kiss(plugins, kiss_ports, hosts, events, channel, &data)?;
         }
-        TncCommand::QueryTiming => {
-            publish_tfpcx_timing_banner(tnc_cfg, events);
-        }
-        TncCommand::Shutdown => {
-            let _ = apply_command_list(link, &tnc_cfg.deinit);
-            let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
-            return Ok(true);
+        TncCommand::Session(_) => {
+            return Err(TncError::Protocol("unadapted session command".into()));
         }
     }
     Ok(false)
 }
 
-fn write_outgoing(link: &mut SerialLink, out: &Outgoing) -> Result<(), TncError> {
-    if out.kind == HostKind::Data {
-        write_host_data(link, out.channel, &out.data)
-    } else {
-        write_host_frame(link, out.channel, &out.data)
+fn send_wa8ded(
+    plugins: &[Plugin],
+    events: &mpsc::Sender<TncEvent>,
+    cmd: TncCommand,
+) -> Result<(), TncError> {
+    let Some(plugin) = plugins.iter().find(|plugin| plugin.wa8ded) else {
+        let _ = events.blocking_send(TncEvent::Warning(
+            "TFPCX has no WA8DED link for that command".into(),
+        ));
+        return Ok(());
+    };
+    plugin
+        .commands
+        .blocking_send(cmd)
+        .map_err(|_| TncError::Protocol("WA8DED link stopped".into()))
+}
+
+fn send_kiss(
+    plugins: &[Plugin],
+    kiss_ports: &[u8],
+    hosts: &mut KnownHosts,
+    events: &mpsc::Sender<TncEvent>,
+    channel: u8,
+    data: &[u8],
+) -> Result<(), TncError> {
+    let Some(frame) = ax25::parse_frame(data) else {
+        return send_on_logical(plugins, events, channel, data.to_vec());
+    };
+    if hosts.is_own(&frame.dest) && frame.via.is_empty() {
+        return send_on_logical(plugins, events, channel, data.to_vec());
+    }
+    let route = hosts.route(&frame.dest, &frame.via, kiss_ports);
+    let ports = match route {
+        Route::Other(port) => {
+            let _ = events.blocking_send(TncEvent::Warning(format!(
+                "{} is known on port {port}",
+                frame.dest
+            )));
+            return Ok(());
+        }
+        Route::Kiss(ports) if ports.is_empty() => {
+            let _ = events.blocking_send(TncEvent::Warning(
+                "TFPCX has no KISS port for that frame".into(),
+            ));
+            return Ok(());
+        }
+        Route::Kiss(ports) => ports,
+    };
+    if ports.len() > 1 {
+        hosts.note_probe(&frame.dest, &frame.via);
+    }
+    for port in ports {
+        send_on_logical(plugins, events, port, data.to_vec())?;
+    }
+    Ok(())
+}
+
+fn send_on_logical(
+    plugins: &[Plugin],
+    events: &mpsc::Sender<TncEvent>,
+    logical: u8,
+    data: Vec<u8>,
+) -> Result<(), TncError> {
+    let Some(plugin) = plugins
+        .iter()
+        .find(|plugin| !plugin.wa8ded && plugin.ports.contains(&logical))
+    else {
+        let _ = events.blocking_send(TncEvent::Warning(format!(
+            "port {logical} is not on a KISS link"
+        )));
+        return Ok(());
+    };
+    let Some(wire) = known_hosts::wire_port(&plugin.ports, logical) else {
+        return Ok(());
+    };
+    plugin
+        .commands
+        .blocking_send(TncCommand::HostFrame {
+            channel: wire,
+            data,
+        })
+        .map_err(|_| TncError::Protocol(format!("KISS port {logical} stopped")))
+}
+
+fn lift(plugin: &Plugin, hosts: &mut KnownHosts, events: &mpsc::Sender<TncEvent>, event: TncEvent) {
+    match event {
+        TncEvent::LinkDown(reason) if reason != "shutdown" => {
+            let _ = events.blocking_send(TncEvent::Warning(reason));
+        }
+        TncEvent::LinkDown(_) => {}
+        TncEvent::KissTx { port, frame } => {
+            let Some(logical) = known_hosts::logical_port(&plugin.ports, port) else {
+                return;
+            };
+            let _ = events.blocking_send(TncEvent::KissTx {
+                port: logical,
+                frame,
+            });
+        }
+        TncEvent::HostFrame {
+            channel,
+            code: HostCode::Data,
+            payload,
+        } if !plugin.wa8ded => {
+            let Some(logical) = known_hosts::logical_port(&plugin.ports, channel) else {
+                return;
+            };
+            if let Some(frame) = ax25::parse_frame(&payload) {
+                if !hosts.is_own(&frame.src) {
+                    hosts.answer(&frame.src, logical);
+                }
+            }
+            let _ = events.blocking_send(TncEvent::HostFrame {
+                channel: logical,
+                code: HostCode::Data,
+                payload,
+            });
+        }
+        TncEvent::HostFrame {
+            channel,
+            code,
+            payload,
+        } if plugin.wa8ded => {
+            if matches!(
+                code,
+                HostCode::Monitor | HostCode::MonitorHeader | HostCode::MonitorData
+            ) {
+                if let Some(call) = heard_call(&payload) {
+                    if let Some(port) = plugin.ports.first().copied() {
+                        hosts.remember(&call, port);
+                    }
+                }
+            }
+            // Bit 7 keeps a hostmode channel from looking like a KISS port.
+            // The session strips it before the hostmode adapter and the UI.
+            let _ = events.blocking_send(TncEvent::HostFrame {
+                channel: channel | 0x80,
+                code,
+                payload,
+            });
+        }
+        other => {
+            let _ = events.blocking_send(other);
+        }
     }
 }
 
-fn publish_tfpcx_timing_banner(tnc_cfg: &TncConfig, events: &mpsc::Sender<TncEvent>) {
-    let timing = timing_from_tnc_config(tnc_cfg);
-    let call = if tnc_cfg.runtime_mycall.is_empty() {
-        "MYCALL"
+fn heard_call(payload: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(payload);
+    let (_, rest) = ax25::split_monitor_fm(text.trim())?;
+    let call = rest.split_whitespace().next()?.trim();
+    if call.is_empty() {
+        None
     } else {
-        tnc_cfg.runtime_mycall.as_str()
+        Some(call.to_string())
+    }
+}
+
+fn host_command(data: &[u8]) -> bool {
+    !data.is_empty()
+        && data
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() || byte.is_ascii_whitespace())
+}
+
+fn shutdown(plugins: &[Plugin]) -> Result<(), TncError> {
+    for plugin in plugins {
+        let _ = plugin.commands.blocking_send(TncCommand::Shutdown);
+    }
+    Ok(())
+}
+
+fn child_serial(base: &SerialConfig, link: &TncLink) -> SerialConfig {
+    let mut serial = base.clone();
+    if !link.serial_port.trim().is_empty() {
+        serial.port = link.serial_port.clone();
+    }
+    if link.baud != 0 {
+        serial.baud = link.baud;
+    }
+    serial.port_detail.clear();
+    serial
+}
+
+fn child_tnc(base: &TncConfig, link: &TncLink) -> TncConfig {
+    let mut cfg = base.clone();
+    if link.is_wa8ded() {
+        cfg.protocol = "wa8ded".into();
+        cfg.kiss_port = 0;
+        cfg.channel_ports.clear();
+        return cfg;
+    }
+    cfg.protocol = "kiss".into();
+    cfg.kiss_transport = if link.uses_tcp() {
+        "tcp".into()
+    } else {
+        "serial".into()
     };
-    let banner = wa8ded_ini::format_timing_banner(
-        call,
-        &timing.as_status_replies(),
-        &timing.as_open_lines(),
-    );
-    let _ = events.blocking_send(TncEvent::TimingBanner(banner.clone()));
-    for line in banner.split('\r').filter(|l| !l.is_empty()) {
-        let _ = events.blocking_send(TncEvent::Status(format!("*** {line}")));
+    cfg.kiss_tcp_host = link.tcp_host.clone();
+    cfg.kiss_tcp_port = link.tcp_port;
+    cfg.kiss_port = 0;
+    cfg.channel_ports = (1..link.ports.len() as u8).collect();
+    cfg
+}
+
+fn link_status(slot: usize, link: &TncLink) -> String {
+    let ports = link
+        .ports
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if link.is_wa8ded() {
+        format!(
+            "link {slot}: WA8DED {} at {} baud, port {ports}",
+            link.serial_port, link.baud
+        )
+    } else if link.uses_tcp() {
+        format!(
+            "link {slot}: KISS TCP {}:{}, ports {ports}",
+            link.tcp_host.trim(),
+            link.tcp_port
+        )
+    } else {
+        format!(
+            "link {slot}: KISS {} at {} baud, ports {ports}",
+            link.serial_port, link.baud
+        )
     }
 }

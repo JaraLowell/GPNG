@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-use crate::config::TncConfig;
+use crate::config::{HostProtocol, TncConfig};
 
 use super::session::{
     canonical_call, command_channel, validate_configs, validate_via, Action, ChannelConfig,
@@ -20,7 +20,7 @@ pub(super) async fn run(
     driver_commands: mpsc::Sender<TncCommand>,
     mut driver_events: mpsc::Receiver<TncEvent>,
 ) {
-    let kiss = config.protocol_kind().uses_software_ax25();
+    let modem = Modem::from_config(&config);
     let mut sessions = KissSessions::new(Settings::from_config(&config));
     let mut host = HostSessions::default();
     let mut timer = tokio::time::interval(Duration::from_millis(20));
@@ -32,30 +32,23 @@ pub(super) async fn run(
             command = commands.recv(), if !shutting_down => {
                 match command {
                     Some(TncCommand::Session(command)) => {
-                        if kiss {
-                            sessions.command(command, Instant::now())
-                        } else {
-                            let channel = command_channel(&command);
-                            match host.command(command) {
-                                Ok(raw) => {
-                                    for command in raw {
-                                        if driver_commands.send(command).await.is_err() { return; }
-                                    }
-                                    Vec::new()
-                                }
-                                Err(reason) => vec![Action::Event(SessionEvent::Error { channel, reason })],
-                            }
-                        }
+                        apply_session(&modem, &mut sessions, &mut host, &driver_commands, command).await
                     }
                     command => {
                         let command = command.unwrap_or(TncCommand::Shutdown);
                         let close = matches!(command, TncCommand::Shutdown | TncCommand::Reinitialize);
                         shutting_down = matches!(command, TncCommand::Shutdown);
-                        let actions = if close {
-                            if kiss { sessions.close("modem stopped or reinitialized") }
-                            else { host.close("modem stopped or reinitialized") }
-                        } else { Vec::new() };
-                        let restores = if kiss { Vec::new() } else { host.restore_after(&command) };
+                        let mut actions = Vec::new();
+                        if close {
+                            let reason = "modem stopped or reinitialized";
+                            if modem.runs_kiss() {
+                                actions.extend(sessions.close(reason));
+                            }
+                            if modem.runs_host() {
+                                actions.extend(host.close(reason));
+                            }
+                        }
+                        let restores = if modem.runs_host() { host.restore_after(&command) } else { Vec::new() };
                         let gated = !restores.is_empty();
                         if gated && driver_commands.send(host_frame(0, b"Y 0".to_vec())).await.is_err() { return; }
                         if driver_commands.send(command).await.is_err() { break; }
@@ -70,23 +63,49 @@ pub(super) async fn run(
             event = driver_events.recv() => {
                 let Some(event) = event else { break; };
                 match event {
-                    TncEvent::KissTx { port, ref frame } if kiss => {
-                        sessions.transmitted(port, frame, Instant::now());
+                    TncEvent::KissTx { port, ref frame } if modem.runs_kiss() => {
+                        if modem.is_switch() {
+                            sessions.credit_transmit(frame, Instant::now());
+                        } else {
+                            sessions.transmitted(port, frame, Instant::now());
+                        }
                         if events.send(event).await.is_err() { break; }
                         Vec::new()
                     }
-                    TncEvent::HostFrame { channel: port, code: HostCode::Data, ref payload } if kiss => {
+                    TncEvent::HostFrame { channel: port, code: HostCode::Data, ref payload }
+                        if modem.kiss_frame(port) =>
+                    {
+                        if modem.is_switch() {
+                            sessions.adopt_port(port, payload);
+                        }
                         let actions = sessions.receive(port, payload, Instant::now());
                         // Monitoring is presentation only; it cannot advance a link.
                         if events.send(event).await.is_err() { break; }
                         actions
                     }
+                    TncEvent::HostFrame { channel, code, payload } if channel & 0x80 != 0 => {
+                        let (raw, actions) = host.event(TncEvent::HostFrame {
+                            channel: channel & 0x7f,
+                            code,
+                            payload,
+                        });
+                        if let Some(raw) = raw {
+                            if events.send(raw).await.is_err() { break; }
+                        }
+                        actions
+                    }
                     TncEvent::LinkDown(ref reason) => {
-                        let actions = if kiss { sessions.close(reason) } else { host.close(reason) };
+                        let mut actions = Vec::new();
+                        if modem.runs_kiss() {
+                            actions.extend(sessions.close(reason));
+                        }
+                        if modem.runs_host() {
+                            actions.extend(host.close(reason));
+                        }
                         if events.send(event).await.is_err() { break; }
                         actions
                     }
-                    event if !kiss => {
+                    event if modem.runs_host() && !modem.is_switch() => {
                         let (raw, actions) = host.event(event);
                         if let Some(raw) = raw {
                             if events.send(raw).await.is_err() { break; }
@@ -100,7 +119,7 @@ pub(super) async fn run(
                 }
             }
             _ = timer.tick() => {
-                if kiss && !shutting_down { sessions.tick(Instant::now()) } else { Vec::new() }
+                if modem.runs_kiss() && !shutting_down { sessions.tick(Instant::now()) } else { Vec::new() }
             }
         };
         for action in actions {
@@ -135,7 +154,7 @@ pub(super) async fn run(
                 return;
             }
         }
-        if kiss {
+        if modem.runs_kiss() {
             let report = sessions.buffers();
             if last_buffers.as_ref() != Some(&report) {
                 last_buffers = Some(report.clone());
@@ -147,12 +166,131 @@ pub(super) async fn run(
     }
 }
 
+enum Modem {
+    Kiss,
+    Host,
+    Switch {
+        kiss_ports: BTreeSet<u8>,
+        wa8ded: Option<u8>,
+    },
+}
+
+impl Modem {
+    fn from_config(config: &TncConfig) -> Self {
+        match config.protocol_kind() {
+            HostProtocol::Kiss | HostProtocol::Baycom => Self::Kiss,
+            HostProtocol::Tfpcx => {
+                let links = config.validated_links().unwrap_or_default();
+                Self::Switch {
+                    kiss_ports: links
+                        .iter()
+                        .filter(|link| link.is_kiss())
+                        .flat_map(|link| link.ports.iter().copied())
+                        .collect(),
+                    wa8ded: links
+                        .iter()
+                        .find(|link| link.is_wa8ded())
+                        .and_then(|link| link.ports.first().copied()),
+                }
+            }
+            HostProtocol::Wa8ded => Self::Host,
+        }
+    }
+
+    fn runs_kiss(&self) -> bool {
+        matches!(self, Self::Kiss | Self::Switch { .. })
+    }
+
+    fn runs_host(&self) -> bool {
+        matches!(self, Self::Host | Self::Switch { .. })
+    }
+
+    fn is_switch(&self) -> bool {
+        matches!(self, Self::Switch { .. })
+    }
+
+    fn kiss_frame(&self, port: u8) -> bool {
+        match self {
+            Self::Kiss => port & 0x80 == 0,
+            Self::Switch { kiss_ports, .. } => kiss_ports.contains(&port),
+            Self::Host => false,
+        }
+    }
+
+    fn host_command(&self, host: &HostSessions, command: &SessionCommand) -> bool {
+        match self {
+            Self::Host => true,
+            Self::Kiss => false,
+            Self::Switch { wa8ded, .. } => match command {
+                SessionCommand::Unproto { port, .. } | SessionCommand::Connect { port, .. } => {
+                    *wa8ded == Some(*port)
+                }
+                SessionCommand::Disconnect { channel } | SessionCommand::Send { channel, .. } => {
+                    host.configs.contains_key(channel)
+                }
+                SessionCommand::Configure(_) => false,
+            },
+        }
+    }
+}
+
+async fn apply_session(
+    modem: &Modem,
+    sessions: &mut KissSessions,
+    host: &mut HostSessions,
+    driver_commands: &mpsc::Sender<TncCommand>,
+    command: SessionCommand,
+) -> Vec<Action> {
+    if let Modem::Switch { wa8ded, .. } = modem {
+        if let SessionCommand::Configure(configs) = &command {
+            host.allowed_port = wa8ded.unwrap_or(0);
+            let (kiss, host_configs): (Vec<_>, Vec<_>) = configs
+                .iter()
+                .cloned()
+                .partition(|config| *wa8ded != Some(config.port));
+            let mut actions = sessions.command(SessionCommand::Configure(kiss), Instant::now());
+            match host.command(SessionCommand::Configure(host_configs)) {
+                Ok(raw) => {
+                    for command in raw {
+                        if driver_commands.send(command).await.is_err() {
+                            return actions;
+                        }
+                    }
+                }
+                Err(reason) => actions.push(Action::Event(SessionEvent::Error {
+                    channel: None,
+                    reason,
+                })),
+            }
+            return actions;
+        }
+    }
+    if modem.host_command(host, &command) {
+        let channel = command_channel(&command);
+        match host.command(command) {
+            Ok(raw) => {
+                for command in raw {
+                    if driver_commands.send(command).await.is_err() {
+                        return Vec::new();
+                    }
+                }
+                Vec::new()
+            }
+            Err(reason) => vec![Action::Event(SessionEvent::Error { channel, reason })],
+        }
+    } else {
+        sessions.command(command, Instant::now())
+    }
+}
+
 #[derive(Default)]
 struct HostSessions {
     configs: BTreeMap<u8, ChannelConfig>,
     pending: BTreeMap<u8, (String, Vec<String>)>,
     connected: BTreeMap<u8, String>,
     outgoing: BTreeSet<u8>,
+    /// Radio port this adapter will accept. Plain WA8DED stays on 0.
+    allowed_port: u8,
 }
 
 impl HostSessions {
@@ -198,7 +336,7 @@ impl HostSessions {
             }
             SessionCommand::Configure(configs) => {
                 let configs = validate_configs(configs)?;
-                if configs.values().any(|c| c.port != 0) {
+                if configs.values().any(|c| c.port != self.allowed_port) {
                     return Err(
                         "this hostmode adapter has no verified multi-radio port selector".into(),
                     );

@@ -159,7 +159,7 @@ impl Config {
             }
         }
 
-        cfg.tnc.runtime_mycall = cfg.primary_mycall().to_string();
+        cfg.capture_own_calls();
         cfg.normalize_spy_calls();
         // Relative dirs follow Config.toml, so a release copy works even when
         // the process is started with a different working directory.
@@ -498,7 +498,24 @@ impl Config {
         if slot == 0 {
             self.tnc.runtime_mycall = call.clone();
         }
+        self.capture_own_calls();
         Ok(call)
+    }
+
+    /// Refresh the calls TFPCX treats as local. Those never go into the host file.
+    pub fn capture_own_calls(&mut self) {
+        self.tnc.runtime_mycall = self.primary_mycall().to_string();
+        let mut own: Vec<String> = self
+            .station
+            .mycall
+            .iter()
+            .filter(|call| !call.trim().is_empty())
+            .cloned()
+            .collect();
+        if own.is_empty() && !self.tnc.runtime_mycall.is_empty() {
+            own.push(self.tnc.runtime_mycall.clone());
+        }
+        self.tnc.runtime_own_calls = own;
     }
 
     /// Rewrite the `mycall = [...]` line in a Config.toml, keeping comments.
@@ -723,6 +740,7 @@ impl Config {
             "com_number",
             &self.serial.com_number.to_string(),
         )?;
+        put_key(path, "tnc", "links", &links_toml(&self.tnc.links))?;
         Ok(())
     }
 
@@ -808,6 +826,31 @@ fn trailing_hash_comment(line: &str) -> &str {
         }
     }
     ""
+}
+
+fn links_toml(links: &[TncLink]) -> String {
+    let body = links
+        .iter()
+        .map(|link| {
+            let ports = link
+                .ports
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{{ protocol = {}, ports = [{ports}], transport = {}, serial_port = {}, baud = {}, tcp_host = {}, tcp_port = {} }}",
+                toml_string(&link.protocol),
+                toml_string(&link.transport),
+                toml_string(&link.serial_port),
+                link.baud,
+                toml_string(&link.tcp_host),
+                link.tcp_port,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{body}]")
 }
 
 fn toml_string(s: &str) -> String {
@@ -1354,6 +1397,28 @@ pub struct TncConfig {
     /// Filled at load from `[station].mycall` for the timing banner (not in TOML).
     #[serde(skip)]
     pub runtime_mycall: String,
+    /// Station calls TFPCX must not write into the known-host file (not in TOML).
+    #[serde(skip)]
+    pub runtime_own_calls: Vec<String>,
+    /// TFPCX hardware links. Empty unless protocol is `tfpcx`. At most three are used.
+    pub links: Vec<TncLink>,
+}
+
+/// One modem behind the TFPCX switch.
+///
+/// `protocol` is `off`, `kiss`, or `wa8ded`. A WA8DED link owns one serial port.
+/// A KISS link owns the logical ports in `ports` (hardware order is 0, 1, …).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct TncLink {
+    pub protocol: String,
+    pub ports: Vec<u8>,
+    /// KISS only: `serial` or `tcp`.
+    pub transport: String,
+    pub serial_port: String,
+    pub baud: u32,
+    pub tcp_host: String,
+    pub tcp_port: u16,
 }
 
 impl Default for TncConfig {
@@ -1378,7 +1443,44 @@ impl Default for TncConfig {
             kiss_port: 0,
             channel_ports: Vec::new(),
             runtime_mycall: String::new(),
+            runtime_own_calls: Vec::new(),
+            links: Vec::new(),
         }
+    }
+}
+
+impl Default for TncLink {
+    fn default() -> Self {
+        Self {
+            protocol: "off".into(),
+            ports: Vec::new(),
+            transport: "serial".into(),
+            serial_port: String::new(),
+            baud: 9600,
+            tcp_host: "127.0.0.1".into(),
+            tcp_port: 8100,
+        }
+    }
+}
+
+impl TncLink {
+    pub fn is_enabled(&self) -> bool {
+        !matches!(
+            self.protocol.trim().to_ascii_lowercase().as_str(),
+            "" | "off" | "none"
+        )
+    }
+
+    pub fn is_wa8ded(&self) -> bool {
+        self.protocol.trim().eq_ignore_ascii_case("wa8ded")
+    }
+
+    pub fn is_kiss(&self) -> bool {
+        self.protocol.trim().eq_ignore_ascii_case("kiss")
+    }
+
+    pub fn uses_tcp(&self) -> bool {
+        self.is_kiss() && self.transport.trim().eq_ignore_ascii_case("tcp")
     }
 }
 
@@ -1410,6 +1512,101 @@ impl TncConfig {
     pub fn kiss_tcp_addr(&self) -> String {
         format!("{}:{}", self.kiss_tcp_host.trim(), self.kiss_tcp_port)
     }
+
+    /// Highest radio port a TFPCX link can use. Ports are `0..=TFPCX_MAX_PORT`.
+    pub const TFPCX_MAX_PORT: u8 = 11;
+
+    /// Enabled TFPCX links, in order. Ports are exclusive. At most three.
+    pub fn validated_links(&self) -> Result<Vec<TncLink>, String> {
+        let active: Vec<TncLink> = self
+            .links
+            .iter()
+            .filter(|link| link.is_enabled())
+            .cloned()
+            .collect();
+        if active.is_empty() {
+            return Err("Choose at least one TFPCX link".into());
+        }
+        if active.len() > 3 {
+            return Err("TFPCX allows at most 3 links".into());
+        }
+        let mut used = Vec::new();
+        for (index, link) in active.iter().enumerate() {
+            check_link(index + 1, link, &mut used)?;
+        }
+        Ok(active)
+    }
+
+    /// Logical ports owned by enabled KISS links.
+    pub fn kiss_logical_ports(&self) -> Vec<u8> {
+        self.validated_links()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|link| link.is_kiss())
+            .flat_map(|link| link.ports)
+            .collect()
+    }
+
+    /// The single WA8DED logical port, when that link is enabled.
+    pub fn wa8ded_logical_port(&self) -> Option<u8> {
+        self.validated_links()
+            .ok()
+            .and_then(|links| links.into_iter().find(|link| link.is_wa8ded()))
+            .and_then(|link| link.ports.first().copied())
+    }
+}
+
+fn check_link(slot: usize, link: &TncLink, used: &mut Vec<u8>) -> Result<(), String> {
+    if link.is_wa8ded() {
+        if link.uses_tcp() || link.transport.trim().eq_ignore_ascii_case("tcp") {
+            return Err(format!("Link {slot}: WA8DED is serial only"));
+        }
+        if link.ports.len() != 1 {
+            return Err(format!("Link {slot}: WA8DED uses one port"));
+        }
+        check_serial(slot, link)?;
+    } else if link.is_kiss() {
+        if link.ports.is_empty() {
+            return Err(format!("Link {slot}: choose at least one KISS port"));
+        }
+        if link.uses_tcp() {
+            if link.tcp_host.trim().is_empty() {
+                return Err(format!("Link {slot}: enter the IP address"));
+            }
+            if link.tcp_port == 0 {
+                return Err(format!("Link {slot}: TCP port needs a number (1–65535)"));
+            }
+        } else {
+            check_serial(slot, link)?;
+        }
+    } else {
+        return Err(format!(
+            "Link {slot}: protocol must be KISS or WA8DED"
+        ));
+    }
+    for port in &link.ports {
+        if *port > TncConfig::TFPCX_MAX_PORT {
+            return Err(format!(
+                "Link {slot}: port {port} is outside 0–{}",
+                TncConfig::TFPCX_MAX_PORT
+            ));
+        }
+        if used.contains(port) {
+            return Err(format!("Link {slot}: port {port} is already used"));
+        }
+        used.push(*port);
+    }
+    Ok(())
+}
+
+fn check_serial(slot: usize, link: &TncLink) -> Result<(), String> {
+    if link.serial_port.trim().is_empty() {
+        return Err(format!("Link {slot}: choose a serial port"));
+    }
+    if link.baud == 0 {
+        return Err(format!("Link {slot}: choose a baud rate"));
+    }
+    Ok(())
 }
 
 /// Which modem driver to construct at startup (only one is loaded).
@@ -1417,7 +1614,7 @@ impl TncConfig {
 pub enum HostProtocol {
     /// WA8DED TNC2 / NORD><LINK TheFirmware hostmode (`JHOST1` / `JHOST0`).
     Wa8ded,
-    /// Legacy TFPCX hostmode path; not direct BayCom hardware support.
+    /// TFPCX switch in front of the KISS and WA8DED drivers.
     Tfpcx,
     /// TAPR KISS over serial or TCP (`FEND` / `FESC`).
     Kiss,
@@ -1856,4 +2053,55 @@ fn parse_u8_list(value: &str, key: &str) -> Result<Vec<u8>, String> {
                 .map_err(|e| format!("{key}: cannot parse `{s}` as u8 ({e})"))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tfpcx_link_tests {
+    use super::*;
+
+    fn kiss(ports: &[u8]) -> TncLink {
+        TncLink {
+            protocol: "kiss".into(),
+            ports: ports.to_vec(),
+            transport: "serial".into(),
+            serial_port: "COM3".into(),
+            baud: 9600,
+            ..TncLink::default()
+        }
+    }
+
+    #[test]
+    fn wa8ded_is_one_serial_port_and_kiss_ports_cannot_overlap() {
+        let mut cfg = TncConfig::default();
+        cfg.links = vec![
+            kiss(&[0, 1]),
+            TncLink {
+                protocol: "wa8ded".into(),
+                ports: vec![2],
+                serial_port: "COM4".into(),
+                baud: 9600,
+                ..TncLink::default()
+            },
+        ];
+        let links = cfg.validated_links().unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(cfg.wa8ded_logical_port(), Some(2));
+        assert_eq!(cfg.kiss_logical_ports(), vec![0, 1]);
+
+        cfg.links[1].ports = vec![2, 3];
+        assert!(cfg.validated_links().unwrap_err().contains("one port"));
+
+        cfg.links[1].ports = vec![2];
+        cfg.links[1].transport = "tcp".into();
+        assert!(cfg.validated_links().unwrap_err().contains("serial only"));
+
+        cfg.links[1].transport = "serial".into();
+        cfg.links[1].ports = vec![1];
+        assert!(cfg.validated_links().unwrap_err().contains("already used"));
+
+        cfg.links.push(kiss(&[4]));
+        cfg.links.push(kiss(&[5]));
+        cfg.links[1].ports = vec![3];
+        assert!(cfg.validated_links().unwrap_err().contains("at most 3"));
+    }
 }

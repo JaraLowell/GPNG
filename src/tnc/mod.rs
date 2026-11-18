@@ -5,17 +5,20 @@
 //! Shared wire helpers live in [`serial`] and [`hostmode`]; each driver owns
 //! its bring-up and poll loop.
 //! The session service sits between UI and driver: host AX.25 for KISS/BayCom,
-//! channel-command translation for WA8DED/TFPCX (whose TNC owns AX.25).
+//! channel-command translation for WA8DED (whose TNC owns AX.25). TFPCX routes
+//! each logical port to a KISS or WA8DED plugin.
 //!
 //! ```text
 //!   wa8ded / jhost  → TNC2 NORD><LINK TheFirmware hostmode (JHOST1/JHOST0)
-//!   tfpcx           → soft-TNC, same hostmode frames
+//!   tfpcx           → switch: up to three KISS or WA8DED plugins
 //!   kiss            → TAPR KISS over serial or TCP (FEND/FESC)
 //! ```
 
 pub mod ax25;
 pub mod baycom;
 mod drivers;
+mod known_hosts;
+#[allow(dead_code)] // Hostmode pacing kept beside WA8DED. The switch calls wa8ded::run.
 mod host_delivery;
 mod hostmode;
 mod kiss_ini;
@@ -133,6 +136,7 @@ pub(crate) fn buffers_from_tx(snaps: &[TxSnap]) -> BufferReport {
     }
 }
 
+#[allow(dead_code)] // Buffer snapshots for a hostmode poller. WA8DED reports its own.
 pub(crate) fn send_buffers_if_changed(
     events: &mpsc::Sender<TncEvent>,
     snaps: &[TxSnap],

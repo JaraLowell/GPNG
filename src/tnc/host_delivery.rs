@@ -1,4 +1,8 @@
-//! Hostmode (WA8DED / TFPCX) command pacing.
+#![allow(dead_code)]
+//! Hostmode command pacing.
+//!
+//! The TFPCX switch calls `wa8ded::run` instead of this pacer. The helper stays
+//! next to the WA8DED driver.
 //!
 //! The TNC owns AX.25 acknowledgements. The host is allowed one outstanding
 //! hostmode frame: the next text part (or command) is written only after the

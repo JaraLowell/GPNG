@@ -89,6 +89,7 @@ impl TimingParams {
 
     /// Open-style lines so [`super::wa8ded_ini::format_timing_banner`] can fill
     /// P/W/T/O; live F/@T2/@T3 still come from `replies` when present.
+    #[allow(dead_code)]
     pub fn as_open_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         if let Some(p) = self.persist {
@@ -107,6 +108,7 @@ impl TimingParams {
     }
 
     /// Optional `(cmd, reply)` pairs when Frack is known from config (no T2/T3).
+    #[allow(dead_code)]
     pub fn as_status_replies(&self) -> Vec<(String, String)> {
         let mut replies = Vec::new();
         if let Some(f) = self.frack {

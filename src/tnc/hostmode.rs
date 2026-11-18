@@ -72,6 +72,7 @@ impl HostCode {
     }
 }
 
+#[cfg(test)]
 pub fn write_host_frame(
     link: &mut impl HostIo,
     channel: u8,
@@ -80,6 +81,7 @@ pub fn write_host_frame(
     write_request(link, channel, true, payload)
 }
 
+#[cfg(test)]
 pub fn write_host_data(
     link: &mut impl HostIo,
     channel: u8,
@@ -122,6 +124,7 @@ pub fn expand_command(command: &str) -> Vec<String> {
 }
 
 /// Apply a list of TNCINI/TNCDEI-style command strings as channel-0 frames.
+#[allow(dead_code)] // WA8DED opens from its INI. Kept for a hostmode command list.
 pub fn apply_command_list(link: &mut SerialLink, cmds: &[String]) -> Result<(), TncError> {
     let mut stream = Vec::new();
     for cmd in cmds {
@@ -140,6 +143,7 @@ pub fn apply_command_list(link: &mut SerialLink, cmds: &[String]) -> Result<(), 
 
 /// Hostmode poll command. Drivers enqueue these bytes so the TNC reply is
 /// the acknowledgement that releases the next frame.
+#[allow(dead_code)]
 pub fn poll_command() -> &'static [u8] {
     b"G"
 }
@@ -209,6 +213,7 @@ fn payload_text(payload: &[u8]) -> &str {
 }
 
 /// Extract complete hostmode frames from an accumulating byte stream.
+#[cfg(test)]
 pub fn drain_frames(stream: &mut Vec<u8>) -> Result<Vec<InboundFrame>, TncError> {
     let mut seen = Vec::new();
     while let Some(frame) = take_frame(stream)? {

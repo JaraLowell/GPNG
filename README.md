@@ -6,9 +6,10 @@ amateur-radio operators who want to make AX.25 packet contacts using a serial
 TNC or a software TNC over TCP. You can run it as a normal windowed program;
 the optional text screen is available with `--tui`.
 
-The program is still under active development. KISS is being tested, and the
-WA8DED and TFPCX drivers have not yet been proved on a real TNC. Read the
-hardware notes below before connecting a transmitter.
+The program is still under active development. KISS is being tested. WA8DED
+has not yet been proved on a real TNC2, and TFPCX (more than one modem on
+the same station) has not yet been proved on the air. Read the hardware
+notes below before connecting a transmitter.
 
 Ready to try it? Jump to [Getting GPNG running](#getting-gpng-running) for
 release downloads or build instructions, then follow the [quick start](#quick-start)
@@ -17,8 +18,9 @@ to set up your station.
 ![afbeelding](https://i.gyazo.com/d8bde765d19db1ee5ba339240dbeb1f7.jpg)
 
 Use **Radio setup** when GPNG starts to enter your call sign and choose the
-TNC: KISS, TAPR TNC-2 WA8DED, Baycom, or TFPCX. Select a serial port and speed,
-or the TCP address and port for a software TNC such as Soundmodem or Direwolf.
+TNC: KISS, TAPR TNC-2 WA8DED, Baycom, or TFPCX. TFPCX is for a station with
+more than one modem. Select a serial port and speed, or the TCP address and
+port for a software TNC such as Soundmodem or Direwolf.
 Press **Use this** to open the link and save the settings. During a session,
 **ALT-U** or **SETUP** opens the parameters for the active window. Most routine
 settings are saved for next time; `Config.toml` remains available for the
@@ -309,7 +311,7 @@ Only **one** modem driver is constructed when you confirm Radio setup (stored as
 | `kiss` | TAPR KISS | Host builds AX.25 via the [`ax25`](https://crates.io/crates/ax25) crate; `FEND`/`FESC`; serial **or** TCP (`kiss_transport`) |
 | `wa8ded` (aliases `jhost`, `hostmode`) | TAPR TNC-2 WA8DED (NORD><LINK TheFirmware) | L2 lives in the TNC; typed command/data requests, extended `G` polling with classic fallback; `WA8DED.INI` open/status/close sections |
 | `baycom` | Baycom | Experimental FT232R direct USB, 1200 bit/s ser12; shared software AX.25 |
-| `tfpcx` | TFPCX | Legacy hostmode path, retained for later review; not a Kantronics KPC driver |
+| `tfpcx` | TFPCX | Up to three modems on one station. Each is KISS (serial or TCP) or one WA8DED TNC2. GPNG sends a call on the radio where that station is heard. |
 
 The **WA8DED TNC2** driver targets TNC2 modems running NORD><LINK/TheFirmware.
 The existing `wa8ded`, `jhost`, and `hostmode` configuration names remain valid.
@@ -354,12 +356,11 @@ fragmenting simulated TNC: simultaneous channels 1 and 10, connect/disconnect,
 binary RX, 256-byte TX, monitor header/body, counters, classic polling fallback,
 and rejected initialization/identity setup. This is **not physical-modem or
 on-air interoperability certification**. Hostmode RF delivery receipts for file
-transfers and structured unproto/beacon requests remain unavailable; TFPCX has
-not received equivalent driver-level validation.
+transfers and structured unproto/beacon requests remain unavailable.
 
 ### BayCom (experimental FT232R USB backend)
 
-BayCom is separate from the existing TFPCX hostmode driver. The in-project
+BayCom is its own modem. It is not a radio attached through TFPCX. The in-project
 Rust core in `src/tnc/baycom.rs` has no Linux kernel-driver dependency. Linux
 v6.6's [BayCom hardware driver](https://github.com/torvalds/linux/blob/v6.6/drivers/net/hamradio/baycom_ser_hdx.c)
 and [HDLC driver](https://github.com/torvalds/linux/blob/v6.6/drivers/net/hamradio/hdlcdrv.c)
@@ -388,7 +389,9 @@ before connecting a transmitter. The D2XX dependency targets Windows, macOS
 and Linux, but validation so far is Windows x64 compilation and simulation,
 **not physical-modem or on-air testing on any OS**. USB sampling gaps are not
 fully observable; wiring, polarity, power, timing and driver ownership still
-need bench verification. TFPCX remains separate and unchanged.
+need bench verification. TFPCX does not drive a BayCom modem. It is the
+multi-modem switch described under
+[Sessions, radio ports, and channels](#sessions-radio-ports-and-channels).
 
 ### KISS transport
 
@@ -426,9 +429,10 @@ KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` str
 The GUI sends channel-level connect, disconnect, and data requests to a shared
 session service. For KISS, that service owns AX.25 modulo-8 sequencing, queued
 data, acknowledgements, busy/retry recovery, and per-channel counters. The KISS
-driver only transports frames. WA8DED/TFPCX adapters expose the same session
-events while leaving RF AX.25 control inside the TNC; host-command acceptance
-is **not** treated as an RF acknowledgement.
+driver only transports frames. A WA8DED TNC keeps AX.25 in the modem and
+reports the same session events. A host command being accepted is **not** an
+RF acknowledgement. Under TFPCX, each KISS radio uses that same host AX.25,
+and a WA8DED radio still keeps AX.25 in its TNC.
 
 KISS receive frames are sent to the monitor independently of session matching,
 including traffic for other stations. Each successful data-frame write to the
@@ -456,8 +460,50 @@ kiss_port = 0             # Monitor, beacons, and parameter changes
 channel_ports = [0, 1, 1] # Channels 1, 2, 3; missing entries use kiss_port
 ```
 
-KISS ports are 0..15. Replies use the receiving circuit's port. WA8DED/TFPCX
-currently require port 0: their multi-radio selection has not been verified.
+KISS ports are 0..15. Replies use the receiving circuit's port. A plain WA8DED
+link uses port 0.
+
+### TFPCX
+
+TFPCX runs up to three modems as one Graphic Packet station. That is the same
+job as the old DOS TFPCX resident driver: one terminal, more than one radio,
+and the program chooses which radio a call belongs on. A usual pair is a
+144 MHz TNC and a 433 MHz TNC. KISS and one WA8DED TNC2 can be mixed. BayCom
+is not one of these modems.
+
+Radio setup shows Modem 1, 2, and 3 side by side.
+
+- **KISS** — serial (COM port and baud) or TCP (Soundmodem, Direwolf, and the
+  like). Tick the radio ports that belong to that modem, from 0 through 11.
+  A two-port TNC is usually 0 and 1 on the same cable. GPNG builds the AX.25
+  frames, as it does for a single KISS link.
+- **WA8DED** — one TNC2, serial only, and exactly one radio port. The TNC
+  still runs the AX.25 link.
+- A radio port can belong to only one modem. Set a modem to **Off** when
+  that radio is not connected.
+
+The monitor marks the radio on the `fm` tag. Port 0 is `fm`, port 1 is `fm1`,
+port 2 is `fm2`, and so on. Traffic from each radio is local, and the tag
+shows which radio carried it.
+
+TFPCX picks the radio for a connect or an unproto frame:
+
+- A frame addressed to your own call, with no digipeater, stays on the port
+  that channel is already using. Your own calls are never stored.
+- If a digipeater in the via line is already known, that radio is used, even
+  when the destination itself has not been heard.
+- Otherwise a known destination is sent only on its radio.
+- If neither the destination nor a digipeater is known, the frame goes out
+  once on every KISS port. The port that answers is kept for that call and
+  for the digipeaters in the path. The next connect uses only that radio.
+- The list is `data/TFPCX.HOSTS`, one station per line (`CALL port`). It is
+  written while TFPCX is selected.
+- A call heard on the WA8DED monitor is remembered on that TNC's port. A
+  station known there is not also sent on a KISS radio.
+
+If one modem drops, the others stay on the air. TFPCX has not yet been proved
+with real TNCs.
+
 KISS uses a one-frame TX window, immediate acknowledgements, and synthetic
 buffer accounting, not a measurement of modem RAM. Local self-connections
 between configured endpoints are simulated inside the session service and
@@ -475,7 +521,8 @@ RF delivery receipts for their file-transfer adapters are explicitly unavailable
 - **JHOST0** — leave hostmode (WA8DED path)  
 - Hostmode requests: `channel | command/data | length-minus-one | payload`;
   replies use response-specific framing as described above.
-- `[serial] fast_poll` (`on` / `off` / `auto`) sets the WA8DED/TFPCX poll interval
+- `[serial] fast_poll` (`on` / `off` / `auto`) sets the poll interval for a
+  WA8DED TNC, including one opened under TFPCX. KISS radios are not polled.
 
 ## Credits
 

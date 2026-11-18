@@ -749,6 +749,46 @@ impl KissSessions {
         out
     }
 
+    /// Move a circuit onto the port that answered. Used by TFPCX only.
+    /// Standalone KISS keeps the port it was opened on.
+    pub fn adopt_port(&mut self, port: u8, payload: &[u8]) -> bool {
+        let Some(frame) = ax25::parse_frame(payload) else {
+            return false;
+        };
+        if self.find(port, &frame.dest, &frame.src).is_some() {
+            return false;
+        }
+        let Some(channel) = self.links.iter().find_map(|(&channel, link)| {
+            (link.config.local == frame.dest
+                && link.remote == frame.src
+                && link.config.port != port)
+                .then_some(channel)
+        }) else {
+            return false;
+        };
+        if let Some(link) = self.links.get_mut(&channel) {
+            link.config.port = port;
+        }
+        if let Some(config) = self.configs.get_mut(&channel) {
+            config.port = port;
+        }
+        true
+    }
+
+    /// Credit a write to the circuit with these calls, whichever port carried it.
+    /// TFPCX may probe more than one port before the answer locks the circuit.
+    pub fn credit_transmit(&mut self, payload: &[u8], now: Instant) {
+        let Some(frame) = ax25::parse_frame(payload) else {
+            return;
+        };
+        let Some(port) = self.links.iter().find_map(|(_, link)| {
+            (link.config.local == frame.src && link.remote == frame.dest).then_some(link.config.port)
+        }) else {
+            return;
+        };
+        self.transmitted(port, payload, now);
+    }
+
     pub fn transmitted(&mut self, port: u8, payload: &[u8], now: Instant) {
         let Some(frame) = ax25::parse_frame(payload) else {
             return;
@@ -1282,5 +1322,35 @@ mod tests {
         let out = e.tick(later + Duration::from_secs(2));
         assert_eq!(frames(&out)[0].1.kind, Ax25FrameType::Rr);
         assert!(frames(&out)[0].1.poll);
+    }
+
+    #[test]
+    fn answering_port_becomes_the_circuit_port() {
+        let now = Instant::now();
+        let mut engine = setup(&[(1, 0, "N0ME")]);
+        let out = engine.command(
+            SessionCommand::Connect {
+                channel: 1,
+                port: 0,
+                local: "N0ME".into(),
+                remote: "N1YOU".into(),
+                via: Vec::new(),
+            },
+            now,
+        );
+        let frame = match &out[0] {
+            Action::Transmit { frame, .. } => frame.clone(),
+            _ => panic!("sabm"),
+        };
+        engine.credit_transmit(&frame, now);
+        assert!(!engine.links[&1].awaiting_write);
+        let ua = ax25::build_ua("N0ME", "N1YOU", true);
+        assert!(engine.adopt_port(2, &ua));
+        let out = engine.receive(2, &ua, now);
+        assert!(matches!(
+            events(&out).as_slice(),
+            [SessionEvent::Connected { port: 2, .. }]
+        ));
+        assert_eq!(engine.links[&1].config.port, 2);
     }
 }

@@ -223,6 +223,19 @@ enum RadioPick {
     Baud,
 }
 
+/// One of the three TFPCX modems on the radio card.
+#[derive(Clone)]
+struct RadioLinkForm {
+    /// `off`, `kiss`, or `wa8ded`.
+    protocol: String,
+    ports: Vec<u8>,
+    tcp: bool,
+    port_name: String,
+    baud: u32,
+    host: String,
+    tcp_port: String,
+}
+
 /// Text captured by `//Write` until `//END` or Ctrl-Z.
 #[derive(Clone)]
 struct UserWrite {
@@ -364,8 +377,12 @@ pub struct GpGuiApp {
     /// Call loaded from Config, so a change can be announced once.
     radio_call_loaded: String,
     radio_protocol: HostProtocol,
-    /// KISS serial/TCP choice. WA8DED and TFPCX stay on serial.
+    /// KISS serial/TCP choice. WA8DED stays on serial.
     radio_tcp: bool,
+    /// TFPCX: up to three modems. Unused for the other protocols.
+    radio_links: Vec<RadioLinkForm>,
+    /// Which TFPCX link the port / baud / connection list is editing.
+    radio_link: Option<usize>,
     radio_port: String,
     /// Last port written to Config.toml, and the device name seen on it.
     radio_saved_port: String,
@@ -625,6 +642,7 @@ impl GpGuiApp {
         };
         let radio_host = cfg.tnc.kiss_tcp_host.clone();
         let radio_tcp_port = cfg.tnc.kiss_tcp_port.to_string();
+        let radio_links = radio_link_forms(&cfg.tnc, &radio_port, radio_baud, &radio_host, &radio_tcp_port);
 
         let colors = &cfg.colors;
         let (serial_port, serial_baud) = if cfg.tnc.kiss_use_tcp() {
@@ -764,6 +782,8 @@ impl GpGuiApp {
             radio_call_loaded,
             radio_protocol,
             radio_tcp,
+            radio_links,
+            radio_link: None,
             radio_port,
             radio_saved_port,
             radio_saved_detail,
@@ -1303,7 +1323,11 @@ impl GpGuiApp {
                         }
                         HostCode::Data => {
                             // KISS: full AX.25 L2 (UI / SABM / I / …) — not hostmode text.
-                            if self.software_ax25() {
+                            // TFPCX kiss ports arrive the same way. WA8DED payload stays text.
+                            let kiss_payload = self.software_ax25()
+                                || (self.cfg.tnc.protocol_kind() == HostProtocol::Tfpcx
+                                    && ax25::parse_frame(&payload).is_some());
+                            if kiss_payload {
                                 if let Some(frame) = ax25::parse_frame(&payload) {
                                     self.kiss_show_transit(&frame, channel);
                                 } else {
@@ -9111,10 +9135,8 @@ impl GpGuiApp {
         let screen = ctx.screen_rect();
         let logo_bottom = self.paint_start_logo(ctx, screen);
         let mut use_this = false;
-        let x = (screen.center().x - 230.0).clamp(
-            screen.left() + 8.0,
-            (screen.right() - 468.0).max(screen.left() + 8.0),
-        );
+        let wide = self.radio_protocol == HostProtocol::Tfpcx;
+        let width = if wide { 760.0 } else { 460.0 };
         let y = (logo_bottom + 12.0).min((screen.bottom() - 28.0).max(screen.top() + 8.0));
         let mut open = true;
         let shown = egui::Window::new("Radio setup")
@@ -9122,8 +9144,10 @@ impl GpGuiApp {
             .collapsible(false)
             .resizable(false)
             .order(egui::Order::Foreground)
-            .fixed_pos(Pos2::new(x, y))
-            .default_width(460.0)
+            .pivot(egui::Align2::CENTER_TOP)
+            .fixed_pos(Pos2::new(screen.center().x, y))
+            .default_width(width)
+            .min_width(width)
             .frame(popup_frame())
             .open(&mut open)
             .show(ctx, |ui| {
@@ -9197,10 +9221,155 @@ impl GpGuiApp {
         logo_bottom
     }
 
+    fn tfpcx_link_rows(&mut self, ui: &mut Ui, form_w: f32) {
+        let col_w = ((form_w - 16.0) / 3.0).max(200.0);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for index in 0..self.radio_links.len().min(3) {
+                ui.vertical(|ui| {
+                    ui.set_width(col_w);
+                    self.tfpcx_link_column(ui, index, col_w);
+                });
+            }
+        });
+    }
+
+    fn tfpcx_link_column(&mut self, ui: &mut Ui, index: usize, row_w: f32) {
+        let font = menu_font(15.0);
+        let ports = self.radio_ports.clone();
+        ui.label(
+            RichText::new(format!("Modem {}", index + 1))
+                .color(Color32::BLACK)
+                .font(menu_font(16.0)),
+        );
+        let kind = link_kind_label(&self.radio_links[index].protocol);
+        if menu_open(ui, "Type", kind, row_w) {
+            self.cycle_link_kind(index);
+        }
+        if self.radio_links[index].protocol == "off" {
+            return;
+        }
+        let kiss = self.radio_links[index].protocol == "kiss";
+        if kiss {
+            let how = if self.radio_links[index].tcp {
+                "TCP"
+            } else {
+                "Serial"
+            };
+            if menu_open(ui, "Link", how, row_w) {
+                self.radio_link = Some(index);
+                self.toggle_radio_pick(RadioPick::Connection);
+            }
+        }
+        let tcp = kiss && self.radio_links[index].tcp;
+        if tcp {
+            ui.label(
+                RichText::new("IP address")
+                    .color(Color32::BLACK)
+                    .font(font.clone()),
+            );
+            retro::field(ui, &mut self.radio_links[index].host, row_w, "", font.clone());
+            ui.label(
+                RichText::new("TCP port")
+                    .color(Color32::BLACK)
+                    .font(font.clone()),
+            );
+            retro::field(
+                ui,
+                &mut self.radio_links[index].tcp_port,
+                row_w,
+                "",
+                font.clone(),
+            );
+        } else {
+            let selected = self.radio_links[index].port_name.clone();
+            let port_value = if ports.is_empty() {
+                "No port found".to_string()
+            } else {
+                port_menu_label(&ports, &selected)
+            };
+            if menu_open(ui, "Port", &port_value, row_w) && !ports.is_empty() {
+                self.radio_link = Some(index);
+                self.toggle_radio_pick(RadioPick::Port);
+            }
+            let baud = self.radio_links[index].baud.to_string();
+            if menu_open(ui, "Baud", &baud, row_w) {
+                self.radio_link = Some(index);
+                self.toggle_radio_pick(RadioPick::Baud);
+            }
+        }
+        let chosen = self.radio_links[index].ports.clone();
+        ui.label(
+            RichText::new("Ports")
+                .color(Color32::BLACK)
+                .font(font.clone()),
+        );
+        paint_port_grid(ui, &chosen, row_w, &font, |port| {
+            self.toggle_link_port(index, port);
+        });
+    }
+
+    fn cycle_link_kind(&mut self, index: usize) {
+        let next = match self.radio_links[index].protocol.as_str() {
+            "off" => "kiss",
+            "kiss" => "wa8ded",
+            _ => "off",
+        };
+        self.radio_links[index].protocol = next.into();
+        if next == "wa8ded" {
+            self.radio_links[index].tcp = false;
+            let keep = self.radio_links[index].ports.first().copied();
+            self.radio_links[index].ports.clear();
+            if let Some(port) = keep.or_else(|| self.free_port()) {
+                self.radio_links[index].ports = vec![port];
+            }
+        } else if next == "kiss" && self.radio_links[index].ports.is_empty() {
+            for _ in 0..2 {
+                if let Some(port) = self.free_port() {
+                    self.radio_links[index].ports.push(port);
+                }
+            }
+        }
+        self.radio_error.clear();
+    }
+
+    fn toggle_link_port(&mut self, index: usize, port: u8) {
+        let kiss = self.radio_links[index].protocol == "kiss";
+        if self.radio_links[index].ports.contains(&port) {
+            self.radio_links[index].ports.retain(|have| *have != port);
+            self.radio_error.clear();
+            return;
+        }
+        if self.port_taken(index, port) {
+            self.radio_error = format!("Port {port} is already used");
+            return;
+        }
+        self.radio_error.clear();
+        if kiss {
+            self.radio_links[index].ports.push(port);
+            self.radio_links[index].ports.sort_unstable();
+        } else {
+            self.radio_links[index].ports = vec![port];
+        }
+    }
+
+    fn port_taken(&self, index: usize, port: u8) -> bool {
+        self.radio_links.iter().enumerate().any(|(other, link)| {
+            other != index && link.protocol != "off" && link.ports.contains(&port)
+        })
+    }
+
+    fn free_port(&self) -> Option<u8> {
+        (0..=crate::config::TncConfig::TFPCX_MAX_PORT)
+            .find(|port| !self.port_taken(usize::MAX, *port))
+    }
+
     fn radio_setup_form(&mut self, ui: &mut Ui) -> bool {
-        ui.set_min_width(retro::ROW_W);
+        let tfpcx = self.radio_protocol == HostProtocol::Tfpcx;
+        let form_w = if tfpcx { 740.0 } else { retro::ROW_W };
+        ui.set_min_width(form_w);
         ui.spacing_mut().item_spacing.y = 4.0;
-        let row_w = retro::ROW_W;
+        let row_w = form_w;
         let font = menu_font(17.0);
         let ports = self.radio_ports.clone();
 
@@ -9216,14 +9385,18 @@ impl GpGuiApp {
             self.toggle_radio_pick(RadioPick::Protocol);
         }
 
-        if self.radio_protocol == HostProtocol::Kiss {
+        if self.radio_protocol == HostProtocol::Tfpcx {
+            self.tfpcx_link_rows(ui, form_w);
+        } else if self.radio_protocol == HostProtocol::Kiss {
             let how = if self.radio_tcp { "TCP" } else { "Serial" };
             if menu_open(ui, "Connection", how, row_w) {
+                self.radio_link = None;
                 self.toggle_radio_pick(RadioPick::Connection);
             }
         }
 
-        let serial = self.radio_protocol != HostProtocol::Kiss || !self.radio_tcp;
+        let serial = self.radio_protocol != HostProtocol::Tfpcx
+            && (self.radio_protocol != HostProtocol::Kiss || !self.radio_tcp);
         if serial {
             let port_value = if ports.is_empty() {
                 "No port found".to_string()
@@ -9231,6 +9404,7 @@ impl GpGuiApp {
                 port_menu_label(&ports, &self.radio_port)
             };
             if menu_open(ui, "Port", &port_value, row_w) && !ports.is_empty() {
+                self.radio_link = None;
                 self.toggle_radio_pick(RadioPick::Port);
             }
             let baud = self.radio_baud.to_string();
@@ -9240,9 +9414,10 @@ impl GpGuiApp {
                 "Baud to TNC"
             };
             if menu_open(ui, label, &baud, row_w) {
+                self.radio_link = None;
                 self.toggle_radio_pick(RadioPick::Baud);
             }
-        } else {
+        } else if self.radio_protocol == HostProtocol::Kiss {
             ui.label(
                 RichText::new("IP address")
                     .color(Color32::BLACK)
@@ -9347,7 +9522,7 @@ impl GpGuiApp {
         self.radio_port.clear();
     }
 
-    fn radio_form_key(&self) -> (String, HostProtocol, bool, String, u32, String, String) {
+    fn radio_form_key(&self) -> (String, HostProtocol, bool, String, u32, String, String, String) {
         (
             self.radio_call.clone(),
             self.radio_protocol,
@@ -9356,6 +9531,21 @@ impl GpGuiApp {
             self.radio_baud,
             self.radio_host.clone(),
             self.radio_tcp_port.clone(),
+            self.radio_links
+                .iter()
+                .map(|link| {
+                    format!(
+                        "{}:{:?}:{}:{}:{}:{}:{}",
+                        link.protocol,
+                        link.ports,
+                        link.tcp,
+                        link.port_name,
+                        link.baud,
+                        link.host,
+                        link.tcp_port
+                    )
+                })
+                .collect(),
         )
     }
 
@@ -9391,8 +9581,27 @@ impl GpGuiApp {
             HostProtocol::Kiss => "kiss",
             HostProtocol::Baycom => "baycom",
         };
+        if self.radio_protocol == HostProtocol::Tfpcx {
+            self.cfg.tnc.links = self
+                .radio_links
+                .iter()
+                .map(|link| crate::config::TncLink {
+                    protocol: link.protocol.clone(),
+                    ports: link.ports.clone(),
+                    transport: if link.tcp { "tcp" } else { "serial" }.into(),
+                    serial_port: link.port_name.clone(),
+                    baud: link.baud,
+                    tcp_host: link.host.clone(),
+                    tcp_port: link.tcp_port.trim().parse().unwrap_or(0),
+                })
+                .collect();
+            self.cfg.tnc.validated_links()?;
+            self.cfg.capture_own_calls();
+        }
         let tcp = self.radio_protocol == HostProtocol::Kiss && self.radio_tcp;
-        if tcp {
+        if self.radio_protocol == HostProtocol::Tfpcx {
+            // Each link carries its own serial port or TCP address.
+        } else if tcp {
             let host = self.radio_host.trim();
             if host.is_empty() {
                 return Err("Enter the IP address".into());
@@ -9458,7 +9667,10 @@ impl GpGuiApp {
             self.serial_baud = self.cfg.serial.baud;
         }
         self.serial_open = false;
-        let how = if self.serial_baud == 0 {
+        let how = if self.cfg.tnc.protocol_kind() == HostProtocol::Tfpcx {
+            let count = self.cfg.tnc.links.iter().filter(|link| link.is_enabled()).count();
+            format!("{count} links")
+        } else if self.serial_baud == 0 {
             format!("TCP {}", self.serial_port)
         } else {
             format!("{} at {}", self.serial_port, self.serial_baud)
@@ -9515,17 +9727,20 @@ impl GpGuiApp {
                 .map(|n| n.to_string())
                 .collect(),
         };
+        let link = self.radio_link.and_then(|i| self.radio_links.get(i));
         let current = match pick {
             RadioPick::Protocol => protocol_label(self.radio_protocol).to_string(),
             RadioPick::Connection => {
-                if self.radio_tcp {
-                    "TCP".into()
-                } else {
-                    "Serial".into()
-                }
+                let tcp = link.map(|link| link.tcp).unwrap_or(self.radio_tcp);
+                if tcp { "TCP".into() } else { "Serial".into() }
             }
-            RadioPick::Port => port_menu_label(&ports, &self.radio_port),
-            RadioPick::Baud => self.radio_baud.to_string(),
+            RadioPick::Port => {
+                let selected = link.map(|link| link.port_name.as_str()).unwrap_or(&self.radio_port);
+                port_menu_label(&ports, selected)
+            }
+            RadioPick::Baud => link
+                .map(|link| link.baud.to_string())
+                .unwrap_or_else(|| self.radio_baud.to_string()),
         };
         let mut open = true;
         let mut chosen: Option<usize> = None;
@@ -9583,16 +9798,30 @@ impl GpGuiApp {
                     }
                 }
             }
-            RadioPick::Connection => self.radio_tcp = index == 1,
+            RadioPick::Connection => {
+                if let Some(link) = self.radio_link.and_then(|i| self.radio_links.get_mut(i)) {
+                    link.tcp = index == 1;
+                } else {
+                    self.radio_tcp = index == 1;
+                }
+            }
             RadioPick::Port => {
                 if let Some(port) = ports.get(index) {
-                    self.radio_port = port.name.clone();
+                    if let Some(link) = self.radio_link.and_then(|i| self.radio_links.get_mut(i)) {
+                        link.port_name = port.name.clone();
+                    } else {
+                        self.radio_port = port.name.clone();
+                    }
                 }
             }
             RadioPick::Baud => {
                 let rates = baud_choices(self.radio_baud, self.radio_protocol);
                 if let Some(rate) = rates.get(index) {
-                    self.radio_baud = *rate;
+                    if let Some(link) = self.radio_link.and_then(|i| self.radio_links.get_mut(i)) {
+                        link.baud = *rate;
+                    } else {
+                        self.radio_baud = *rate;
+                    }
                 }
             }
         }
@@ -13711,6 +13940,128 @@ fn menu_open(ui: &mut Ui, label: &str, value: &str, width: f32) -> bool {
         menu_font(17.0),
     );
     resp.clicked() && !resp.double_clicked()
+}
+
+/// Equal cells for ports 0–11. Two-digit labels stay in the same columns as 0–5.
+fn paint_port_grid(ui: &mut Ui, chosen: &[u8], row_w: f32, font: &FontId, mut toggle: impl FnMut(u8)) {
+    const COLS: usize = 6;
+    let gap = 3.0;
+    let cell_w = ((row_w - gap * (COLS as f32 - 1.0)) / COLS as f32).max(22.0);
+    let cell_h = 22.0;
+    let last = usize::from(crate::config::TncConfig::TFPCX_MAX_PORT);
+    let rows = last / COLS + 1;
+    for row in 0..rows {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for col in 0..COLS {
+                let port_n = row * COLS + col;
+                if port_n > last {
+                    break;
+                }
+                let port = port_n as u8;
+                let on = chosen.contains(&port);
+                let (rect, response) =
+                    ui.allocate_exact_size(Vec2::new(cell_w, cell_h), Sense::click());
+                let fill = if on {
+                    Color32::from_rgb(180, 210, 180)
+                } else if response.hovered() {
+                    Color32::from_rgb(214, 214, 214)
+                } else {
+                    Color32::from_rgb(192, 192, 192)
+                };
+                retro::paint(
+                    ui.painter(),
+                    rect,
+                    fill,
+                    response.is_pointer_button_down_on(),
+                    retro::ROW_ROUND,
+                );
+                ui.painter().text(
+                    rect.center() + Vec2::new(0.0, -1.0),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{port}"),
+                    font.clone(),
+                    Color32::BLACK,
+                );
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if response.clicked() {
+                    toggle(port);
+                }
+            }
+        });
+    }
+}
+
+fn link_kind_label(protocol: &str) -> &'static str {
+    match protocol {
+        "kiss" => "KISS",
+        "wa8ded" => "WA8DED",
+        _ => "Off",
+    }
+}
+
+fn radio_link_forms(
+    tnc: &crate::config::TncConfig,
+    port: &str,
+    baud: u32,
+    host: &str,
+    tcp_port: &str,
+) -> Vec<RadioLinkForm> {
+    let mut forms: Vec<RadioLinkForm> = tnc
+        .links
+        .iter()
+        .take(3)
+        .map(|link| RadioLinkForm {
+            protocol: if link.is_enabled() {
+                link.protocol.to_ascii_lowercase()
+            } else {
+                "off".into()
+            },
+            ports: link.ports.clone(),
+            tcp: link.uses_tcp(),
+            port_name: if link.serial_port.is_empty() {
+                port.to_string()
+            } else {
+                link.serial_port.clone()
+            },
+            baud: if link.baud == 0 { baud } else { link.baud },
+            host: if link.tcp_host.is_empty() {
+                host.to_string()
+            } else {
+                link.tcp_host.clone()
+            },
+            tcp_port: if link.tcp_port == 0 {
+                tcp_port.to_string()
+            } else {
+                link.tcp_port.to_string()
+            },
+        })
+        .collect();
+    if forms.is_empty() {
+        forms.push(RadioLinkForm {
+            protocol: "kiss".into(),
+            ports: vec![0, 1],
+            tcp: false,
+            port_name: port.to_string(),
+            baud,
+            host: host.to_string(),
+            tcp_port: tcp_port.to_string(),
+        });
+    }
+    while forms.len() < 3 {
+        forms.push(RadioLinkForm {
+            protocol: "off".into(),
+            ports: Vec::new(),
+            tcp: false,
+            port_name: port.to_string(),
+            baud,
+            host: host.to_string(),
+            tcp_port: tcp_port.to_string(),
+        });
+    }
+    forms
 }
 
 fn port_menu_label(ports: &[DetectedPort], selected: &str) -> String {
