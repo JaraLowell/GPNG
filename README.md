@@ -1,4 +1,4 @@
-# Graphic Packet NG (GPNG)
+# Graphic Packet - Next Generation (GPNG)
 
 GPNG is a modern, cross-platform continuation of **Graphic Packet (GP)**, the
 classic MS-DOS packet terminal by Ulf Saran (DH1DAE). It is for licensed
