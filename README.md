@@ -47,7 +47,8 @@ remaining compatibility work is listed in `docs/GAPS.md`.
 | `data/` | Runtime tree beside the exe (or the crate, while developing) |
 | `data/ICONS.GP` | Toolbar icons |
 | `data/NAMES.GP` | Station list for Connect, `%N`, and `//Name` |
-| `data/*.GPI`, `data/*.GPH` | Connect texts and remote help. `G.GPH` is English. `//Info` prefers `<mycall>.GPI` (your base call); a release ships `INFO.GPI` as the fallback example |
+| `data/*.GPI` | Connect texts. `//Info` prefers `<mycall>.GPI` (your base call); a release ships `INFO.GPI` as the fallback example |
+| `locales/*.toml` | UI Setup labels + remote `//Help` (ISO: `en`, `nl`, `de`, `fr`, `pl`, `sl`, `cs`, `hu`, `es`, `no`, `bg`, `pt`, `ru`). Config `language = "en"`; change in Setup or `//Language` |
 | `data/*.GPW` | Sysop password. `DB0IZ-9` is `DB0IZ9.GPW` |
 | `data/USER` | `//` catalog, read, write, and delete. 7Plus autosave writes here too. Browsing stays inside this folder |
 | `data/EXTERNAL` | `//RUN` programs: Python, PHP, Perl, Ruby, Node, Lua, or Java. `FREE` reports memory. 300 seconds with no input and no new output closes a run. The command cannot name a file outside this folder |
@@ -56,7 +57,7 @@ remaining compatibility work is listed in `docs/GAPS.md`.
 | `data/log/<CALL>.GPL` | Station journal when `log = true` or `LOG=ON`. One file per base call, not per SSID |
 | `data/log/pads/` | Saved monitor, channel, spy, BBS, and box pads |
 | `data/SAVE`, `data/TEMP` | Intended 7Plus join and split folders. Not wired to the channel yet |
-| `docs/COMPATIBILITY.md` | `//` remotes + `%` macros recovered from `*.GPH` / docs / EXE strings |
+| `docs/COMPATIBILITY.md` | `//` remotes + `%` macros recovered from historic help packs / docs / EXE strings |
 | `src/remote/` | Abbreviation-aware command parser, GPI macros, USER jail, EXTERNAL programs, and mail |
 | `docs/TRANSFER.md` | AutoBin `#BIN#` + 7Plus Code-AutoSave (≠ 7-Zip) for DOS GP interop |
 | `src/transfer/` | `#BIN#` state machine, CCITT CRC, `go_7+.` / `stop_7+.` sniffer, and `sevenplus_codec` |

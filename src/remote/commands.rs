@@ -1,6 +1,6 @@
 //! Classic `//` remote-command table (abbreviation-aware).
 //!
-//! Built from the union of `*.GPH` help packs + `README.TXT` / EXE strings.
+//! Built from the union of historic help packs + `README.TXT` / EXE strings.
 //! Matching is case-insensitive; significant-prefix length follows `@TAG,N`.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -168,7 +168,7 @@ pub fn catalogue() -> Vec<RemoteCommand> {
             &["HELP", "H"],
             1,
             RemoteAction::Help,
-            "Send *.GPH help",
+            "Send localized help",
         ),
         cmd(
             "//Info",

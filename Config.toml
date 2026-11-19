@@ -45,7 +45,7 @@ backup = true
 zoom = 1
 prompt = "%c to %y>"
 noname = "%c"
-remote_language = "EN"
+language = "en"
 # Setup menu. Word wrapping and input columns are stored; the editor does not hard-wrap yet.
 input_columns = 81
 editor_wrap = 255
@@ -84,7 +84,7 @@ channel_ctext = ["", "", "", "", "", "", "", "", "", "", ""]
 umlaut = 0
 softscroll = 0
 echo = 2047
-bell = 0
+bell = 2046
 seven_plus = 0
 remote = 2046
 scr_lock = false
@@ -216,8 +216,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1195
-y = 192
+x = 632
+y = 248
 width = 1155
 height = 890
 maximized = false

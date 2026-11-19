@@ -24,7 +24,7 @@ pub const VGA_NAMES: &[&str] = &[
     "White",
 ];
 
-pub const LANGUAGES: &[&str] = &["EN", "NL", "DL", "F", "PL", "SLO", "OK", "HA"];
+pub const LANGUAGES: &[&str] = crate::i18n::CODES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowId {
@@ -132,39 +132,40 @@ impl ColorSlot {
 }
 
 impl RowId {
-    pub fn label(self) -> &'static str {
+    /// Setup row caption (localized via `locales/*.toml` `[setup]`).
+    pub fn label(self) -> String {
         if let Some(title) = self.color_slot().map(ColorSlot::title) {
-            return title;
+            return title.to_string();
         }
-        match self {
-            Self::Theme => "Theme Setup",
-            Self::Prompt => "Remote control prompt",
-            Self::Remote => "Remote control",
-            Self::Backup => "Backup text buffers",
-            Self::Echo => "Echo",
-            Self::RxClick => "RX-Click",
-            Self::ConnectBell => "Connect Bell",
-            Self::Umlaut => "Umlaut conversion",
-            Self::InputColumns => "Input columns",
-            Self::InsertMon => "InsertMonLine",
-            Self::Softscroll => "Softscroll",
-            Self::Beacon => "Beacon parameters",
-            Self::Language => "System language",
-            Self::Zoom => "Zoom",
-            Self::Icons => "System Icons",
-            Self::PacketLen => "Packet length",
-            Self::AutoSave => "Code-AutoSave",
-            Self::WordWrap => "Word wrapping",
-            Self::EditorBak => "Create *.BAK File",
-            Self::RefChannel => "Reference channel",
-            Self::InsertFromEditor => "Insert list from editor",
-            Self::FileDrawer => "File drawer",
-            Self::AutoSpy => "Auto Spy",
-            Self::SpyAutoIgnore => "Spy Auto Ignore",
-            Self::MaxSpy => "Number of spies",
-            Self::MheardClean => "Clear MHeard older than (days)",
-            Self::MheardClear => "Clear MHeard List",
-            Self::Use => "Use these values",
+        let key = match self {
+            Self::Theme => "setup.theme",
+            Self::Prompt => "setup.prompt",
+            Self::Remote => "setup.remote",
+            Self::Backup => "setup.backup",
+            Self::Echo => "setup.echo",
+            Self::RxClick => "setup.rx_click",
+            Self::ConnectBell => "setup.connect_bell",
+            Self::Umlaut => "setup.umlaut",
+            Self::InputColumns => "setup.input_columns",
+            Self::InsertMon => "setup.insert_mon",
+            Self::Softscroll => "setup.softscroll",
+            Self::Beacon => "setup.beacon",
+            Self::Language => "setup.language",
+            Self::Zoom => "setup.zoom",
+            Self::Icons => "setup.icons",
+            Self::PacketLen => "setup.packet_len",
+            Self::AutoSave => "setup.auto_save",
+            Self::WordWrap => "setup.word_wrap",
+            Self::EditorBak => "setup.editor_bak",
+            Self::RefChannel => "setup.ref_channel",
+            Self::InsertFromEditor => "setup.insert_from_editor",
+            Self::FileDrawer => "setup.file_drawer",
+            Self::AutoSpy => "setup.auto_spy",
+            Self::SpyAutoIgnore => "setup.spy_auto_ignore",
+            Self::MaxSpy => "setup.max_spy",
+            Self::MheardClean => "setup.mheard_clean",
+            Self::MheardClear => "setup.mheard_clear",
+            Self::Use => "setup.use",
             Self::ColorsInput
             | Self::ColorsMonitor
             | Self::ColorsChannel
@@ -175,8 +176,9 @@ impl RowId {
             | Self::ColorsSpy
             | Self::ColorsState
             | Self::ColorsMenu
-            | Self::ColorsClock => "",
-        }
+            | Self::ColorsClock => return String::new(),
+        };
+        crate::i18n::t(key)
     }
 
     pub fn color_slot(self) -> Option<ColorSlot> {

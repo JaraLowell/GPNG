@@ -1,0 +1,239 @@
+[meta]
+name = "Czech"
+
+[help]
+overview = '''
+
+  //<n> <Text>           : Odeslání textu na kanál <n>
+  //7+ <ON/OFF>          : P⌐epínaç 7+ AutoSave ZAP nebo VYP
+  //Activity             : Dotaz na aktivitu sysopa
+  //Bell                 : Volání SYSOPa zvonením
+  //CATalog [Filter]     : Vÿpis adresá⌐e s moæností nastavení filtru
+  //CUT                  : P⌐eru¿ení toku dat ze serveru
+  //DELete               : Ru¿ení zpráv zapsanÿch //W s nastevním filtru
+  //DIRectory [Filter]   : Stejné jako //CATalog
+  //DISConnect           : Rychlé odpojení
+  //Echo <Text>          : Vratí zpêt <Text>
+  //END                  : Ukonçeni zprávy zapsané pomocí //Write
+  //Help [prikaz]        : Podrobnêj¿í napovêda o <p⌐íkazu>
+  //Info                 : Informaçní text nastvenÿ sysopem o stanici
+  //Language <sprache>   : Volba komunikaçního jazyka s GP serverem
+  //MHeard [çíslo ]      : Kdo je na kanálu "çíslo" sly¿eném GP serverem ?
+  //MHeard <znaçka>      : Ukáæe, kdy byla satnice naposledy sly¿ena
+  //Name <name>          : Vloæení identifikace vlastního jména
+  //NEws                 : Novinky na stanici
+  //PRompt <ON/OFF>      : Nastavení
+  //Quit                 : Ukonçí spojení a zaloguje
+  //Read <soubor>        : Odeslat <soubor>
+  //RPrg <soubor>        : Odeslat soubor v AutoBin módu
+  //RTt <PortNr>         : Zobrazí zaokrouhlenÿ ças k ukonçení
+  //RUN <program>        : Spustí externí program (//RUN ? ->INFO)
+  //Usage [call]         : Stav kanalu a krátke info o stanicích !
+  //VERsion              : Zobrazí çíslo verze programu
+  //Write <soubor>       : Zapí¿e dále odeslanÿ text do <souboru>
+  //WPrg <soubor>        : Zapí¿e odeslanÿ text do <souboru> v AutoBin modu
+
+  V¿echny p⌐íkazy musí bÿt zapsány na zaçátku ⌐ádky a musí bÿt ukonçeny
+  klávesou CR (Enter).
+  Zadejte "//h h" pro více informací
+'''
+
+[help.commands]
+"7+" = '''
+
+  //7+ <ON/OFF>
+      Tento p⌐íkaz p⌐epíná 7+ AutoSave na ZAP nebo VYP. P⌐íkaz mûæe bÿt
+      pouæit jestliæe chcete zaslat nêkteré 7+ soubory, ale operátor není
+      u jeho stanice a vy nevíte urçitê, zda je 7+ AutoSave zapnut nebo
+      vypnut.
+'''
+ACTIVITY = '''
+
+  //Activity
+      Tento p⌐íkaz ukáæe ças, kdy byla nasposledy zaznamenána sysopova
+      aktivita z klávesnice nebo my¿i.
+'''
+WPRG = '''
+
+  //WPrg <soubor>
+     Tento p⌐íkaz startuje zápis v AutoBin modu. AutoBin mod je jednoduchÿ
+     p⌐enosovÿ protokol, kterÿ obsahuje CRC kontrolu. Bohuæel neobsahuje
+     opravu chyb. Tento AutoBin mód je kompatibilní s binarními p⌐enosovÿmi
+     protokoly programu THP a SP.
+'''
+WRITE = '''
+
+  //Write <soubor>
+     Tento p⌐íkaz startuje zápis dále zasílaného textu do uvedeného <souboru>
+     na disk. Zápis do souboru bude ukonçen odesláním znaku Ctrl+Z nebo
+     remote p⌐íkazu "//END".
+'''
+VERSION = '''
+
+  //VERsion
+      Zobrazí po⌐adové çíslo verze programu GP.
+'''
+USAGE = '''
+
+  //Usage [znacka]
+     Tento p⌐íkaz bez uvedení parametru zobrazí aktuální stav kanálu této
+     stanice. Jestliæe uvedete k p⌐íkazu jako paramater znaçku stanice,
+     bude zaslána krátká informace o této znaçce, jeli zapsána v souboru
+     znaçek a cest adresare GP.
+'''
+RUN = '''
+
+  //RUN <programm>
+     Tato funkce spou¿tí externí program a zasílá vÿstup na TNC. V¿echny
+     Externí programy musí pouæívat DOS standardní jména vÿstupu jinak
+     nemûæe pracovat s GP.
+     Uvedení parametru "?" zpûsobí zaslání zpêt seznamu spustitelnÿch
+     externích programû.
+
+     Volani externích programû se ⌐ídí následujícími kroky:
+        1.: Otev⌐e doçasnÿ soubor na disku.
+        2.: P⌐esmêruje DOS za⌐ízení CON do tohoto souboru.
+        3.: Spustí program. Obrazovkovÿ vÿstup bude nyní zapisován
+            do tohoto souboru.
+        4.: Po ukonçení programu çte doçasnÿ soubor a zasílá jej do TNC.
+        5.: Maæe doçasnÿ soubor.
+
+     Externí programy mohou bÿt programovány uæivateli GP v jakémkoli
+     programovacím jazyku. Musí splnit pouze to, æe pouæijí DOS jméno 1
+     (standardní vÿstupní za⌐ízení) pro obrazovkové vÿstupy.
+'''
+RPRG = '''
+
+  //RPrg <soubor>
+     Tato funkce zasílá soubor v Auto/bin módu. Musíte nejprve nastavit
+     vá¿ vlastní program pro p⌐íjem souboru v AutoBin módu je¿tê p⌐ed
+     odesláním ⌐ídícího p⌐íkazu tak, aby p⌐icházející data byla jiæ do
+     tohoto souboru zapisována.
+     AutoBin mod je kompatabilní s THP a SP programy.
+'''
+READ = '''
+
+  //Read <soubor>
+     Tento p⌐íkaz vám za¿le textovÿ soubor. Pro vÿpis moænÿch souboru
+     ke çtení mûæete pouæít ⌐ídícího p⌐íkazu "//CATalog".
+'''
+QUIT = '''
+
+  //Quit
+     Tohoto p⌐íkazu by mêlo bÿt pouæito pro ukonçení spojení narozdíl
+     od jednoduchého hardwarového p⌐eru¿ení "disconnect". Jestliæe pouæijete
+     tento p⌐íkaz, bude zaslán ukonçující text p⌐ed skuteçnÿm rozpojením.
+     Spojení bude p⌐ípadnê zaevidováno.
+'''
+PROMPT = '''
+
+  //PRompt <ON/OFF>
+     Tento p⌐íkaz zapíná nebo vypíná zasílání PROMPTU systému. Jestliæe je
+     zapnut, prompt bude zasílán, jestliæe bude kaædÿ ⌐idící p⌐íkaz ukonçen
+     a systém tak ohlásí svoji p⌐ipravenost k dal¿ímu pouæití.
+'''
+NEWS = '''
+
+  //NEws
+      Tento p⌐íkaz za¿le soubor novinek na stanici, pokud tento existuje.
+'''
+NAME = '''
+
+  //Name <jméno>
+     Jestliæe va¿e jméno není uvedeno v souboru cest v adresê⌐i GP, mûæete
+     pouæít tohoto p⌐íkazu k p⌐idání svého jména pro va¿i pozdej¿í
+     identifikaci. Pozor na oddêleni mezerou jména od p⌐íkazu. Jméno mûæe
+     obsahovat jakékoli znaky vçetnê mezer.
+'''
+MHEARD = '''
+
+  //MHeard [cislo]
+     Tento p⌐íkaz vám zobrazí seznam sly¿enÿch stanic. Jestliæe p⌐idáte
+     jako parametr çíslo, GP vy¿le uvedeny poçet naposledy sly¿enÿch stanic.
+     Bez parametru bude zasláno posledních dvacet sly¿enÿch stanic.
+'''
+INFO = '''
+
+  //Info
+     Zobrazí informace o této stanici, zaznamenané v informaçním souboru
+     sysopem.
+'''
+HELP = '''
+
+  //Help
+     Obecne informace:
+     V¿echny p⌐íkazy musí zaçínat jako první znaky na ⌐ádce a ukonçeny
+     musí bÿt <CR> (Enter).
+     Kaædÿ p⌐íkaz zaçíná znaky //
+     Parametry musí bÿt oddêleny mezerou.
+     P⌐íkaz i s parametry nesmí p⌐ekroçit délku 80 znakû.
+'''
+END = '''
+
+  //END
+     Ukonçuje zápis p⌐ená¿eného souboru, kterÿ byl odstarován p⌐íkazem
+     //Writ. Tento p⌐íkaz nemûæe bÿt pouæit pro ukonçení AutoBin p⌐enosu.
+'''
+ECHO = '''
+
+  //Echo <text>
+     Tento p⌐íkaz mûæete pouæít pro automatickou odpovêâ, V¿echen <Text>
+     je po p⌐ijetí odeslán zpêt.
+'''
+DISCONNECT = '''
+
+  //DISConnect
+     Tento p⌐íkaz ukonçuje QSO okamæitê bez odeslání ukonçovacího textu.
+'''
+DIRECTORY = '''
+
+  //DIRectory [sablona]
+      Tato funkce vrací obsah uæivatelského adresá⌐e. V¿echny soubory mohou
+      bÿt çteny za pomoci //Read nebo //RPrg. Taktéæ //Write nebo //WPrg
+      zapsiují do tohoto adresá⌐e.
+      Mûete pouæít dodovské ¿ablony s tímto p⌐íkazem (nap⌐. "//DIR *.txt").
+      Mûæete uvést nêkolik ¿ablon za sebou oddêlenÿch st⌐edníkem. Nap⌐.
+      "//DIR *.txt;*.doc"
+'''
+DELETE = '''
+
+  //DELete <jmeno souboru>
+     Tento p⌐íkaz pouæijte k vymazání souboru z uæivatelského adresá⌐e.
+     Mûæete smazat pouze soubory, které jste sami vygenerovali p⌐íkazem
+     //Write. Ostatní soubory mohou bÿt smazány pouze sysopem této stanice.
+'''
+CUT = '''
+
+  //CUT
+     Jestliæe máte odstartován p⌐enos souboru p⌐íkazem //Read, mûæete
+     tímto p⌐íkazem tento p⌐enos zastavit.
+'''
+CATALOG = '''
+
+  //CATalog [sablona]
+     Tato fukce vrací obsah uæivatelského adresá⌐e. V¿echny soubory mohou
+     bÿt çteny p⌐íkazy //Read nebo //RPrg. Taktéæ //Write a //WPrg zapisují
+     do tohoto adresá⌐e.
+     Mûæete pouæít standardní dosovské ¿ablony pro specifikaci seznamu
+     souboru, nap⌐. "//CAT *.txt". Mûæete také uvést nêkolik ¿ablon za sebou
+     oddêlenÿch st⌐edníkem.
+'''
+BELL = '''
+
+  //Bell
+     Tento p⌐íkaz aktivuje vyzvánení zvonku k probuzení sysopa. :-)
+'''
+LANGUAGE = '''
+
+  //Language <jazyk>
+     Tímto p⌐íkazem dosáhnete zmêny jazyka, kterÿm s vámi systém
+     komunikuje. P⌐íkaz bez parametru zobrazí moæné volby jazykû.
+'''
+RTT = '''
+
+  //RTt <PortNr>
+     Tento p⌐íkaz spoçítá p⌐ibliænÿ ças reakce mezi na¿imi stanicemi.
+     K pouæití musí vá¿ program rozumêt p⌐íkazu //echo, kterÿ k vám
+     GP za¿le. Pouæíváte-li Digicom nebo Baycom, p⌐idejte k p⌐íkazu
+     parametr çísla kanálu, nap⌐. "//RT 1".
+'''

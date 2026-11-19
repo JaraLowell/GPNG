@@ -1,4 +1,8 @@
-@@
+[meta]
+name = "Slovenian"
+
+[help]
+overview = '''
 
   //<n> <Text>           : Posljes tekst na kanal <n>
   //7+ ON/OFF            : Vklop-izklop 7+ shranjevanja
@@ -32,46 +36,48 @@
 
   Vsi ukazi se morajo zaceti v prvi vrsti,prvi koloni.
   Napisi "//h h" za vec informacij o ukazih  ali "//h <ukaz> o tem ukazu.
+'''
 
-@7+,2
+[help.commands]
+"7+" = '''
 
    //7+ ON/OFF
    Vkljuci oz.izkljuci 7+ autoshranjevanje.Ta ukaz lahko uporabimo,ko nismo 
    prepricani,da je opcija vkljucena,sysop pa ni prisoten,mi bi mu pa  radi
    poslali nek kodiran tekst.
-
-@ACTIVITY,2
+'''
+ACTIVITY = '''
 
    Ukaz nam pove,kdaj je sysop postaje nazadnje pritisnil na kaksno tipko ali 
    premaknil  misko.
-
-@WPRG,2
+'''
+WPRG = '''
 
   //WPrg <imedatoteke>
       S tem ukazom napises datoteko v AutoBinarnem nacinu.
       Ta AutoBinarni nacin je compatibilen z THP in SP.
-
-@WRITE,1
+'''
+WRITE = '''
 
   //Write <imedatoteke>
       S tem ukazom napises datoteko v tekstovnem nacinu.
       Zakljucis jo tako,da za konec napises "//END" ali pritisnes
       CTRL-Z.
-
-@VERSION,3
+'''
+VERSION = '''
 
   //VERsion
       Pokaze verzijo tega programa (softwera).
-
-@USAGE,1
+'''
+USAGE = '''
 
   //Usage [znak]
       Pokaze vse prikljucene postaje,nekaj parametrov,ki pripadajo tem
       podatkom....
       Ce dodas se znak,dobis se nekaj informacij  o "znaku",
       ce jih seveda program pozna.
-
-@RUN,3
+'''
+RUN = '''
 
   //RUN <program>
       Ta ukaz pozene programe,ki se obicajno izvrsujejo v DOS-u.
@@ -85,43 +91,44 @@
       da ne napises //RUN ime_programa,  dovolj je ze // ime_programa.
                       
  
-@RPRG,2
+'''
+RPRG = '''
 
   //RPrg <imedatoteke>
       Ta ukaz poslje datoteko v AutoBinarnem nacinu.
       Ta AutoBinarni nacin je kompatibilen z THP and SP.
-
-@READ,1
+'''
+READ = '''
 
   //Read <imedatoteke>
       Ta ukaz ti poslje tekstovno datoteko.Najprej prelistaj listo datotek
       z ukazom  "//CATalog"  oz. "//CAT *.doc; *.txt  ...
-
-@QUIT,1
+'''
+QUIT = '''
 
   //Quit
       To je ukaz za zakljucitev zveze pri katerem dobis se preprost
       QRT  tekst z pozdravi...      
-
-@PROMPT,2
+'''
+PROMPT = '''
 
   //PRompt <ON/OFF>
       Vklopi ali izklopi prompt.
       Ta ti pokaze ,kdaj je sistem pripravljen za sprejem novega ukaza.
-
-@NEWS,2
+'''
+NEWS = '''
 
   //NEws
       Ta ukaz poslje novice,ce te obstajajo.
-
-@NAME,1
+'''
+NAME = '''
 
   //Name <ime>
       Ce tvoje ime se ni zabelezeno v progranu uporabis ta ukaz.
       Med ukazom in imenom obvezno uporabi presledek,ime pa napisi
       z veliko zacetnico.Uporabis lahko vse znake,tudi presledek(SPACE).     
-
-@MHEARD,2
+'''
+MHEARD = '''
 
   //MHeard [stevilka]
       Ta ukaz ti poslje listo "slisanih"postaj.Z uporabo stevilke dobis
@@ -130,15 +137,15 @@
       nazadnje slisanih postaj.
   //MHeard [znak]
       pa ti pove,kdaj je nazadnje (po njegovih podatkih) slisal "znak"  
-
-@INFO,1
+'''
+INFO = '''
 
   //Info
       Pokaze informacije o tej postaji,ime..telefon..kraj,
       podatke o hardweru , itd...Te podatke je treba napisati
       v datoteko  INFO.GPI ali tvoj_znak.GPI.
-
-@HELP,1
+'''
+HELP = '''
 
   //Help
       Informacije o ukazih:
@@ -146,24 +153,25 @@
       v nasprotnem primeru bo racunalnik javljal napako.Vsi ukazi se
       zacnejo z "//" vendar je treba dodati se parametre,drugace se ne 
       zgodi nic.Parametri ne smejo presegati 80 znakov.
-
-@END,3
+'''
+END = '''
 
   //END
       Prekine pisanje datoteke, ki smo jo zaceli pisati z "//Write" .
       V AutoBinarnem nacinu je ne moremo uporabiti!!!
-
-@ECHO,1
+'''
+ECHO = '''
 
   //Echo <text>
       To je preprosti echo (odmev) in poslje nazaj sprejeti tekst.
       
-@DISCONNECT,4
+'''
+DISCONNECT = '''
 
   //DISConnect
       Hitra prekinitev QSO,brez poslovilnega pozdravnega teksta.
-
-@DIRECTORY,3
+'''
+DIRECTORY = '''
 
   //DIRectory [wildcard]
       Prikaze direktorij,iz katerega lahko citamo ali kopiramo datoteke.
@@ -171,34 +179,34 @@
       ,ki prikaze vse datoteke s koncnico "txt" v tem direktoriju.
       V isto vrstico lahko napisemo vec iskanih datotek,ki jih locimo
       z ";"..npr.//DIR *.txt;*.doc"
-
-@DELETE,3
+'''
+DELETE = '''
 
   //DELete <imedatoteke>
        Ta ukaz zbrise datoteko "imedatoteke" iz direktorija,ki si jo
        napisal z //Write.
        Vse ostale datoteke lahko zbrise samo Sysop te postaje.
-
-@CUT,3
+'''
+CUT = '''
 
   //CUT
       Ce si zacel citati datoteko z //Read ,lahko prekines citanje
       s tem ukazom.
-
-@CATALOG,3
+'''
+CATALOG = '''
 
   //CATalog [wildcard]
 
       Enako kot ukaz "//DIR".
       Vse kar napises,lahko najdes v tem direktoriju,pa tudi kar je
       kdo drug napisal.
-
-@BELL,1
+'''
+BELL = '''
 
   //Bell
       Ta ukaz "zbudi" operaterja,ce je slucajno zaspal. :-)
-
-@LANGUAGE,1
+'''
+LANGUAGE = '''
 
   //Language <jezik>
       S tem ukazom spremenis pogovorni jezik z racunalnikom,ki ti
@@ -206,13 +214,12 @@
       moznih pogovornih jezikov, npr:
       //l dl   nemski jezik ; //l g   angleski jezik
       //l slo  slovenski jezik  ...
-
-@RTT,2
+'''
+RTT = '''
 
   //RTt <portnr>
       Ta ukaz preracuna cas ,ki pretece za protokol med najinima postajama.
       Tvoj program mora imeti vklopljen ECHO , drugace zadeva ne dela.
       Lahko se vklopi z "//ECHO". Ce imas BayCom ali Digicom,vstavi v ukaz
       se stevilko aktivnega porta npr. "//RT 1".
-
-@@[EOF]
+'''

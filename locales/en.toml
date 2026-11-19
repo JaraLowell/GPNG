@@ -1,4 +1,38 @@
-@@
+[meta]
+name = "English"
+
+[setup]
+theme = "Theme Setup"
+prompt = "Remote control prompt"
+remote = "Remote control"
+backup = "Backup text buffers"
+echo = "Echo"
+rx_click = "RX-Click"
+connect_bell = "Connect Bell"
+umlaut = "Umlaut conversion"
+input_columns = "Input columns"
+insert_mon = "InsertMonLine"
+softscroll = "Softscroll"
+beacon = "Beacon parameters"
+language = "System language"
+zoom = "Zoom"
+icons = "System Icons"
+packet_len = "Packet length"
+auto_save = "Code-AutoSave"
+word_wrap = "Word wrapping"
+editor_bak = "Create *.BAK File"
+ref_channel = "Reference channel"
+insert_from_editor = "Insert list from editor"
+file_drawer = "File drawer"
+auto_spy = "Auto Spy"
+spy_auto_ignore = "Spy Auto Ignore"
+max_spy = "Number of spies"
+mheard_clean = "Clear MHeard older than (days)"
+mheard_clear = "Clear MHeard List"
+use = "Use these values"
+
+[help]
+overview = '''
 
   Available Commands:
   //# [Text]
@@ -36,45 +70,47 @@
   //WPrg <filename>
   All commands must begin in the first row and must be completed with a Enter.
   Type "//h <command>" for more details.
+'''
 
-@7+,2
+[help.commands]
+"7+" = '''
 
   //7+ <ON/OFF>
       This command switches 7+ AutoSave on or off. This command may be used
       if you want to send some 7+ files, but the operator is not at his
       station and you are not sure, if he turned 7+ AutoSave on or not.
-
-@7DECODE,7
+'''
+"7DECODE" = '''
 
   //7DECODE <file>
       Joins 7Plus part files already stored in USER. <file> may be a part
       name (README.P01) or the original name (README.TXT). The first part
       supplies the part count. Missing parts are reported; when every part
       is present the original file is written and the parts are deleted.
-
-@ACTIVITY,2
+'''
+ACTIVITY = '''
 
   //Activity
       This command shows the space of time when the sysop finally pressed
       a key or moved the mouse.
-
-@WPRG,2
+'''
+WPRG = '''
 
   //WPrg <filename>
       This command starts the storage of a file in AutoBin mode.
       The AutoBin mode is a simple transfer protocol which contains a CRC
       check. Unfortunately it doesnt't correct errors.
       This AutoBin mode is compatible to THP and SP.
-
-@MAIL,2
+'''
+MAIL = '''
 
   //MAIL
       Prints the mail waiting for your callsign. This is not a file transfer.
       //Read sends a file. A numeric SSID is the same mailbox, so
       NL1STK-2 reads NL1STK. If there is no mail the answer is:
       You have no mail
-
-@SEND,4
+'''
+SEND = '''
 
   //SEND <call>
       The next line is a mail message for that station. A numeric SSID
@@ -83,36 +119,36 @@
       written and the new message is added:
       <from> to <call> at <date> <time>, then the message.
       The answer is: GPNG: Mail send to <call>
-
-@WRITE,1
+'''
+WRITE = '''
 
   //Write <filename>
       This command starts the storage of a text. All text after this command
       will be stored into the file "filename" until you send a Ctrl-Z or
       the command //END.
-
-@VERSION,3
+'''
+VERSION = '''
 
   //VERsion
       Shows the version number of this software.
-
-@USAGE,1
+'''
+USAGE = '''
 
   //Usage [call]
       The command without further parameters shows the actual channel state
       of this station.
       If you add a call to the command, you will get a short information
       about the call, if it's stored in path file of GP.
-
-@PARAMETERS,1
+'''
+PARAMETERS = '''
 
   //PARameters
   //P
       Queries TNC timing parameters (P-Persistence, Slottime, Frack,
       T2, T3, TXDelay, MaxUnack). On WA8DED the values are read live from
       the TNC; otherwise the last known or WA8DED.INI / init[] values.
-
-@CSTATUS,2
+'''
+CSTATUS = '''
 
   //CSTATUS
       Lists only channels that have a connection. The first line is
@@ -121,8 +157,8 @@
       other station. <-- means they called in. --> means this station
       called out.
              Chan   1: NL1STK     <--  NL0MSK
-
-@RUN,3
+'''
+RUN = '''
 
   //RUN <program>
       Runs a program from the EXTERNAL folder and sends what it prints
@@ -148,63 +184,63 @@
       and no new text. A station still connected is told
       "closed run program after timeout".
       One program per channel. It also stops when the link drops.
-
-@RPRG,2
+'''
+RPRG = '''
 
   //RPrg <filename>
       This function sends a file in AutoBin mode. You must first set your
       own program ready to recieve the file in AutoBin mode before sending
       the remote command. 
       The AutoBin mode is compatible to THP and SP.
-
-@READ,1
+'''
+READ = '''
 
   //Read <filename>
       This command sends you a text file. You can get a list of all readable
       files by sending the command "//CATalog".
       Mail is //MAIL, not this file transfer.
-
-@QUIT,1
+'''
+QUIT = '''
 
   //Quit
       This command can be used to terminate the QSO instead of a simple
       hard disconnect. If you use this command, you will get a dismissal text
       before the QSO is disconnected.
-
-@PROMPT,2
+'''
+PROMPT = '''
 
   //PRompt <ON/OFF>
       This command turns on/off the remote prompt. If it's on, the prompt
       will appear, when a remote command is completed to show you the system
       is ready to get the next command.
-
-@NEWS,2
+'''
+NEWS = '''
 
   //NEws
       This command will show you some news if there exist any.
-
-@NAME,1
+'''
+NAME = '''
 
   //Name <name>
       If your name istn't yet stored in the path file of GP, you can use
       this command to add your name to the file. You must use a <SPACE> to
       seperate the name from the command. The name itself can consist of any
       character, including <SPACE>.
-
-@MHEARD,2
+'''
+MHEARD = '''
 
   //MHeard [number]
       This command shows you a list of heard stations. If you append a
       number to the command (seperated by a single <SPACE>), GP will send
       you this number of finally heard stations. The single command without
       a number will show you the last 20 stations.
-
-@INFO,1
+'''
+INFO = '''
 
   //Info
       Shows an information text about this station.
-
-@HELP,1
+'''
+HELP = '''
 
   //Help
       General information:
@@ -216,25 +252,25 @@
       by a single <SPACE>, too.
       A command inclusive parameters must not exceed the length of 80
       characters.
-
-@END,3
+'''
+END = '''
 
   //END
       Aborts the file transfer, which was started by //Write. This command
       can't be used to abort an AutoBin transfer.
-
-@ECHO,1
+'''
+ECHO = '''
 
   //Echo <text>
       This command is a simple echo and sends back the following text.
       Seperate the Text from the command with a <SPACE>.
-
-@DISCONNECT,4
+'''
+DISCONNECT = '''
 
   //DISConnect
       This command terminates the QSO immediately without any dismissal text.
-
-@DIRECTORY,3
+'''
+DIRECTORY = '''
 
   //DIRectory [wildcard]
       This function returns the volume of the user directory. All files
@@ -243,23 +279,23 @@
       You can use wildcards with this command, e.g. "//DIR *.txt". You
       even can use several wildcards seperated by a semicolon.
       e.g. "//DIR *.txt;*.doc"
-
-@DELETE,3
+'''
+DELETE = '''
 
   //DELete <filename>
       This command allows you to delete a file from the user directory.
       You only can delete files, which you have generated by yourself with
       //Write. Other files can only be deleted by the sysop of this station.
-
-@CUT,3
+'''
+CUT = '''
 
   //CUT
       Aborts the file transfer on this channel and returns to chat.
       BIN-RX, or a 7+ capture, sends #ABORT# (#NO# if the BIN file has
       not started). BIN-TX stops. A sender that has already sent file
       bytes also sends #ABORT# so the receiver leaves the file.
-
-@CATALOG,3
+'''
+CATALOG = '''
 
   //CATalog [wildcard]
       This function returns the volume of the user directory. All files
@@ -268,8 +304,8 @@
       You can use wildcards with this command, e.g. "//CAT *.txt". You
       even can use several wildcards seperated by a semicolon.
       e.g. "//CAT *.txt;*.doc"
-
-@N,1
+'''
+N = '''
 
   //<n> [text]
       Where n is a number. Bare //n joins chat on channel n. Everything
@@ -278,8 +314,8 @@
       "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
       Left. With text, //n sends one line only and does not stay in chat
       mode. Target must be a connected TERM channel.
-
-@#,1
+'''
+"#" = '''
 
   //# [text]
       Where # is a number. Bare //# joins chat on channel #. Everything
@@ -288,24 +324,58 @@
       "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
       Left. With text, //# sends one line only and does not stay in chat
       mode. Target must be a connected TERM channel.
-
-@BELL,1
+'''
+BELL = '''
 
   //Bell
       This command activates a bell to wake up the operator. :-)
-
-@LANGUAGE,1
+'''
+LANGUAGE = '''
 
   //Language <language>
-      With this command you can change the language of the remote messages.
+      Changes the UI and remote help language (ISO codes such as en, de, nl).
       A call without parameters returns a list of all supported languages.
-
-@RTT,2
+'''
+RTT = '''
 
   //RTt <portnr>
       This command calculates the round trip time between our stations.
       Your program must be able to execute the remote command "//Echo",
       otherwise this command will not work. If you use BayCom or Digicom,
       add the number of the actual port to the command, e.g. "//RT 1".
+'''
 
-@@[EOF]
+[help.prefix]
+"#" = 1
+"7+" = 2
+"7DECODE" = 7
+ACTIVITY = 2
+BELL = 1
+CATALOG = 3
+CSTATUS = 2
+CUT = 3
+DELETE = 3
+DIRECTORY = 3
+DISCONNECT = 4
+ECHO = 1
+END = 3
+HELP = 1
+INFO = 1
+LANGUAGE = 1
+MAIL = 2
+MHEARD = 2
+N = 1
+NAME = 1
+NEWS = 2
+PARAMETERS = 1
+PROMPT = 2
+QUIT = 1
+READ = 1
+RPRG = 2
+RTT = 2
+RUN = 3
+SEND = 4
+USAGE = 1
+VERSION = 3
+WPRG = 2
+WRITE = 1

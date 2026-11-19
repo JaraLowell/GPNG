@@ -7,6 +7,7 @@ pub mod bbs;
 pub mod cipher;
 pub mod config;
 pub mod gpw;
+pub mod i18n;
 pub mod journal;
 pub mod names;
 pub mod paths;

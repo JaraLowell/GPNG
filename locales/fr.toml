@@ -1,4 +1,8 @@
-@@
+[meta]
+name = "French"
+
+[help]
+overview = '''
    //<n> <texte>         : Envoie un texte au canal <n>
    //7+ <ON/OFF>         : Commute 7+ AutoSave ON ou OFF
    //Bell                : Appelle le Sysop par un coup de sonnette
@@ -13,8 +17,8 @@
    //Info                : Envoie des infos au sujet de cette station
    //Language <langue>   : Change la langue des messages 
    //MHeard [nombre]     : Affiche la liste des stations entendues
-   //MHeard <indicatif>  : Affiche l'heure … laquelle <indicatif> a ‚t‚ entendu
-   //Name <pr‚nom>       : Memorise votre nom s'il n'est pas encore connu
+   //MHeard <indicatif>  : Affiche l'heure Ã  laquelle <indicatif> a Ã©tÃ© entendu
+   //Name <prÃ©nom>       : Memorise votre nom s'il n'est pas encore connu
    //NEws                : Affiche le menu (s'il existe)
    //PARameter           : Envoie les parametres du syteme
    //PRompt <ON/OFF>     : Commute le prompt de commande a distance
@@ -32,34 +36,36 @@
 	  debut de ligne et se terminer par un CR.
 
    Pour plus de details tapez "//H <cmd>". (<cmd>=commandes ci dessus sans //)
+'''
 
-@7+,2
+[help.commands]
+"7+" = '''
 
    //7+ <ON/OFF>
        Cette commande commute 7+ AutoSave ON ou OFF. Cette commande est
-       utilis‚e pour envoyer des fichiers 7+
-
-@WPRG,2
+       utilisÃ©e pour envoyer des fichiers 7+
+'''
+WPRG = '''
    
    //WPrg <fichier>
       Cette commande lance la memorisation d'un fichier en mode Autobin.
       Le mode AutoBin est un simple protocole de transfert qui contient un 
       controle de CRC. Malheureusement, il ne corrige pas les erreurs.
       Ce mode AutoBin est compatible avec THP et SP.
-
-@WRITE,1
+'''
+WRITE = '''
 
    //Write <fichier>
-      Cette commande lance la memorisation d'un texte. Tout le texte aprŠs 
+      Cette commande lance la memorisation d'un texte. Tout le texte aprÃ¨s 
       cette commande sera memorise dans le fichier [nom de fichier" jusqu'a 
       ce que vous envoyiez un Ctrl-Z ou la commande //END.
-
-@VERSION,3
+'''
+VERSION = '''
 
     //VERsion
        Affiche le numero de version de ce programme.
-
-@USAGE,1
+'''
+USAGE = '''
 
     //Usage [indicatif]
        Cette commande sans autres parametres affiche l'etat du canal actuel ou 
@@ -67,8 +73,8 @@
        Si vous ajoutez un indicatif a cette commande, vous aurez une courte 
        information au sujet de cet indicatif s'il est memorise dans le fichier 
        des chemins de GP.
-
-@RUN,3
+'''
+RUN = '''
 
     //RUN <programme>
        Cette fonction lance un programme externe et en envoie le resultat
@@ -77,8 +83,8 @@
        ou ils ne fonctionneront pas avec GP.
        Le parametre "?" vous renverra une liste des programmes disponibles. 
 
-       Il y a deux types de programmes qui peuvent ˆtre lanc‚s en commande 
-       … distance :
+       Il y a deux types de programmes qui peuvent Ãªtre lancÃ©s en commande 
+       Ã  distance :
 
        a)  Les programmes standards
 	 L'appel de ces programmes comporte cinq etapes :
@@ -93,54 +99,55 @@
        considerer est d'utiliser la sortie standard du DOS pour l'ecran.
 
        b) Les programmes GPRI
-	 Depuis la version 1.5, GP comporte une interface sp‚ciale appell‚e 
+	 Depuis la version 1.5, GP comporte une interface spÃ©ciale appellÃ©e 
 	 GPRI (Graphic Packet Remote Interface).  Cette interface permet  une 
-	 communication interactive entre le programme command‚ … distance 
+	 communication interactive entre le programme commandÃ© Ã  distance 
 	 et l'utilisateur. Les programmes GPRI fonctionnent en quelque sorte 
-	 en multitache et admettent ainsi plusieurs utilisateurs en mˆme temps.
-
-@RPRG,2
+	 en multitache et admettent ainsi plusieurs utilisateurs en mÃªme temps.
+'''
+RPRG = '''
 
     //RPrg <fichier>
        Cette fonction envoie un fichier en mode "Autobin". Vous devez d'abord 
        preparer votre propre programme pour la reception en mode "Autobin" 
        avant d'envoyer la commande.
        Le mode "AutoBin" est compatible avec THP et SP.
-
-@READ,1
+'''
+READ = '''
 
     //Read <fichier>
        Cette commande vous envoie un fichier texte. Vous pouvez obtenir une 
        liste des fichiers que vous pouvez lire en lancant la commande 
        "//CATalog".
-
-@QUIT,1
+'''
+QUIT = '''
 
     //Quit
        Cette commande est employee pour terminer le QSO plutot que par une 
        simple deconnection. Vous recevrez alors un message de cloture de 
        QSO avant la deconnection et vous retournerez a l'etape precedente 
        de la chaine de connection.
-
-@PAR,3
+'''
+PARAMETERS = '''
 
    //PAR
        Cette commande vous envoie les parametres du system.
  
-@PROMPT,2
+'''
+PROMPT = '''
 
     //PRompt <ON/OFF>
        Cette commande enclenche ou declenche le prompt de commande a distance 
        S'il est "ON", le prompt apparaitra apres qu'une commande ait ete 
        accomplie pour vous montrer qu'elle a ete executee et que le systeme 
        est pret a executer la suivante.
-
-@NEWS,2
+'''
+NEWS = '''
 
     //NEws
        Cette commande affiche les nouvelles s'il y en a.
-
-@NAME,1
+'''
+NAME = '''
 
     //Name <nom>
        Si votre nom n'est pas encore memorise dans le fichier des chemins 
@@ -149,8 +156,8 @@
        Le nom peut, par contre, comporter n'importe quel caractere y compris 
        des espaces. Le chemin pour arriver jusqu'a vous sera alors disponible 
        aux autres utilisateurs et sera acessible par la commande "//Usage".
-
-@MHEARD,2
+'''
+MHEARD = '''
 
     //MHeard [nombre]
        Cette commande affiche la liste des stations entendues. Si vous 
@@ -158,13 +165,13 @@
        GP vous limitera la liste a ce nombre, en commencant par la 
        derniere station entendue. La commande seule donnne les vingt 
        dernieres stations.
-
-@INFO,1
+'''
+INFO = '''
 
     //Info
 	   Affiche un texte d'information au sujet de cette station.
-
-@HELP,1
+'''
+HELP = '''
 
     //Help
 	   Informations generales :
@@ -175,28 +182,28 @@
 	   Si une commande comporte plusieurs parametres, ils doivent tous  
 	   etre separes par des espaces. L'ensemble ne peut neanmoins compter 
 	   plus de 80 caracteres.
-
-@END,3
+'''
+END = '''
 
     //END
 	   Arrete le transfert d'un fichier qui a ete lance par //Write. 
 	   Cette commande ne peut etre utilisee pour arreter le transfert d'un 
 	   fichier Autobin.
-
-@ECHO,1
+'''
+ECHO = '''
 
     //Echo <texte>
        Cette commande est un simple echo et envoie en retour le texte qui 
        est emis. Le texte doit etre separe de la commande par un espace.
-
-@DISCONNECT,4
+'''
+DISCONNECT = '''
 
     //DISConnect
        Cette commande termine un QSO immediatement sans l'envoi d'un texte
        de cloture de QSO et sans retourner a l'etape precedente de la chaine 
        de connection.
-
-@DIRECTORY,3
+'''
+DIRECTORY = '''
 
     //DIRectory [joker]
        Cette fonction renvoie le contenu du directory utilisateur. 
@@ -206,22 +213,22 @@
        Par ex. : "//DIR *.txt". Vous pouvez meme utiliser plusieurs 
        jokers en les separant par un point-virgule. Par ex. : 
        "//DIR *.txt;*.doc". Elle est identique a //CAT.
-
-@DELETE,3
+'''
+DELETE = '''
 
     //DELete <fichier>
        Cette commande vou permet d'effacer un fichier du directory 
        utilisateur. Vous ne pouvez effacer que des fichiers que vous 
        avez ecrits vous-meme avec //Write. Les autres fichiers ne peuvent 
        etre effaces que par le sysop de cette station.
-
-@CUT,3
+'''
+CUT = '''
 
     //CUT
        Si vous avez lance le transfert d'un fichier avec //Read, vous 
        pouvez l'arreter avec cette commande.
-
-@CATALOG,3
+'''
+CATALOG = '''
 
     //CATalog [joker]
        Cette fonction renvoie le contenu du directory utilisateur. 
@@ -231,20 +238,20 @@
        Vous pouvez meme utiliser plusieurs jokers en les separant par un 
        point-virgule.
        Par ex. : "//CAT *.txt;*.doc". Elle est identique a "//DIR"
-
-@BELL,1
+'''
+BELL = '''
 
     //Bell
        Cette commande active une sonnerie pour prevenir le sysop.
-
-@LANGUAGE,1
+'''
+LANGUAGE = '''
 
     //Language <langue>
        Avec cette commande, vous pouvez choisir la langue des messages qui 
        vous sont envoyes. Une commande sans parametres provoque l'envoi 
        de la liste des langues disponibles.
-
-@RTT,2
+'''
+RTT = '''
 
     //RTt <No de port>
        Cette commande calcule le temps du QSO entre nos deux stations. 
@@ -252,5 +259,4 @@
        "//Echo", Autrement, elle ne fonctionnera pas. Si vous utilisez BayCom 
        ou Digicom, ajoutez le numero du canal du port actuel a la commande, 
        par ex. : "//RT 1".
-
-@@[EOF]
+'''

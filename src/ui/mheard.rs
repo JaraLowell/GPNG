@@ -1,9 +1,9 @@
 //! MHeard — stations heard (APRS / AX.25 UI), persisted as JSON.
 //!
-//! A row is date, time, from, to, a five-column packet count (`30`, `1.3k`,
-//! `26m`), and the last message (60 characters, or 57 plus `...`).
-//! When TFPCX has more than one radio port, the port number sits between
-//! the time and the call. Older `MHEARD.json` files omit `packets`,
+//! The pane is a sheet: Date, Time, Port (when TFPCX has more than one
+//! radio), From, To, Packets, Last Payload, and Via. Packet counts stay
+//! short (`30`, `1.3k`, `26m`). The payload is kept in full; the sheet
+//! clips it for the cell. Older `MHEARD.json` files omit `packets`,
 //! `last_msg`, and `port`; those load as one packet, an empty message,
 //! and no port.
 //!
@@ -285,7 +285,7 @@ fn pad_call(s: &str) -> String {
 
 /// Packet count in at most five characters: `30`, `1.3k`, `26m`.
 /// The returned field is right-aligned to five columns.
-fn format_packet_count(n: u64) -> String {
+pub fn format_packet_count(n: u64) -> String {
     let body = compact_count(n);
     format!("{body:>5}")
 }
@@ -340,7 +340,7 @@ fn normalize_last_msg(raw: &str) -> String {
 }
 
 /// At most 60 characters. Longer text keeps 57 and ends with `...`.
-fn clip_last_msg(msg: &str) -> String {
+pub fn clip_last_msg(msg: &str) -> String {
     let n = msg.chars().count();
     if n <= 60 {
         msg.to_string()

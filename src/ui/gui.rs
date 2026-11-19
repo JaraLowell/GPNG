@@ -50,7 +50,6 @@ use crate::remote::commands::{
     NOT_RECOGNIZED, REMOTE_OFF,
 };
 use crate::remote::external;
-use crate::remote::gph;
 use crate::remote::gpi;
 use crate::remote::macros::{self, MacroContext};
 use crate::remote::mail::{self, MailAsk};
@@ -81,7 +80,7 @@ use super::icons::{
     IconEdit, IconLibrary, ICON_HEIGHT, ICON_SLOT_LABELS, ICON_WIDTH, VGA16_RGB,
 };
 use super::layout::ActivePane;
-use super::mheard::MheardList;
+use super::mheard::{self, MheardList};
 use super::padlog::{self, PadKind, TextPad};
 use super::retro;
 use super::session::{
@@ -4754,7 +4753,7 @@ impl GpGuiApp {
                 return;
             }
             RemoteAction::Help => {
-                let text = gph::help_for(&self.cfg.session.remote_language, args);
+                let text = crate::i18n::help_for(&self.cfg.session.language, args);
                 let topic = args.trim();
                 let title = if topic.is_empty() {
                     "Available Help commands".into()
@@ -5204,15 +5203,16 @@ impl GpGuiApp {
     fn remote_language(&mut self, args: &str) {
         let args = args.trim();
         if args.is_empty() {
-            let text = gph::language_list();
+            let text = crate::i18n::language_list();
             self.status = "languages".into();
             self.send_report_block("Available languages", &text);
             return;
         }
-        match gph::resolve_language(args) {
+        match crate::i18n::resolve_language(args) {
             Some((code, label)) => {
-                self.cfg.session.remote_language = code.to_string();
-                if let Err(err) = self.cfg.persist_remote_language(&self.config_path) {
+                self.cfg.session.language = code.to_string();
+                crate::i18n::set_language(code);
+                if let Err(err) = self.cfg.persist_language(&self.config_path) {
                     self.status = format!("language: {err}");
                 } else {
                     self.status = format!("Language {label}");
@@ -5220,7 +5220,7 @@ impl GpGuiApp {
                 self.send_report(&format!("Language {label}"));
             }
             None => {
-                let text = gph::language_list();
+                let text = crate::i18n::language_list();
                 self.status = format!("Unknown language {args}");
                 self.send_report_block(&format!("Unknown language {args}"), &text);
             }
@@ -5993,7 +5993,7 @@ impl GpGuiApp {
             RowId::InputColumns => s.input_columns.to_string(),
             RowId::InsertMon => on_off(s.insert_mon_line).into(),
             RowId::Softscroll => on_off(self.session.softscroll_lit(pane)).into(),
-            RowId::Language => s.remote_language.clone(),
+            RowId::Language => s.language.clone(),
             RowId::Zoom => on_off(zoom_bold(s.zoom)).into(),
             RowId::Icons => icon_file_label(&s.icon_file),
             RowId::PacketLen => self.cfg.buffers.packet_payload.to_string(),
@@ -6049,8 +6049,9 @@ impl GpGuiApp {
                 self.session.toggle_softscroll(self.setup_pane);
             }
             RowId::Language => {
-                self.cfg.session.remote_language =
-                    setup::next_name(setup::LANGUAGES, &self.cfg.session.remote_language, step);
+                self.cfg.session.language =
+                    setup::next_name(setup::LANGUAGES, &self.cfg.session.language, step);
+                crate::i18n::set_language(&self.cfg.session.language);
             }
             RowId::Zoom => self.toggle_zoom(),
             RowId::PacketLen => {
@@ -7144,13 +7145,14 @@ impl GpGuiApp {
                         ui.spacing_mut().item_spacing.y = 4.0;
                         for (i, row) in rows.iter().enumerate() {
                             let value = self.setup_value(row.id);
+                            let label = row.id.label();
                             let tab = match row.kind {
                                 RowKind::Submenu | RowKind::Action => retro::TAB_OPEN,
                                 _ => retro::TAB_VALUE,
                             };
                             let resp = retro::entry(
                                 ui,
-                                row.id.label(),
+                                &label,
                                 &value,
                                 tab,
                                 i == cursor,
@@ -7292,13 +7294,14 @@ impl GpGuiApp {
                             continue;
                         }
                         let value = self.setup_value(row.id);
+                        let label = row.id.label();
                         let tab = match row.kind {
                             RowKind::Submenu | RowKind::Action => retro::TAB_OPEN,
                             _ => retro::TAB_VALUE,
                         };
                         let resp = retro::entry(
                             ui,
-                            row.id.label(),
+                            &label,
                             &value,
                             tab,
                             i == cursor,
@@ -11247,7 +11250,7 @@ impl GpGuiApp {
         self.note_split_right_click(ui, rect);
     }
 
-    /// Clickable MHeard list (row select → SPY confirm).
+    /// Clickable MHeard sheet (row select → SPY confirm).
     fn mheard_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
         let bg = self.mh_bg;
         let text_fg = self.mh_fg;
@@ -11260,22 +11263,23 @@ impl GpGuiApp {
         let open_at_top = self.mheard_scroll_top;
         self.mheard_scroll_top = false;
         let show_port = self.mheard_shows_port();
-        let lines: Vec<(usize, String)> = self
+        let rows: Vec<(usize, HeardSheetRow)> = self
             .mheard
             .entries
             .iter()
             .enumerate()
             .filter(|(_, e)| e.listed())
-            .map(|(i, e)| (i, e.format_line(show_port)))
+            .map(|(i, e)| (i, HeardSheetRow::from_station(e)))
             .collect();
         let mut clicked: Option<usize> = None;
-        let row_font = FontId::monospace(14.0);
+        let row_font = FontId::monospace(13.0);
+        let head_font = FontId::monospace(12.0);
+        let rule = Stroke::new(1.0, Color32::from_rgb(text_fg.r() / 3, text_fg.g() / 3, text_fg.b() / 3));
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
             let avail = ui.available_size();
             ui.set_min_size(avail);
             ui.painter().rect_filled(rect, 0.0, bg);
-            // No stroke: a right/bottom line sits on the monitor blue and shows through.
             Frame::none().fill(bg).inner_margin(0.0).show(ui, |ui| {
                 let full = ui.max_rect();
                 ui.set_min_size(full.size());
@@ -11287,10 +11291,10 @@ impl GpGuiApp {
                 let text_outer =
                     Rect::from_min_max(full.min, Pos2::new(full.right() - bar_w, full.bottom()));
                 let text = Rect::from_min_max(
-                    Pos2::new(text_outer.left() + 6.0, text_outer.top() + 4.0),
+                    Pos2::new(text_outer.left() + 4.0, text_outer.top() + 2.0),
                     Pos2::new(
-                        (text_outer.right() - 4.0).max(text_outer.left() + 8.0),
-                        (text_outer.bottom() - 4.0).max(text_outer.top() + 8.0),
+                        (text_outer.right() - 2.0).max(text_outer.left() + 8.0),
+                        (text_outer.bottom() - 2.0).max(text_outer.top() + 8.0),
                     ),
                 );
                 let bar_rect = Rect::from_min_max(
@@ -11298,6 +11302,9 @@ impl GpGuiApp {
                     full.right_bottom(),
                 );
                 let row_h = ui.fonts(|f| f.row_height(&row_font)).max(1.0) + 2.0;
+                let head_h = ui.fonts(|f| f.row_height(&head_font)).max(1.0) + 4.0;
+                let cell_w = ui.fonts(|f| f.glyph_width(&row_font, 'M')).max(1.0);
+                let cols = mheard_sheet_cols(text.width(), show_port, cell_w);
 
                 let mut snap = None;
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text), |ui| {
@@ -11309,73 +11316,72 @@ impl GpGuiApp {
                                 .strong(),
                         );
                     }
-                    // Wide call lines still shift-scroll. The visible bar is the DOS one.
-                    let mut list = egui::ScrollArea::both()
-                        .id_salt("mheard_list")
-                        .auto_shrink([false, false])
-                        .scroll_bar_visibility(
-                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-                        );
-                    if open_at_top {
-                        list = list.vertical_scroll_offset(0.0);
-                    }
-                    let out = list.show(ui, |ui| {
-                        // Setup (and every other dialog) widens the global
-                        // widget gap. This list must keep the normal 3px
-                        // pitch, or the station rows spread when it opens.
-                        ui.spacing_mut().item_spacing.y = 3.0;
-                        if nudge != 0.0 {
-                            ui.scroll_with_delta(Vec2::new(0.0, nudge));
-                        }
-                        if lines.is_empty() {
-                            ui.label(
-                                RichText::new(
-                                    "No stations heard yet — APRS/AX.25 UI frames appear here.",
-                                )
-                                .color(text_fg)
-                                .font(row_font.clone()),
+                    let header = Rect::from_min_size(ui.cursor().min, Vec2::new(text.width(), head_h));
+                    ui.allocate_rect(header, Sense::hover());
+                    paint_mheard_sheet_header(ui.painter(), header, &cols, &head_font, text_fg, bg, rule);
+
+                    let body = Rect::from_min_max(
+                        Pos2::new(text.left(), header.bottom()),
+                        text.right_bottom(),
+                    );
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body), |ui| {
+                        ui.set_min_size(body.size());
+                        let mut list = egui::ScrollArea::vertical()
+                            .id_salt("mheard_list")
+                            .auto_shrink([false, false])
+                            .scroll_bar_visibility(
+                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
                             );
-                        } else {
-                            for (i, line) in &lines {
-                                let is_sel = selected == Some(*i);
-                                let fill = if is_sel {
-                                    text_inv
-                                } else {
-                                    Color32::TRANSPARENT
-                                };
-                                let fg = if is_sel { bg } else { text_fg };
-                                let resp = egui::Frame::none()
-                                    .fill(fill)
-                                    .inner_margin(egui::Margin::symmetric(4.0, 1.0))
-                                    .show(ui, |ui| {
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(line)
-                                                    .color(fg)
-                                                    .font(row_font.clone()),
-                                            )
-                                            .wrap_mode(TextWrapMode::Extend)
-                                            .sense(Sense::click()),
-                                        )
-                                    })
-                                    .response;
-                                let hit = ui.interact(
-                                    resp.rect,
-                                    ui.id().with(("mh_row", *i)),
-                                    Sense::click(),
+                        if open_at_top {
+                            list = list.vertical_scroll_offset(0.0);
+                        }
+                        let out = list.show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            if nudge != 0.0 {
+                                ui.scroll_with_delta(Vec2::new(0.0, nudge));
+                            }
+                            if rows.is_empty() {
+                                ui.label(
+                                    RichText::new(
+                                        "No stations heard yet — APRS/AX.25 UI frames appear here.",
+                                    )
+                                    .color(text_fg)
+                                    .font(row_font.clone()),
                                 );
-                                if hit.clicked() || resp.clicked() {
-                                    clicked = Some(*i);
+                            } else {
+                                for (i, row) in &rows {
+                                    let is_sel = selected == Some(*i);
+                                    let fill = if is_sel {
+                                        text_inv
+                                    } else {
+                                        Color32::TRANSPARENT
+                                    };
+                                    let fg = if is_sel { bg } else { text_fg };
+                                    let (row_rect, resp) =
+                                        ui.allocate_exact_size(Vec2::new(body.width(), row_h), Sense::click());
+                                    ui.painter().rect_filled(row_rect, 0.0, fill);
+                                    paint_mheard_sheet_row(
+                                        ui.painter(),
+                                        row_rect,
+                                        &cols,
+                                        row,
+                                        &row_font,
+                                        fg,
+                                        rule,
+                                    );
+                                    if resp.clicked() {
+                                        clicked = Some(*i);
+                                    }
                                 }
                             }
-                        }
+                        });
+                        snap = Some((
+                            out.id,
+                            out.state,
+                            out.content_size.y,
+                            out.inner_rect.height(),
+                        ));
                     });
-                    snap = Some((
-                        out.id,
-                        out.state,
-                        out.content_size.y,
-                        out.inner_rect.height(),
-                    ));
                 });
                 if show_bar && bar_rect.width() > 4.0 {
                     if let Some((sid, mut state, content_h, view_h)) = snap {
@@ -14016,6 +14022,196 @@ fn com_badge(port: &str) -> String {
         "COM".into()
     } else {
         port.to_string()
+    }
+}
+
+struct HeardSheetRow {
+    date: String,
+    time: String,
+    port: String,
+    from: String,
+    to: String,
+    packets: String,
+    payload: String,
+    via: String,
+}
+
+impl HeardSheetRow {
+    fn from_station(e: &super::mheard::HeardStation) -> Self {
+        Self {
+            date: e.date.clone(),
+            time: e.time.clone(),
+            port: match e.port {
+                Some(port) if port > 0 => port.to_string(),
+                _ => String::new(),
+            },
+            from: e.call.clone(),
+            to: e.to.clone(),
+            packets: mheard::format_packet_count(e.packets),
+            payload: mheard::clip_last_msg(&e.last_msg),
+            via: e.via.clone(),
+        }
+    }
+
+    fn cell(&self, key: &str) -> &str {
+        match key {
+            "date" => &self.date,
+            "time" => &self.time,
+            "port" => &self.port,
+            "from" => &self.from,
+            "to" => &self.to,
+            "packets" => &self.packets,
+            "payload" => &self.payload,
+            "via" => &self.via,
+            _ => "",
+        }
+    }
+}
+
+struct HeardSheetCol {
+    key: &'static str,
+    title: &'static str,
+    width: f32,
+}
+
+fn mheard_sheet_cols(total: f32, show_port: bool, cell_w: f32) -> Vec<HeardSheetCol> {
+    // Pad each fixed column so the full value fits: date, time, call, packet count.
+    // Last Payload and Via take the remaining width and clip only there.
+    let pad = 10.0;
+    let cols_chars: &[(&str, &str, f32)] = if show_port {
+        &[
+            ("date", "Date", 10.0),
+            ("time", "Time", 5.0),
+            ("port", "fm", 2.0),
+            ("from", "From", 9.0),
+            ("to", "To", 9.0),
+            ("packets", "Pckts", 5.0),
+        ]
+    } else {
+        &[
+            ("date", "Date", 10.0),
+            ("time", "Time", 5.0),
+            ("from", "From", 9.0),
+            ("to", "To", 9.0),
+            ("packets", "Pckts", 5.0),
+        ]
+    };
+    let mut fixed: Vec<(&str, &str, f32)> = cols_chars
+        .iter()
+        .map(|(key, title, chars)| {
+            let title_w = title.len() as f32 * cell_w + pad;
+            let body_w = *chars * cell_w + pad;
+            (*key, *title, title_w.max(body_w))
+        })
+        .collect();
+    let used: f32 = fixed.iter().map(|c| c.2).sum();
+    let rest = (total - used).max(cell_w * 16.0);
+    let payload_w = (rest * 0.68).max(cell_w * 10.0);
+    let via_w = (rest - payload_w).max(cell_w * 6.0);
+    fixed.push(("payload", "Last Payload", payload_w));
+    fixed.push(("via", "Via", via_w));
+    fixed
+        .into_iter()
+        .map(|(key, title, width)| HeardSheetCol { key, title, width })
+        .collect()
+}
+
+fn paint_mheard_sheet_header(
+    painter: &egui::Painter,
+    rect: Rect,
+    cols: &[HeardSheetCol],
+    font: &FontId,
+    fg: Color32,
+    bg: Color32,
+    rule: Stroke,
+) {
+    painter.rect_filled(rect, 0.0, mix_rgb(bg, fg, 0.12));
+    let mut x = rect.left();
+    for (i, col) in cols.iter().enumerate() {
+        let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(col.width, rect.height()));
+        painter.text(
+            Pos2::new(cell.left() + 4.0, cell.center().y),
+            egui::Align2::LEFT_CENTER,
+            col.title,
+            font.clone(),
+            fg,
+        );
+        if i + 1 < cols.len() {
+            let edge = cell.right();
+            painter.line_segment(
+                [Pos2::new(edge, rect.top() + 1.0), Pos2::new(edge, rect.bottom() - 1.0)],
+                rule,
+            );
+        }
+        x += col.width;
+    }
+    painter.line_segment([rect.left_bottom(), rect.right_bottom()], rule);
+}
+
+fn paint_mheard_sheet_row(
+    painter: &egui::Painter,
+    rect: Rect,
+    cols: &[HeardSheetCol],
+    row: &HeardSheetRow,
+    font: &FontId,
+    fg: Color32,
+    rule: Stroke,
+) {
+    let mut x = rect.left();
+    for (i, col) in cols.iter().enumerate() {
+        let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(col.width, rect.height()));
+        let raw = row.cell(col.key);
+        let clip = matches!(col.key, "payload" | "via");
+        let text = if clip {
+            clip_sheet_cell(raw, col.width, font, painter)
+        } else {
+            raw.to_string()
+        };
+        let align = if col.key == "packets" || col.key == "port" {
+            egui::Align2::RIGHT_CENTER
+        } else {
+            egui::Align2::LEFT_CENTER
+        };
+        let pos = if col.key == "packets" || col.key == "port" {
+            Pos2::new(cell.right() - 4.0, cell.center().y)
+        } else {
+            Pos2::new(cell.left() + 4.0, cell.center().y)
+        };
+        painter.text(pos, align, text, font.clone(), fg);
+        if i + 1 < cols.len() {
+            let edge = cell.right();
+            painter.line_segment(
+                [Pos2::new(edge, rect.top()), Pos2::new(edge, rect.bottom())],
+                rule,
+            );
+        }
+        x += col.width;
+    }
+}
+
+fn clip_sheet_cell(text: &str, width: f32, font: &FontId, painter: &egui::Painter) -> String {
+    let inner = (width - 8.0).max(8.0);
+    if painter.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE).size().x <= inner {
+        return text.to_string();
+    }
+    let ellipsis = "...";
+    let mut out = String::new();
+    for ch in text.chars() {
+        let next = format!("{out}{ch}{ellipsis}");
+        if painter
+            .layout_no_wrap(next, font.clone(), Color32::WHITE)
+            .size()
+            .x
+            > inner
+        {
+            break;
+        }
+        out.push(ch);
+    }
+    if out.is_empty() {
+        ellipsis.to_string()
+    } else {
+        format!("{out}{ellipsis}")
     }
 }
 

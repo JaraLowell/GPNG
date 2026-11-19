@@ -161,6 +161,8 @@ impl Config {
 
         cfg.capture_own_calls();
         cfg.normalize_spy_calls();
+        cfg.session.language = crate::i18n::migrate_language(&cfg.session.language);
+        crate::i18n::set_language(&cfg.session.language);
         // Relative dirs follow Config.toml, so a release copy works even when
         // the process is started with a different working directory.
         let base = path
@@ -273,8 +275,8 @@ impl Config {
                 "ZOOM" => self.session.zoom = parse_u32(value, "ZOOM")?,
                 "PROMPT" => self.session.prompt = value.to_string(),
                 "NONAME" => self.session.noname = value.to_string(),
-                "REMOTELANGUAGE" => {
-                    self.session.remote_language = value.to_string();
+                "REMOTELANGUAGE" | "LANGUAGE" => {
+                    self.session.language = crate::i18n::migrate_language(value);
                 }
                 "SECURITY" => self.session.security = parse_boolish(value),
                 "REMOTE" => self.session.remote = split_csv(value),
@@ -560,10 +562,10 @@ impl Config {
         upsert_toml_section(path, "session.chrome", &body)
     }
 
-    /// Keep `//Language` across a restart (`remote_language` in Config.toml).
-    pub fn persist_remote_language(&self, path: impl AsRef<Path>) -> Result<(), String> {
-        let value = toml_string(&self.session.remote_language);
-        upsert_toml_key(path.as_ref(), None, "remote_language", &value)
+    /// Keep `//Language` / Setup language across a restart (`language` in Config.toml).
+    pub fn persist_language(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let value = toml_string(&self.session.language);
+        upsert_toml_key(path.as_ref(), None, "language", &value)
     }
 
     /// Ensure `spy_calls` has 10 entries; rewrite the TOML array.
@@ -612,12 +614,7 @@ impl Config {
             if s.insert_mon_line { "true" } else { "false" },
         )?;
         put_key(path, "session", "prompt", &toml_string(&s.prompt))?;
-        put_key(
-            path,
-            "session",
-            "remote_language",
-            &toml_string(&s.remote_language),
-        )?;
+        put_key(path, "session", "language", &toml_string(&s.language))?;
         put_key(path, "session", "zoom", &s.zoom.to_string())?;
         put_key(path, "session", "icon_file", &toml_string(&s.icon_file))?;
         put_key(
@@ -1094,7 +1091,10 @@ pub struct SessionConfig {
     pub zoom: u32,
     pub prompt: String,
     pub noname: String,
-    pub remote_language: String,
+    /// ISO 639-1 UI / remote-help language (`en`, `de`, …). Legacy
+    /// `remote_language` / DOS tokens are migrated on load.
+    #[serde(default = "default_language", alias = "remote_language")]
+    pub language: String,
     /// Icon library file name. Empty or `ICONS.GP` is `data/ICONS.GP`.
     /// Any other name is a file in `data/ICONS`.
     #[serde(default)]
@@ -1142,6 +1142,10 @@ fn default_spy_calls() -> Vec<String> {
     vec![String::new(); 10]
 }
 
+fn default_language() -> String {
+    "en".into()
+}
+
 fn default_allow_color_ansi() -> bool {
     true
 }
@@ -1162,7 +1166,7 @@ impl Default for SessionConfig {
             zoom: 1,
             prompt: "%c to %y>".into(),
             noname: "%c".into(),
-            remote_language: "EN".into(),
+            language: default_language(),
             icon_file: String::new(),
             log: false,
             utc_offset_min: 0,

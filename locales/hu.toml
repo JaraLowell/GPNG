@@ -1,0 +1,271 @@
+[meta]
+name = "Hungarian"
+
+[help]
+overview = '''
+
+  A GraficPacket V1.60 verziójának távvezérelhetö utasításai:
+  -----------------------------------------------------------
+
+  //<n> <szöveg>         : A <szöveg> átküldése az <n> csatornára.
+  //7+ <on/off>          : Automatikus 7+ file mentés be/ki kapcsolása.
+  //Activity             : Az utolsó sysop-parancs kiadása óta eltelt idö.
+  //Bell                 : Csengetés a kezelönek.
+  //CATalog              : Lemezlista lekérdezése.
+  //CUT                  : A //Read-el indított fileátvitel leállítása.
+  //DELete               : A //Write-al megnyitott file törlése.
+  //DIRectory            : (Lásd: //CATalog).
+  //DISConnect           : Összeköttetés lebontásának kérése.
+  //Echo <szöveg>        : Az elküldött <szöveg>-et visszaküldi.
+  //END                  : A //Write-al indított fileátvitel leállítasa.
+  //Help [parancs]       : H segitség kérése. (H [parancs] esetén, a
+                           megnevezett parancsot ismerteti).
+  //Info                 : Az állomás-informació lekérdezése.
+  //Language [prefix]    : A kommunikációs nyelv lekérdezése és kiválasztása.
+                           (Választhatsz: DL [német], G [angol], F [francia},
+                            HA [magyar] és HG [magyar ékezetes] komumikációs
+                            nyelvek között.)
+  //MHeard [n]           : A heard-lista lekérdezése. (MH [szám] megadása
+                           esetén, az utolsó [n] darabot küldi ki).
+  //Name <Név>           : Keresztnév megadása és feliratkozás a path listába.
+  //NEws                 : Az aktuális informaciós file lekérdezése.
+  //PRompt <ON/OFF>      : Promt <ki/be> kapcsolása.
+  //Quit                 : A QSO-t lebontja, ha mindent visszaigazolt.
+  //Read <filenév.kit>   : A <filenév.kit> címü text-file lekérdezése.
+  //RIng                 : Csengetés a kezelönek.(U.a.m. //Bell).
+  //RPrg <filenév.kit>   : A <filenév.kit> címü bináris-file lehívása,
+                           AutoBin filetransfer-el.
+  //RTt <portszám>       : Az állomás elérési idejét küldi vissza sec.-ban.
+  //RUN <prgnev.kit>     : Program indítása az EXTERNAL dir-ból.
+  //Usage [call]         : A csatornák állapotának lekérdezése.
+  //VERsion              : Az alkalmazott software verziójának lekérdezése.
+  //Write <filenév.kit>  : A <név.kit> címü text-file küldése
+  //WPrg <filenév.kit>   : Bináris file küldése AutoBin filetransfer-el.
+
+  Ha egy parancs részletesebb ismertetésére van szükséged, akkor
+  azt a //H [parancs] megadásával kérheted.
+  Például: "//h wp" megadására a //WPrg parancs ismertetését kapod meg.
+'''
+
+[help.commands]
+"7+" = '''
+
+  //7+ <ON/OFF>
+      Ha 7+ programmal darabolt file-t akarsz kûldeni, akkor ezzel a parancs-
+      csal be/ki kapcsolhatod a 7+ filek automatikus mentését.
+      Ha be van kapcsolva (//7+ ON), akkor nem kell egyebet tenned, mint
+      a *.7pl, *.p?? *.err, *.cor, vagy *.c?? kitejesztésü file-kat folya=
+      matosan adasba kûldeni.
+      A program a "go.....stop" közötti fileterületeket automatikusan, az
+      erre kijelölt lemezkönyvtárban rögzíti.
+'''
+ACTIVITY = '''
+
+   //Activity
+      Erre a parancsra a GP visszaküldi,hogy a kezelö hány másodperccel
+      elöbb adta ki az utolsó parancsot.
+      Ez lehet egy billentyû lenyomása, vagy az egérgomb megnyomása is. 
+'''
+WPRG = '''
+
+  //WPrg <filenév.kit>
+      Ez a parancs elindítja a FILENÉV.KIT - ben meghatározott bináris file
+      átküldését AutoBin filetransferrel.
+      (AutoBin filetransfer = Automatikus Bináris fileátvitel).
+
+      (Ez az üzemmód kompatibilis a THP es SP packettprogramokéval).
+'''
+WRITE = '''
+
+  //Write <filenév.kit>
+      Text-file - k (pl.:személyre szóló üzenetek) küldése elött, ezzel a
+      paranccsal kell megnyitni az aktuális meghajtón egy txt-filet, ahová
+      az üzenet felíródik. A file lezárását - a szokásos módon - a CTRL+Z,
+      vagy a //W off paranccsal kell jelezni.
+'''
+VERSION = '''
+
+  //VERsion
+      Az állomáson üzemelö GraficPackett program verziószámát küldi vissza.
+'''
+USAGE = '''
+
+  //Usage [call]
+      Lekérdezi a használt csatornák állapotát.
+      Ha az állomás több hívójellel dogozik, akkor a [call] hívójel megadá-
+      sával csak a kért hívójelü csatornák állapotát adja vissza.
+'''
+RUN = '''
+
+  //RUN <prgnév>
+      Ezzel a paranccsal egy programot indíthatsz el, amelynek a futtatá-
+      sával kapott adatokat a gép a TNC-re küldi.
+      Minden külsö program futtatásához szükséges a DOS jelenléte, ezért
+      csak olyan lemezröl lehetséges a programok futtatása, amelyek tar-
+      mazzák a rendszerprogramot is.
+      Ha a használható programokról listát kérsz, használd a "//RUN ?"
+      parancsot.
+
+      A  külsö program futtatásakor a gép öt müveletet végez el:
+           1.: Megnyit az aktuális lemezegységen egy ideiglenes file-t;
+           2.: Kilép a DOS-ba és kapcsolatba lép az ideiglenes file-val;
+           3.: Elindítja a meghívott programot és az abból érkezö adatokat
+               az ideiglenes file-ba elmenti;
+           4.: Kilép a DOS-ból és az ideiglenes file tartalmát a TNC-re ki-
+               küldi;
+           5.: Végül törli az ideiglenes file-t.
+
+      Bármely programnyelven irt külsö programot lehet futtatni a GP bármely
+      portján, de csak akkor, ha a futtatás a DOS rendszerfile-kat is tar-
+      talmazó lemezröl történik.
+'''
+RPRG = '''
+
+  //RPrg <filenév.kit>
+      Ez a parancs elindítja a FILENÉV.KIT - ben meghatározott bináris file
+      lehívását AutoBin filetransferrel.                                 
+      (Ez az üzemmód kompatibilis a THP és SP packettprogramokéval).
+'''
+READ = '''
+
+  //Read <filenév.kit>
+      Ez a parancs elindítja a FILENÉV.KIT címü text-file (pld.:személyre
+      szóló üzenetek) lehívását.
+'''
+QUIT = '''
+
+  //Quit
+      Az összeköttetés lebontásának kezdeményezése. Az állomás elöbb végre-
+      hajtja, ill. visszaigazolja a korábban kapott parancsokat, kiküldi
+      a QRT.GP file-ban tárolt elköszönö szöveget, majd disconnect-ál.
+'''
+PROMPT = '''
+
+  //PRompt <ON/OFF>
+      A prompt kiküldésének engedélyezését/tiltását lehet a parnccsal kérni.
+'''
+NEWS = '''
+
+  //NEws
+      Lekéri az állomástól a NEWS.GP file-ban tárolt aktuális - általában
+      mindenkinek szóló - informaciókat.
+'''
+NAME = '''
+
+  //Name <Név>
+      Ha az állomás meghívásakor az a hívójeleden szóllít meg, akkor add
+      meg a nevedet a //N <Operátor név> parancsal. ìgy felkerülsz az ismert
+      állomások listájára, amit a GP a NAMES.GP file-ban tárol. Itt a neveddel
+      együtt az elérési útvonalad is tárolódik, amit a program késôbb
+      path-listakent is használ.
+'''
+MHEARD = '''
+
+  //MHeard [n]
+      A hallott állomások listáját adja vissza. Ha a parancs után egy darab-
+      számot [n] is megadsz, akkor az utoljára hallott állomásokból csak
+      az így kért mennyiséget sorolja fel.
+'''
+INFO = '''
+
+  //Info
+      Kiküldi a porton aktuális állomásinfót, amit a program a MYCALL.GPI
+      címu file(k)-ban tárol.
+'''
+HELP = '''
+
+  //Help
+      Ålltalános segitség:
+      Erre az utasításra a program rövid ismertetést ad a használható paran-
+      csokról és azok jelentéséröl.
+      Ha a //H után a keresett parancsról részletes tájekoztatást kérsz, akkor
+      egészítsd ki a parancs kódjával (a parancsok felsorolásánál nagybetüvel
+      írt rész), az alabbi példa szerint:
+          
+          //H WP  (segitség a WPrg parancshoz)
+'''
+END = '''
+
+  //END
+      A //Write-al indított file-átvitel megszakítása.
+'''
+ECHO = '''
+
+  //Echo <szöveg>
+      A //E utan írt <szöveg>-et visszaküldi a feledónak.
+      (A <szöveg> lehet egy neked szóló távvezérlö parancs is).
+
+      Példák: 1.   //E //RP filenév.prg
+              2.   //E //I
+
+      1. Ezzel a paranccsal például elindíthatod egy nálad levö binaris
+         file átvitelét AutoBin filetransfer-el.
+      2. A második példa azt mutatja, hogyan küldheted el hozzám az
+         allomasinfódat, ha nem vagyok a gépnél (azaz nem küldhetek Hozzád
+         egy //I parancsot), de erröl tájékoztatni szeretnél.
+'''
+DISCONNECT = '''
+
+  //DISConnect
+      A QSO megszakításának kérése.
+'''
+DIRECTORY = '''
+
+  //DIRectory [*.filekiterjesztés]
+      Az állomáson, a USER konyvtárban tárolt file-k listájának lekérdézése.
+
+      Mielött a //Read, //RPrg, //Write, vagy //WPrg parancsokat kiadnád,
+      feltétlen kérd le a DIRectoriban tarolt file-k listáját, egyreszt
+      azert, hogy tájekozódj arról, nincs-e olyan nevü file a lemezen,
+      amilyen néven Te küldeni akarsz valamit, másrészt arról, hogy a megfelelö
+      nevet adhasd meg egy file lehívásához.
+
+      Ha csak bizonyos tipusu file-k érdekelnek akkor a //dir parancs után
+      a kiterjesztést is megadhatod az alábbi példák szerint:
+
+         //DIR *.txt                Text file-k listázása
+         //DIR *.txt;*.usr;*.doc    Egyszerre több file-tipus listázása
+'''
+DELETE = '''
+
+  //DELete <filenév.kit>
+      Ezzel a paranccsal törölheted a neked címzett, vagy általad beírt
+      file-kat a USER konyvtárból.                                  
+'''
+CUT = '''
+
+  //CUT
+      Ha már a //Read paranccsal elindítottad egy file lehívását, akkor
+      ezzel a paranccsal megszakíthatod az átvitelt.
+'''
+CATALOG = '''
+
+  //CATalog [*.filekiterjesztés]
+      Ez a parancs megegyezik a //DIR [*.filekiterjesztés] utasítással.
+'''
+BELL = '''
+
+  //Bell
+      A parancs kiadásakor a program csenget az operátornak.
+      A parancs végrehajtását a prg visszajelzi.
+
+      Megj.: a //RIng parancs is használható.
+'''
+LANGUAGE = '''
+
+  //Language <prefix>
+      A program kommunikációs nyelvének lekérdezése, ill. kiválasztása.
+
+      Ha prefixként DL-t német-, ha F-et francia, ha G-t angol- és ha HA-t,
+      vagy HG-t akkor magyar-ul fog Neked a terminál válaszolgatni.
+      (A HG.gph ékezetes!).
+'''
+RTT = '''
+
+  //RTt <portszám>
+      Ezzel a paranccsal lekérdezhetö a két állomás közötti elérési idö,
+      amit a program sec.-ban küld vissza. (A funkció csak akkor müködik,
+      ha a //Echo-val történö vezérlés engedélyezve van).
+      Ha a parancsot Baycom, vagy DIGICOM programból adod ki, meg kell
+      adnod az aktualis portszámodat is. Pl.: "//RT 1" .
+'''
