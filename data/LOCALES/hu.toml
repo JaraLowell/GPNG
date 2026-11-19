@@ -1,0 +1,333 @@
+[meta]
+name = "Hungarian"
+
+[help]
+overview = '''
+
+  A GraficPacket V1.60 verziójának távvezérelhetö utasításai:
+  -----------------------------------------------------------
+
+  //<n> <szöveg>         : A <szöveg> átküldése az <n> csatornára.
+  //7+ <on/off>          : Automatikus 7+ file mentés be/ki kapcsolása.
+  //Activity             : Az utolsó sysop-parancs kiadása óta eltelt idö.
+  //Bell                 : Csengetés a kezelönek.
+  //CATalog              : Lemezlista lekérdezése.
+  //CUT                  : A //Read-el indított fileátvitel leállítása.
+  //DELete               : A //Write-al megnyitott file törlése.
+  //DIRectory            : (Lásd: //CATalog).
+  //DISConnect           : Összeköttetés lebontásának kérése.
+  //Echo <szöveg>        : Az elküldött <szöveg>-et visszaküldi.
+  //END                  : A //Write-al indított fileátvitel leállítasa.
+  //Help [parancs]       : H segitség kérése. (H [parancs] esetén, a
+                           megnevezett parancsot ismerteti).
+  //Info                 : Az állomás-informació lekérdezése.
+  //Language [prefix]    : A kommunikációs nyelv lekérdezése és kiválasztása.
+                           (Választhatsz: DL [német], G [angol], F [francia},
+                            HA [magyar] és HG [magyar ékezetes] komumikációs
+                            nyelvek között.)
+  //MHeard [n]           : A heard-lista lekérdezése. (MH [szám] megadása
+                           esetén, az utolsó [n] darabot küldi ki).
+  //Name <Név>           : Keresztnév megadása és feliratkozás a path listába.
+  //NEws                 : Az aktuális informaciós file lekérdezése.
+  //PRompt <ON/OFF>      : Promt <ki/be> kapcsolása.
+  //Quit                 : A QSO-t lebontja, ha mindent visszaigazolt.
+  //Read <filenév.kit>   : A <filenév.kit> címü text-file lekérdezése.
+  //RIng                 : Csengetés a kezelönek.(U.a.m. //Bell).
+  //RPrg <filenév.kit>   : A <filenév.kit> címü bináris-file lehívása,
+                           AutoBin filetransfer-el.
+  //RTt <portszám>       : Az állomás elérési idejét küldi vissza sec.-ban.
+  //RUN <prgnev.kit>     : Program indítása az EXTERNAL dir-ból.
+  //Usage [call]         : A csatornák állapotának lekérdezése.
+  //VERsion              : Az alkalmazott software verziójának lekérdezése.
+  //Write <filenév.kit>  : A <név.kit> címü text-file küldése
+  //WPrg <filenév.kit>   : Bináris file küldése AutoBin filetransfer-el.
+  //# [Text]
+  //7DECODE <file>
+  //CSTATUS
+  //MAil
+  //PARameters
+  //SEnd <call>
+
+  Ha egy parancs részletesebb ismertetésére van szükséged, akkor
+  azt a //H [parancs] megadásával kérheted.
+  Például: "//h wp" megadására a //WPrg parancs ismertetését kapod meg.
+'''
+
+[help.commands]
+"7+" = '''
+
+  //7+ <ON/OFF>
+      Ha 7+ programmal darabolt file-t akarsz kûldeni, akkor ezzel a parancs-
+      csal be/ki kapcsolhatod a 7+ filek automatikus mentését.
+      Ha be van kapcsolva (//7+ ON), akkor nem kell egyebet tenned, mint
+      a *.7pl, *.p?? *.err, *.cor, vagy *.c?? kitejesztésü file-kat folya=
+      matosan adasba kûldeni.
+      A program a "go.....stop" közötti fileterületeket automatikusan, az
+      erre kijelölt lemezkönyvtárban rögzíti.
+'''
+"7DECODE" = '''
+  //7DECODE <file>
+      Joins 7Plus part files already stored in USER. <file> may be a part
+      name (README.P01) or the original name (README.TXT). The first part
+      supplies the part count. Missing parts are reported; when every part
+      is present the original file is written and the parts are deleted.
+'''
+ACTIVITY = '''
+
+   //Activity
+      Erre a parancsra a GP visszaküldi,hogy a kezelö hány másodperccel
+      elöbb adta ki az utolsó parancsot.
+      Ez lehet egy billentyû lenyomása, vagy az egérgomb megnyomása is. 
+'''
+BELL = '''
+
+  //Bell
+      A parancs kiadásakor a program csenget az operátornak.
+      A parancs végrehajtását a prg visszajelzi.
+
+      Megj.: a //RIng parancs is használható.
+'''
+CATALOG = '''
+
+  //CATalog [*.filekiterjesztés]
+      Ez a parancs megegyezik a //DIR [*.filekiterjesztés] utasítással.
+'''
+CSTATUS = '''
+  //CSTATUS
+      Lists only channels that have a connection. The first line is
+      Channel state, then the date, time, and timezone (%D %T %Z).
+      Each link is one line: this station's call, an arrow, and the
+      other station. <-- means they called in. --> means this station
+      called out.
+             Chan   1: NL1STK     <--  NL0MSK
+'''
+CUT = '''
+  //CUT
+      Aborts the file transfer on this channel and returns to chat.
+      BIN-RX, or a 7+ capture, sends #ABORT# (#NO# if the BIN file has
+      not started). BIN-TX stops. A sender that has already sent file
+      bytes also sends #ABORT# so the receiver leaves the file.
+'''
+DELETE = '''
+
+  //DELete <filenév.kit>
+      Ezzel a paranccsal törölheted a neked címzett, vagy általad beírt
+      file-kat a USER konyvtárból.                                  
+'''
+DIRECTORY = '''
+
+  //DIRectory [*.filekiterjesztés]
+      Az állomáson, a USER konyvtárban tárolt file-k listájának lekérdézése.
+
+      Mielött a //Read, //RPrg, //Write, vagy //WPrg parancsokat kiadnád,
+      feltétlen kérd le a DIRectoriban tarolt file-k listáját, egyreszt
+      azert, hogy tájekozódj arról, nincs-e olyan nevü file a lemezen,
+      amilyen néven Te küldeni akarsz valamit, másrészt arról, hogy a megfelelö
+      nevet adhasd meg egy file lehívásához.
+
+      Ha csak bizonyos tipusu file-k érdekelnek akkor a //dir parancs után
+      a kiterjesztést is megadhatod az alábbi példák szerint:
+
+         //DIR *.txt                Text file-k listázása
+         //DIR *.txt;*.usr;*.doc    Egyszerre több file-tipus listázása
+'''
+DISCONNECT = '''
+
+  //DISConnect
+      A QSO megszakításának kérése.
+'''
+ECHO = '''
+
+  //Echo <szöveg>
+      A //E utan írt <szöveg>-et visszaküldi a feledónak.
+      (A <szöveg> lehet egy neked szóló távvezérlö parancs is).
+
+      Példák: 1.   //E //RP filenév.prg
+              2.   //E //I
+
+      1. Ezzel a paranccsal például elindíthatod egy nálad levö binaris
+         file átvitelét AutoBin filetransfer-el.
+      2. A második példa azt mutatja, hogyan küldheted el hozzám az
+         allomasinfódat, ha nem vagyok a gépnél (azaz nem küldhetek Hozzád
+         egy //I parancsot), de erröl tájékoztatni szeretnél.
+'''
+END = '''
+
+  //END
+      A //Write-al indított file-átvitel megszakítása.
+'''
+HELP = '''
+
+  //Help
+      Ålltalános segitség:
+      Erre az utasításra a program rövid ismertetést ad a használható paran-
+      csokról és azok jelentéséröl.
+      Ha a //H után a keresett parancsról részletes tájekoztatást kérsz, akkor
+      egészítsd ki a parancs kódjával (a parancsok felsorolásánál nagybetüvel
+      írt rész), az alabbi példa szerint:
+          
+          //H WP  (segitség a WPrg parancshoz)
+'''
+INFO = '''
+
+  //Info
+      Kiküldi a porton aktuális állomásinfót, amit a program a MYCALL.GPI
+      címu file(k)-ban tárol.
+'''
+LANGUAGE = '''
+  //Language <language>
+      Valta az UI es a tavoli sugo nyelvet (ISO kodok: en, hu, de…).
+      Parameter nelkul listazza a nyelveket.
+'''
+MAIL = '''
+  //MAIL
+      Prints the mail waiting for your callsign. This is not a file transfer.
+      //Read sends a file. A numeric SSID is the same mailbox, so
+      NL1STK-2 reads NL1STK. If there is no mail the answer is:
+      You have no mail
+'''
+MHEARD = '''
+
+  //MHeard [n]
+      A hallott állomások listáját adja vissza. Ha a parancs után egy darab-
+      számot [n] is megadsz, akkor az utoljára hallott állomásokból csak
+      az így kért mennyiséget sorolja fel.
+'''
+N = '''
+  //<n> [text]
+      Where n is a number. Bare //n joins chat on channel n. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //n sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+"#" = '''
+  //# [text]
+      Where # is a number. Bare //# joins chat on channel #. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //# sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+NAME = '''
+
+  //Name <Név>
+      Ha az állomás meghívásakor az a hívójeleden szóllít meg, akkor add
+      meg a nevedet a //N <Operátor név> parancsal. ìgy felkerülsz az ismert
+      állomások listájára, amit a GP a NAMES.GP file-ban tárol. Itt a neveddel
+      együtt az elérési útvonalad is tárolódik, amit a program késôbb
+      path-listakent is használ.
+'''
+NEWS = '''
+
+  //NEws
+      Lekéri az állomástól a NEWS.GP file-ban tárolt aktuális - általában
+      mindenkinek szóló - informaciókat.
+'''
+PARAMETERS = '''
+  //PARameters
+  //P
+      Queries TNC timing parameters (P-Persistence, Slottime, Frack,
+      T2, T3, TXDelay, MaxUnack). On WA8DED the values are read live from
+      the TNC; otherwise the last known or WA8DED.INI / init[] values.
+'''
+PROMPT = '''
+
+  //PRompt <ON/OFF>
+      A prompt kiküldésének engedélyezését/tiltását lehet a parnccsal kérni.
+'''
+QUIT = '''
+
+  //Quit
+      Az összeköttetés lebontásának kezdeményezése. Az állomás elöbb végre-
+      hajtja, ill. visszaigazolja a korábban kapott parancsokat, kiküldi
+      a QRT.GP file-ban tárolt elköszönö szöveget, majd disconnect-ál.
+'''
+READ = '''
+  //Read <filename>
+      This command sends you a text file. You can get a list of all readable
+      files by sending the command "//CATalog".
+      Mail is //MAIL, not this file transfer.
+'''
+RPRG = '''
+
+  //RPrg <filenév.kit>
+      Ez a parancs elindítja a FILENÉV.KIT - ben meghatározott bináris file
+      lehívását AutoBin filetransferrel.                                 
+      (Ez az üzemmód kompatibilis a THP és SP packettprogramokéval).
+'''
+RTT = '''
+
+  //RTt <portszám>
+      Ezzel a paranccsal lekérdezhetö a két állomás közötti elérési idö,
+      amit a program sec.-ban küld vissza. (A funkció csak akkor müködik,
+      ha a //Echo-val történö vezérlés engedélyezve van).
+      Ha a parancsot Baycom, vagy DIGICOM programból adod ki, meg kell
+      adnod az aktualis portszámodat is. Pl.: "//RT 1" .
+'''
+RUN = '''
+  //RUN <program>
+      Runs a program from the EXTERNAL folder and sends what it prints
+      back on this link. //RUN ? lists the programs. //<program> is the
+      same when that name is not already a command.
+
+      A program is a text script the sysop placed in EXTERNAL: Python,
+      PHP, Perl, Ruby, Node, Lua, or Java. Java cannot open a window.
+      The first line may name the program, for example
+      #! /usr/bin/env python3, #! /usr/bin/perl, or
+      #! /usr/lib/cgi-bin/php7.2.
+      That line is read on Linux, macOS, and Windows. The language must
+      be installed on the sysop computer. Words after the name are
+      arguments, not a path.
+
+      //RUN FREE
+          Memory total, used, and still free.
+
+      If the script reads a line, the next text from this connection is
+      that line, and the program stays open while it waits. A second
+      //RUN answers "program is running". When the script exits, it is
+      closed. It also closes after 300 seconds with no typed line
+      and no new text. A station still connected is told
+      "closed run program after timeout".
+      One program per channel. It also stops when the link drops.
+'''
+SEND = '''
+  //SEND <call>
+      The next line is a mail message for that station. A numeric SSID
+      is ignored, so NL1STK-2 is NL1STK. The line is stored as that
+      call's mail. If mail is already there, two blank lines are
+      written and the new message is added:
+      <from> to <call> at <date> <time>, then the message.
+      The answer is: GPNG: Mail send to <call>
+'''
+USAGE = '''
+
+  //Usage [call]
+      Lekérdezi a használt csatornák állapotát.
+      Ha az állomás több hívójellel dogozik, akkor a [call] hívójel megadá-
+      sával csak a kért hívójelü csatornák állapotát adja vissza.
+'''
+VERSION = '''
+
+  //VERsion
+      Az állomáson üzemelö GraficPackett program verziószámát küldi vissza.
+'''
+WPRG = '''
+
+  //WPrg <filenév.kit>
+      Ez a parancs elindítja a FILENÉV.KIT - ben meghatározott bináris file
+      átküldését AutoBin filetransferrel.
+      (AutoBin filetransfer = Automatikus Bináris fileátvitel).
+
+      (Ez az üzemmód kompatibilis a THP es SP packettprogramokéval).
+'''
+WRITE = '''
+
+  //Write <filenév.kit>
+      Text-file - k (pl.:személyre szóló üzenetek) küldése elött, ezzel a
+      paranccsal kell megnyitni az aktuális meghajtón egy txt-filet, ahová
+      az üzenet felíródik. A file lezárását - a szokásos módon - a CTRL+Z,
+      vagy a //W off paranccsal kell jelezni.
+'''

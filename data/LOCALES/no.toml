@@ -1,0 +1,329 @@
+[meta]
+name = "Norwegian"
+
+[help]
+overview = '''
+
+  //<n> <Text>           : Send en tekst til kanal <n>
+  //7+ <ON/OFF>          : Skrur 7+ AutoSave av eller på
+  //ACtivity             : S¢ker sysop aktivitet
+  //Bell                 : Kaller Sysop ved hjelp av ringesignal
+  //CATalog [wildcard]   : Viser en liste over alle lesbare filer
+  //CD                   : Skifter til annen katalog i bruker katalogen
+  //CD ..                : Skifter til ett lavere katalognivå
+  //CUT                  : Avbryter en filoverf¢ring
+  //DELete               : Sletter en fil som er opprettet med //Write
+  //DIRectory [wildcard] : som //CATalog
+  //DISConnect           : Hurtig disconnect (uten avskjed)
+  //Echo <tekst>         : Sender tilbake <tekst>
+  //END                  : Avslutter lagring av tekst startet med //Write
+  //Help [komando]       : Denne teksten eller flere detaljer med "komando"
+  //Info                 : Sender info om denne stasjonen
+  //Language <språk>     : Endrer meldingenes språk
+  //MHeard [tall]        : Viser en liste med h¢rte stasjoner
+  //MHeard <kallesignal> : Viser klokkeslett sist <kallesignal> var h¢rt
+  //Name <navn>          : Lagrer ditt navn hvis det ikke er kjent
+  //NEws                 : Viser nytt (hvis det er noe nytt)
+  //PRompt <ON/OFF>      : Skrur på/av Remote Prompt
+  //Quit                 : Avslutter kontakten
+  //Read <filnavn>       : Sender filen "filenavn"
+  //RPrg <filnavn>       : Sender filen "filenavn" i AutoBin mode
+  //RTt <portnr>         : Viser the round trip time
+  //RUN <program>        : Kj¢rer et eksternt program, //RUN ? viser program
+  //Usage [kallesignal]  : Kanal status eller kort info om "kallesignal"
+  //VERsion              : Viser versjonsnummeret til programvaren
+  //Write <filnavn>      : Lagrer den f¢lgende tekst i filen "filnavn"
+  //WPrg <filnavn>       : Lagrer en fil i AutoBin mode
+  //# [Text]
+  //7DECODE <file>
+  //CSTATUS
+  //MAil
+  //PARameters
+  //SEnd <call>
+
+  Alle komandoer må begynne i f¢rste kolonne helt til venstre og avsluttes 
+  med CR.
+  Tast "//h h" for flere detaljer.
+'''
+
+[help.commands]
+"7+" = '''
+
+  //7+ <ON/OFF>
+      Denne komando skrur 7+ AutoSave på eller av. Du kan bruke denne 
+      komandoen hvis du ¢nsker å sende noen 7+ filer, men operat¢ren ikke er
+      til stede ved stasjonen, og du er usikker på om han har satt på 
+      7+ AutoSave eller ikke.
+'''
+"7DECODE" = '''
+  //7DECODE <file>
+      Joins 7Plus part files already stored in USER. <file> may be a part
+      name (README.P01) or the original name (README.TXT). The first part
+      supplies the part count. Missing parts are reported; when every part
+      is present the original file is written and the parts are deleted.
+'''
+ACTIVITY = '''
+
+  //Activity
+      Denne komandoen viser hvor lenge siden sysop sist trykket en tast
+      eller beveget musa.
+'''
+BELL = '''
+
+  //Bell
+      Denne komandoen aktivisere en ringeklokke for å vekke sysop.
+'''
+CATALOG = '''
+
+  //CATalog [wildcard]
+      Denne komandoen returnerer innholdet i bruker katalogen. Alle filene
+      kan bli lest med //Read eller //RPrg. Også //Write eller //WPrg skriver 
+      filer til denne katalogen.
+      Du kan bruke wildcards sammen med denne komandoen, f.eks. "//CAT *.txt". 
+      Du kan til og med bruke flere wildcards skilt med et semikolon.
+      F.eks. "//CAT *.txt;*.doc"
+      
+'''
+CSTATUS = '''
+  //CSTATUS
+      Lists only channels that have a connection. The first line is
+      Channel state, then the date, time, and timezone (%D %T %Z).
+      Each link is one line: this station's call, an arrow, and the
+      other station. <-- means they called in. --> means this station
+      called out.
+             Chan   1: NL1STK     <--  NL0MSK
+'''
+CUT = '''
+  //CUT
+      Aborts the file transfer on this channel and returns to chat.
+      BIN-RX, or a 7+ capture, sends #ABORT# (#NO# if the BIN file has
+      not started). BIN-TX stops. A sender that has already sent file
+      bytes also sends #ABORT# so the receiver leaves the file.
+'''
+DELETE = '''
+
+  //DELete <filename>
+      Denne komandoen tillater deg å slette en fil fra bruker katalogen.
+      Du kan bare slette filer som du selv har lagt inn med //Write. Andre 
+      filer kan bare slettes av stasjonenes sysop.
+'''
+DIRECTORY = '''
+
+  //DIRectory [wildcard]
+      Denne komandoen returnerer innholdet i bruker katalogen. Alle filene
+      kan bli lest med //Read eller //RPrg. Også //Write eller //WPrg skriver 
+      filer til denne katalogen.
+      Du kan bruke wildcards sammen med denne komandoen, f.eks. "//DIR *.txt". 
+      Du kan til og med bruke flere wildcards skilt med et semikolon.
+      F.eks. "//DIR *.txt;*.doc"
+'''
+DISCONNECT = '''
+
+  //DISConnect
+      Denne komando avslutter QSO'en umiddelbart uten noen avskjedstekst.
+'''
+ECHO = '''
+
+  //Echo <tekst>
+      Denne komandoen er et enkelt ekko som sender tilbake den påf¢lgende
+      tekst. Skill teksten fra komandoen med et <MELLOMROM>.
+'''
+END = '''
+
+  //END
+      Avbryter en filoverf¢ring som ble startet med //Write. Denne komandoen
+      kan ikke bli brukt til å avbryte en AutoBin overf¢ring.
+'''
+HELP = '''
+
+  //Help
+      Generell informasjon:
+      Alle komandoer må begynne i f¢rste kolonne og avsluttes med et <CR>.
+      Du må begynne hver komando med "//" ellers vil ingenting skje.
+      Alle komandoer kan forkortes. Hvis du f¢yer en parameter til komandoen, 
+      må du skille den med et enkelt <MELLOMROM> fra selve komandoen. Hvis en
+      komando trenger mer enn en parameter, må også alle parametrene skilles
+      med et enkelt <MELLOMROM>.
+      En komando inkludert parametre må ikke være lenger enn 80 tegn.
+      
+'''
+INFO = '''
+
+  //Info
+      Viser en informasjon om denne satsjonen.
+'''
+LANGUAGE = '''
+  //Language <language>
+      Byttar UI- og hjelpesprak (ISO-koder som en, no, de).
+      Uten parameter: liste over sprak.
+'''
+MAIL = '''
+  //MAIL
+      Viser post for ditt kallesignal. Dette er ikke filoverforing.
+      //Read sender en fil. Numerisk SSID er samme postkasse. Uten post:
+      You have no mail
+'''
+MHEARD = '''
+
+  //MHeard [nummer]
+      Denne komando viser deg en liste over h¢rte stasjoner. Hvis du legger 
+      til et tall til komandoen (skilt med et enkelt <MELLOMROM>), vil GP 
+      sende dette antall sist h¢rte stasjoner. Komandoen uten noe tall vil
+      vise deg en liste over de 20 siste h¢rte stasjoner.
+'''
+N = '''
+  //<n> [text]
+      Where n is a number. Bare //n joins chat on channel n. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //n sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+"#" = '''
+  //# [text]
+      Where # is a number. Bare //# joins chat on channel #. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //# sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+NAME = '''
+
+  //Name <navn>
+      Hvis ditt navn ikke er lagret i GP's navnefil, kan du bruke denne
+      komandoen for å legge ditt navn i filen. Du må bruke et <MELLOMROM> 
+      for å skille navnet fra komandoen. Selve navnet kan bestå av hvilke
+      som helst tegn, inkludert <MELLOMROM>.
+'''
+NEWS = '''
+
+  //NEws
+      Denne komando vil vise noen nyheter hvis det eksisterer noen.
+'''
+PARAMETERS = '''
+  //PARameters
+  //P
+      Queries TNC timing parameters (P-Persistence, Slottime, Frack,
+      T2, T3, TXDelay, MaxUnack). On WA8DED the values are read live from
+      the TNC; otherwise the last known or WA8DED.INI / init[] values.
+'''
+PROMPT = '''
+
+  //PRompt <ON/OFF>
+      Denne komando slår "remote prompten" på eller av. Hvis den er på, vil 
+      prompten komme fram når en remote komando er utf¢rt for å vise at
+      systemet er klart til å ta imot neste komando.
+'''
+QUIT = '''
+
+  //Quit
+      Denne komandoen kan bli brukt for å avslutte en QSO istedenfor en 
+      simpel "hard disconnect". Hvis du bruker denne komandoen vil du få 
+      en avskjedstekst f¢r QSOen blir avsluttet.
+'''
+READ = '''
+  //Read <filename>
+      This command sends you a text file. You can get a list of all readable
+      files by sending the command "//CATalog".
+      Mail is //MAIL, not this file transfer.
+'''
+RPRG = '''
+
+  //RPrg <filnavn>
+      Denne funksjonen sender en fil i AutoBin mode. Du må f¢rst sette ditt
+      eget program klart til å motta filen i AutoBin mode f¢r du sender 
+      fjernstyrings komandoen.
+      AutoBin mode er kompatibel med THP og SP.
+'''
+RTT = '''
+
+  //RTt <portnr>
+      Denne komandoen regner ut the round trip mellom våre stasjoner.
+      Ditt program må være i stand til å utf¢re fjernstyrings komandoen
+      "//Echo", eller vil ikke denne komandoen virke. Hvis du bruker BayCom 
+      eller Digicom, legg til aktuell portnr til komandoen. F.eks "//RT 1".
+'''
+RUN = '''
+  //RUN <program>
+      Runs a program from the EXTERNAL folder and sends what it prints
+      back on this link. //RUN ? lists the programs. //<program> is the
+      same when that name is not already a command.
+
+      A program is a text script the sysop placed in EXTERNAL: Python,
+      PHP, Perl, Ruby, Node, Lua, or Java. Java cannot open a window.
+      The first line may name the program, for example
+      #! /usr/bin/env python3, #! /usr/bin/perl, or
+      #! /usr/lib/cgi-bin/php7.2.
+      That line is read on Linux, macOS, and Windows. The language must
+      be installed on the sysop computer. Words after the name are
+      arguments, not a path.
+
+      //RUN FREE
+          Memory total, used, and still free.
+
+      If the script reads a line, the next text from this connection is
+      that line, and the program stays open while it waits. A second
+      //RUN answers "program is running". When the script exits, it is
+      closed. It also closes after 300 seconds with no typed line
+      and no new text. A station still connected is told
+      "closed run program after timeout".
+      One program per channel. It also stops when the link drops.
+'''
+SEND = '''
+  //SEND <call>
+      The next line is a mail message for that station. A numeric SSID
+      is ignored, so NL1STK-2 is NL1STK. The line is stored as that
+      call's mail. If mail is already there, two blank lines are
+      written and the new message is added:
+      <from> to <call> at <date> <time>, then the message.
+      The answer is: GPNG: Mail send to <call>
+'''
+USAGE = '''
+
+  //Usage [call]
+      Komandoen uten andre parameter viser den aktuelle kanals satus på 
+      denne stasjonen.
+      Hvis du legger et call til komandoen, vil du få en kort informasjon
+      om stasjonen, hvis det er lagret informasjon om stasjonen i GP.
+'''
+VERSION = '''
+
+  //VERsion
+      Viser versjonsnummeret til denne programvaren.
+'''
+WPRG = '''
+
+  //WPrg <filnavn>
+      Denne komandoen starter lagring av en fil i AutoBin mode.
+      AutoBin mode er en enkel ovef¢rings protokoll som inneholder en CRC
+      sjekk. Beklageligvis retter den ikke opp feil.
+      AutoBin mode er kompatibel med THP og SP.
+'''
+WRITE = '''
+
+  //Write <filnavn>
+      Denne komandoen starter lagring av en tekst. All tekst etter denne 
+      komando vil bli lagret i filen "filnavn" inntil du sender Ctrl-Z 
+      eller komandoen //END.
+'''
+CD = '''
+
+  //CD
+     Denne komandoen fungerer som DOS komando CD. Adgang gis kun til 
+     kataloger som er lagt inn og åpnet for eksterne brukere av SYSOP.
+     Komandoen f¢rer brukeren til et nytt nivå i katalogtreet.
+     //CD .. f¢rer brukeren til et lavere nivå i katalogtreet så sant
+     du ikke allerede befinner deg i laveste åpne katalog.
+
+@CD..,2
+     
+  //CD
+     Denne komandoen fungerer som DOS komando CD. Adgang gis kun til 
+     kataloger som er lagt inn og åpnet for eksterne brukere av SYSOP
+     Komandoen f¢rer brukeren til et nytt nivå i katalogtreet.
+  //CD .. 
+     f¢rer brukeren til ett lavere nivå i katalogtreet så sant
+     du ikke allerede befinner deg i laveste åpne katalog.
+'''

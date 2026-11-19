@@ -1,0 +1,296 @@
+[meta]
+name = "Slovenian"
+
+[help]
+overview = '''
+
+  //<n> <Text>           : Posljes tekst na kanal <n>
+  //7+ ON/OFF            : Vklop-izklop 7+ shranjevanja
+  //Activity             : Pove o sysopovi aktivnosti
+  //Bell                 : Poklices Sysopa z zvonenjem zvonca
+  //CATalog [wildcard]   : Pokaze listo datotek za citanje
+  //CD                   : Prikaze direktorij
+  //CUT                  : Prekines oddajo datoteke
+  //DELete               : Zbrises datoteko napisano z //Write
+  //DIRectory [wildcard] : kot //CATalog
+  //DISConnect           : Hiter Disconnect
+  //Echo <text>          : Po{ilja nazaj echo <text>
+  //END                  : Zakljucitev pisanja teksta,ki si ga zacel z //Write
+  //Help [ukaz]          : To sporocilo ali vec detaljev o "command"
+  //Info                 : Poslje informacije o tej postaji
+  //Language <jezik>     : Spremeni pogovorni jezik sporocil
+  //MHeard [stevilka]    : Pokaze listo slisanih postaj
+  //MHeard [znak]        : Pokaze kdaj je bil znak nazadnje connectiran
+  //Name <ime>           : Shrani tvoje ime,ce se ga ne ve
+  //NEws                 : Pokaze novice,ce te obstajajo
+  //PRompt <ON/OFF>      : Vkljuci/izkljuci prompt
+  //Quit                 : Konec zveze
+  //Read <imedatoteke>   : Poslje datoteko "imedatoteke"
+  //RPrg <imedatoteke>   : Poslje datoteko "imedatoteke" v AutoBinarnem nacinu
+  //RTt <portnr>         : Pokaze cas krozenja med postajama
+  //RUN <program>        : Pozene external programe
+  //Usage [znak]         : Kanal status ali majhna informacija o "znaku"
+  //VERsion              : Pokaze stevilko verzije tega softwera
+  //Write <imedatoteke>  : Shrani sprejeti tekst v datoteko "imedatoteke"
+  //WPrg <imedatoteke>   : Shrani datoteko v AutoBinarnem nacinu
+  //# [Text]
+  //7DECODE <file>
+  //CSTATUS
+  //MAil
+  //PARameters
+  //SEnd <call>
+
+  Vsi ukazi se morajo zaceti v prvi vrsti,prvi koloni.
+  Napisi "//h h" za vec informacij o ukazih  ali "//h <ukaz> o tem ukazu.
+'''
+
+[help.commands]
+"7+" = '''
+
+   //7+ ON/OFF
+   Vkljuci oz.izkljuci 7+ autoshranjevanje.Ta ukaz lahko uporabimo,ko nismo 
+   prepricani,da je opcija vkljucena,sysop pa ni prisoten,mi bi mu pa  radi
+   poslali nek kodiran tekst.
+'''
+"7DECODE" = '''
+  //7DECODE <file>
+      Joins 7Plus part files already stored in USER. <file> may be a part
+      name (README.P01) or the original name (README.TXT). The first part
+      supplies the part count. Missing parts are reported; when every part
+      is present the original file is written and the parts are deleted.
+'''
+ACTIVITY = '''
+
+   Ukaz nam pove,kdaj je sysop postaje nazadnje pritisnil na kaksno tipko ali 
+   premaknil  misko.
+'''
+BELL = '''
+
+  //Bell
+      Ta ukaz "zbudi" operaterja,ce je slucajno zaspal. :-)
+'''
+CATALOG = '''
+
+  //CATalog [wildcard]
+
+      Enako kot ukaz "//DIR".
+      Vse kar napises,lahko najdes v tem direktoriju,pa tudi kar je
+      kdo drug napisal.
+'''
+CSTATUS = '''
+  //CSTATUS
+      Lists only channels that have a connection. The first line is
+      Channel state, then the date, time, and timezone (%D %T %Z).
+      Each link is one line: this station's call, an arrow, and the
+      other station. <-- means they called in. --> means this station
+      called out.
+             Chan   1: NL1STK     <--  NL0MSK
+'''
+CUT = '''
+  //CUT
+      Aborts the file transfer on this channel and returns to chat.
+      BIN-RX, or a 7+ capture, sends #ABORT# (#NO# if the BIN file has
+      not started). BIN-TX stops. A sender that has already sent file
+      bytes also sends #ABORT# so the receiver leaves the file.
+'''
+DELETE = '''
+
+  //DELete <imedatoteke>
+       Ta ukaz zbrise datoteko "imedatoteke" iz direktorija,ki si jo
+       napisal z //Write.
+       Vse ostale datoteke lahko zbrise samo Sysop te postaje.
+'''
+DIRECTORY = '''
+
+  //DIRectory [wildcard]
+      Prikaze direktorij,iz katerega lahko citamo ali kopiramo datoteke.
+      Lahko uporabimo tudi "Yoker" in sicer npr. "//dir *.txt"
+      ,ki prikaze vse datoteke s koncnico "txt" v tem direktoriju.
+      V isto vrstico lahko napisemo vec iskanih datotek,ki jih locimo
+      z ";"..npr.//DIR *.txt;*.doc"
+'''
+DISCONNECT = '''
+
+  //DISConnect
+      Hitra prekinitev QSO,brez poslovilnega pozdravnega teksta.
+'''
+ECHO = '''
+
+  //Echo <text>
+      To je preprosti echo (odmev) in poslje nazaj sprejeti tekst.
+      
+'''
+END = '''
+
+  //END
+      Prekine pisanje datoteke, ki smo jo zaceli pisati z "//Write" .
+      V AutoBinarnem nacinu je ne moremo uporabiti!!!
+'''
+HELP = '''
+
+  //Help
+      Informacije o ukazih:
+      Vsi ukazi se morajo zaceti v prvi koloni in morajo biti popolni, 
+      v nasprotnem primeru bo racunalnik javljal napako.Vsi ukazi se
+      zacnejo z "//" vendar je treba dodati se parametre,drugace se ne 
+      zgodi nic.Parametri ne smejo presegati 80 znakov.
+'''
+INFO = '''
+
+  //Info
+      Pokaze informacije o tej postaji,ime..telefon..kraj,
+      podatke o hardweru , itd...Te podatke je treba napisati
+      v datoteko  INFO.GPI ali tvoj_znak.GPI.
+'''
+LANGUAGE = '''
+  //Language <language>
+      Preklopi jezik vmesnika in pomoci (ISO kode: en, sl, de…).
+      Brez parametra izpise seznam jezikov.
+'''
+MAIL = '''
+  //MAIL
+      Prints the mail waiting for your callsign. This is not a file transfer.
+      //Read sends a file. A numeric SSID is the same mailbox, so
+      NL1STK-2 reads NL1STK. If there is no mail the answer is:
+      You have no mail
+'''
+MHEARD = '''
+
+  //MHeard [stevilka]
+      Ta ukaz ti poslje listo "slisanih"postaj.Z uporabo stevilke dobis
+      zeljeno stevilo (nazadnje) konektiranih postaj..doda pa ti tudi
+      stevilo skupno slisanih postaj.Npr.//MH 10  prikaze  listo 10-tih
+      nazadnje slisanih postaj.
+  //MHeard [znak]
+      pa ti pove,kdaj je nazadnje (po njegovih podatkih) slisal "znak"  
+'''
+N = '''
+  //<n> [text]
+      Where n is a number. Bare //n joins chat on channel n. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //n sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+"#" = '''
+  //# [text]
+      Where # is a number. Bare //# joins chat on channel #. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //# sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+NAME = '''
+
+  //Name <ime>
+      Ce tvoje ime se ni zabelezeno v progranu uporabis ta ukaz.
+      Med ukazom in imenom obvezno uporabi presledek,ime pa napisi
+      z veliko zacetnico.Uporabis lahko vse znake,tudi presledek(SPACE).     
+'''
+NEWS = '''
+
+  //NEws
+      Ta ukaz poslje novice,ce te obstajajo.
+'''
+PARAMETERS = '''
+  //PARameters
+  //P
+      Queries TNC timing parameters (P-Persistence, Slottime, Frack,
+      T2, T3, TXDelay, MaxUnack). On WA8DED the values are read live from
+      the TNC; otherwise the last known or WA8DED.INI / init[] values.
+'''
+PROMPT = '''
+
+  //PRompt <ON/OFF>
+      Vklopi ali izklopi prompt.
+      Ta ti pokaze ,kdaj je sistem pripravljen za sprejem novega ukaza.
+'''
+QUIT = '''
+
+  //Quit
+      To je ukaz za zakljucitev zveze pri katerem dobis se preprost
+      QRT  tekst z pozdravi...      
+'''
+READ = '''
+  //Read <filename>
+      This command sends you a text file. You can get a list of all readable
+      files by sending the command "//CATalog".
+      Mail is //MAIL, not this file transfer.
+'''
+RPRG = '''
+
+  //RPrg <imedatoteke>
+      Ta ukaz poslje datoteko v AutoBinarnem nacinu.
+      Ta AutoBinarni nacin je kompatibilen z THP and SP.
+'''
+RTT = '''
+
+  //RTt <portnr>
+      Ta ukaz preracuna cas ,ki pretece za protokol med najinima postajama.
+      Tvoj program mora imeti vklopljen ECHO , drugace zadeva ne dela.
+      Lahko se vklopi z "//ECHO". Ce imas BayCom ali Digicom,vstavi v ukaz
+      se stevilko aktivnega porta npr. "//RT 1".
+'''
+RUN = '''
+  //RUN <program>
+      Runs a program from the EXTERNAL folder and sends what it prints
+      back on this link. //RUN ? lists the programs. //<program> is the
+      same when that name is not already a command.
+
+      A program is a text script the sysop placed in EXTERNAL: Python,
+      PHP, Perl, Ruby, Node, Lua, or Java. Java cannot open a window.
+      The first line may name the program, for example
+      #! /usr/bin/env python3, #! /usr/bin/perl, or
+      #! /usr/lib/cgi-bin/php7.2.
+      That line is read on Linux, macOS, and Windows. The language must
+      be installed on the sysop computer. Words after the name are
+      arguments, not a path.
+
+      //RUN FREE
+          Memory total, used, and still free.
+
+      If the script reads a line, the next text from this connection is
+      that line, and the program stays open while it waits. A second
+      //RUN answers "program is running". When the script exits, it is
+      closed. It also closes after 300 seconds with no typed line
+      and no new text. A station still connected is told
+      "closed run program after timeout".
+      One program per channel. It also stops when the link drops.
+'''
+SEND = '''
+  //SEND <call>
+      The next line is a mail message for that station. A numeric SSID
+      is ignored, so NL1STK-2 is NL1STK. The line is stored as that
+      call's mail. If mail is already there, two blank lines are
+      written and the new message is added:
+      <from> to <call> at <date> <time>, then the message.
+      The answer is: GPNG: Mail send to <call>
+'''
+USAGE = '''
+
+  //Usage [znak]
+      Pokaze vse prikljucene postaje,nekaj parametrov,ki pripadajo tem
+      podatkom....
+      Ce dodas se znak,dobis se nekaj informacij  o "znaku",
+      ce jih seveda program pozna.
+'''
+VERSION = '''
+
+  //VERsion
+      Pokaze verzijo tega programa (softwera).
+'''
+WPRG = '''
+
+  //WPrg <imedatoteke>
+      S tem ukazom napises datoteko v AutoBinarnem nacinu.
+      Ta AutoBinarni nacin je compatibilen z THP in SP.
+'''
+WRITE = '''
+
+  //Write <imedatoteke>
+      S tem ukazom napises datoteko v tekstovnem nacinu.
+      Zakljucis jo tako,da za konec napises "//END" ali pritisnes
+      CTRL-Z.
+'''

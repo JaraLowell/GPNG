@@ -48,7 +48,7 @@ remaining compatibility work is listed in `docs/GAPS.md`.
 | `data/ICONS.GP` | Toolbar icons |
 | `data/NAMES.GP` | Station list for Connect, `%N`, and `//Name` |
 | `data/*.GPI` | Connect texts. `//Info` prefers `<mycall>.GPI` (your base call); a release ships `INFO.GPI` as the fallback example |
-| `locales/*.toml` | UI Setup labels + remote `//Help` (ISO: `en`, `nl`, `de`, `fr`, `pl`, `sl`, `cs`, `hu`, `es`, `no`, `bg`, `pt`, `ru`). Config `language = "en"`; change in Setup or `//Language` |
+| `data/LOCALES/*.toml` | UI Setup labels + remote `//Help` (ISO: `en`, `nl`, `de`, `fr`, `pl`, `sl`, `cs`, `hu`, `es`, `no`, `bg`, `pt`, `ru`). Config `language = "en"`; change in Setup or `//Language` |
 | `data/*.GPW` | Sysop password. `DB0IZ-9` is `DB0IZ9.GPW` |
 | `data/USER` | `//` catalog, read, write, and delete. 7Plus autosave writes here too. Browsing stays inside this folder |
 | `data/EXTERNAL` | `//RUN` programs: Python, PHP, Perl, Ruby, Node, Lua, or Java. `FREE` reports memory. 300 seconds with no input and no new output closes a run. The command cannot name a file outside this folder |

@@ -1,0 +1,265 @@
+[meta]
+name = "Dutch"
+
+[help]
+overview = '''
+
+  //<n> <Tekst           : Stuurt een tekst naar poort nummer <n>
+  //7+ <ON/OFF>          : Schakelt de 7+ AutoSave aan of uit
+  //Activity             : Laat U de laatste toets muis handeling zien
+  //Bell                 : Roept Han door te bellen
+  //CATalog [wildcard]   : Laat U de inhoud van de User dir zien
+  //CUT                  : Stopt een file transfer
+  //DELete               : Verwijdert een bestand dat door U met //Write is gemaakt
+  //DIRectory [wildcard] : Zie //CATalog
+  //DISConnect           : Disconnect zonder QRT tekst
+  //Echo <tekst>         : Stuurt de door U gezonden tekst terug aan U <text>
+  //END                  : Stopt tekst save die gestart is met //Write
+  //Help [commando]      : Deze Helpfile meer details met "//H H commando"
+  //Info                 : Stationsbeschrijving van NL0MSK
+  //Language <taal>      : Verandert de te gebruiken taal in GP
+  //MHeard [nummer]      : Geeft de lijst van gehoorde stations door NL0MSK
+  //MHeard <call>        : Geeft aan waneer een station het laatst gehoord is <call>
+  //Name <naam>          : Schrijft Uw naam in het GP bestand
+  //NEws                 : Laat U het laatste nieuws zien (vernieuwd elke 3 uur)
+  //PRompt <ON/OFF>      : Zet de Remote Prompt aan of uit
+  //Quit                 : Disconnect met QRT tekst
+  //Read <filenaam>      : Stuurt U een bestand "filenaam"
+  //RPrg <filenaam>      : Stuurt U een BEstand in de AutoBin mode "filenaam"
+  //RTt <poortnr>        : Laat U de looptijd tussen NL0MSK en Uw station zien
+  //RUN <programma>      : Runt een extern programma
+  //Usage [call]         : Poort status met korte info over geconnecte "calls"
+  //VERsion              : Geeft het versie nummer van dit GP programma
+  //Write <filenaam>     : Schrijft de volgende tekst weg "filenaam"
+  //WPrg <filename>      : Schrijft een bestand weg in de AutoBin mode
+  //# [Text]
+  //7DECODE <file>
+  //CSTATUS
+  //MAil
+  //PARameters
+  //SEnd <call>
+
+  Alle commando,s moeten vooraan een regel beginnen gevolgd door een enter <CR>.
+
+  Type "//h h" voor meer details.
+'''
+
+[help.commands]
+"7+" = '''
+
+  //7+ <ON/OFF>
+       Dit commando zet de 7+ AutoSave aan of uit.
+       U mag dit gebruiken al U denkt dat het uitstaat en een 7+ file
+       wilt zenden aan mij.
+'''
+"7DECODE" = '''
+  //7DECODE <file>
+      Voegt 7Plus-delen in USER samen. <file> mag een deelnaam of de
+      originele naam zijn. Ontbrekende delen worden gemeld; bij alle delen
+      wordt het origineel geschreven en de delen gewist.
+'''
+ACTIVITY = '''
+
+  //Activity
+      Dit commando laat U de laatste toets of muis handeling van de sysop zien.
+'''
+BELL = '''
+
+  //Bell
+      Met dit commando activeert U de bell om de Sysop te wekken (HI). :-)
+'''
+CATALOG = '''
+
+  //CATalog [wildcard]
+      Dit heeft dezelfde fuctie als //DIRectory.
+'''
+CSTATUS = '''
+  //CSTATUS
+      Toont alleen kanalen met verbinding. Eerste regel Channel state, dan
+      datum/tijd/zone. <-- inkomend. --> uitgaand.
+'''
+CUT = '''
+  //CUT
+      Stopt de bestandsoverdracht op dit kanaal en keert terug naar chat.
+      BIN-RX of 7+-capture stuurt #ABORT# (#NO# als BIN nog niet startte).
+'''
+DELETE = '''
+
+  //DELete <filenaam>
+      Dit commando staat toe dat U een door u ingebrachte file in de User dir
+      Echter aleen een file die met //Write door U is geplaatst is te wissen.
+      Alle andere files zijn aleen te wissen door de Sysop.
+'''
+DIRECTORY = '''
+
+  //DIRectory [wildcard]
+      Dit commando stuurt U de inhoud lijst van de User-dir
+      U kunt iets lezen uit deze dir met //Read of //RPrg.
+      Iets weg schrijven in deze dir doet U met //Write of //WPrg.
+      DE zogenaamde wildcards kunnen hier gebruikt worden
+      b.v.. "//DIR *.txt".
+      Zelfs verschillende wildcards kunnen gebruikt worden.
+      b.v.  "//DIR *.txt:*.doc"
+'''
+DISCONNECT = '''
+
+  //DISConnect
+      Dit commando stopt het QSO direckt zonder QRT tekst.
+'''
+ECHO = '''
+
+  //Echo <text>
+      Dit commando is een simpele echo en stuurt de door U gezonden text
+      aan U terug.
+'''
+END = '''
+
+  //END
+      Stopt een file transfer welke was gestart met //Write.
+      Dit werkt echter niet bij AutoBin mode transfer.
+'''
+HELP = '''
+
+  //Help
+      Algemene informatie van GP:
+      Alle commando's moeten vooraan een regel beginnen gevolgd door enter <CR>.
+      Het commando moet altijd beginnen met "//" anders gebeurt er niets.
+      Deze commando's mogen gevolgd worden door een parameter.
+      Meerdere parameters moeten gescheiden worden door een spatie <SPACE>.
+      E commando plus parameter mag noot langer zijn dan 80 karakters.
+'''
+INFO = '''
+
+  //Info
+      Laat U de  stations-informatie van NL0MSK zien
+'''
+LANGUAGE = '''
+  //Language <language>
+      Wisselt UI- en help-taal (ISO-codes zoals en, nl, de).
+      Zonder parameter: lijst van talen.
+'''
+MAIL = '''
+  //MAIL
+      Toont de mail voor jouw call. Dit is geen bestandsoverdracht.
+      //Read stuurt een bestand. Numerieke SSID hoort bij dezelfde mailbox
+      (NL1STK-2 leest NL1STK). Geen mail: You have no mail
+'''
+MHEARD = '''
+
+  //MHeard [nummer]
+      Dit commando geeft een lijst van gehoorde stations door NL0MSK.
+      Door toevoeging van een nummer (voorafgaand van een spatie <SPACE>,
+      zal GP dit aantal laatst gehoorde stations aan U laten zien.
+      Zonder nummer laat GP U de laatste 20 stations zien.
+'''
+N = '''
+  //<n> [text]
+      Where n is a number. Bare //n joins chat on channel n. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //n sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+"#" = '''
+  //# [text]
+      Where # is a number. Bare //# joins chat on channel #. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //# sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+NAME = '''
+
+  //Name <naam>
+      Met dit commando zet U uw naam in de path file van GP
+      Er moet wel een spatie <SPACE> tussen Uw naam en het commado staan.
+      De naam achter het commando mag meerdere woorden bevatten.
+      b.v. WILL in Kaatsheuvel.
+'''
+NEWS = '''
+
+  //NEws
+      Dit commando laat U het nieuws van NL0MSK zien..
+'''
+PARAMETERS = '''
+  //PARameters
+  //P
+      Vraagt TNC-timingparameters op. Op WA8DED live; anders laatste bekende
+      of WA8DED.INI / init[].
+'''
+PROMPT = '''
+
+  //PRompt <ON/OFF>
+      Dit commando zet de remote prompt aan of uit.
+      Als het aanstaat zal de prompt verschijnen op het scherm.
+      als een commando is afgesloten om aan te geven dat het
+      systeem klaar is om verder te gaan.
+'''
+QUIT = '''
+
+  //Quit
+      Dit commando gebruikt U om het QSO te beeindigen.
+      Met een QRT text van NL0MSK
+'''
+READ = '''
+  //Read <filename>
+      Stuurt een tekstbestand. Lijst met "//CATalog".
+      Mail is //MAIL, niet deze overdracht.
+'''
+RPRG = '''
+
+  //RPrg <filenaam>
+      Deze functie haalt een file in AutoBin mode.
+      Eerst moet Uw eigen programma klaar staan om AutoBin mode
+      te kunnen ontvangen in de Autobin mode.
+      Voordat het commando wordt gegeven.
+      De AutoBin mode is compatible met THP en SP.
+'''
+RTT = '''
+
+  //RTt <poortnr>
+      Dit commando berekent de tooptijd tussen Uw station en NL0MSK.
+      Echter Uw programma moet in staat zijn een "//ECHO" te kunnen,
+      uitvoeren anders werkt helaas dit commando niet.
+      Voor BayCom of Digicom gebruikers is het commando "//RT 1".
+'''
+RUN = '''
+  //RUN <program>
+      Start een programma uit EXTERNAL en stuurt de uitvoer terug. //RUN ?
+      toont de lijst. Scripts: Python, PHP, Perl, Ruby, Node, Lua of Java.
+      //RUN FREE = geheugen. Timeout 300 s. Een programma per kanaal.
+'''
+SEND = '''
+  //SEND <call>
+      De volgende regel is mail voor die station. Numerieke SSID wordt
+      genegeerd. Antwoord: GPNG: Mail send to <call>
+'''
+USAGE = '''
+
+  //Usage [call]
+      Dit commando zonder parameters geeft U de poort status van NL0MSK
+      Als U er een call aan toevoegd wordt een korte info van de geconnecte
+      stations zien mits deze in het systeem bekent is.
+'''
+VERSION = '''
+
+  //VERsion
+      Laat U de versie van het gebruikte GP programma zien.
+'''
+WPRG = '''
+
+  //WPrg <filenaam>
+      Dit commando start de opslag van een file in AutoBin mode.
+      De AutoBin mode is een simpel protocol dat een CRC bevat.
+      Helaas worden fouten niet verbeterd.
+      Deze AutoBin mode is compatible met THP en SP.
+'''
+WRITE = '''
+
+  //Write <filenaam>
+      Dit commando start de opslag vaneen tekst file.
+      Alle tekst na dit commando wordt opgeslagen in de file "filenaam"
+      Afsluiten met het commando CTRL-Z of //END.
+'''

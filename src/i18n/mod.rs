@@ -1,7 +1,7 @@
 //! TOML locale packs for UI strings and remote `//Help`.
 //!
-//! Files live in `locales/<iso>.toml` (`en`, `nl`, `de`, …). Missing keys fall
-//! back to English. ISO 639-1 codes only.
+//! Files live in `data/LOCALES/<iso>.toml` (`en`, `nl`, `de`, …). Missing keys
+//! fall back to English. ISO 639-1 codes only.
 
 use std::collections::HashMap;
 use std::fs;
@@ -190,7 +190,7 @@ pub fn language_list() -> String {
         }
     }
     if lines.is_empty() {
-        "No locale files in locales/".into()
+        "No locale files in data/LOCALES/".into()
     } else {
         lines.join("\r")
     }
@@ -414,16 +414,32 @@ fn find_locale_file(code: &str) -> Option<PathBuf> {
 
 fn locale_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    for root in crate::paths::install_roots() {
-        let dir = root.join("locales");
+    for data in crate::paths::data_dirs() {
+        let dir = data.join("LOCALES");
         if dir.is_dir() {
             dirs.push(dir);
+            continue;
+        }
+        // Case-insensitive disk: accept `locales` / `Locales` and keep looking.
+        if let Some(found) = find_ci_dir(&data, "LOCALES") {
+            dirs.push(found);
         }
     }
     if dirs.is_empty() {
-        dirs.push(PathBuf::from("locales"));
+        dirs.push(crate::paths::data_dir().join("LOCALES"));
     }
     dirs
+}
+
+fn find_ci_dir(parent: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let rd = fs::read_dir(parent).ok()?;
+    for ent in rd.flatten() {
+        let got = ent.file_name();
+        if got.to_string_lossy().eq_ignore_ascii_case(name) && ent.path().is_dir() {
+            return Some(ent.path());
+        }
+    }
+    None
 }
 
 fn find_ci(dir: &std::path::Path, file: &str) -> Option<PathBuf> {

@@ -2,7 +2,7 @@
 //!
 //! Command names recovered from historic language packs and `README.TXT`, with
 //! light confirmation against strings in `GP2862K.EXE`. Help text lives in
-//! `locales/*.toml` via `crate::i18n`. See `docs/COMPATIBILITY.md`.
+//! `data/LOCALES/*.toml` via `crate::i18n`. See `docs/COMPATIBILITY.md`.
 
 pub mod commands;
 pub mod external;

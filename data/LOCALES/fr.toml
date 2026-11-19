@@ -1,0 +1,287 @@
+[meta]
+name = "French"
+
+[help]
+overview = '''
+   //<n> <texte>         : Envoie un texte au canal <n>
+   //7+ <ON/OFF>         : Commute 7+ AutoSave ON ou OFF
+   //Bell                : Appelle le Sysop par un coup de sonnette
+   //CATalog [joker]     : Affiche une liste de fichiers lisibles
+   //CUT                 : Arrete un transfert de fichiers
+   //DELete              : Efface un fichier qui a ete genere par //Write
+   //DIRectory [joker]   : Equivalent a //CATalog
+   //DISConnect          : Deconnection rapide et totale
+   //Echo <texte>        : Renvoie le <texte> en echo
+   //END                 : Arrete la sauvegarde du texte envoye par //Write
+   //Help [commande]     : Ce message ou plus de details sur les [commande]
+   //Info                : Envoie des infos au sujet de cette station
+   //Language <langue>   : Change la langue des messages 
+   //MHeard [nombre]     : Affiche la liste des stations entendues
+   //MHeard <indicatif>  : Affiche l'heure à laquelle <indicatif> a été entendu
+   //Name <prénom>       : Memorise votre nom s'il n'est pas encore connu
+   //NEws                : Affiche le menu (s'il existe)
+   //PARameter           : Envoie les parametres du syteme
+   //PRompt <ON/OFF>     : Commute le prompt de commande a distance
+   //Quit                : Termine le contact
+   //Read <fichier>      : Vous envoie le fichier [nom de fichier]
+   //RPrg <fichier>      : Vous envoie le ficher [nom fichier] en mode AutoBin
+   //RTt <No de port>    : Affiche la duree de connection sur le port <n>
+   //RUN <programme>     : Lance un programme externe
+   //Usage [indicatif]   : Etat du canal ou courte info au sujet de [indicatif]
+   //VERsion             : Affiche la version de ce programme
+   //Write <fichier/nom> : Ecrit le texte qui va suivre dans le fichier <nom> 
+   //WPrg <fichier>      : Ecrit un fichier en mode Autobin
+  //# [Text]
+  //7DECODE <file>
+  //Activity
+  //CSTATUS
+  //MAil
+  //PARameters
+  //SEnd <call>
+
+   NOTE : Toutes les commandes doivent etre precedees de // , commencer en 
+	  debut de ligne et se terminer par un CR.
+
+   Pour plus de details tapez "//H <cmd>". (<cmd>=commandes ci dessus sans //)
+'''
+
+[help.commands]
+"7+" = '''
+
+   //7+ <ON/OFF>
+       Cette commande commute 7+ AutoSave ON ou OFF. Cette commande est
+       utilisée pour envoyer des fichiers 7+
+'''
+"7DECODE" = '''
+  //7DECODE <file>
+      Assemble les parties 7Plus deja dans USER. <file> peut etre une partie
+      (README.P01) ou le nom original. Parties manquantes signalees; quand
+      tout est la, le fichier original est ecrit et les parties effacees.
+'''
+ACTIVITY = '''
+
+  //Activity
+      This command shows the space of time when the sysop finally pressed
+      a key or moved the mouse.
+'''
+BELL = '''
+
+    //Bell
+       Cette commande active une sonnerie pour prevenir le sysop.
+'''
+CATALOG = '''
+
+    //CATalog [joker]
+       Cette fonction renvoie le contenu du directory utilisateur. 
+       Tous les fichiers peuvent etre lus par //Read ou //RPrg.  
+       //Write et //WPrg ecrivent des fichiers dans ce directory. Vous pouvez 
+       pouvez utiliser les jokers avec cette commande. Par ex. : "//CAT *.txt". 
+       Vous pouvez meme utiliser plusieurs jokers en les separant par un 
+       point-virgule.
+       Par ex. : "//CAT *.txt;*.doc". Elle est identique a "//DIR"
+'''
+CSTATUS = '''
+  //CSTATUS
+      Liste uniquement les canaux connectes. Premiere ligne: Channel state,
+      puis date, heure et fuseau (%D %T %Z). <-- entree. --> sortie.
+'''
+CUT = '''
+  //CUT
+      Aborte le transfert sur ce canal et revient au chat. BIN-RX ou capture
+      7+ envoie #ABORT# (#NO# si BIN n'a pas demarre). BIN-TX s'arrete.
+'''
+DELETE = '''
+
+    //DELete <fichier>
+       Cette commande vou permet d'effacer un fichier du directory 
+       utilisateur. Vous ne pouvez effacer que des fichiers que vous 
+       avez ecrits vous-meme avec //Write. Les autres fichiers ne peuvent 
+       etre effaces que par le sysop de cette station.
+'''
+DIRECTORY = '''
+
+    //DIRectory [joker]
+       Cette fonction renvoie le contenu du directory utilisateur. 
+       Tous les fichiers peuvent etre lus par "//Read" ou "//RPrg". 
+       "//Write" et "//WPrg" ecrivent des fichiers dans ce directory. 
+       Vous pouvez utiliser les jokers avec cette commande. 
+       Par ex. : "//DIR *.txt". Vous pouvez meme utiliser plusieurs 
+       jokers en les separant par un point-virgule. Par ex. : 
+       "//DIR *.txt;*.doc". Elle est identique a //CAT.
+'''
+DISCONNECT = '''
+
+    //DISConnect
+       Cette commande termine un QSO immediatement sans l'envoi d'un texte
+       de cloture de QSO et sans retourner a l'etape precedente de la chaine 
+       de connection.
+'''
+ECHO = '''
+
+    //Echo <texte>
+       Cette commande est un simple echo et envoie en retour le texte qui 
+       est emis. Le texte doit etre separe de la commande par un espace.
+'''
+END = '''
+
+    //END
+	   Arrete le transfert d'un fichier qui a ete lance par //Write. 
+	   Cette commande ne peut etre utilisee pour arreter le transfert d'un 
+	   fichier Autobin.
+'''
+HELP = '''
+
+    //Help
+	   Informations generales :
+	   Toutes les commandes doivent commencer a la premiere colonne par un 
+	   "//" et se terminer par un "C.R." ou rien ne se produira.
+	   Toutes les commandes peuvent etre abreviees. Si vous y ajoutez un 
+	   parametre, il doit etre separe de la commande par un seul espace.
+	   Si une commande comporte plusieurs parametres, ils doivent tous  
+	   etre separes par des espaces. L'ensemble ne peut neanmoins compter 
+	   plus de 80 caracteres.
+'''
+INFO = '''
+
+    //Info
+	   Affiche un texte d'information au sujet de cette station.
+'''
+LANGUAGE = '''
+  //Language <language>
+      Change la langue de l'interface et de l'aide (codes ISO: en, fr, de…).
+      Sans parametre: liste des langues disponibles.
+'''
+MAIL = '''
+  //MAIL
+      Affiche le courrier en attente pour votre indicatif. Ce n'est pas un
+      transfert de fichier. //Read envoie un fichier. Un SSID numerique est
+      la meme boite (NL1STK-2 lit NL1STK). Sans courrier:
+      You have no mail
+'''
+MHEARD = '''
+
+    //MHeard [nombre]
+       Cette commande affiche la liste des stations entendues. Si vous 
+       ajoutez un nombre a cette commande (separee par un espace), 
+       GP vous limitera la liste a ce nombre, en commencant par la 
+       derniere station entendue. La commande seule donnne les vingt 
+       dernieres stations.
+'''
+N = '''
+  //<n> [text]
+      Where n is a number. Bare //n joins chat on channel n. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //n sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+"#" = '''
+  //# [text]
+      Where # is a number. Bare //# joins chat on channel #. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //# sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+NAME = '''
+
+    //Name <nom>
+       Si votre nom n'est pas encore memorise dans le fichier des chemins 
+       de GP, vous pouvez utiliser cette commande pour l'y inscrire. Vous 
+       devez inserer un espace pour separer votre nom de cette commande. 
+       Le nom peut, par contre, comporter n'importe quel caractere y compris 
+       des espaces. Le chemin pour arriver jusqu'a vous sera alors disponible 
+       aux autres utilisateurs et sera acessible par la commande "//Usage".
+'''
+NEWS = '''
+
+    //NEws
+       Cette commande affiche les nouvelles s'il y en a.
+'''
+PARAMETERS = '''
+  //PARameters
+  //P
+      Interroge les parametres tempo du TNC (P-Persistence, Slottime, Frack,
+      T2, T3, TXDelay, MaxUnack). Sur WA8DED en direct; sinon derniere
+      valeur connue ou WA8DED.INI / init[].
+'''
+PROMPT = '''
+
+    //PRompt <ON/OFF>
+       Cette commande enclenche ou declenche le prompt de commande a distance 
+       S'il est "ON", le prompt apparaitra apres qu'une commande ait ete 
+       accomplie pour vous montrer qu'elle a ete executee et que le systeme 
+       est pret a executer la suivante.
+'''
+QUIT = '''
+
+    //Quit
+       Cette commande est employee pour terminer le QSO plutot que par une 
+       simple deconnection. Vous recevrez alors un message de cloture de 
+       QSO avant la deconnection et vous retournerez a l'etape precedente 
+       de la chaine de connection.
+'''
+READ = '''
+  //Read <filename>
+      Envoie un fichier texte. Liste via "//CATalog".
+      Le courrier est //MAIL, pas ce transfert.
+'''
+RPRG = '''
+
+    //RPrg <fichier>
+       Cette fonction envoie un fichier en mode "Autobin". Vous devez d'abord 
+       preparer votre propre programme pour la reception en mode "Autobin" 
+       avant d'envoyer la commande.
+       Le mode "AutoBin" est compatible avec THP et SP.
+'''
+RTT = '''
+
+    //RTt <No de port>
+       Cette commande calcule le temps du QSO entre nos deux stations. 
+       Votre programme doit neanmoins etre capable d'executer la commande 
+       "//Echo", Autrement, elle ne fonctionnera pas. Si vous utilisez BayCom 
+       ou Digicom, ajoutez le numero du canal du port actuel a la commande, 
+       par ex. : "//RT 1".
+'''
+RUN = '''
+  //RUN <program>
+      Lance un programme depuis EXTERNAL et renvoie sa sortie. //RUN ?
+      liste. Scripts: Python, PHP, Perl, Ruby, Node, Lua ou Java.
+      //RUN FREE = memoire. Timeout 300 s. Un programme par canal.
+'''
+SEND = '''
+  //SEND <call>
+      La ligne suivante est un message pour cette station. Le SSID numerique
+      est ignore. Reponse: GPNG: Mail send to <call>
+'''
+USAGE = '''
+
+    //Usage [indicatif]
+       Cette commande sans autres parametres affiche l'etat du canal actuel ou 
+       de cette station. 
+       Si vous ajoutez un indicatif a cette commande, vous aurez une courte 
+       information au sujet de cet indicatif s'il est memorise dans le fichier 
+       des chemins de GP.
+'''
+VERSION = '''
+
+    //VERsion
+       Affiche le numero de version de ce programme.
+'''
+WPRG = '''
+   
+   //WPrg <fichier>
+      Cette commande lance la memorisation d'un fichier en mode Autobin.
+      Le mode AutoBin est un simple protocole de transfert qui contient un 
+      controle de CRC. Malheureusement, il ne corrige pas les erreurs.
+      Ce mode AutoBin est compatible avec THP et SP.
+'''
+WRITE = '''
+
+   //Write <fichier>
+      Cette commande lance la memorisation d'un texte. Tout le texte après 
+      cette commande sera memorise dans le fichier [nom de fichier" jusqu'a 
+      ce que vous envoyiez un Ctrl-Z ou la commande //END.
+'''

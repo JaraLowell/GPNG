@@ -1,4 +1,4 @@
-"""One-shot: convert data/*.GPH into locales/*.toml. Not used at runtime."""
+"""One-shot: convert data/*.GPH into data/LOCALES/*.toml. Not used at runtime."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
-OUT = ROOT / "locales"
+OUT = ROOT / "data" / "LOCALES"
 
 MAP = {
     "G.GPH": ("en", "English"),

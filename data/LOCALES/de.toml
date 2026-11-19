@@ -1,0 +1,334 @@
+[meta]
+name = "German"
+
+[help]
+overview = '''
+
+  //<n> <Text>           : Text an Kanal <n> senden
+  //7+ <ON/OFF>          : Schaltet 7+ AutoSave an oder aus
+  //Activity             : Sysop-Aktivitaet abfragen
+  //Bell                 : Sysop rufen
+  //CATalog [Filter]     : Liste der Dateien, die gelesen werden koennen
+  //CD <Verzeichnis>     : Wechselt in ein anderes User-Verzeichnis
+  //CUT                  : Bricht einen Lesevorgang ab
+  //DELete               : Loescht eine mit //Write angelegte Datei
+  //DIRectory [Filter]   : siehe //CATalog
+  //DISConnect           : Schneller Disconnect (ohne Verabschiedung)
+  //Echo <text>          : Sendet "text" zurueck
+  //END                  : Beendet eine mit //Write gestartete Textspeicherung
+  //Help [befehl]        : Diese Meldung bzw. detaillierte Hilfe fuer "befehl"
+  //Info                 : Sendet die Stationsinfo (wenn vorhanden)
+  //Language <sprache>   : Wechselt die Sprache der Meldungen
+  //MHeard [anzahl]      : Zeigt eine Liste von gehoerten Stationen
+  //MHeard <call>        : Gibt aus, in wann <call> zuletzt gehoert wurde
+  //Name <name>          : Speicherung des eigenen Namens in die Namensdatei
+  //NEws                 : Aktuelle Neuigkeiten (wenn vorhanden)
+  //PARameters           : Zeigt die Einstellungen einiger TNC-Parameter an
+  //PRompt <ON/OFF>      : Schaltet das Prompt an oder aus
+  //Quit                 : Beendet die Verbindung
+  //Read <datei>         : Sendet die Datei "datei"
+  //RPrg <datei>         : Sendet eine Binaerdatei im Automodus
+  //RTt <PortNr>         : Laufzeitmessung der Verbindung
+  //RUN <programm>       : Startet ein externes Programm
+  //Usage [rufzeichen]   : Liste der connecteten Stationen
+  //VERsion              : Zeigt die Versionsnummer dieser Software
+  //Write <datei>        : Speichert den folgenden Text in die Datei "datei"
+  //WPrg <datei>         : Speichert eine Binaerdatei im Automodus
+  //# [Text]
+  //7DECODE <file>
+  //CSTATUS
+  //MAil
+  //SEnd <call>
+
+  Alle Befehle muessen am Anfang der Zeile beginnen und mit <CR> beendet
+  werden.
+  Weiteres mit //Help Help
+'''
+
+[help.commands]
+"7+" = '''
+
+  //7+ <ON/OFF>
+      Dieser Befehl schaltet 7+ AutoSave an bzw. aus. Dies ist dann praktisch,
+      wenn man einer Station eine Reihe von 7Plus-Dateien uebertragen will,
+      Operator aber gerade nicht da ist und man nicht sicher ist, ob er die
+      AutoSave-Funktion eingeschaltet hat oder nicht. Anstatt die Dateien
+      einzeln mit //W zu uebertragen oder auf der OP zu warten, kann man nun
+      einfach die AutoSave-Funktion per Fernsteuerung einschalten und dann
+      die Dateien einfach senden.
+'''
+"7DECODE" = '''
+  //7DECODE <file>
+      Fuegt 7Plus-Teildateien zusammen, die bereits in USER liegen. <file>
+      kann ein Teilname (README.P01) oder der Originalname (README.TXT) sein.
+      Der erste Teil liefert die Anzahl. Fehlende Teile werden gemeldet;
+      sind alle da, wird die Originaldatei geschrieben und die Teile geloescht.
+'''
+ACTIVITY = '''
+
+  //Activity
+      Zeigt an, wann der Sysop das letzte Mal eine Taste gedrueckt bzw. die
+      Maus bewegt hat. Dadurch kann man feststellen, ob er sich ueberhaupt
+      an der Station befindet.
+'''
+BELL = '''
+
+  //Bell
+      Dieser Befehl loest einen Gong aus, um den Sysop zu rufen.
+'''
+CATALOG = '''
+
+  //CATalog
+      Mit diesem Befehl wird eine Liste von Dateien ausgegeben,
+      die fuer jeden User zugaenglich sind. Alle angezeigten
+      Dateien koennen mit //Read gelesen werden. Mit //Write
+      angelegte Dateien werden ebenfalls in dieses Directory
+      geschrieben. Die Angabe von Wildcards sind erlaubt, also
+      z.B. "//CATalog *.txt". Es koennen auch mehrere Wildcards an-
+      gegeben werden, die dann durch ein Semikolon getrennt
+      werden muessen, z.B. "//CATalog *.txt;*.doc".
+'''
+CSTATUS = '''
+  //CSTATUS
+      Listet nur Kanaele mit Verbindung. Erste Zeile: Channel state, dann
+      Datum, Zeit und Zeitzone (%D %T %Z). Jede Verbindung eine Zeile:
+      eigenes Rufzeichen, Pfeil, Gegenstation. <-- Angerufen. --> selbst
+      herausgerufen.
+             Chan   1: NL1STK     <--  NL0MSK
+'''
+CUT = '''
+  //CUT
+      Bricht die Dateiuebertragung auf diesem Kanal ab und kehrt zum Chat
+      zurueck. BIN-RX oder 7+-Capture sendet #ABORT# (#NO#, wenn BIN noch
+      nicht gestartet). BIN-TX stoppt. Ein Sender, der schon Bytes gesendet
+      hat, sendet ebenfalls #ABORT#, damit der Empfaenger die Datei verlaesst.
+'''
+DELETE = '''
+
+  //DELete <dateiname>
+      Dieser Befehl dient zum Loeschen von Textdateien im Userdirectory.
+      Es koennen jedoch nur Dateien geloescht werden, die das eigene Call
+      als Namen bilden oder die mit //Write selbst angelegt wurden. Hierbei
+      wird ein Header, der beim Speichern automatisch angelegt wird, auf
+      das Rufzeichen untersucht. Stimmen die Rufzeichen nicht ueberein,
+      kann die Datei nicht geloescht werden. Aus diesem Grund koennen auch
+      keine Binaerdateien geloescht werden, da sie keinen Header enthalten.
+'''
+DIRECTORY = '''
+
+  //DIRectory
+      Mit diesem Befehl wird eine Liste von Dateien ausgegeben,
+      die fuer jeden User zugaenglich sind. Alle angezeigten
+      Dateien koennen mit //Read gelesen werden. Mit //Write
+      angelegte Dateien werden ebenfalls in dieses Directory
+      geschrieben. Die Angabe von Wildcards sind erlaubt, also
+      z.B. "//DIRectory *.txt". Es koennen auch mehrere Wildcards an-
+      gegeben werden, die dann durch ein Semikolon getrennt
+      werden muessen, z.B. "//DIRectory *.txt;*.doc".
+'''
+DISCONNECT = '''
+
+  //DISConnect
+      Dient zum sofortigen Trennen der Verbindung. (ohne Verabschiedung)
+'''
+ECHO = '''
+
+  //Echo <text>
+      Diese Funktion hat die Wirkung eines Echos. Sie sendet einen
+      durch ein Leerzeichen abgetrennten nachfolgenden Text wieder
+      zurueck.
+'''
+END = '''
+
+  //END
+      Beendet einen mit //Write gestarteten Schreibvorgang. Bei einer
+      Binaerfile-Uebertragung wird der Befehl ignoriert.
+'''
+HELP = '''
+
+  //Help
+      Allgemeine Informationen:
+      Allen Fernsteuerbefehlen muessen zwei Schraegstriche vorangestellt
+      werden, damit GP diese auch als Fernsteuerbefehle interpraetiert.
+      Die Befehle koennen abgekuerzt werden, indem man nur die Gross-
+      buchstaben der Befehlsnamen verwendet, wie sie in den Hilfetexten
+      vorkommen. Parameter der Befehle sind in Kleinschrift geschrieben
+      und in spitze Klammern gesetzt. Diese Parameter muessen direkt hinter
+      dem Befehl angegeben werden (ohne Klammern). Parameter in eckigen
+      Klammern sind optional und koennen weggelassen werden.
+      Ist ein Parameter in den Hilfetexten in Grossbuchstaben geschrieben,
+      muss dieser in voller Laenge angegeben werden. Die Gesamtlaenge des
+      Fernsteuerbefehls inclusive Uebergabeparameter darf 80 Zeichen nicht
+      ueberschreiten.
+'''
+INFO = '''
+
+  //Info
+      Gibt Auskunft ueber diese Station. (wenn vorhanden)
+'''
+LANGUAGE = '''
+  //Language <language>
+      Wechselt UI- und Hilfe-Sprache (ISO-Codes wie en, de, nl).
+      Ohne Parameter: Liste aller unterstuetzten Sprachen.
+'''
+MAIL = '''
+  //MAIL
+      Zeigt die Mail fuer Ihr Rufzeichen. Das ist keine Dateiuebertragung.
+      //Read sendet eine Datei. Eine numerische SSID gehoert zum gleichen
+      Postfach, NL1STK-2 liest also NL1STK. Ohne Mail lautet die Antwort:
+      You have no mail
+'''
+MHEARD = '''
+
+  //MHeard [anzahl]
+      Diese Funktion liefert eine Liste von Rufzeichen, die von dieser
+      Station gehoert wurden. Wird hinter dem Befehl eine Zahl angegeben,
+      wird die eintsprechende Anzahl der zuletzt gehoerten Stationen
+      ausgegeben. Der Defaultwert ist 20.
+'''
+N = '''
+  //<n> [text]
+      n ist eine Nummer. Alleiniges //n tritt dem Chat auf Kanal n bei.
+      Alles Tippen geht dorthin; Text von diesem Kanal (und anderen
+      Teilnehmern) kommt zurueck. Der Raum sieht
+      "<GPNG>: CALL (Name) Joined your channel!". //0 verlaesst und meldet
+      Left. Mit Text sendet //n nur eine Zeile ohne Chat-Modus.
+      Ziel muss ein verbundener TERM-Kanal sein.
+'''
+"#" = '''
+  //# [text]
+      # ist eine Nummer. Alleiniges //# tritt dem Chat auf Kanal # bei.
+      Alles Tippen geht dorthin; Text von diesem Kanal (und anderen
+      Teilnehmern) kommt zurueck. Der Raum sieht
+      "<GPNG>: CALL (Name) Joined your channel!". //0 verlaesst und meldet
+      Left. Mit Text sendet //# nur eine Zeile ohne Chat-Modus.
+      Ziel muss ein verbundener TERM-Kanal sein.
+'''
+NAME = '''
+
+  //Name <name>
+      Mit diesem Befehl teilt man dem System seinen Namen mit. Dieser
+      wird zusammen mit dem Connect-Pfad in eine Liste gespeichert.
+      Der Name muss durch ein Leerzeichen getrennt direkt hinter dem
+      Befehl angegeben werden.
+      Der Name selbst kann alle Zeichen, auch Leerzeichen, enthalten.
+'''
+NEWS = '''
+
+  //NEws
+      Gibt Auskunft ueber aktuelle Neuigkeiten.
+'''
+PARAMETERS = '''
+  //PARameters
+  //P
+      Fragt TNC-Zeitparameter ab (P-Persistence, Slottime, Frack, T2, T3,
+      TXDelay, MaxUnack). Bei WA8DED live vom TNC; sonst letzte bekannte
+      oder WA8DED.INI / init[]-Werte.
+'''
+PROMPT = '''
+
+  //PRompt <ON/OFF>
+      Mit diesem Befehl laesst sich ein Systemprompt ein- bzw. ausschalten.
+      Wenn das Prompt eingeschaltet ist, erscheint es nach jedem
+      ausgefuehrten Befehl und signalisiert damit, dass das System
+      auf die naechste Eingabe wartet.
+'''
+QUIT = '''
+
+  //Quit
+      Dient zum Trennen der Verbindung. Vorher wird noch ein
+      Verabschiedungstext gesendet und anschliessend ein
+      Disconnect ausgeloest.
+'''
+READ = '''
+  //Read <filename>
+      Sendet eine Textdatei. Liste aller lesbaren Dateien mit "//CATalog".
+      Mail ist //MAIL, keine Dateiuebertragung.
+'''
+RPRG = '''
+
+  //RPrg <dateiname>
+      Mit diesem Befehl wird eine Datei im Automodus gesendet.
+      Der Automodus benutzt ein kleines Uebertragungsprotokoll und eine
+      Pruefsumme, so dass es so moeglich ist, eine Binaerdatei 1:1 zu
+      uebertragen. Der Automodus ist kompatibel zu THP und SP.
+'''
+RTT = '''
+
+  //RTt <PortNr>
+      Dieser Befehl aktiviert eine Messung der Laufzeit. Dazu muss jedoch
+      die eigene Station Fernsteuerbefehle ausfuehren koennen.
+      Ist das eigene Terminalprogramm in der Lage, den Befehl //Echo zu
+      verarbeiten, so reicht der Aufruf von /RTt ohne zusaetzlichen Parameter.
+      BayCom- oder Digicom-User muessen die Portnummer, auf dem dieses QSO
+      laeuft, angeben, z.B. //RT 1
+'''
+RUN = '''
+  //RUN <program>
+      Startet ein Programm aus EXTERNAL und sendet dessen Ausgabe auf
+      dieser Verbindung. //RUN ? listet Programme. //<program> geht auch,
+      wenn der Name kein anderer Befehl ist.
+
+      Skripte in EXTERNAL: Python, PHP, Perl, Ruby, Node, Lua oder Java.
+      Java ohne Fenster. Erste Zeile kann z.B. sein
+      #! /usr/bin/env python3, #! /usr/bin/perl oder
+      #! /usr/lib/cgi-bin/php7.2 (Linux, macOS, Windows). Die Sprache muss
+      auf dem Sysop-Rechner installiert sein. Weitere Worte sind Argumente.
+
+      //RUN FREE
+          Speicher gesamt, belegt und frei.
+
+      Liest das Skript eine Zeile, ist der naechste Text von dieser
+      Verbindung diese Zeile. Zweites //RUN: "program is running". Ende
+      oder 300 s ohne Eingabe/Ausgabe beendet es; verbunden bleibt
+      "closed run program after timeout". Ein Programm pro Kanal; Link
+      weg beendet ebenfalls.
+'''
+SEND = '''
+  //SEND <call>
+      Die naechste Zeile ist eine Mail an diese Station. Eine numerische
+      SSID wird ignoriert (NL1STK-2 = NL1STK). Die Zeile wird als Mail
+      gespeichert. Bei bestehender Mail folgen zwei Leerzeilen und die
+      neue Nachricht: <from> to <call> at <date> <time>, dann der Text.
+      Antwort: GPNG: Mail send to <call>
+'''
+USAGE = '''
+
+  //Usage [rufzeichen]
+      Diese Funktion liefert den augenblicklichen Connect-Status dieser
+      Station zururck.
+      Der Parameter rufzeichen ist optional und liefert den Namen und
+      Pfad von "rufzeichen", falls dieser in der Namensliste gespeichert
+      ist. Die Speicherung des eigenen Namens erfolgt mit dem Name-Befehl.
+'''
+VERSION = '''
+
+  //VERsion
+      Gibt die Versionsnummer dieser Software aus.
+'''
+WPRG = '''
+
+  //WPrg <dateiname>
+      Mit diesem Befehl wird eine Datei im Automodus empfangen und auf
+      Diskette/Festplatte gespeichert.
+      Der Automodus benutzt ein kleines Uebertragungsprotokoll und eine
+      Pruefsumme, so dass es so moeglich ist, eine Binaerdatei 1:1 zu
+      uebertragen. Der Automodus ist kompatibel zu THP und SP.
+'''
+WRITE = '''
+
+  //Write <dateiname>
+      Diese Funktion dient zum Speichern von Nachrichten auf Diskette
+      bzw. Festplatte. Der nachfolgende Text wird so lange in diese Datei
+      geschrieben, bis die Speicherung mit "//END" oder Ctrl-Z beendet wird.
+'''
+CD = '''
+
+  //CD <directory>
+      Mit diesem Befehl ist es moeglich, das aktuelle Userdirectory zu
+      wechseln, sofern mehrere existieren. Es kann nur in Unterverzeichnisse
+      des vom Sysop festgelegten Remote-Verzeichnisses gewechselt werden.
+      Die Bedienung des Befehls entspricht ansonsten dem DOS-Befehls CD.
+      "//CD .." wechselt in das uebergeordnete Verzeichnis.
+      Der Aufruf von "//CD" ohne Parameter zeigt das aktuelle Verzeichnis an.
+'''

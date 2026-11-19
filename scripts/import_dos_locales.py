@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "locales"
+OUT = ROOT / "data" / "LOCALES"
 DOS_TMP = Path(r"D:\GPDos\GP\USER\GP\tmp")
 
 # Absolute GPH path → (iso, English name)

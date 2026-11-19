@@ -132,7 +132,7 @@ impl ColorSlot {
 }
 
 impl RowId {
-    /// Setup row caption (localized via `locales/*.toml` `[setup]`).
+    /// Setup row caption (localized via `data/LOCALES/*.toml` `[setup]`).
     pub fn label(self) -> String {
         if let Some(title) = self.color_slot().map(ColorSlot::title) {
             return title.to_string();

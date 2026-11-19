@@ -52,7 +52,7 @@ find, sort, replace/append). Still open:
 | `NAMES.GP` type `B` blocks remotes | **Missing** | Type stored; remotes still run |
 | `PORTx` / multiport radio switch | **Partial** | `%DIGI%` / `PORTx` QRG match in paths; no TNC/radio port change |
 | `NoName` salutation | **Partial** | Stored; `%N` falls back to the callsign |
-| Full UI string localization | **Partial** | `locales/*.toml` + Setup labels + `//Help`; most pad/status chrome still English |
+| Full UI string localization | **Partial** | `data/LOCALES/*.toml` + Setup labels + `//Help`; most pad/status chrome still English |
 
 ### Spy / AutoSpy
 

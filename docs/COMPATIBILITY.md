@@ -9,7 +9,7 @@ disagree, so we treat **compatibility recovery** as a first-class task.
 
 | Goal | Preferred source | When binary help is useful |
 |------|------------------|----------------------------|
-| Command *names* & abbreviations | Historic help packs + `README.TXT` (now `locales/*.toml`) | Confirm tokens / aliases not listed in one language |
+| Command *names* & abbreviations | Historic help packs + `README.TXT` (now `data/LOCALES/*.toml`) | Confirm tokens / aliases not listed in one language |
 | Macro *letters* (`%V`, `%N#20`) | README “fifteen” + Reko `cmp al` chain | Extras: `%DIGI%`, `%Q`, `%A`; EXE also has undocumented `%P` / `%*` |
 | Exact *behaviour* | Docs + try under DOSBox against real TNC/TFPCX | Ambiguous edge cases only |
 | BGI drawing / internal structs | **Not required** for remotes/macros | Avoid — licence forbids modifying the EXE; clean-room rewrite |
@@ -18,7 +18,7 @@ So: **targeted string / help-file archaeology**, not a full decompile of `GP2862
 
 ## Recovery pipeline used here
 
-1. Historic `*.GPH` packs were migrated into `locales/<iso>.toml` (`en`, `nl`, `de`, …) — each `help.commands` entry plus `help.prefix` is the remote help surface.
+1. Historic `*.GPH` packs were migrated into `data/LOCALES/<iso>.toml` (`en`, `nl`, `de`, …) — each `help.commands` entry plus `help.prefix` is the remote help surface.
 2. Merge with `README.TXT` / `GP.DOC` (macros, `Remote=` / `NoRemote=`, `//C`, `//Kill`, chat `#`).
 3. Confirm with printable strings from `GP2862K.EXE` (e.g. `//C `, `//END`, `KILL`, `PARAMETERS`, `Graphic Packet V1.63`).
 4. Encode the union in `src/remote/` so the modern binary implements one authoritative table.
@@ -54,7 +54,7 @@ So: **targeted string / help-file archaeology**, not a full decompile of `GP2862
 
 ### `//` remote commands (abbreviation-aware)
 
-Minimum significant letters come from `help.prefix` in `locales/en.toml` (e.g. `VERSION = 3` → `VER` matches `VERsion`).
+Minimum significant letters come from `help.prefix` in `data/LOCALES/en.toml` (e.g. `VERSION = 3` → `VER` matches `VERsion`).
 
 Text replies on connected channels end with CRLF, including GPI and help replies.
 Prompts, external-program streams, and file-transfer data retain their own framing.
@@ -72,7 +72,7 @@ Prompts, external-program streams, and file-transfer data retain their own frami
 | `//DISConnect` | `DISC` | Drop without QRT text |
 | `//Echo <text>` | `E` | Echo; used by `//RTT` |
 | `//END` | `END` | Finish `//Write` capture (or Ctrl-Z) |
-| `//Help [cmd]` | `H` | Serve `locales/*.toml` help |
+| `//Help [cmd]` | `H` | Serve `data/LOCALES/*.toml` help |
 | `//Info` | `I` | Prefers `<mycall>.GPI` (our station base call, SSID dropped). If that file is missing, falls back to `INFO.GPI`. Releases ship `INFO.GPI` as the example because the operator’s call is unknown at build time; rename/copy to `<call>.GPI` for a personal info text |
 | `//Language <lang>` | `L` | Switch UI / help language (ISO: `en`, `de`, …) |
 | `//MHeard [n\|call]` | `MH` | MH list or last-heard for call |

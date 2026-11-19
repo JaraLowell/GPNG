@@ -1,0 +1,312 @@
+[meta]
+name = "Russian"
+
+[help]
+overview = '''
+
+  //<n> <Text>           : Å«ß½áΓ∞ ΓÑ¬ßΓ ó ¬á¡á½ <n>
+  //7+ <ON/OFF>          : ôßΓá¡«ó¿Γ∞ 7+ ÇóΓ«ß«σαá¡Ñ¡¿Ñ ON ¿½¿ OFF
+  //Activity             : Ä»α«ß¿Γ∞ á¬Γ¿ó¡«ßΓ∞ SYSOPá
+  //Bell                 : éδº«ó SYSOPá »«ºóá¡¿óá¡¿Ñ¼ ºó«¡«τ¬á
+  //CATalog [wildcard]   : Å«¬áºáΓ∞ ß»¿ß«¬ óßÑσñ«ßΓπ»¡δσ Σá⌐½«ó
+  //CUT                  : ÅαÑ¬αáΘÑ¡¿Ñ »ÑαÑñáτ¿ Σá⌐½á
+  //DELete               : ôñá½¿Γ∞ Σá⌐½, ß«ºñá¡¡δ⌐ ¬«¼á¡ñ«⌐ //Write
+  //DIRectory [wildcard] : Æ«ªÑ ßá¼«Ñ ,τΓ« ¿  //CATalog
+  //DISConnect           : üδßΓα«Ñ αáº∞Ññ¿¡Ñ¡¿Ñ
+  //Echo <text>          : Å«»πúá⌐τ¿¬ (é«ºóαáΘáÑΓ ¡áºáñ <text>)
+  //END                  : Ä¬«¡τá¡¿Ñ ß«σαá¡Ñ¡¿∩ ΓÑ¬ßΓá, ¡áτáΓ«ú« //Write
+  //Help [command]       : ¥Γ« ß««íΘÑ¡¿Ñ ¿½¿ »«½ÑÑ »«ñα«í¡« « "command"
+  //Info                 : Å«ßδ½áÑΓ info « φΓ«⌐ ßΓá¡µ¿¿
+  //Language <language>  : æ¼Ñ¡á ∩ºδ¬á ñ½∩ «íΘÑ¡¿∩
+  //MHeard [number]      : Å«¬áºáΓ∞ ß»¿ß«¬ πß½δΦá¡¡δσ ßΓá¡µ¿⌐ [¬«½.ßΓ¡.]
+  //MHeard <call>        : Å«¬áºáΓ∞ ¬«úñá <call> íδ½ ß½δΦá¡
+  //Name <name>          : ÉÑú¿ßΓα¿απÑΓ ¿¼∩,Ñß½¿ ÑΘÑ ¡Ñ¿ºóÑßΓ¡«.
+  //NEws                 : Å«¬áºδóáÑΓ ¡«ó«ßΓ¿.( Ñß½¿ ¿¼ÑεΓß∩ )
+  //PRompt <ON/OFF>      : é¬½/óδ¬½ »α¿ú½áΦÑ¡¿Ñ
+  //Quit                 : çá¬«¡τ¿Γ∞ ßó∩º∞
+  //Read <filename>      : Åα«τ¿ΓáΓ∞ Σá⌐½ "filename"
+  //RPrg <filename>      : Å«ß½áΓ∞ Σá⌐½ "filename" ó ÇóΓ«ü¿¡ αÑª¿¼Ñ
+  //RTt <portnr>         : Å«¬áºáΓ∞ óαÑ¼∩ »ÑαÑßδ½¬¿ <ⁿ »«αΓá>
+  //RUN <program>        : çá»πßΓ¿Γ∞ ó¡ÑΦ¡εε »α«úαá¼¼π
+  //Usage [call]         : æ«ßΓ«∩¡¿Ñ ¬á¡á½ ¿½¿ ¬αáΓ¬á∩ info « "call"
+  //VERsion              : Å«¬áºáΓ∞ óÑαß¿ε »α«úαá¼¼δ
+  //Write <filename>     : Å«¼ÑßΓ¿Γ∞ »«ß½ÑñπεΘ¿⌐ ΓÑ¬ßΓ ó Σá⌐½ "filename"
+  //WPrg <filename>      : Å«¼ÑßΓ¿Γ∞ Σá⌐½ ó ÇóΓ«ü¿¡ αÑª¿¼Ñ
+  //# [Text]
+  //7DECODE <file>
+  //CSTATUS
+  //MAil
+  //PARameters
+  //SEnd <call>
+
+  éßÑ ¬«¼á¡ñδ ñ«½ª¡δ ¡áτ¿¡áΓ∞ß∩ ß »Ñαó«⌐ ¬«½«¡¬¿ ¿ ºáóÑαΦáΓ∞ß∩ <CR>.
+  éóÑñ¿ΓÑ "//h h" ñ½∩ í«½ÑÑ »«ñα«í¡«ú« «»¿ßá¡¿∩.
+'''
+
+[help.commands]
+"7+" = '''
+
+  //7+ <ON/OFF>
+      ¥Γá ¬«¼á¡ñá πßΓá¡áó½¿óáÑΓ 7+ ÇóΓ«æ«σαá¡Ñ¡¿Ñ on ¿½¿ off.
+      ¥Γá ¬«¼á¡ñá ¼«ªÑΓ »α¿¼Ñ¡∩Γ∞ß∩Ñß½¿ óδ σ«Γ¿ΓÑ »«ß½áΓ∞ ¬á¬«⌐-½¿í«
+      7+ Σá⌐½, ¡« ¡Ñ πóÑαÑ¡δ,ÑßΓ∞ ½¿ «»ÑαáΓ«α ¡á ßΓá¡µ¿¿,¿ ó¬½ετ¿½-½¿
+      «¡ 7+ ÇóΓ«æ«σαá¡Ñ¡¿Ñ ¿½¿ ¡ÑΓ.
+'''
+"7DECODE" = '''
+  //7DECODE <file>
+      Joins 7Plus part files already stored in USER. <file> may be a part
+      name (README.P01) or the original name (README.TXT). The first part
+      supplies the part count. Missing parts are reported; when every part
+      is present the original file is written and the parts are deleted.
+'''
+ACTIVITY = '''
+
+  //Activity
+      ¥Γá ¬«¼á¡ñá »«¬áºδóáÑΓ ,¬á¬«⌐ »α«¼ÑªπΓ«¬ óαÑ¼Ñ¡¿ »α«Φ½« ß ΓÑσ »«α,
+      ¬«úñá SYSOP »«ß½Ññ¡¿⌐ αáº ¡áª¿¼á½ ¬½áó¿Φ¿ ¿½¿ ΦÑóÑ½¿½ "¼δΦ∞ε".
+'''
+BELL = '''
+
+  //Bell
+      ¥Γá ¬«¼á¡ñá ó¬½ετáÑΓ ºóπ¬«ó«⌐ ß¿ú¡á½ ¡á ΓÑα¼¿¡á½Ñ. :-)
+'''
+CATALOG = '''
+
+  //CATalog [wildcard]
+      ¥Γá Σπ¡¬µ¿∩ ó«ºóαáΘáÑΓ éá¼ ß«ñÑαªá¡¿Ñ »«½∞º«óáΓÑ½∞ß¬«ú« ¬áΓá½«úá.
+      éßÑ Σá½δ ó ¡Ñ⌐ ñ«ßΓπ»¡δ ß ¬«¼á¡ñá¼¿ //Read ¿½¿ //RPrg.
+      Æá¬ªÑ //Write ¿½¿ //WPrg  Σá⌐½δ íπñπΓ »«¼ÑΘÑ¡δ ó φΓ«Γ ¬áΓá½«ú.
+          éδ ¼«ªÑΓÑ ¿ß»«½∞º«óáΓ∞ ¼áß¬¿ ß ¬«¼á¡ñ«⌐, Γ.Ñ. "//CAT *.txt".
+      Æá¬ªÑ ¼«ª¡« ¿ß»«½∞º«óáΓ∞ ¡Ñß¬«½∞¬« ¼áß«¬,αáºñÑ½Ñ¡¡δσ ß¿¼ó«½«¼ ";".
+      Γ.Ñ. "//CAT *.txt;*.doc"
+'''
+CSTATUS = '''
+  //CSTATUS
+      Lists only channels that have a connection. The first line is
+      Channel state, then the date, time, and timezone (%D %T %Z).
+      Each link is one line: this station's call, an arrow, and the
+      other station. <-- means they called in. --> means this station
+      called out.
+             Chan   1: NL1STK     <--  NL0MSK
+'''
+CUT = '''
+  //CUT
+      Aborts the file transfer on this channel and returns to chat.
+      BIN-RX, or a 7+ capture, sends #ABORT# (#NO# if the BIN file has
+      not started). BIN-TX stops. A sender that has already sent file
+      bytes also sends #ABORT# so the receiver leaves the file.
+'''
+DELETE = '''
+
+  //DELete <filename>
+      ¥Γá ¬«¼á¡ñá »«ºó«½∩ÑΓ éá¼ πñá½¿Γ∞ Σá⌐½ ¿º  »«½∞º«óáΓÑ½∞ß¬«ú«
+      ¬áΓá½«úá.Äñ¡á¬« Γ«½∞¬« ΓÑ Σá⌐½δ,¬«Γ«αδÑ éδ ßá¼¿ ß«ºñá½¿
+      ¬«¼á¡ñ«⌐ //Write. éßÑ «ßΓá½∞¡δÑ Σá⌐½δ πñá½∩εΓß∩ Γ«½∞¬«
+      Çñ¼¿¡¿ßΓαáµ¿Ñ⌐ !
+'''
+DIRECTORY = '''
+
+  //DIRectory [wildcard]
+      ¥Γá Σπ¡¬µ¿∩ ó«ºóαáΘáÑΓ éá¼ ß«ñÑαªá¡¿Ñ »«½∞º«óáΓÑ½∞ß¬«ú« ¬áΓá½«úá.
+      éßÑ Σá½δ ó ¡Ñ⌐ ñ«ßΓπ»¡δ ß ¬«¼á¡ñá¼¿ //Read ¿½¿ //RPrg.
+      Æá¬ªÑ //Write ¿½¿ //WPrg  Σá⌐½δ íπñπΓ »«¼ÑΘÑ¡δ ó φΓ«Γ ¬áΓá½«ú.
+      éδ ¼«ªÑΓÑ »α¿¼Ñ¡∩Γ∞ ¼áß¬¿ ß Σπ¡¬µ¿Ñ⌐, Γ.Ñ. "//DIR *.txt".
+      Æá¬ªÑ ¼«ª¡« »α¿¼Ñ¡∩Γ∞ ¡Ñß¬«½∞¬« ¼áß«¬ ,αáºñÑ½∩∩ ¿σ ";".
+      Γ.Ñ. "//DIR *.txt;*.doc"  ¥Γá Σπ¡¬µ¿∩ ó«ºóαáΘáÑΓ éá¼ ß«ñÑαªá¡¿Ñ »«½∞º«óáΓÑ½∞ß¬«ú« ¬áΓá½«úá.
+      éßÑ Σá½δ ó ¡Ñ⌐ ñ«ßΓπ»¡δ ß ¬«¼á¡ñá¼¿ //Read ¿½¿ //RPrg.
+      Æá¬ªÑ //Write ¿½¿ //WPrg  Σá⌐½δ íπñπΓ »«¼ÑΘÑ¡δ ó φΓ«Γ ¬áΓá½«ú.
+'''
+DISCONNECT = '''
+
+  //DISConnect
+      ¥Γá ¬«¼á¡ñá »αÑ¬αáΘáÑΓ QSO ¡Ñ¼Ññ½Ñ¡¡« ¿ íÑº ¬«¼¼Ñ¡Γáα¿Ñó.
+      ì« φΓ« ¡ÑóÑª½¿ó«,¿ »« ó«º¼«ª¡«ßΓ¿ »«½∞ºπ⌐ΓÑß∞ ¬«¼á¡ñ«⌐ "//Q".
+'''
+ECHO = '''
+
+  //Echo <text>
+      ¥Γá ¬«¼á¡ñá »α«ßΓ« »«ßδ½áÑΓ ¡áºáñ »ÑαÑñá¡¡δ⌐ éá¼¿ ΓÑ¬ßΓ.
+      ÄΓñÑ½¿ΓÑ ΓÑ¬ßΓ «Γ ¬«¼á¡ñδ »α«íÑ½«¼.
+'''
+END = '''
+
+  //END
+      ÅαÑ¬αáΘáÑΓ »ÑαÑ¼ÑΘÑ¡¿Ñ Σá⌐½á,¡áτáΓ«ú« ¬«¼á¡ñ«⌐ //Write.
+      ¥Γá ¬«¼á¡ñá ¡Ñ αáí«ΓáÑΓ ó αÑª¿¼Ñ AutoBin.
+'''
+HELP = '''
+
+  //Help
+      ÄíΘá∩ ¿¡Σ«α¼áµ¿∩:
+      éßÑ ¬«¼á¡ñδ ñ«½ª¡δ ¡áτ¿¡áΓß∩ ß »Ñαó«⌐ »«º¿µ¿¿ ßΓα«¬¿ ¿ ºá¬á¡τ¿óáΓ∞ß∩
+      <CR>.è«¼á¡ñá ¡áτ¿¡áÑΓß∩ ß "//",¿¡áτÑ ¡¿τÑú« ¡Ñ ß½πτ¿Γß∩.
+      éßÑ ¬«¼á¡ñδ ¼«úπΓ íδΓ∞ ß »áαá¼ÑΓαá¼¿. àß½¿ éδ ñ«íáó½∩ÑΓÑ »áαá¼ÑΓα
+      Γ«  ¡Ñ«íσ«ñ¿¼« «ΓñÑ½¿Γ∞ Ñú« «Γ ¬«¼á¡ñδ «ñ¡¿¼ »α«íÑ½«¼.
+      àß½¿ ¡Ñ«íσ«ñ¿¼« ñ«íáó¿Γ∞ ¡Ñß¬«½∞¬« »áαá¼ÑΓα«ó,óßÑ Γá¬ªÑ «ΓñÑ½∩εΓß∩
+      ñαπú «Γ ñαπúá «ñ¡¿¼ »α«íÑ½«¼.
+      è«¼á¡ñá ß »áαá¼ÑΓαá¼¿ ¡Ñ ñ«½ª¡á »αÑóδΦáΓ∞ ñ½¿¡δ 80 ß¿¼ó«½«ó.
+'''
+INFO = '''
+
+  //Info
+      Å«¬áªÑΓ ¿¡Σ«α¼áµ¿«¡¡δ⌐ Σá⌐½ « î«Ñ⌐ ß¿ßΓÑ¼Ñ ¿ ßΓá¡µ¿¿.
+'''
+LANGUAGE = '''
+  //Language <language>
+      Меняет язык интерфейса и справки (ISO: en, ru, de…).
+      Без параметра — список языков.
+'''
+MAIL = '''
+  //MAIL
+      Prints the mail waiting for your callsign. This is not a file transfer.
+      //Read sends a file. A numeric SSID is the same mailbox, so
+      NL1STK-2 reads NL1STK. If there is no mail the answer is:
+      You have no mail
+'''
+MHEARD = '''
+
+  //MHeard [number]
+      ¥Γá ¬«¼á¡ñá »«¬áºδóáÑΓ ß»¿ß«¬ πß½δΦá¡¡δσ ßΓá¡µ¿⌐. àß½¿ ñ«íáó¿Γ∞
+      τ¿ß½«ó«⌐ »áαá¼ÑΓα ó ¬«¼á¡ñπ,«ΓñÑ½¿ó Ñú« «ñ¡¿¼ »α«íÑ½«¼, GP »«Φ½ÑΓ
+      óá¼ π¬áºá¡¡«Ñ ¬«½¿τÑßΓó« πß½δΦá¡¡δσ ßΓá¡µ¿⌐.
+      è«¼á¡ñá íÑº »áαá¼ÑΓαá »«¬áªÑΓ éá¼ »«ß½Ññ¡¿Ñ 20 ßΓá¡µ¿⌐.
+'''
+N = '''
+  //<n> [text]
+      Where n is a number. Bare //n joins chat on channel n. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //n sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+"#" = '''
+  //# [text]
+      Where # is a number. Bare //# joins chat on channel #. Everything
+      you type is sent to that channel, and text from that channel (and
+      other joiners) is sent back to you on the air. The room is told
+      "<GPNG>: CALL (Name) Joined your channel!". //0 leaves and announces
+      Left. With text, //# sends one line only and does not stay in chat
+      mode. Target must be a connected TERM channel.
+'''
+NAME = '''
+
+  //Name <name>
+      àß½¿ éáΦÑ ¿¼∩ ÑΘÑ ¡Ñ »«¼ÑΘÑ¡« ó ¼áαΦαπΓ¡δ⌐ Σá⌐½ GP, óδ ¼«ªÑΓÑ
+      ¿ß»«½∞º«óáΓ∞ φΓπ ¬«¼á¡ñπ ñ½∩ αÑú¿ßΓαáµ¿¿ Ñú« ó ¡Ñ¼.
+      éδ ñ«½ª¡δ «ΓñÑ½¿Γ∞ »α«íÑ½«¼ éáΦÑ ¿¼∩ «Γ ¬«¼á¡ñδ.
+      éáΦÑ ¿¼∩ ¼«ªÑΓ ß«ñÑªáΓ∞ ½εíδÑ ß¿¼ó«½δ,ó¬½ετá∩ ¿ »α«íÑ½δ.
+'''
+NEWS = '''
+
+  //NEws
+      ¥Γá ¬«¼á¡ñá »«¬áªÑΓ ì«ó«ßΓ¿ , Ñß½¿ Γá¬«óδÑ ¿¼ÑεΓß∩.
+'''
+PARAMETERS = '''
+  //PARameters
+  //P
+      Queries TNC timing parameters (P-Persistence, Slottime, Frack,
+      T2, T3, TXDelay, MaxUnack). On WA8DED the values are read live from
+      the TNC; otherwise the last known or WA8DED.INI / init[] values.
+'''
+PROMPT = '''
+
+  //PRompt <ON/OFF>
+      ¥Γá ¬«¼á¡ñá πßΓá¡áó½¿óáÑΓ on/off πñá½Ñ¡¡«Ñ »α¿ú½áΦÑ¡¿Ñ.
+      àß½¿ φΓá Σπ¡¬µ¿∩ ó¬½ετÑ¡á,»α¿ú½áΦÑ¡¿Ñ »«∩ó¿Γß∩,¬«úñá
+      éáΦá ¬«¼á¡ñá πªÑ óδ»«½¡Ñ¡á ¿ »«¬áºδóáÑΓ ,τΓ« ß¿ßΓÑ¼á
+      ú«Γ«óá ¬ »α¿Ñ¼π ß½ÑñπεΘÑ⌐ ¬«¼á¡ñδ.
+'''
+QUIT = '''
+
+  //Quit
+      ¥Γá ¬«¼á¡ñá ¡«α¼á½∞¡« «¬á¡τ¿óáÑΓ QSO.êß»«½∞ºπ∩ φΓπ ¬«¼á¡ñπ
+      »α¿ αáº∞Ññ¿¡Ñ¡¿¿ éδ »α«½πτ¿ΓÑ »α«Θá½∞¡δ⌐ ΓÑ¬ßΓ »ÑαÑñ ΓÑ¼,
+      ¬á¬ QSO ºá¬«¡τ¿Γß∩.
+'''
+READ = '''
+  //Read <filename>
+      This command sends you a text file. You can get a list of all readable
+      files by sending the command "//CATalog".
+      Mail is //MAIL, not this file transfer.
+'''
+RPRG = '''
+
+  //RPrg <filename>
+      ¥Γá Σπ¡¬µ¿∩ »«ßδ½áÑΓ Σá⌐½ ó AutoBin αÑª¿¼Ñ. éδ ñ«½ª¡δ ß¡áτá½á πßΓá¡«ó¿Γ∞
+      éáΦπ »α«úαá¼¼π ú«Γ«ó«⌐ ¬ »α¿Ñ¼π Σá⌐½á ó AutoBin αÑª¿¼Ñ »αÑªñÑ,τÑ¼
+      »«ß½áΓ∞ φΓπ πñá½Ñ¡¡πε ¬«¼á¡ñπ.
+      ¥Γ«Γ αÑª¿¼ ß«ó¼ÑßΓ¿¼ ß »α«úαá¼¼á¼¿ THP ¿ SP.
+'''
+RTT = '''
+
+  //RTt <portnr>
+      ¥Γá ¬«¼á¡ñá óδτ¿ß½∩ÑΓ óαÑ¼∩ »ÑαÑßδ½¬¿ ¼Ñªñπ ¡áΦ¿¼¿ ßΓá¡µ¿∩¼¿.
+      éáΦá »α«úαá¼¼á ñ«½ª¡á íδΓ∞ ß»«ß«í¡á óδ»«½¡¿Γ∞ ó¡ÑΦ¡εε ¬«¼á¡ñπ
+      "//Echo",¿¡áτÑ φΓá ¬«¼á¡ñá ¡Ñ ßαáí«ΓáÑΓ.
+      àß½¿ óδ ¿ß»«½∞ºπÑΓÑ BayCom ¿½¿ Digicom,ñ«íáó∞ΓÑ »áαá¼ÑΓα«¼
+      ¡«¼Ñα ΓÑ¬πΘÑú« »«αΓá ó ¬«¼á¡ñπ. Γ.Ñ. "//RT 1".
+'''
+RUN = '''
+  //RUN <program>
+      Runs a program from the EXTERNAL folder and sends what it prints
+      back on this link. //RUN ? lists the programs. //<program> is the
+      same when that name is not already a command.
+
+      A program is a text script the sysop placed in EXTERNAL: Python,
+      PHP, Perl, Ruby, Node, Lua, or Java. Java cannot open a window.
+      The first line may name the program, for example
+      #! /usr/bin/env python3, #! /usr/bin/perl, or
+      #! /usr/lib/cgi-bin/php7.2.
+      That line is read on Linux, macOS, and Windows. The language must
+      be installed on the sysop computer. Words after the name are
+      arguments, not a path.
+
+      //RUN FREE
+          Memory total, used, and still free.
+
+      If the script reads a line, the next text from this connection is
+      that line, and the program stays open while it waits. A second
+      //RUN answers "program is running". When the script exits, it is
+      closed. It also closes after 300 seconds with no typed line
+      and no new text. A station still connected is told
+      "closed run program after timeout".
+      One program per channel. It also stops when the link drops.
+'''
+SEND = '''
+  //SEND <call>
+      The next line is a mail message for that station. A numeric SSID
+      is ignored, so NL1STK-2 is NL1STK. The line is stored as that
+      call's mail. If mail is already there, two blank lines are
+      written and the new message is added:
+      <from> to <call> at <date> <time>, then the message.
+      The answer is: GPNG: Mail send to <call>
+'''
+USAGE = '''
+
+  //Usage [call]
+      ¥Γá ¬«¼á¡ñá íÑº »áαá¼ÑΓα«ó »«¬áºδóÑΓ ΓÑ¬πΘÑÑ ß«ßΓ«∩¡¿Ñ ¬á¡á½«ó
+      ßΓá¡µ¿¿.
+      àß½¿ ñ«íáó¿Γ∞ call »áαá¼ÑΓα«¼, óδ »«½πτ¿ΓÑ ¬αáΓ¬πε ¿¡Σ«α¼áµ¿ε
+      « call, Ñß½¿ «¡á ß«ñÑαª¿Γß∩ ó ¼áαΦαπΓ¡«¼ Σá⌐½Ñ (in path file) GP.
+'''
+VERSION = '''
+
+  //VERsion
+      Å«¬áºδóáÑΓ óÑαß¿ε φΓ«⌐ »α«úαá¼¼δ.
+'''
+WPRG = '''
+
+  //WPrg <filename>
+      ¥Γá ¬«¼á¡ñá ¡áτ¿¡áÑΓ ß«σαá¡∩Γ∞ Σá⌐½ ó AutoBin αÑª¿¼Ñ.
+      AutoBin αÑª¿¼-φΓ« »α«ßΓ«⌐ »α«Γ«¬«½,ß«ñÑαªáΘ¿⌐ »α«óÑα¬π CRC.
+      Äíδτ¡« φΓ« »αÑñ«ΓóαáΘáÑΓ «Φ¿í¬¿.¥Γ«Γ αÑª¿¼ ß«ó¼ÑßΓ¿¼ ß
+      »α«úαá¼¼á¼¿ THP ¿ SP.
+'''
+WRITE = '''
+
+  //Write <filename>
+      ¥Γá ¬«¼á¡ñá ¡áτ¿¡áÑΓ ß«σαá¡∩¿Γ∞ ΓÑ¬ßΓ. éÑß∞ ΓÑ¬ßΓ »«ß½Ñ φΓ«⌐ ¬«¼á¡ñδ
+      íπñÑΓ »«¼ÑΘÑ¡ ó Σá⌐½ "filename" »«¬á óδ ¡Ñ »«Φ½ÑΓÑ Ctrl-Z ¿½¿
+      ¬«¼á¡ñπ //END.
+'''
