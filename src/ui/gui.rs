@@ -672,8 +672,8 @@ impl GpGuiApp {
         let beacon_sched = BeaconSchedule::start(
             ctx.clone(),
             BeaconSnap {
-                kiss: cfg.tnc.protocol_kind().uses_software_ax25(),
-                port: cfg.tnc.kiss_port,
+                kiss: cfg.tnc.runs_kiss_ax25(),
+                port: cfg.tnc.kiss_tx_port(),
                 beacon: cfg.beacon.clone(),
                 my_call: cfg.primary_mycall().to_string(),
                 qrg: session.qrg_text(),
@@ -1480,7 +1480,7 @@ impl GpGuiApp {
     /// Push this slot's effective MYCALL to the TNC (`I call`).
     fn push_channel_identity(&mut self, channel: u8) {
         let call = self.effective_mycall(channel);
-        if channel == 0 && !self.software_ax25() {
+        if channel == 0 && self.cfg.tnc.has_wa8ded() {
             self.tx_modem_line(channel, &format!("I {call}"));
         }
         self.configure_sessions();
@@ -2247,7 +2247,7 @@ impl GpGuiApp {
     }
 
     fn software_ax25(&self) -> bool {
-        self.cfg.tnc.protocol_kind().uses_software_ax25()
+        self.cfg.tnc.runs_kiss_ax25()
     }
 
     /// KISS, BayCom and TFPCX use the application's monitor filter.
@@ -3750,7 +3750,7 @@ impl GpGuiApp {
             _ => {
                 let (dest, vias) = ax25::parse_unproto(&self.cfg.beacon.address);
                 self.send_session_command(SessionCommand::Unproto {
-                    port: self.cfg.tnc.kiss_port,
+                    port: self.cfg.tnc.kiss_tx_port(),
                     local: my.clone(),
                     remote: dest.clone(),
                     via: vias.clone(),
@@ -3801,7 +3801,7 @@ impl GpGuiApp {
 
     /// Hostmode/modem command TX — skipped on KISS (identity lives in AX.25 headers).
     fn tx_modem_line(&mut self, channel: u8, line: &str) {
-        if self.software_ax25() {
+        if self.software_ax25() && !self.cfg.tnc.has_wa8ded() {
             return;
         }
         let line = line.trim_end_matches('\r').trim_end_matches('\n');
@@ -7803,7 +7803,7 @@ impl GpGuiApp {
     fn poll_beacon(&mut self) {
         self.beacon_sched.publish(BeaconSnap {
             kiss: self.software_ax25(),
-            port: self.cfg.tnc.kiss_port,
+            port: self.cfg.tnc.kiss_tx_port(),
             beacon: self.cfg.beacon.clone(),
             my_call: self.cfg.primary_mycall().to_string(),
             qrg: self.session.qrg_text(),

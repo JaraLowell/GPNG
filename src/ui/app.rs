@@ -269,8 +269,8 @@ impl UiApp {
                         self.cfg.session.qrg_text.clone()
                     };
                     self.status = beacon::send_now(&BeaconSnap {
-                        kiss: self.cfg.tnc.protocol_kind().uses_software_ax25(),
-                        port: self.cfg.tnc.kiss_port,
+                        kiss: self.cfg.tnc.runs_kiss_ax25(),
+                        port: self.cfg.tnc.kiss_tx_port(),
                         beacon: self.cfg.beacon.clone(),
                         my_call: self.cfg.primary_mycall().to_string(),
                         qrg,
@@ -340,10 +340,10 @@ impl UiApp {
                     data: chunk.into_bytes(),
                     id: None,
                 })
-            } else if self.cfg.tnc.protocol_kind().uses_software_ax25() {
+            } else if self.cfg.tnc.runs_kiss_ax25() {
                 let (remote, via) = crate::tnc::ax25::parse_unproto(&self.cfg.beacon.address);
                 TncCommand::Session(SessionCommand::Unproto {
-                    port: self.cfg.tnc.kiss_port,
+                    port: self.cfg.tnc.kiss_tx_port(),
                     local: self.cfg.primary_mycall().into(),
                     remote,
                     via,

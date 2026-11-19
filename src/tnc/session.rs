@@ -330,6 +330,8 @@ pub(super) struct KissSessions {
     configs: BTreeMap<u8, ChannelConfig>,
     links: BTreeMap<u8, Link>,
     settings: Settings,
+    /// TFPCX: a free channel may answer a SABM on any KISS radio.
+    any_kiss_port: bool,
 }
 
 impl KissSessions {
@@ -338,7 +340,13 @@ impl KissSessions {
             configs: BTreeMap::new(),
             links: BTreeMap::new(),
             settings,
+            any_kiss_port: false,
         }
+    }
+
+    /// A connect request on one TFPCX radio can use a channel set up for another.
+    pub fn listen_on_every_kiss_port(&mut self) {
+        self.any_kiss_port = true;
     }
 
     pub fn command(&mut self, command: SessionCommand, now: Instant) -> Vec<Action> {
@@ -523,7 +531,7 @@ impl KissSessions {
         let ours: Vec<_> = self
             .configs
             .values()
-            .filter(|c| c.port == port)
+            .filter(|c| self.any_kiss_port || c.port == port)
             .map(|c| c.local.clone())
             .collect();
         if let Some(repeated) = ax25::repeat_if_ours(payload, &ours) {
@@ -559,14 +567,7 @@ impl KissSessions {
                 } else {
                     link.connected(true, &mut out);
                 }
-            } else if let Some(config) = self
-                .configs
-                .values()
-                .find(|c| {
-                    c.port == port && c.local == frame.dest && !self.links.contains_key(&c.channel)
-                })
-                .cloned()
-            {
+            } else if let Some(config) = self.incoming_config(port, &frame.dest) {
                 let mut link = Link::new(
                     config.clone(),
                     frame.src.clone(),
@@ -699,9 +700,32 @@ impl KissSessions {
     }
 
     fn owns(&self, port: u8, call: &str) -> bool {
-        self.configs
+        self.configs.values().any(|c| {
+            (self.any_kiss_port || c.port == port) && c.local == call
+        })
+    }
+
+    /// Free channel for an incoming SABM. TFPCX may move it onto the radio that called.
+    fn incoming_config(&self, port: u8, local: &str) -> Option<ChannelConfig> {
+        let free = |c: &ChannelConfig| {
+            c.local == local && !self.links.contains_key(&c.channel)
+        };
+        if let Some(config) = self
+            .configs
             .values()
-            .any(|c| c.port == port && c.local == call)
+            .find(|c| c.port == port && free(c))
+            .cloned()
+        {
+            return Some(config);
+        }
+        if !self.any_kiss_port {
+            return None;
+        }
+        self.configs.values().find(|c| free(c)).map(|c| {
+            let mut config = c.clone();
+            config.port = port;
+            config
+        })
     }
 
     pub fn tick(&mut self, now: Instant) -> Vec<Action> {
@@ -1352,5 +1376,33 @@ mod tests {
             [SessionEvent::Connected { port: 2, .. }]
         ));
         assert_eq!(engine.links[&1].config.port, 2);
+    }
+
+    #[test]
+    fn incoming_sabm_on_another_kiss_port_opens_a_free_channel() {
+        let now = Instant::now();
+        let mut engine = setup(&[(1, 0, "NL0MSK"), (2, 0, "NL0MSK")]);
+        engine.listen_on_every_kiss_port();
+        let sabm = ax25::build_sabm("NL0MSK", "NL1MSK");
+        let out = engine.receive(1, &sabm, now);
+        assert_eq!(frames(&out)[0].0, 1);
+        assert_eq!(frames(&out)[0].1.kind, Ax25FrameType::Ua);
+        assert!(matches!(
+            events(&out).as_slice(),
+            [SessionEvent::Connected {
+                channel: 1,
+                port: 1,
+                outgoing: false,
+                ..
+            }]
+        ));
+        assert_eq!(engine.links[&1].config.port, 1);
+        assert_eq!(engine.configs[&1].port, 0);
+        let again = engine.receive(1, &sabm, now);
+        assert!(events(&again).iter().all(|event| !matches!(
+            event,
+            SessionEvent::Connected { channel: 2, .. }
+        )));
+        assert!(!engine.links.contains_key(&2));
     }
 }

@@ -22,6 +22,9 @@ pub(super) async fn run(
 ) {
     let modem = Modem::from_config(&config);
     let mut sessions = KissSessions::new(Settings::from_config(&config));
+    if modem.is_switch() {
+        sessions.listen_on_every_kiss_port();
+    }
     let mut host = HostSessions::default();
     let mut timer = tokio::time::interval(Duration::from_millis(20));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

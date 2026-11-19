@@ -97,10 +97,11 @@ pub fn monitor_ctl_line(
     format!("fm {src} to {dest}{via} ctl {ctl}")
 }
 
-/// `fm CALL…` or `fm2 CALL…`. The head includes the trailing space.
+/// `fm CALL…` or `fm2 CALL…`. The head includes the separator space.
 ///
-/// Digits glued to `fm` are the KISS port. A space and then `HH:MM` is the
-/// clock, so port 0 stays `fm` and is not read as a port number.
+/// Digits glued to `fm` are the KISS port. Port 0 is written `fm` plus one
+/// extra space, so `fm  HH:MM` lines up with `fm1 HH:MM`. That pad stays in
+/// the head. A following `HH:MM` is the clock, not a port number.
 pub fn split_monitor_fm(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim_start();
     let b = rest.as_bytes();
@@ -108,7 +109,9 @@ pub fn split_monitor_fm(line: &str) -> Option<(&str, &str)> {
         return None;
     }
     let mut i = 2;
-    if b[2].is_ascii_digit() {
+    let mut port_digits = false;
+    if b.get(2).is_some_and(|c| c.is_ascii_digit()) {
+        port_digits = true;
         while i < b.len() && b[i].is_ascii_digit() {
             i += 1;
         }
@@ -116,15 +119,17 @@ pub fn split_monitor_fm(line: &str) -> Option<(&str, &str)> {
     if b.get(i) != Some(&b' ') {
         return None;
     }
-    let head_end = line.len() - rest.len() + i + 1;
+    i += 1;
+    if !port_digits && b.get(i) == Some(&b' ') {
+        i += 1;
+    }
+    let head_end = line.len() - rest.len() + i;
     Some((&line[..head_end], &line[head_end..]))
 }
 
-/// Port 0 leaves `fm CALL`. Any other KISS port becomes `fm2 CALL`.
+/// Port 0 becomes `fm  CALL` (the missing digit is a space). Any other KISS
+/// port becomes `fm2 CALL`.
 pub fn tag_kiss_port(line: &str, port: u8) -> String {
-    if port == 0 {
-        return line.to_string();
-    }
     let Some((head, tail)) = split_monitor_fm(line) else {
         return line.to_string();
     };
@@ -135,11 +140,16 @@ pub fn tag_kiss_port(line: &str, port: u8) -> String {
     let lead_len = head.len() - head.trim_start().len();
     let lead = &head[..lead_len];
     let fm = &head[lead_len..lead_len + 2];
-    format!("{lead}{fm}{port} {tail}")
+    if port == 0 {
+        format!("{lead}{fm}  {tail}")
+    } else {
+        format!("{lead}{fm}{port} {tail}")
+    }
 }
 
-/// `fm SRC …` → `fm HH:MM SRC …` (24-hour, already-stamped lines left as-is).
-/// A non-zero KISS port stays glued to `fm`: `fm2 HH:MM SRC …`.
+/// `fm SRC …` → `fm  HH:MM SRC …` when the port digit was left out.
+/// A numbered KISS port stays glued to `fm`: `fm2 HH:MM SRC …`.
+/// Already-stamped lines are left as-is.
 pub fn insert_monitor_time(line: &str, hhmm: &str) -> String {
     let Some((head, tail)) = split_monitor_fm(line) else {
         return line.to_string();
@@ -778,4 +788,31 @@ pub fn parse_frame(payload: &[u8]) -> Option<Ax25Frame> {
         command,
         info,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn port_zero_monitor_tag_keeps_a_column_for_the_missing_digit() {
+        let line = "fm NL1MSK to NL1AS via NL0MSK ctl RR1v";
+        let plain = tag_kiss_port(line, 0);
+        let numbered = tag_kiss_port(line, 1);
+        let stamped_plain = insert_monitor_time(&plain, "14:30");
+        let stamped_numbered = insert_monitor_time(&numbered, "14:30");
+        assert_eq!(
+            stamped_plain,
+            "fm  14:30 NL1MSK to NL1AS via NL0MSK ctl RR1v"
+        );
+        assert_eq!(
+            stamped_numbered,
+            "fm1 14:30 NL1MSK to NL1AS via NL0MSK ctl RR1v"
+        );
+        assert_eq!(
+            stamped_plain.find("14:30"),
+            stamped_numbered.find("14:30")
+        );
+        assert_eq!(insert_monitor_time(&stamped_plain, "14:31"), stamped_plain);
+    }
 }

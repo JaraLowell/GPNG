@@ -1628,6 +1628,44 @@ impl HostProtocol {
     }
 }
 
+impl TncConfig {
+    /// KISS or BayCom, or TFPCX with at least one KISS modem.
+    /// Beacons and monitor text are AX.25 UI frames on that path.
+    pub fn runs_kiss_ax25(&self) -> bool {
+        match self.protocol_kind() {
+            HostProtocol::Kiss | HostProtocol::Baycom => true,
+            HostProtocol::Tfpcx => self
+                .links
+                .iter()
+                .any(|link| link.is_enabled() && link.is_kiss()),
+            HostProtocol::Wa8ded => false,
+        }
+    }
+
+    /// A WA8DED TNC is on this station, either alone or as one TFPCX modem.
+    pub fn has_wa8ded(&self) -> bool {
+        match self.protocol_kind() {
+            HostProtocol::Wa8ded => true,
+            HostProtocol::Tfpcx => self.wa8ded_logical_port().is_some(),
+            _ => false,
+        }
+    }
+
+    /// Port used for a beacon or monitor UI frame.
+    /// TFPCX uses `kiss_port` when that radio is one of its KISS ports.
+    pub fn kiss_tx_port(&self) -> u8 {
+        if self.protocol_kind() != HostProtocol::Tfpcx {
+            return self.kiss_port;
+        }
+        let ports = self.kiss_logical_ports();
+        if ports.contains(&self.kiss_port) {
+            self.kiss_port
+        } else {
+            ports.first().copied().unwrap_or(self.kiss_port)
+        }
+    }
+}
+
 fn default_white_name() -> String {
     "White".into()
 }
@@ -2103,5 +2141,19 @@ mod tfpcx_link_tests {
         cfg.links.push(kiss(&[5]));
         cfg.links[1].ports = vec![3];
         assert!(cfg.validated_links().unwrap_err().contains("at most 3"));
+    }
+
+    #[test]
+    fn kiss_only_tfpcx_sends_ui_frames_and_skips_the_host_identity() {
+        let mut cfg = TncConfig::default();
+        cfg.protocol = "tfpcx".into();
+        cfg.kiss_port = 9;
+        cfg.links = vec![kiss(&[0, 1]), kiss(&[2])];
+        cfg.links[1].transport = "tcp".into();
+        cfg.links[1].tcp_host = "127.0.0.1".into();
+        cfg.links[1].tcp_port = 8200;
+        assert!(cfg.runs_kiss_ax25());
+        assert!(!cfg.has_wa8ded());
+        assert_eq!(cfg.kiss_tx_port(), 0);
     }
 }
