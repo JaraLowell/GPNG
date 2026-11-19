@@ -148,7 +148,7 @@ wa8ded_line_delay_ms = 300
 
 # Modem driver (only one is loaded): "wa8ded" (aliases: jhost, hostmode),
 # "tfpcx" (soft-TNC), or "kiss" (TAPR KISS over serial or TCP).
-protocol = "tfpcx"
+protocol = "kiss"
 
 # Monitor flags at connect — expanded as %M in WA8DED.INI / KISS.INI (e.g. M %M → M IUSC).
 monitor_mode = "IUSC"

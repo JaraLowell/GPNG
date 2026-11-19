@@ -9148,6 +9148,7 @@ impl GpGuiApp {
             .fixed_pos(Pos2::new(screen.center().x, y))
             .default_width(width)
             .min_width(width)
+            .max_width(width)
             .frame(popup_frame())
             .open(&mut open)
             .show(ctx, |ui| {
@@ -9367,7 +9368,7 @@ impl GpGuiApp {
     fn radio_setup_form(&mut self, ui: &mut Ui) -> bool {
         let tfpcx = self.radio_protocol == HostProtocol::Tfpcx;
         let form_w = if tfpcx { 740.0 } else { retro::ROW_W };
-        ui.set_min_width(form_w);
+        ui.set_width(form_w);
         ui.spacing_mut().item_spacing.y = 4.0;
         let row_w = form_w;
         let font = menu_font(17.0);
@@ -14085,7 +14086,7 @@ const RADIO_PROTOCOLS: [HostProtocol; 4] = [
 fn protocol_label(kind: HostProtocol) -> &'static str {
     match kind {
         HostProtocol::Wa8ded => "TAPR TNC-2 WA8DED",
-        HostProtocol::Tfpcx => "TFPCX",
+        HostProtocol::Tfpcx => "TFPCX - Multi Modem",
         HostProtocol::Kiss => "KISS",
         HostProtocol::Baycom => "Baycom",
     }
@@ -16074,7 +16075,7 @@ mod input_tests {
                 (0, "kiss", "KISS"),
                 (1, "wa8ded", "TAPR TNC-2 WA8DED"),
                 (2, "baycom", "Baycom"),
-                (3, "tfpcx", "TFPCX"),
+                (3, "tfpcx", "TFPCX - Multi Modem"),
             ] {
                 app.apply_radio_pick(RadioPick::Protocol, index, &[]);
                 app.store_radio_form().unwrap();
