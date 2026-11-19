@@ -182,6 +182,7 @@ impl UiApp {
                 tracing::debug!(len = bytes.len(), "raw RX (ui)");
             }
             TncEvent::LinkIo { .. } => {}
+            TncEvent::Modem { .. } => {}
             TncEvent::Buffers(_) => {}
             TncEvent::KissTx { port, frame } => {
                 self.monitor_kiss_packet("TX", port, &frame);

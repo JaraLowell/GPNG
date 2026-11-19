@@ -24,6 +24,7 @@ mod hostmode;
 mod kiss_ini;
 mod monitor_filter;
 mod payload;
+mod reconnect;
 mod serial;
 mod session;
 mod session_service;
@@ -156,10 +157,18 @@ pub enum TncEvent {
     Session(SessionEvent),
     /// Raw bytes observed on the wire (pre-decoder / debug).
     RawRx(Vec<u8>),
-    /// Bytes moved on the COM port or KISS TCP link, before any decode.
+    /// Bytes moved on one COM port or KISS TCP link, before any decode.
     /// `tx` is host → modem (send). `false` is modem → host (receive).
+    /// `index` is 0 for a single modem, or the TFPCX modem in list order.
     LinkIo {
         tx: bool,
+        index: u8,
+    },
+    /// Session-bar badge for one modem. `label` is `COM7` or `TCP`.
+    Modem {
+        index: u8,
+        label: String,
+        phase: LinkPhase,
     },
     /// A decoded hostmode frame or raw KISS/BayCom AX.25 (radio port + payload).
     HostFrame {
@@ -185,6 +194,19 @@ pub enum TncEvent {
     Warning(String),
     /// Serial link closed or unrecoverable error.
     LinkDown(String),
+}
+
+/// Whether a modem badge is green, waiting, or red.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkPhase {
+    /// Not open yet.
+    Pending,
+    /// The port or socket is up.
+    Open,
+    /// Dropped. Another try follows in a minute.
+    Retry,
+    /// Ten tries failed. The badge stays red.
+    Closed,
 }
 
 /// Commands the UI / session layer may send toward the TNC task.

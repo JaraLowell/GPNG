@@ -313,7 +313,7 @@ fn run_loop(
                 if let Some(bit) = clock.push(sample) {
                     match modem.receive_bit(bit) {
                         Some(Ok(payload)) => {
-                            emit(events, TncEvent::LinkIo { tx: false })?;
+                            emit(events, TncEvent::LinkIo { tx: false, index: 0 })?;
                             emit(
                                 events,
                                 TncEvent::HostFrame {
@@ -393,7 +393,7 @@ fn run_loop(
             clock = ClockRecovery::default();
             last_input = Instant::now();
             last_service = Instant::now();
-            emit(events, TncEvent::LinkIo { tx: true })?;
+            emit(events, TncEvent::LinkIo { tx: true, index: 0 })?;
             emit(events, TncEvent::KissTx { port: 0, frame })?;
         }
         std::thread::sleep(Duration::from_millis(1));

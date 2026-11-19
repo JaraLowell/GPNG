@@ -13,7 +13,8 @@ use super::super::hostmode::{
 };
 use super::super::serial::SerialLink;
 use super::super::wa8ded_ini::{self, resolve_wa8ded_ini};
-use super::super::{BufferReport, ChannelBuffers, TncCommand, TncError, TncEvent};
+use super::super::reconnect::{self, Attempt};
+use super::super::{BufferReport, ChannelBuffers, LinkPhase, TncCommand, TncError, TncEvent};
 
 const CHANNELS: u8 = 10;
 
@@ -21,9 +22,61 @@ pub fn run(
     serial: SerialConfig,
     config: TncConfig,
     events: mpsc::Sender<TncEvent>,
-    commands: mpsc::Receiver<TncCommand>,
+    mut commands: mpsc::Receiver<TncCommand>,
 ) -> Result<(), TncError> {
-    let mut link = SerialLink::open(&serial)?;
+    let label = {
+        let port = serial.port.trim();
+        if port.is_empty() {
+            "COM".to_string()
+        } else {
+            port.to_string()
+        }
+    };
+    let mut failures = 0u8;
+    loop {
+        match run_once(&serial, &config, &events, &mut commands, &label, &mut failures) {
+            Attempt::Stop => return Ok(()),
+            Attempt::Again(err) => {
+                failures = failures.saturating_add(1);
+                let phase = if failures >= reconnect::RETRY_LIMIT {
+                    LinkPhase::Closed
+                } else {
+                    LinkPhase::Retry
+                };
+                let _ = events.blocking_send(TncEvent::Modem {
+                    index: 0,
+                    label: label.clone(),
+                    phase,
+                });
+                let _ = events.blocking_send(TncEvent::Warning(format!(
+                    "{label} down, try {failures} of {}: {err}",
+                    reconnect::RETRY_LIMIT
+                )));
+                let _ = events.blocking_send(TncEvent::LinkDown(err.to_string()));
+                if phase == LinkPhase::Closed {
+                    reconnect::hold_until_shutdown(&mut commands);
+                    return Ok(());
+                }
+                if !reconnect::wait_retry(&mut commands) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+fn run_once(
+    serial: &SerialConfig,
+    config: &TncConfig,
+    events: &mpsc::Sender<TncEvent>,
+    commands: &mut mpsc::Receiver<TncCommand>,
+    label: &str,
+    failures: &mut u8,
+) -> Attempt {
+    let mut link = match SerialLink::open(serial) {
+        Ok(link) => link,
+        Err(err) => return Attempt::Again(err),
+    };
     link.watch(events.clone());
     let _ = events.blocking_send(TncEvent::Status(format!(
         "Opening WA8DED TNC2 on {} ({} baud)",
@@ -31,25 +84,38 @@ pub fn run(
     )));
     let result = run_hostmode(
         &mut link,
-        &config,
-        &events,
+        config,
+        events,
         commands,
         serial.poll_interval_ms(),
+        label,
+        failures,
     );
     link.prepare_close();
-    result
+    match result {
+        Ok(()) => Attempt::Stop,
+        Err(err) => Attempt::Again(err),
+    }
 }
 
 fn run_hostmode(
     link: &mut impl HostIo,
     config: &TncConfig,
     events: &mpsc::Sender<TncEvent>,
-    mut commands: mpsc::Receiver<TncCommand>,
+    commands: &mut mpsc::Receiver<TncCommand>,
     poll_ms: u64,
+    label: &str,
+    failures: &mut u8,
 ) -> Result<(), TncError> {
     let mut stream = Vec::new();
     enter_hostmode(link, &mut stream, events)?;
     run_open(link, &mut stream, config, events)?;
+    *failures = 0;
+    let _ = events.blocking_send(TncEvent::Modem {
+        index: 0,
+        label: label.to_string(),
+        phase: LinkPhase::Open,
+    });
     let mut poller = Poller::default();
     let mut status = 0;
     let mut next_status = Instant::now();
@@ -564,12 +630,16 @@ mod tests {
                 (5, b"fm N1HEAR to CQ ctl UI^ pid F0".to_vec()),
                 (6, b"monitor\x00\xDB".to_vec()),
             ]);
+            let mut raw_commands_rx = raw_commands_rx;
+            let mut failures = 0u8;
             let result = run_hostmode(
                 &mut modem,
                 &driver_config,
                 &raw_events_tx,
-                raw_commands_rx,
+                &mut raw_commands_rx,
                 10,
+                "COM1",
+                &mut failures,
             );
             (result, modem.writes)
         });
@@ -713,7 +783,7 @@ mod tests {
             ..TncConfig::default()
         };
         let (events, _rx) = mpsc::channel(256);
-        let (commands, rx) = mpsc::channel(4);
+        let (commands, mut rx) = mpsc::channel(4);
         commands
             .blocking_send(TncCommand::HostFrame {
                 channel: 10,
@@ -726,7 +796,9 @@ mod tests {
                 data: b"C N1YOU".to_vec(),
             })
             .unwrap();
-        let error = run_hostmode(&mut modem, &config, &events, rx, 10).unwrap_err();
+        let mut failures = 0u8;
+        let error = run_hostmode(&mut modem, &config, &events, &mut rx, 10, "COM1", &mut failures)
+            .unwrap_err();
         assert!(error.to_string().contains("I N0BAD"));
         assert!(!modem.writes.iter().any(|wire| wire.ends_with(b"C N1YOU")));
     }

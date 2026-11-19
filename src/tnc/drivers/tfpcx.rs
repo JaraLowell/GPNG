@@ -111,7 +111,7 @@ fn supervise(
 
         for (index, rx) in incoming.iter_mut().enumerate() {
             while let Ok(event) = rx.try_recv() {
-                lift(&plugins[index], hosts, events, event);
+                lift(index, &plugins[index], hosts, events, event);
             }
         }
         thread::sleep(Duration::from_millis(10));
@@ -260,12 +260,32 @@ fn send_on_logical(
         .map_err(|_| TncError::Protocol(format!("KISS port {logical} stopped")))
 }
 
-fn lift(plugin: &Plugin, hosts: &mut KnownHosts, events: &mpsc::Sender<TncEvent>, event: TncEvent) {
+fn lift(
+    index: usize,
+    plugin: &Plugin,
+    hosts: &mut KnownHosts,
+    events: &mpsc::Sender<TncEvent>,
+    event: TncEvent,
+) {
     match event {
         TncEvent::LinkDown(reason) if reason != "shutdown" => {
-            let _ = events.blocking_send(TncEvent::Warning(reason));
+            // One modem retrying must not take the other radios down.
+            // The driver already reported the reason.
         }
         TncEvent::LinkDown(_) => {}
+        TncEvent::LinkIo { tx, .. } => {
+            let _ = events.blocking_send(TncEvent::LinkIo {
+                tx,
+                index: index as u8,
+            });
+        }
+        TncEvent::Modem { label, phase, .. } => {
+            let _ = events.blocking_send(TncEvent::Modem {
+                index: index as u8,
+                label,
+                phase,
+            });
+        }
         TncEvent::KissTx { port, frame } => {
             let Some(logical) = known_hosts::logical_port(&plugin.ports, port) else {
                 return;

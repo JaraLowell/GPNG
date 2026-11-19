@@ -60,7 +60,7 @@ impl TcpKissLink {
             self.last_rx_note = Some(now);
         }
         if let Some(events) = &self.activity {
-            let _ = events.try_send(TncEvent::LinkIo { tx });
+            let _ = events.try_send(TncEvent::LinkIo { tx, index: 0 });
         }
     }
 

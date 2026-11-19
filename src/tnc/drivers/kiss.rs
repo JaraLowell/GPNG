@@ -134,49 +134,121 @@ pub fn run(
     events: mpsc::Sender<TncEvent>,
     mut commands: mpsc::Receiver<TncCommand>,
 ) -> Result<(), TncError> {
-    let mut link = KissLink::open(&serial, &tnc_cfg)?;
+    let label = kiss_badge(&serial, &tnc_cfg);
+    let mut failures = 0u8;
+    loop {
+        match run_link(
+            &serial,
+            &tnc_cfg,
+            &events,
+            &mut commands,
+            &label,
+            &mut failures,
+        ) {
+            super::super::reconnect::Attempt::Stop => return Ok(()),
+            super::super::reconnect::Attempt::Again(err) => {
+                failures = failures.saturating_add(1);
+                let phase = if failures >= super::super::reconnect::RETRY_LIMIT {
+                    crate::tnc::LinkPhase::Closed
+                } else {
+                    crate::tnc::LinkPhase::Retry
+                };
+                let _ = events.blocking_send(TncEvent::Modem {
+                    index: 0,
+                    label: label.clone(),
+                    phase,
+                });
+                let _ = events.blocking_send(TncEvent::Warning(format!(
+                    "{label} down, try {failures} of {}: {err}",
+                    super::super::reconnect::RETRY_LIMIT
+                )));
+                let _ = events.blocking_send(TncEvent::LinkDown(err.to_string()));
+                if phase == crate::tnc::LinkPhase::Closed {
+                    super::super::reconnect::hold_until_shutdown(&mut commands);
+                    return Ok(());
+                }
+                if !super::super::reconnect::wait_retry(&mut commands) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+fn kiss_badge(serial: &SerialConfig, tnc_cfg: &TncConfig) -> String {
+    if tnc_cfg.kiss_use_tcp() {
+        return "TCP".into();
+    }
+    let port = serial.port.trim();
+    if port.is_empty() {
+        "COM".into()
+    } else {
+        port.to_string()
+    }
+}
+
+fn run_link(
+    serial: &SerialConfig,
+    tnc_cfg: &TncConfig,
+    events: &mpsc::Sender<TncEvent>,
+    commands: &mut mpsc::Receiver<TncCommand>,
+    label: &str,
+    failures: &mut u8,
+) -> super::super::reconnect::Attempt {
+    let mut link = match KissLink::open(serial, tnc_cfg) {
+        Ok(link) => link,
+        Err(err) => return super::super::reconnect::Attempt::Again(err),
+    };
     link.watch(events.clone());
 
     if !link.is_tcp() {
         // Soft-restart recovery: radio may still be in KISS from last run.
         link.leave_kiss_for_commands();
-        if let Err(err) = run_kiss_init(&mut link, &tnc_cfg) {
+        if let Err(err) = run_kiss_init(&mut link, tnc_cfg) {
             let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
         }
         link.flush_input();
     }
     // Modem is in KISS now (serial after INI, TCP already). Push [params].
-    let timing = load_kiss_params(&tnc_cfg);
-    apply_configured_params(&mut link, &tnc_cfg, &timing, &events);
+    let timing = load_kiss_params(tnc_cfg);
+    apply_configured_params(&mut link, tnc_cfg, &timing, events);
 
     let status = if link.is_tcp() {
         format!("TCP OPEN {} — KISS listen", link.label())
     } else {
         format!("serial OPEN {} — KISS listen", link.label())
     };
+    *failures = 0;
+    let _ = events.blocking_send(TncEvent::Modem {
+        index: 0,
+        label: label.to_string(),
+        phase: crate::tnc::LinkPhase::Open,
+    });
     let _ = events.blocking_send(TncEvent::Status(status));
-    publish_kiss_timing_banner(&tnc_cfg, &timing, &events);
+    publish_kiss_timing_banner(tnc_cfg, &timing, events);
 
     let mut rx_buf = [0u8; 512];
     let mut stream = Vec::<u8>::new();
 
     loop {
         while let Ok(cmd) = commands.try_recv() {
-            if handle_command(&mut link, &serial, &tnc_cfg, &events, cmd)? {
-                return Ok(());
+            match handle_command(&mut link, serial, tnc_cfg, events, cmd) {
+                Ok(true) => return super::super::reconnect::Attempt::Stop,
+                Ok(false) => {}
+                Err(err) => return super::super::reconnect::Attempt::Again(err),
             }
         }
 
         match commands.try_recv() {
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                leave_kiss_and_close(&mut link, &tnc_cfg, &events);
-                return Ok(());
+                leave_kiss_and_close(&mut link, tnc_cfg, events);
+                return super::super::reconnect::Attempt::Stop;
             }
-            Ok(cmd) => {
-                if handle_command(&mut link, &serial, &tnc_cfg, &events, cmd)? {
-                    return Ok(());
-                }
-            }
+            Ok(cmd) => match handle_command(&mut link, serial, tnc_cfg, events, cmd) {
+                Ok(true) => return super::super::reconnect::Attempt::Stop,
+                Ok(false) => {}
+                Err(err) => return super::super::reconnect::Attempt::Again(err),
+            },
             Err(mpsc::error::TryRecvError::Empty) => {}
         }
 
@@ -187,12 +259,9 @@ pub fn run(
             Ok(n) => {
                 let chunk = &rx_buf[..n];
                 stream.extend_from_slice(chunk);
-                drain_kiss_frames(&mut stream, &events);
+                drain_kiss_frames(&mut stream, events);
             }
-            Err(err) => {
-                let _ = events.blocking_send(TncEvent::LinkDown(err.to_string()));
-                return Err(err);
-            }
+            Err(err) => return super::super::reconnect::Attempt::Again(err),
         }
     }
 }

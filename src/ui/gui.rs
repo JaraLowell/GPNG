@@ -61,8 +61,8 @@ use crate::tnc::{
     load_kiss_paclen, load_kiss_params, normalize_call, pack_text_payloads, parse_heard,
     parse_kiss_esc, payload_lines, resolve_kiss_ini, resolve_wa8ded_ini, store_kiss_paclen,
     store_kiss_param, take_rx_lines_bytes, timing_banner_fallback, wa8ded_section_lines,
-    BufferReport, ChannelBuffers, DetectedPort, EscKiss, FrameClass, HostCode, MonitorFilter,
-    MonitorInput, RadioLink, TncCommand, TncEvent, TNC_RAM,
+    BufferReport, ChannelBuffers, DetectedPort, EscKiss, FrameClass, HostCode, LinkPhase,
+    MonitorFilter, MonitorInput, RadioLink, TncCommand, TncEvent, TNC_RAM,
 };
 use crate::tnc::{ChannelConfig, SessionCommand, SessionEvent};
 use crate::transfer::autobin::{self, AutoBinState, BinReceiveDone, TxReply};
@@ -447,20 +447,14 @@ pub struct GpGuiApp {
     timing_banner: Option<String>,
     /// Live `QueryTiming` reply target: (channel, pane to restore afterward).
     pending_timing: Option<(u8, ActivePane)>,
-    /// Serial device for the session-bar badge (`COM6`).
-    serial_port: String,
-    /// Serial baud for the session-bar badge.
-    serial_baud: u32,
-    /// UART link up (green COM badge when open).
+    /// One session-bar badge and lamp per modem. A single TNC has one.
+    modems: Vec<ModemFace>,
+    /// UART link up when any modem badge is green.
     serial_open: bool,
     /// Raw UART bytes seen since start (proves RX even without frames).
     serial_rx_bytes: u64,
     /// Decoded hostmode/KISS frames since start.
     serial_rx_frames: u64,
-    /// Front monitor (red) stays bright until this instant after a COM send.
-    link_tx_until: Option<Instant>,
-    /// Back monitor (green) stays bright until this instant after a COM receive.
-    link_rx_until: Option<Instant>,
     monitor_bg: Color32,
     /// Output-window foreground: `fm … to …` header text.
     monitor_fg: Color32,
@@ -649,11 +643,7 @@ impl GpGuiApp {
         let radio_links = radio_link_forms(&cfg.tnc, &radio_port, radio_baud, &radio_host, &radio_tcp_port);
 
         let colors = &cfg.colors;
-        let (serial_port, serial_baud) = if cfg.tnc.kiss_use_tcp() {
-            (cfg.tnc.kiss_tcp_addr(), 0)
-        } else {
-            (cfg.serial.port.clone(), cfg.serial.baud)
-        };
+        let modems = modem_faces(&cfg);
         let monitor_filter = MonitorFilter::from_config(&cfg.tnc.monitor_mode);
         let monitor_mode = monitor_filter.label();
         let mut session = SessionChrome::from_config(&cfg.session.chrome);
@@ -827,13 +817,10 @@ impl GpGuiApp {
             remote_prompt: false,
             timing_banner: None,
             pending_timing: None,
-            serial_port,
-            serial_baud,
+            modems,
             serial_open: false,
             serial_rx_bytes: 0,
             serial_rx_frames: 0,
-            link_tx_until: None,
-            link_rx_until: None,
             session,
             editor: GpEditor::default(),
             editor_held: false,
@@ -1215,7 +1202,12 @@ impl GpGuiApp {
                         || low.contains("tfpcx driver");
                     if link_up {
                         let was_open = self.serial_open;
-                        self.serial_open = true;
+                        if self.modems.len() <= 1 {
+                            if let Some(face) = self.modems.first_mut() {
+                                face.phase = LinkPhase::Open;
+                            }
+                            self.serial_open = true;
+                        }
                         if low.starts_with("serial open") || low.starts_with("tcp open") {
                             self.log_event(m);
                         }
@@ -1237,6 +1229,11 @@ impl GpGuiApp {
                     self.timing_banner = None;
                     self.pending_timing = None;
                     self.status = format!("link down: {m}");
+                    for face in &mut self.modems {
+                        if face.phase == LinkPhase::Open {
+                            face.phase = LinkPhase::Pending;
+                        }
+                    }
                     self.serial_open = false;
                     self.log_event(format!("link down: {m}"));
                     for ch in 1..=self.channels {
@@ -1274,13 +1271,18 @@ impl GpGuiApp {
                 TncEvent::RawRx(bytes) => {
                     self.serial_rx_bytes += bytes.len() as u64;
                 }
-                TncEvent::LinkIo { tx } => {
+                TncEvent::LinkIo { tx, index } => {
                     let until = Instant::now() + LINK_LAMP_HOLD;
-                    if tx {
-                        self.link_tx_until = Some(until);
-                    } else {
-                        self.link_rx_until = Some(until);
+                    if let Some(face) = self.modems.get_mut(usize::from(index)) {
+                        if tx {
+                            face.tx_until = Some(until);
+                        } else {
+                            face.rx_until = Some(until);
+                        }
                     }
+                }
+                TncEvent::Modem { index, label, phase } => {
+                    self.note_modem(index, label, phase);
                 }
                 TncEvent::Buffers(report) => self.apply_buffers(report),
                 TncEvent::Session(event) => self.handle_session_event(event),
@@ -9012,8 +9014,10 @@ impl eframe::App for GpGuiApp {
         self.maybe_hour_gong();
         self.maybe_clean_mheard();
         self.poll_beacon();
-        let link_hot = self.link_tx_until.is_some_and(|t| t > Instant::now())
-            || self.link_rx_until.is_some_and(|t| t > Instant::now());
+        let now = Instant::now();
+        let link_hot = self.modems.iter().any(|face| {
+            face.tx_until.is_some_and(|t| t > now) || face.rx_until.is_some_and(|t| t > now)
+        });
         let repaint = if self.transfer_row_open() {
             Duration::from_millis(100)
         } else if link_hot {
@@ -9740,6 +9744,28 @@ impl GpGuiApp {
         Ok(())
     }
 
+    fn note_modem(&mut self, index: u8, label: String, phase: LinkPhase) {
+        let slot = usize::from(index);
+        if self.modems.len() <= slot {
+            self.modems
+                .resize_with(slot + 1, || ModemFace::new(String::new()));
+        }
+        let was_open = self.serial_open;
+        let face = &mut self.modems[slot];
+        if !label.is_empty() {
+            face.label = label;
+        }
+        face.phase = phase;
+        if phase != LinkPhase::Open {
+            face.tx_until = None;
+            face.rx_until = None;
+        }
+        self.serial_open = self.modems.iter().any(|face| face.phase == LinkPhase::Open);
+        if self.serial_open && !was_open {
+            self.sync_channel_identities();
+        }
+    }
+
     fn open_chosen_radio(&mut self) {
         apply_configured_paclen(&mut self.cfg);
         if !self.radio.is_open() {
@@ -9749,22 +9775,14 @@ impl GpGuiApp {
             self.events = events;
             self.cmd_tx = cmd_tx;
         }
-        if self.cfg.tnc.kiss_use_tcp() {
-            self.serial_port = self.cfg.tnc.kiss_tcp_addr();
-            self.serial_baud = 0;
-        } else {
-            self.serial_port = self.cfg.serial.port.clone();
-            self.serial_baud = self.cfg.serial.baud;
-        }
+        self.modems = modem_faces(&self.cfg);
         self.serial_open = false;
-        let how = if self.cfg.tnc.protocol_kind() == HostProtocol::Tfpcx {
-            let count = self.cfg.tnc.links.iter().filter(|link| link.is_enabled()).count();
-            format!("{count} links")
-        } else if self.serial_baud == 0 {
-            format!("TCP {}", self.serial_port)
-        } else {
-            format!("{} at {}", self.serial_port, self.serial_baud)
-        };
+        let how = self
+            .modems
+            .iter()
+            .map(|face| face.label.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         self.status = format!(
             "Opening {} on {how}",
             protocol_label(self.cfg.tnc.protocol_kind())
@@ -11839,21 +11857,21 @@ impl GpGuiApp {
                 CellGlyph::Text,
             ),
         ];
-        // Square COM lamp sits immediately left of ScrLock on every session bar.
+        // Each modem is a badge plus its own lamp, just left of ScrLock.
         let lamp_w = h;
-        let trail_w: f32 = trail.iter().map(|(_, _, _, w, _)| w + gap).sum::<f32>() + lamp_w + gap;
-        let lamp_x = rect.right() - trail_w - 2.0;
-        let mut tx = lamp_x + lamp_w + gap;
+        let modem_span: f32 = self
+            .modems
+            .iter()
+            .map(|face| modem_badge_w(&face.label) + gap + lamp_w + gap)
+            .sum();
+        let trail_w: f32 = trail.iter().map(|(_, _, _, w, _)| w + gap).sum::<f32>() + modem_span;
+        let modem_x = rect.right() - trail_w - 2.0;
+        let mut tx = modem_x + modem_span;
         for (label, lit, action, w, glyph) in trail {
             tx += paint_cell(ui, tx, label, lit, action, w, glyph);
         }
 
-        // Monitor: spy slots + COM sit just left of the COM lamp (right-justified).
-        let com_badge = if self.serial_baud == 0 {
-            format!("TCP {}", self.serial_port)
-        } else {
-            format!("{} {}", self.serial_port, self.serial_baud)
-        };
+        // Monitor: spy slots sit just left of the modem badges.
         let spy_cell_w = 20.0_f32;
         let lock_w = 26.0_f32;
         let on_channel = matches!(self.active, ActivePane::Channel(_));
@@ -11862,9 +11880,8 @@ impl GpGuiApp {
         } else {
             0
         };
-        let badge_w = (com_badge.len() as f32 * 7.2 + 12.0).clamp(72.0, 180.0);
         let right_mid_w = if spy_n > 0 {
-            spy_n as f32 * (spy_cell_w + gap) + badge_w + gap
+            spy_n as f32 * (spy_cell_w + gap)
         } else if on_channel {
             lock_w + gap
         } else {
@@ -11965,7 +11982,6 @@ impl GpGuiApp {
                         CellGlyph::Text,
                     );
                 }
-                let _ = paint_static_cell(ui, rx, y, h, gap, &com_badge, badge_w, self.serial_open);
             }
             ActivePane::Channel(n) => {
                 for (label, lit, action, w) in [
@@ -12017,17 +12033,26 @@ impl GpGuiApp {
         drop(paint_cell);
 
         let now = Instant::now();
-        paint_link_lamp(
-            ui,
-            &mut controls,
-            lamp_x,
-            y,
-            lamp_w,
-            h,
-            self.link_tex.as_ref(),
-            self.link_tx_until.is_some_and(|t| t > now),
-            self.link_rx_until.is_some_and(|t| t > now),
-        );
+        let mut mx = modem_x;
+        for (index, face) in self.modems.iter().enumerate() {
+            let badge_w = modem_badge_w(&face.label);
+            paint_modem_badge(ui, mx, y, h, &face.label, face.phase, badge_w);
+            mx += badge_w + gap;
+            paint_link_lamp(
+                ui,
+                &mut controls,
+                mx,
+                y,
+                lamp_w,
+                h,
+                index,
+                &face.label,
+                self.link_tex.as_ref(),
+                face.tx_until.is_some_and(|t| t > now),
+                face.rx_until.is_some_and(|t| t > now),
+            );
+            mx += lamp_w + gap;
+        }
 
         if let Some(resp) = split_bar.filter(|_| ui.is_enabled()) {
             let (hover, down, pressed, origin, delta, abort) = ui.input(|i| {
@@ -13918,14 +13943,18 @@ fn paint_link_lamp(
     y: f32,
     w: f32,
     h: f32,
+    index: usize,
+    label: &str,
     tex: Option<&TextureHandle>,
     tx_on: bool,
     rx_on: bool,
 ) {
     let cell = Rect::from_min_size(Pos2::new(origin_x, y), Vec2::new(w, h));
     controls.push(cell);
-    let resp = ui.interact(cell, ui.id().with("sess-link-lamp"), Sense::hover());
-    resp.on_hover_text("COM line\nFront screen red: sending\nBack screen green: receiving");
+    let resp = ui.interact(cell, ui.id().with(("sess-link-lamp", index)), Sense::hover());
+    resp.on_hover_text(format!(
+        "{label}\nFront screen red: sending\nBack screen green: receiving"
+    ));
     let painter = ui.painter();
     painter.rect_filled(cell, 0.0, VGA_GRAY);
     paint_bevel(painter, cell, false);
@@ -13963,23 +13992,93 @@ fn paint_link_lamp(
     }
 }
 
-/// Session-strip badge with no click handler (COM open indicator).
-fn paint_static_cell(
+struct ModemFace {
+    label: String,
+    phase: LinkPhase,
+    tx_until: Option<Instant>,
+    rx_until: Option<Instant>,
+}
+
+impl ModemFace {
+    fn new(label: String) -> Self {
+        Self {
+            label,
+            phase: LinkPhase::Pending,
+            tx_until: None,
+            rx_until: None,
+        }
+    }
+}
+
+fn com_badge(port: &str) -> String {
+    let port = port.trim();
+    if port.is_empty() {
+        "COM".into()
+    } else {
+        port.to_string()
+    }
+}
+
+fn modem_faces(cfg: &Config) -> Vec<ModemFace> {
+    let faces = match cfg.tnc.protocol_kind() {
+        HostProtocol::Tfpcx => cfg
+            .tnc
+            .links
+            .iter()
+            .filter(|link| link.is_enabled())
+            .map(|link| {
+                let label = if link.uses_tcp() {
+                    "TCP".into()
+                } else {
+                    com_badge(&link.serial_port)
+                };
+                ModemFace::new(label)
+            })
+            .collect::<Vec<_>>(),
+        HostProtocol::Kiss if cfg.tnc.kiss_use_tcp() => vec![ModemFace::new("TCP".into())],
+        _ => vec![ModemFace::new(com_badge(&cfg.serial.port))],
+    };
+    if faces.is_empty() {
+        vec![ModemFace::new(com_badge(&cfg.serial.port))]
+    } else {
+        faces
+    }
+}
+
+fn modem_badge_w(label: &str) -> f32 {
+    (label.len() as f32 * 8.0 + 16.0).clamp(52.0, 88.0)
+}
+
+fn paint_modem_badge(
     ui: &mut Ui,
     origin_x: f32,
     y: f32,
     h: f32,
-    gap: f32,
     label: &str,
+    phase: LinkPhase,
     w: f32,
-    lit: bool,
-) -> f32 {
+) {
     let cell = Rect::from_min_size(Pos2::new(origin_x, y), Vec2::new(w, h));
-    let _ = ui.interact(cell, ui.id().with(("sess-static", label)), Sense::hover());
+    let resp = ui.interact(
+        cell,
+        ui.id().with(("sess-modem", label, origin_x.to_bits())),
+        Sense::hover(),
+    );
+    let hint = match phase {
+        LinkPhase::Open => format!("{label} open"),
+        LinkPhase::Retry => format!("{label} down — retrying every minute"),
+        LinkPhase::Closed => format!("{label} closed after 10 tries"),
+        LinkPhase::Pending => format!("{label} opening"),
+    };
+    resp.on_hover_text(hint);
     let painter = ui.painter();
-    let fill = if lit { VGA_GREEN } else { VGA_GRAY };
+    let fill = match phase {
+        LinkPhase::Open => VGA_GREEN,
+        LinkPhase::Closed => Color32::from_rgb(200, 32, 32),
+        LinkPhase::Pending | LinkPhase::Retry => VGA_GRAY,
+    };
     painter.rect_filled(cell, 0.0, fill);
-    paint_bevel(painter, cell, lit);
+    paint_bevel(painter, cell, phase == LinkPhase::Open);
     painter.text(
         cell.center() - Vec2::new(0.0, 1.0),
         egui::Align2::CENTER_CENTER,
@@ -13987,7 +14086,6 @@ fn paint_static_cell(
         FontId::proportional(11.0),
         Color32::BLACK,
     );
-    w + gap
 }
 
 /// Room kept under the radio card for the two-line welcome credits.
