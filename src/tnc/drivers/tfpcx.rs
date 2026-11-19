@@ -59,7 +59,10 @@ pub fn run(
                     )));
                 }
             })
-            .map_err(|err| TncError::Protocol(format!("link {slot}: {err}")))?;
+            .map_err(|err| {
+            let _ = hosts.save();
+            TncError::Protocol(format!("link {slot}: {err}"))
+        })?;
         // Detach. Shutdown is a command on the child's channel.
         drop(join);
         let _ = events.blocking_send(TncEvent::Status(link_status(slot, link)));
@@ -77,16 +80,29 @@ pub fn run(
         .flat_map(|plugin| plugin.ports.iter().copied())
         .collect();
 
+    let result = supervise(&plugins, &kiss_ports, &mut hosts, &events, &mut commands, &mut incoming);
+    let _ = hosts.save();
+    result
+}
+
+fn supervise(
+    plugins: &[Plugin],
+    kiss_ports: &[u8],
+    hosts: &mut KnownHosts,
+    events: &mpsc::Sender<TncEvent>,
+    commands: &mut mpsc::Receiver<TncCommand>,
+    incoming: &mut [mpsc::Receiver<TncEvent>],
+) -> Result<(), TncError> {
     loop {
         loop {
             match commands.try_recv() {
                 Ok(cmd) => {
-                    if dispatch(&plugins, &kiss_ports, &mut hosts, &events, cmd)? {
+                    if dispatch(plugins, kiss_ports, hosts, events, cmd)? {
                         return Ok(());
                     }
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
-                    let _ = shutdown(&plugins);
+                    let _ = shutdown(plugins);
                     return Ok(());
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
@@ -95,7 +111,7 @@ pub fn run(
 
         for (index, rx) in incoming.iter_mut().enumerate() {
             while let Ok(event) = rx.try_recv() {
-                lift(&plugins[index], &mut hosts, &events, event);
+                lift(&plugins[index], hosts, events, event);
             }
         }
         thread::sleep(Duration::from_millis(10));
@@ -268,6 +284,7 @@ fn lift(plugin: &Plugin, hosts: &mut KnownHosts, events: &mpsc::Sender<TncEvent>
                 return;
             };
             if let Some(frame) = ax25::parse_frame(&payload) {
+                // Beacon or any other incoming frame: keep the sending station.
                 if !hosts.is_own(&frame.src) {
                     hosts.answer(&frame.src, logical);
                 }
@@ -310,12 +327,25 @@ fn lift(plugin: &Plugin, hosts: &mut KnownHosts, events: &mpsc::Sender<TncEvent>
 fn heard_call(payload: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(payload);
     let (_, rest) = ax25::split_monitor_fm(text.trim())?;
-    let call = rest.split_whitespace().next()?.trim();
+    let call = rest
+        .split_whitespace()
+        .find(|token| !is_hhmm(token))?
+        .trim();
     if call.is_empty() {
         None
     } else {
         Some(call.to_string())
     }
+}
+
+fn is_hhmm(token: &str) -> bool {
+    let Some((h, m)) = token.split_once(':') else {
+        return false;
+    };
+    h.len() == 2
+        && m.len() == 2
+        && h.bytes().all(|b| b.is_ascii_digit())
+        && m.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn host_command(data: &[u8]) -> bool {

@@ -496,8 +496,12 @@ TFPCX picks the radio for a connect or an unproto frame:
 - If neither the destination nor a digipeater is known, the frame goes out
   once on every KISS port. The port that answers is kept for that call and
   for the digipeaters in the path. The next connect uses only that radio.
-- The list is `data/TFPCX.HOSTS`, one station per line (`CALL port`). It is
-  written while TFPCX is selected.
+- The list is `data/TFPCX.HOSTS`. TFPCX keeps it in memory while the radios
+  are open, loads it at start, and writes it when the switch closes. Each
+  line is `CALL port yyyy-mm-dd HH:MM`, the local time that station was last
+  heard. A beacon or any other incoming frame adds or refreshes the sending
+  station. A station not heard for four days is removed. Your own calls are
+  never stored.
 - A call heard on the WA8DED monitor is remembered on that TNC's port. A
   station known there is not also sent on a KISS radio.
 

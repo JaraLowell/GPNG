@@ -1,10 +1,14 @@
 //! Calls TFPCX has already heard, and the logical port they were on.
 //!
-//! Our own calls are never stored. The file is written only while TFPCX is running.
+//! The table stays in memory while the switch is running. It is loaded from
+//! `data/TFPCX.HOSTS` at start and written back when the switch closes.
+//! Our own calls are never stored. A station not heard for four days is dropped.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
+
+use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone};
 
 /// Where to send a frame whose destination is not one of our calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,11 +24,20 @@ struct Probe {
     calls: Vec<String>,
 }
 
-/// `CALL port` lines in `data/TFPCX.HOSTS`.
+/// How long a heard station stays in the table after its last frame.
+const KEEP: Duration = Duration::days(4);
+
+#[derive(Debug, Clone)]
+struct Heard {
+    port: u8,
+    seen: DateTime<Local>,
+}
+
+/// Heard stations. `CALL port yyyy-mm-dd HH:MM` lines in `data/TFPCX.HOSTS`.
 #[derive(Debug, Clone)]
 pub struct KnownHosts {
     path: PathBuf,
-    hosts: BTreeMap<String, u8>,
+    hosts: BTreeMap<String, Heard>,
     own: BTreeSet<String>,
     own_bases: BTreeSet<String>,
     pending: Vec<Probe>,
@@ -48,7 +61,18 @@ impl KnownHosts {
                 if port > 15 {
                     continue;
                 }
-                hosts.insert(normalize(call), port);
+                let seen = match (parts.next(), parts.next()) {
+                    (None, _) => Local::now(),
+                    (Some(date), Some(time)) => match parse_seen(date, time) {
+                        Some(seen) => seen,
+                        None => continue,
+                    },
+                    _ => continue,
+                };
+                if parts.next().is_some() || !fresh(seen, Local::now()) {
+                    continue;
+                }
+                hosts.insert(normalize(call), Heard { port, seen });
             }
         }
         let mut book = Self {
@@ -87,7 +111,8 @@ impl KnownHosts {
         self.own.contains(&call) || self.own_bases.contains(base(&call))
     }
 
-    /// Remember a station heard or answered on `port`. Own calls are ignored.
+    /// Remember a station heard on `port`. Own calls are ignored.
+    /// The file is left untouched until [`Self::save`].
     pub fn remember(&mut self, call: &str, port: u8) -> bool {
         if port > 15 || self.is_own(call) {
             return false;
@@ -96,11 +121,13 @@ impl KnownHosts {
         if call.is_empty() {
             return false;
         }
-        if self.hosts.get(&call) == Some(&port) {
-            return false;
-        }
-        self.hosts.insert(call, port);
-        let _ = self.save();
+        self.hosts.insert(
+            call,
+            Heard {
+                port,
+                seen: Local::now(),
+            },
+        );
         true
     }
 
@@ -145,12 +172,15 @@ impl KnownHosts {
         if self.is_own(call) {
             return None;
         }
-        self.hosts.get(&normalize(call)).copied()
+        let heard = self.hosts.get(&normalize(call))?;
+        fresh(heard.seen, Local::now()).then_some(heard.port)
     }
 
     /// Known KISS port for the first via, else the destination.
     /// Unknown names are tried on every KISS port.
-    pub fn route(&self, dest: &str, vias: &[String], kiss_ports: &[u8]) -> Route {
+    /// Stations last heard four days ago are dropped before the choice is made.
+    pub fn route(&mut self, dest: &str, vias: &[String], kiss_ports: &[u8]) -> Route {
+        self.prune();
         let known = vias
             .iter()
             .chain(std::iter::once(&dest.to_string()))
@@ -162,18 +192,40 @@ impl KnownHosts {
         }
     }
 
-    fn save(&self) -> Result<(), String> {
+    /// Write the table. Called when the switch closes, not on each heard frame.
+    pub fn save(&mut self) -> Result<(), String> {
+        self.prune();
         if let Some(dir) = self.path.parent() {
             if !dir.as_os_str().is_empty() {
                 fs::create_dir_all(dir).map_err(|err| err.to_string())?;
             }
         }
-        let mut text = String::from("# call port — TFPCX known hosts. Own calls are not listed.\n");
-        for (call, port) in &self.hosts {
-            text.push_str(&format!("{call} {port}\n"));
+        let mut text = String::from(
+            "# call port yyyy-mm-dd HH:MM — TFPCX known hosts. Own calls are not listed.\n",
+        );
+        for (call, heard) in &self.hosts {
+            text.push_str(&format!(
+                "{call} {} {}\n",
+                heard.port,
+                heard.seen.format("%Y-%m-%d %H:%M")
+            ));
         }
         fs::write(&self.path, text).map_err(|err| err.to_string())
     }
+
+    fn prune(&mut self) {
+        let now = Local::now();
+        self.hosts.retain(|_, heard| fresh(heard.seen, now));
+    }
+}
+
+fn fresh(seen: DateTime<Local>, now: DateTime<Local>) -> bool {
+    now.signed_duration_since(seen) < KEEP
+}
+
+fn parse_seen(date: &str, time: &str) -> Option<DateTime<Local>> {
+    let naive = NaiveDateTime::parse_from_str(&format!("{date} {time}"), "%Y-%m-%d %H:%M").ok()?;
+    Local.from_local_datetime(&naive).single()
 }
 
 fn normalize(call: &str) -> String {
@@ -257,5 +309,40 @@ mod tests {
         assert_eq!(wire_port(&[2, 5], 5), Some(1));
         assert_eq!(logical_port(&[2, 5], 1), Some(5));
         assert_eq!(wire_port(&[2, 5], 0), None);
+    }
+
+    #[test]
+    fn heard_calls_stay_in_memory_until_save_and_drop_after_four_days() {
+        let path = std::env::temp_dir().join(format!(
+            "gpng-hosts-age-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_file(&path);
+        let mut hosts = KnownHosts::load(&path, &["N0ME".into()]);
+        assert!(hosts.remember("NL1MSK", 1));
+        assert!(!path.exists());
+        hosts.answer("NL1MSK", 1);
+        hosts.save().unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("NL1MSK 1 "));
+        hosts.remember("NL2NEW", 0);
+        assert_eq!(fs::read_to_string(&path).unwrap(), written);
+
+        let stale = (Local::now() - Duration::days(5)).format("%Y-%m-%d %H:%M");
+        let fresh = Local::now().format("%Y-%m-%d %H:%M");
+        fs::write(
+            &path,
+            format!("# call port yyyy-mm-dd HH:MM\nOLD1 2 {stale}\nNL1MSK 1 {fresh}\n"),
+        )
+        .unwrap();
+        let loaded = KnownHosts::load(&path, &["N0ME".into()]);
+        assert_eq!(loaded.port_of("OLD1"), None);
+        assert_eq!(loaded.port_of("NL1MSK"), Some(1));
+        assert_eq!(loaded.port_of("N0ME"), None);
+        let _ = fs::remove_file(&path);
     }
 }
