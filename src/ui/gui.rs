@@ -347,6 +347,8 @@ pub struct GpGuiApp {
     temp_slot_call: Vec<Option<String>>,
     /// Digipeaters for the live KISS link on this channel.
     channel_via: Vec<Vec<String>>,
+    /// Radio port for a live link. Empty until the session reports one.
+    channel_link_port: Vec<Option<u8>>,
     /// Node `C` / `C!` lines still to send after the AX.25 link is up.
     channel_down: Vec<Vec<String>>,
     /// Callsign the next incoming line must mention before the next downlink.
@@ -590,10 +592,12 @@ impl GpGuiApp {
         let mut channel_via = Vec::with_capacity(channels as usize + 1);
         let mut channel_down = Vec::with_capacity(channels as usize + 1);
         let mut channel_down_wait = Vec::with_capacity(channels as usize + 1);
+        let mut channel_link_port = Vec::with_capacity(channels as usize + 1);
         for _ in 0..=channels {
             channel_via.push(Vec::new());
             channel_down.push(Vec::new());
             channel_down_wait.push(None);
+            channel_link_port.push(None);
         }
         // Local call stays on the monitor. The credits line is on the start screen.
         pads[0].push(
@@ -762,6 +766,7 @@ impl GpGuiApp {
             next_packet_id: 0,
             temp_slot_call,
             channel_via,
+            channel_link_port,
             channel_down,
             channel_down_wait,
             names: NamesFile::load_default(),
@@ -1255,6 +1260,9 @@ impl GpGuiApp {
                     for via in &mut self.channel_via {
                         via.clear();
                     }
+                    for port in &mut self.channel_link_port {
+                        *port = None;
+                    }
                     for down in &mut self.channel_down {
                         down.clear();
                     }
@@ -1340,7 +1348,7 @@ impl GpGuiApp {
                             }
                             if let Some(frame) = parse_ax25_ui(&payload) {
                                 spy_src = Some(frame.src.clone());
-                                self.mheard.hear(&frame);
+                                self.mheard.hear(&frame, Some(self.heard_text_port(channel)));
                                 (PadKind::Incoming, frame.display_line())
                             } else if text.chars().any(|c| c.is_ascii_graphic()) {
                                 spy_src = extract_heard_call(&text);
@@ -1532,7 +1540,7 @@ impl GpGuiApp {
             }
             SessionEvent::Connected {
                 channel,
-                port: _,
+                port,
                 local,
                 remote,
                 via,
@@ -1546,6 +1554,7 @@ impl GpGuiApp {
                 self.channel_connecting[idx] = None;
                 self.channel_peer[idx] = Some(remote.clone());
                 self.channel_via[idx] = via;
+                self.channel_link_port[idx] = Some(port);
                 self.disconnecting[idx] = false;
                 if !self.effective_mycall(channel).eq_ignore_ascii_case(&local) {
                     self.temp_slot_call[idx] = Some(local);
@@ -1588,6 +1597,9 @@ impl GpGuiApp {
                 }
                 let idx = usize::from(channel);
                 self.channel_connecting[idx] = self.channel_peer[idx].take();
+                if let Some(port) = self.channel_link_port.get_mut(idx) {
+                    *port = None;
+                }
                 self.stop_external(channel);
                 self.cancel_mail_send(channel);
                 if self
@@ -1905,6 +1917,9 @@ impl GpGuiApp {
         }
         if let Some(via) = self.channel_via.get_mut(idx) {
             via.clear();
+        }
+        if let Some(port) = self.channel_link_port.get_mut(idx) {
+            *port = None;
         }
         if let Some(down) = self.channel_down.get_mut(idx) {
             down.clear();
@@ -2386,7 +2401,7 @@ impl GpGuiApp {
         if !self.monitor_lists_frame(frame_kind, src, dest, via) {
             return;
         }
-        self.note_heard_on_monitor(src, dest, via, heard_info);
+        self.note_heard_on_monitor(src, dest, via, heard_info, Some(port));
         let hdr = stamp_monitor_fm(&ax25::tag_kiss_port(
             &ax25::monitor_ctl_line(src, dest, via, frame_kind, ns, nr, poll, command),
             port,
@@ -2405,7 +2420,14 @@ impl GpGuiApp {
     /// Every monitor `fm` line updates MHeard from its source call.
     /// Our own transmissions are not stations we heard.
     /// `info` is the payload row after the header, or empty when there is none.
-    fn note_heard_on_monitor(&mut self, src: &str, dest: &str, via: &[String], info: &str) {
+    fn note_heard_on_monitor(
+        &mut self,
+        src: &str,
+        dest: &str,
+        via: &[String],
+        info: &str,
+        port: Option<u8>,
+    ) {
         let src = src.trim();
         if src.is_empty()
             || (0..=self.channels).any(|ch| self.effective_mycall(ch).eq_ignore_ascii_case(src))
@@ -2417,12 +2439,15 @@ impl GpGuiApp {
             .map(|hop| hop.trim_end_matches('*').trim().to_string())
             .filter(|hop| !hop.is_empty())
             .collect();
-        self.mheard.hear(&Ax25UiFrame {
-            dest: dest.to_string(),
-            src: src.to_string(),
-            via,
-            info: info.to_string(),
-        });
+        self.mheard.hear(
+            &Ax25UiFrame {
+                dest: dest.to_string(),
+                src: src.to_string(),
+                via,
+                info: info.to_string(),
+            },
+            port,
+        );
     }
 
     /// `fm` headers in `lines`, each with the following payload row as its text.
@@ -2436,8 +2461,53 @@ impl GpGuiApp {
                 .map(String::as_str)
                 .filter(|next| !is_fm_header(next))
                 .unwrap_or("");
-            self.note_heard_on_monitor(&src, &dest, &via, info);
+            self.note_heard_on_monitor(
+                &src,
+                &dest,
+                &via,
+                info,
+                Some(self.heard_text_port_line(line)),
+            );
         }
+    }
+
+    /// Port column on MHeard when TFPCX is running more than one radio.
+    fn mheard_shows_port(&self) -> bool {
+        if self.cfg.tnc.protocol_kind() != HostProtocol::Tfpcx {
+            return false;
+        }
+        let ports: usize = self
+            .cfg
+            .tnc
+            .links
+            .iter()
+            .filter(|link| link.is_enabled())
+            .map(|link| link.ports.len())
+            .sum();
+        ports > 1
+    }
+
+    /// Radio port for a hostmode payload that is not a KISS frame.
+    fn heard_text_port(&self, _channel: u8) -> u8 {
+        if self.cfg.tnc.protocol_kind() == HostProtocol::Tfpcx {
+            return self.cfg.tnc.wa8ded_logical_port().unwrap_or(0);
+        }
+        0
+    }
+
+    /// `fm2 …` is port 2. A plain `fm` on a TFPCX WA8DED link uses that radio's port.
+    fn heard_text_port_line(&self, line: &str) -> u8 {
+        if let Some((head, _)) = ax25::split_monitor_fm(line) {
+            let word = head.trim();
+            if let Some(digits) = word.get(2..) {
+                if !digits.is_empty() {
+                    if let Ok(port) = digits.parse() {
+                        return port;
+                    }
+                }
+            }
+        }
+        self.heard_text_port(0)
     }
 
     fn push_kiss_mon_frame(
@@ -3705,12 +3775,15 @@ impl GpGuiApp {
             // Hidden UI frames never reach the monitor header, which is the
             // other place a packet is counted. Record them here, once.
             if matches!(frame.kind, Ax25FrameType::Ui) {
-                self.mheard.hear(&Ax25UiFrame {
-                    dest: frame.dest.clone(),
-                    src: frame.src.clone(),
-                    via: frame.via.clone(),
-                    info: info_text,
-                });
+                self.mheard.hear(
+                    &Ax25UiFrame {
+                        dest: frame.dest.clone(),
+                        src: frame.src.clone(),
+                        via: frame.via.clone(),
+                        info: info_text,
+                    },
+                    Some(port),
+                );
             }
             return;
         }
@@ -5213,11 +5286,16 @@ impl GpGuiApp {
     fn channel_state_line(&self, n: u8) -> Option<String> {
         let peer = self.channel_peer.get(n as usize).and_then(|p| p.as_ref())?;
         let my = self.effective_mycall(n);
+        let port = self
+            .channel_link_port
+            .get(n as usize)
+            .and_then(|port| *port);
         Some(format_channel_state_line(
             n,
             &my,
             self.link_is_outgoing(n),
             peer,
+            port,
         ))
     }
 
@@ -8566,9 +8644,20 @@ impl GpGuiApp {
 ///
 /// `       Chan   1: NL1STK     <--  NL0MSK`
 /// The call column is nine characters. Channel 10 lines up on the colon.
-fn format_channel_state_line(n: u8, mycall: &str, outgoing: bool, peer: &str) -> String {
+/// A known radio port is added at the end. Without one, the line is unchanged.
+fn format_channel_state_line(
+    n: u8,
+    mycall: &str,
+    outgoing: bool,
+    peer: &str,
+    port: Option<u8>,
+) -> String {
     let arrow = if outgoing { "-->" } else { "<--" };
-    format!("       Chan  {n:>2}: {mycall:<9}  {arrow}  {peer}")
+    let mut line = format!("       Chan  {n:>2}: {mycall:<9}  {arrow}  {peer}");
+    if let Some(port) = port {
+        line.push_str(&format!(" port {port}"));
+    }
+    line
 }
 
 /// Comma-separated phrases for setup display / edit (`fm DB0SGL, ctl UI`).
@@ -11152,13 +11241,14 @@ impl GpGuiApp {
         let selected = self.mheard_selected;
         let open_at_top = self.mheard_scroll_top;
         self.mheard_scroll_top = false;
+        let show_port = self.mheard_shows_port();
         let lines: Vec<(usize, String)> = self
             .mheard
             .entries
             .iter()
             .enumerate()
             .filter(|(_, e)| e.listed())
-            .map(|(i, e)| (i, e.display_line()))
+            .map(|(i, e)| (i, e.format_line(show_port)))
             .collect();
         let mut clicked: Option<usize> = None;
         let row_font = FontId::monospace(14.0);
@@ -11280,7 +11370,14 @@ impl GpGuiApp {
         if let Some(i) = clicked {
             self.mheard_selected = Some(i);
             if let Some(e) = self.mheard.entries.get(i) {
-                self.status = format!("MHeard: {}", e.call);
+                self.status = if show_port {
+                    match e.port {
+                        Some(port) => format!("MHeard: {} on port {port}", e.call),
+                        None => format!("MHeard: {}", e.call),
+                    }
+                } else {
+                    format!("MHeard: {}", e.call)
+                };
                 if self.mheard_spy_pick {
                     self.open_mheard_spy_confirm(e.call.clone());
                 }
@@ -16186,6 +16283,20 @@ mod input_tests {
             app.accept_rx_text(1, "\r\n", PadKind::Incoming);
             assert!(app.rx_row[1].is_none());
             assert!(rx.try_recv().is_err());
+        });
+    }
+
+    #[test]
+    fn cstatus_names_the_radio_port_only_when_the_link_has_one() {
+        with_offline_app("kiss", |app, _, _| {
+            app.channel_peer[1] = Some("N1PEER".into());
+            let plain = app.cstatus_text();
+            assert!(plain.contains("N1PEER"), "{plain}");
+            assert!(!plain.contains("port"), "{plain}");
+            app.channel_link_port[1] = Some(2);
+            let marked = app.cstatus_text();
+            assert!(marked.contains("N1PEER port 2"), "{marked}");
+            assert!(marked.starts_with(&plain), "{marked}");
         });
     }
 

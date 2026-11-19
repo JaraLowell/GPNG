@@ -2,8 +2,10 @@
 //!
 //! A row is date, time, from, to, a five-column packet count (`30`, `1.3k`,
 //! `26m`), and the last message (60 characters, or 57 plus `...`).
-//! Older `MHEARD.json` files omit `packets` and `last_msg`; those load as
-//! one packet and an empty message.
+//! When TFPCX has more than one radio port, the port number sits between
+//! the time and the call. Older `MHEARD.json` files omit `packets`,
+//! `last_msg`, and `port`; those load as one packet, an empty message,
+//! and no port.
 //!
 //! Station names live in `NAMES.GP`, not on this list. `%N` and `//Name`
 //! read and write that file.
@@ -45,6 +47,9 @@ pub struct HeardStation {
     /// Last information text, kept in full. The list shows at most 60 characters.
     #[serde(default)]
     pub last_msg: String,
+    /// Radio port this station was last heard on. Absent in older files.
+    #[serde(default)]
+    pub port: Option<u8>,
 }
 
 fn one_packet() -> u64 {
@@ -52,7 +57,7 @@ fn one_packet() -> u64 {
 }
 
 impl HeardStation {
-    pub fn from_ax25(frame: &Ax25UiFrame, when: DateTime<Local>) -> Self {
+    pub fn from_ax25(frame: &Ax25UiFrame, when: DateTime<Local>, port: Option<u8>) -> Self {
         Self {
             date: when.format("%Y/%m/%d").to_string(),
             time: when.format("%H:%M").to_string(),
@@ -62,6 +67,7 @@ impl HeardStation {
             heard_ms: when.timestamp_millis(),
             packets: 1,
             last_msg: normalize_last_msg(&frame.info),
+            port,
         }
     }
 
@@ -73,16 +79,45 @@ impl HeardStation {
     /// `yyyy/mm/dd hh:mm  CALL_____ > TO_______  COUNT message  via PATH`
     ///
     /// `COUNT` is five columns. `message` is at most 60 characters.
+    /// `show_port` inserts a two-column radio port after the time.
     pub fn display_line(&self) -> String {
+        self.format_line(false)
+    }
+
+    pub fn format_line(&self, show_port: bool) -> String {
         let from = pad_call(&self.call);
         let to = pad_call(&self.to);
         let count = format_packet_count(self.packets);
         let msg = clip_last_msg(&self.last_msg);
-        let mut line = format!("{} {}  {} > {}  {}", self.date, self.time, from, to, count);
+        let mut line = format!("{} {}", self.date, self.time);
+        if show_port {
+            match self.port {
+                Some(port) => line.push_str(&format!("  {port:>2}")),
+                None => line.push_str("    "),
+            }
+        }
+        line.push_str(&format!("  {from} > {to}  {count}"));
         if !msg.is_empty() {
             line.push(' ');
             line.push_str(&msg);
         }
+        if !self.via.is_empty() {
+            line.push_str("  via ");
+            line.push_str(&self.via);
+        }
+        line
+    }
+
+    /// `//MHeard` row. No packet count and no last message.
+    /// The radio port is included only when this station was heard on one.
+    pub fn remote_line(&self) -> String {
+        let from = pad_call(&self.call);
+        let to = pad_call(&self.to);
+        let mut line = format!("{} {}", self.date, self.time);
+        if let Some(port) = self.port {
+            line.push_str(&format!("  {port:>2}"));
+        }
+        line.push_str(&format!("  {from} > {to}"));
         if !self.via.is_empty() {
             line.push_str("  via ");
             line.push_str(&self.via);
@@ -131,9 +166,10 @@ impl MheardList {
     /// Insert or refresh a call. Each packet increments the count, replaces
     /// date, time, to, and via (via may become empty), and moves the station
     /// to the top. An empty information field leaves the previous message.
-    pub fn hear(&mut self, frame: &Ax25UiFrame) {
+    /// `port` replaces the stored radio port when it is known.
+    pub fn hear(&mut self, frame: &Ax25UiFrame, port: Option<u8>) {
         let now = Local::now();
-        let entry = HeardStation::from_ax25(frame, now);
+        let entry = HeardStation::from_ax25(frame, now, port);
         if let Some(pos) = self
             .entries
             .iter()
@@ -146,6 +182,9 @@ impl MheardList {
                 prev.to = entry.to;
                 prev.via = entry.via; // "" when heard direct / no digis
                 prev.heard_ms = entry.heard_ms;
+                if entry.port.is_some() {
+                    prev.port = entry.port;
+                }
                 prev.packets = prev.packets.saturating_add(1);
                 if !entry.last_msg.is_empty() {
                     prev.last_msg = entry.last_msg;
@@ -204,11 +243,11 @@ impl MheardList {
         self.entries.iter().filter(|e| e.listed()).count()
     }
 
-    pub fn lines(&self) -> Vec<String> {
+    pub fn lines(&self, show_port: bool) -> Vec<String> {
         self.entries
             .iter()
             .filter(|e| e.listed())
-            .map(HeardStation::display_line)
+            .map(|e| e.format_line(show_port))
             .collect()
     }
 
@@ -217,27 +256,20 @@ impl MheardList {
     /// - no args → newest [`DEFAULT_REMOTE_LINES`] (classic default 10)
     /// - a number → that many newest rows (`//mh 50`, `//mh 5`)
     /// - a callsign → that station's row when it is on the list
+    ///
+    /// Each line is date, time, the radio port when known, call, to, and via.
     pub fn remote_lines(&self, args: &str) -> Vec<String> {
         let args = args.trim();
+        let listed = self.entries.iter().filter(|e| e.listed());
         if args.is_empty() {
-            return self.newest_lines(DEFAULT_REMOTE_LINES);
+            return listed.take(DEFAULT_REMOTE_LINES).map(|e| e.remote_line()).collect();
         }
         if let Ok(n) = args.parse::<usize>() {
-            return self.newest_lines(n);
+            return listed.take(n).map(|e| e.remote_line()).collect();
         }
-        self.entries
-            .iter()
-            .filter(|e| e.listed() && e.call.eq_ignore_ascii_case(args))
-            .map(HeardStation::display_line)
-            .collect()
-    }
-
-    fn newest_lines(&self, n: usize) -> Vec<String> {
-        self.entries
-            .iter()
-            .filter(|e| e.listed())
-            .take(n)
-            .map(HeardStation::display_line)
+        listed
+            .filter(|e| e.call.eq_ignore_ascii_case(args))
+            .map(|e| e.remote_line())
             .collect()
     }
 }
@@ -336,6 +368,7 @@ mod tests {
             heard_ms: 1,
             packets,
             last_msg: last_msg.into(),
+            port: None,
         }
     }
 
@@ -386,6 +419,43 @@ mod tests {
     }
 
     #[test]
+    fn display_line_inserts_the_radio_port_after_the_time() {
+        let mut row = station(30, "hello", "");
+        row.port = Some(0);
+        assert_eq!(
+            row.format_line(true),
+            "2026/11/18 11:12   0  DL1ABC    > APRS          30 hello"
+        );
+        row.port = Some(11);
+        assert_eq!(
+            row.format_line(true),
+            "2026/11/18 11:12  11  DL1ABC    > APRS          30 hello"
+        );
+        row.port = None;
+        assert_eq!(
+            row.format_line(true),
+            "2026/11/18 11:12      DL1ABC    > APRS          30 hello"
+        );
+        assert_eq!(row.display_line(), row.format_line(false));
+    }
+
+    #[test]
+    fn remote_line_keeps_the_port_and_drops_count_and_message() {
+        let mut row = station(30, "hello packet", "DIGI");
+        assert_eq!(
+            row.remote_line(),
+            "2026/11/18 11:12  DL1ABC    > APRS       via DIGI"
+        );
+        row.port = Some(2);
+        assert_eq!(
+            row.remote_line(),
+            "2026/11/18 11:12   2  DL1ABC    > APRS       via DIGI"
+        );
+        assert!(!row.remote_line().contains("30"));
+        assert!(!row.remote_line().contains("hello"));
+    }
+
+    #[test]
     fn old_mheard_file_loads_and_new_fields_round_trip() {
         let path = std::env::temp_dir().join(format!(
             "gpng-mheard-{}-{}.json",
@@ -409,6 +479,7 @@ mod tests {
         assert_eq!(loaded.entries[0].packets, 1);
         assert_eq!(loaded.entries[0].last_msg, "");
         assert_eq!(loaded.entries[0].via, "DIGI");
+        assert_eq!(loaded.entries[0].port, None);
         let _ = fs::remove_file(&path);
 
         let path = std::env::temp_dir().join(format!(
@@ -420,22 +491,29 @@ mod tests {
                 .unwrap_or(0)
         ));
         let mut list = MheardList::load_from(path.clone());
-        list.hear(&Ax25UiFrame {
-            dest: "APRS".into(),
-            src: "DL1ABC".into(),
-            via: vec!["DIGI".into()],
-            info: "hello\r\nthere".into(),
-        });
-        list.hear(&Ax25UiFrame {
-            dest: "BEACON".into(),
-            src: "dl1abc".into(),
-            via: vec![],
-            info: String::new(),
-        });
+        list.hear(
+            &Ax25UiFrame {
+                dest: "APRS".into(),
+                src: "DL1ABC".into(),
+                via: vec!["DIGI".into()],
+                info: "hello\r\nthere".into(),
+            },
+            Some(0),
+        );
+        list.hear(
+            &Ax25UiFrame {
+                dest: "BEACON".into(),
+                src: "dl1abc".into(),
+                via: vec![],
+                info: String::new(),
+            },
+            Some(2),
+        );
         assert_eq!(list.entries.len(), 1);
         assert_eq!(list.entries[0].packets, 2);
         assert_eq!(list.entries[0].last_msg, "hello there");
         assert_eq!(list.entries[0].to, "BEACON");
+        assert_eq!(list.entries[0].port, Some(2));
         assert!(list.entries[0].via.is_empty());
         let again = MheardList::load_from(path.clone());
         assert_eq!(again.entries[0].packets, 2);
