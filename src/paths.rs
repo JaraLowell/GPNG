@@ -5,7 +5,8 @@
 //! ```text
 //! Config.toml
 //! data/           ICONS.GP, *.GPI, MHEARD.json, KISS.INI, WA8DED.INI, sounds
-//! data/LOCALES/   ISO UI + //Help packs (en.toml, de.toml, …)
+//! data/LOCALES/   ISO UI + //Help packs (en.toml, de.toml, …);
+//!                 offline map packs (MAP_COUNTRIES/REGIONS/PLACES.json)
 //! data/LOG/       gpng.log (shell), `<base call>.GPL` (journal), PADS/
 //! ```
 //!

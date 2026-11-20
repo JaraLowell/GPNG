@@ -680,6 +680,11 @@ impl Config {
             ("spy_background", c.spy_background.as_str()),
             ("spy_foreground", c.spy_foreground.as_str()),
             ("spy_invers_attr", c.spy_invers_attr.as_str()),
+            ("map_background", c.map_background.as_str()),
+            ("map_foreground", c.map_foreground.as_str()),
+            ("map_grid", c.map_grid.as_str()),
+            ("map_qth", c.map_qth.as_str()),
+            ("map_heard", c.map_heard.as_str()),
             ("state_background", c.state_background.as_str()),
             ("state_foreground", c.state_foreground.as_str()),
             ("state_invers_attr", c.state_invers_attr.as_str()),
@@ -689,6 +694,12 @@ impl Config {
         ] {
             put_key(path, "colors", key, &toml_string(value))?;
         }
+        put_key(
+            path,
+            "station",
+            "locator",
+            &toml_string(&self.station.locator),
+        )?;
         let b = &self.beacon;
         let body = format!(
             "address = {}\nsource = {}\ntext = {}\nfile = {}\nperiod_minutes = {}\n",
@@ -1009,6 +1020,10 @@ pub struct StationConfig {
     pub mycall: Vec<String>,
     pub zone: String,
     pub time_offset_minutes: i32,
+    /// Own QTH as a 6- or 8-character Maidenhead locator (`JO32KX` / `JO32MW49`).
+    /// Empty = unset.
+    #[serde(default)]
+    pub locator: String,
 }
 
 impl Default for StationConfig {
@@ -1017,6 +1032,7 @@ impl Default for StationConfig {
             mycall: vec!["N0CALL".into()],
             zone: "UTC".into(),
             time_offset_minutes: 0,
+            locator: String::new(),
         }
     }
 }
@@ -1836,6 +1852,40 @@ pub struct ColorConfig {
     pub spy_background: String,
     pub spy_foreground: String,
     pub spy_invers_attr: String,
+    /// Map pane sea / background.
+    #[serde(default = "default_map_background")]
+    pub map_background: String,
+    /// Map country outlines and labels.
+    #[serde(default = "default_map_foreground")]
+    pub map_foreground: String,
+    /// Maidenhead grid lines.
+    #[serde(default = "default_map_grid")]
+    pub map_grid: String,
+    /// Own QTH marker.
+    #[serde(default = "default_map_qth")]
+    pub map_qth: String,
+    /// Heard-station markers.
+    #[serde(default = "default_map_heard")]
+    pub map_heard: String,
+}
+
+fn default_map_background() -> String {
+    // Sea — same VGA Blue as the Monitor pad.
+    "Blue".into()
+}
+fn default_map_foreground() -> String {
+    // Land fill — same VGA DarkGreen as the clock face.
+    "DarkGreen".into()
+}
+fn default_map_grid() -> String {
+    // Field/square labels need to read on blue sea + green land.
+    "Orange".into()
+}
+fn default_map_qth() -> String {
+    "Red".into()
+}
+fn default_map_heard() -> String {
+    "Green".into()
 }
 
 impl Default for ColorConfig {
@@ -1874,6 +1924,11 @@ impl Default for ColorConfig {
             spy_background: "Blue".into(),
             spy_foreground: "White".into(),
             spy_invers_attr: "LightCyan".into(),
+            map_background: default_map_background(),
+            map_foreground: default_map_foreground(),
+            map_grid: default_map_grid(),
+            map_qth: default_map_qth(),
+            map_heard: default_map_heard(),
         }
     }
 }

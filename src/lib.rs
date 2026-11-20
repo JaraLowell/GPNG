@@ -6,9 +6,11 @@
 pub mod bbs;
 pub mod cipher;
 pub mod config;
+pub mod geo;
 pub mod gpw;
 pub mod i18n;
 pub mod journal;
+pub mod locator;
 pub mod names;
 pub mod paths;
 pub mod remote;

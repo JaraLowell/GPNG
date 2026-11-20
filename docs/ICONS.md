@@ -52,7 +52,7 @@ See `src/ui/icons.rs`. Canonical library: **`data/ICONS.GP`**.
 | 5 | LOAD | 14 | SPY |
 | 6 | MONITOR | 15 | KILL SPY |
 | 7 | MYCALL | 16 | FIND |
-| 8 | EMPTY | | |
+| 8 | EMPTY | Map button on MHeard / Map strips (Alt+W) | |
 
 The pixel UI uses the DOS slot (2) to send a beacon, like ALT-A; its bitmap
 still comes from the icon file.
@@ -61,7 +61,8 @@ Per-screen strips (`toolbar_for` in `icons.rs`):
 
 - Monitor: MHEARD EDIT SETUP MONITOR DOS SAVE MYCALL EXIT
 - Channel: CONNECT EDIT SETUP MONITOR DOS SAVE MYCALL EXIT
-- MHeard: MHEARD EDIT SETUP MONITOR DOS SPY CONNECT EXIT
+- MHeard: MHEARD EMPTY(MAP) SETUP MONITOR DOS SPY CONNECT EXIT
+- Map: MHEARD EMPTY(MAP) SETUP MONITOR DOS SPY CONNECT EXIT
 - Editor: MHEARD EDIT SETUP MONITOR DOS SAVE LOAD EXIT
 - BBS-Menu: MHEARD EDIT SETUP MONITOR SAVE SORT FIND EXIT
 - Box-List: MHEARD EDIT SETUP MONITOR DOS SAVE FIND EXIT

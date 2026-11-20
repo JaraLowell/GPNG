@@ -48,6 +48,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Pixel UI (icons + analog clock) — ratatui cannot show ICONS.GP bitmaps.
 eframe = "0.29"
 egui = "0.29"
+# Proper polygon triangulation (egui PathShape fill uses a triangle-fan and
+# mis-fills concave coastlines — e.g. a green strip south of Mozambique).
+earcutr = "0.4"
 chrono = "0.4"
 
 # Session-bar: CTEXT file picker + classic bell.wav

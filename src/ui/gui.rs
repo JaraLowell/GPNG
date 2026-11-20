@@ -80,6 +80,7 @@ use super::icons::{
     IconEdit, IconLibrary, ICON_HEIGHT, ICON_SLOT_LABELS, ICON_WIDTH, VGA16_RGB,
 };
 use super::layout::ActivePane;
+use super::map::{self, MapView};
 use super::mheard::{self, MheardList};
 use super::padlog::{self, PadKind, TextPad};
 use super::retro;
@@ -479,6 +480,17 @@ pub struct GpGuiApp {
     spy_bg: Color32,
     spy_fg: Color32,
     spy_inv: Color32,
+    map_bg: Color32,
+    map_fg: Color32,
+    map_grid: Color32,
+    map_qth: Color32,
+    map_heard: Color32,
+    /// Pan / zoom for the Map pane.
+    map_view: MapView,
+    /// First Map open this session: fit a centred world once we know the pane aspect.
+    map_needs_world_fit: bool,
+    /// Last hover Maidenhead under the pointer on the map.
+    map_hover_loc: Option<String>,
     connect_bg: Color32,
     #[allow(dead_code)]
     connect_fg: Color32,
@@ -693,6 +705,14 @@ impl GpGuiApp {
             spy_bg: egui_color(&colors.spy_background),
             spy_fg: egui_color(&colors.spy_foreground),
             spy_inv: egui_color(&colors.spy_invers_attr),
+            map_bg: egui_color(&colors.map_background),
+            map_fg: egui_color(&colors.map_foreground),
+            map_grid: egui_color(&colors.map_grid),
+            map_qth: egui_color(&colors.map_qth),
+            map_heard: egui_color(&colors.map_heard),
+            map_view: MapView::default(),
+            map_needs_world_fit: true,
+            map_hover_loc: None,
             connect_bg: egui_color(&colors.connect_background),
             connect_fg: egui_color(&colors.connect_foreground),
             cfg,
@@ -5852,6 +5872,11 @@ impl GpGuiApp {
         self.spy_bg = egui_color(&c.spy_background);
         self.spy_fg = egui_color(&c.spy_foreground);
         self.spy_inv = egui_color(&c.spy_invers_attr);
+        self.map_bg = egui_color(&c.map_background);
+        self.map_fg = egui_color(&c.map_foreground);
+        self.map_grid = egui_color(&c.map_grid);
+        self.map_qth = egui_color(&c.map_qth);
+        self.map_heard = egui_color(&c.map_heard);
         self.connect_bg = egui_color(&c.connect_background);
         self.connect_fg = egui_color(&c.connect_foreground);
     }
@@ -5909,6 +5934,11 @@ impl GpGuiApp {
                 c.spy_background.clone(),
                 c.spy_foreground.clone(),
                 c.spy_invers_attr.clone(),
+            ],
+            ColorSlot::Map => [
+                c.map_background.clone(),
+                c.map_foreground.clone(),
+                c.map_grid.clone(),
             ],
         }
     }
@@ -5969,6 +5999,11 @@ impl GpGuiApp {
                 c.spy_foreground = v[1].clone();
                 c.spy_invers_attr = v[2].clone();
             }
+            ColorSlot::Map => {
+                c.map_background = v[0].clone();
+                c.map_foreground = v[1].clone();
+                c.map_grid = v[2].clone();
+            }
         }
         self.apply_palette();
     }
@@ -6013,6 +6048,13 @@ impl GpGuiApp {
             RowId::MaxSpy => self.spy_limit().to_string(),
             RowId::MheardClean => self.cfg.session.mheard_clean_days.to_string(),
             RowId::MheardClear => String::new(),
+            RowId::Locator => {
+                if self.cfg.station.locator.is_empty() {
+                    "(none)".into()
+                } else {
+                    self.cfg.station.locator.clone()
+                }
+            }
             _ => String::new(),
         }
     }
@@ -6154,6 +6196,13 @@ impl GpGuiApp {
                     self.setup_view = SetupView::Edit {
                         kind: EditKind::SpyAutoIgnore,
                         text: join_csv_phrases(&self.cfg.session.no_auto_spy),
+                        parent_beacon: false,
+                    };
+                }
+                RowId::Locator => {
+                    self.setup_view = SetupView::Edit {
+                        kind: EditKind::Locator,
+                        text: self.cfg.station.locator.clone(),
                         parent_beacon: false,
                     };
                 }
@@ -6822,6 +6871,19 @@ impl GpGuiApp {
             EditKind::SpyAutoIgnore => {
                 self.cfg.session.no_auto_spy = split_csv_phrases(&text);
             }
+            EditKind::Locator => {
+                let t = text.trim();
+                if t.is_empty() {
+                    self.cfg.station.locator.clear();
+                    self.status = "Own locator cleared".into();
+                } else if let Some(loc) = crate::locator::normalize_locator(t) {
+                    self.cfg.station.locator = loc.clone();
+                    self.map_view.fit_locator(&loc);
+                    self.status = format!("Own locator {loc}");
+                } else {
+                    self.status = "Locator must be 6 or 8 characters (e.g. JO32KX / JO32MW49)".into();
+                }
+            }
         }
         self.setup_view = if parent_beacon {
             self.beacon_view()
@@ -7004,6 +7066,7 @@ impl GpGuiApp {
                     EditKind::FileDrawer => "File drawer",
                     EditKind::AutoSpy => "Auto Spy",
                     EditKind::SpyAutoIgnore => "Spy Auto Ignore",
+                    EditKind::Locator => "Own locator (Maidenhead)",
                 };
                 let mut open = true;
                 let mut applied = false;
@@ -7974,6 +8037,11 @@ impl GpGuiApp {
             self.select(ActivePane::Monitor);
             return;
         }
+        if eat_key(ctx, alt, egui::Key::W) {
+            // World map (MHeard EMPTY slot).
+            self.select(ActivePane::Map);
+            return;
+        }
         if eat_key(ctx, alt, egui::Key::E) {
             self.open_ctext_editor();
             return;
@@ -8488,6 +8556,9 @@ impl GpGuiApp {
             ActivePane::Mh => {
                 self.status = "MHeard is not cleared from the keyboard".into();
             }
+            ActivePane::Map => {
+                self.status = "Map is not cleared from the keyboard".into();
+            }
         }
     }
 
@@ -8521,6 +8592,7 @@ impl GpGuiApp {
             ActivePane::Monitor => "Monitor".into(),
             ActivePane::Channel(n) => format!("Channel {n}"),
             ActivePane::Mh => "MHeard".into(),
+            ActivePane::Map => "Map".into(),
             ActivePane::Editor => "GP-Editor".into(),
             ActivePane::Check => "BBS-Menu".into(),
             ActivePane::List => "DieBox-List".into(),
@@ -10938,6 +11010,42 @@ impl GpGuiApp {
                     vec![hint],
                 )
             }
+            ActivePane::Map => {
+                let qth = if self.cfg.station.locator.is_empty() {
+                    "(none)".into()
+                } else {
+                    self.cfg.station.locator.clone()
+                };
+                let plotted = self
+                    .mheard
+                    .entries
+                    .iter()
+                    .filter(|e| {
+                        e.locator
+                            .as_ref()
+                            .map(|l| l.len() == 6 || l.len() == 8)
+                            .unwrap_or(false)
+                    })
+                    .count();
+                let hover = self
+                    .map_hover_loc
+                    .clone()
+                    .unwrap_or_else(|| "—".into());
+                let place = self
+                    .map_hover_loc
+                    .as_deref()
+                    .and_then(|l| crate::geo::global().resolve_locator_label(l))
+                    .unwrap_or_default();
+                let row2 = if place.is_empty() {
+                    format!("Cursor: {hover}")
+                } else {
+                    format!("Cursor: {hover}  {place}")
+                };
+                (
+                    vec![format!("QTH: {qth}"), format!("Plotted: {plotted}")],
+                    vec![row2],
+                )
+            }
             ActivePane::Spy(n) => {
                 let call = self.spy_call(n);
                 let spy_line = if call.is_empty() {
@@ -11204,6 +11312,10 @@ impl GpGuiApp {
             self.mheard_pane(ui, width, height);
             return;
         }
+        if matches!(self.active, ActivePane::Map) {
+            self.map_pane(ui, width, height);
+            return;
+        }
         if matches!(self.active, ActivePane::Check) && !self.bbs_rows.is_empty() {
             self.mail_list_pane(ui, width, height, false);
             return;
@@ -11250,6 +11362,45 @@ impl GpGuiApp {
         self.note_split_right_click(ui, rect);
     }
 
+    /// Offline world map (Maidenhead + heard stations). Entered from MHeard.
+    fn map_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+        if self.map_needs_world_fit {
+            let aspect = rect.width() / rect.height().max(1.0);
+            self.map_view.fit_world(aspect as f64);
+            self.map_needs_world_fit = false;
+        }
+        let markers = map::collect_markers(
+            &self.cfg.station.locator,
+            self.mheard.entries.iter().filter(|e| e.listed()).map(|e| {
+                (
+                    e.call.clone(),
+                    e.locator.clone(),
+                    e.lat,
+                    e.lon,
+                )
+            }),
+        );
+        let colors = map::MapColors {
+            background: self.map_bg,
+            land: self.map_fg,
+            grid: self.map_grid,
+            qth: self.map_qth,
+            heard: self.map_heard,
+        };
+        let font = FontId::monospace(11.0);
+        let hover = map::paint_map(
+            ui,
+            rect,
+            &mut self.map_view,
+            crate::geo::global(),
+            colors,
+            &markers,
+            font,
+        );
+        self.map_hover_loc = hover;
+    }
+
     /// Clickable MHeard sheet (row select → SPY confirm).
     fn mheard_pane(&mut self, ui: &mut Ui, width: f32, height: f32) {
         let bg = self.mh_bg;
@@ -11263,13 +11414,24 @@ impl GpGuiApp {
         let open_at_top = self.mheard_scroll_top;
         self.mheard_scroll_top = false;
         let show_port = self.mheard_shows_port();
+        let qth_ll = crate::locator::normalize_locator(&self.cfg.station.locator)
+            .and_then(|loc| crate::locator::locator_to_lat_lon(&loc));
+        let geo = crate::geo::global();
         let rows: Vec<(usize, HeardSheetRow)> = self
             .mheard
             .entries
             .iter()
             .enumerate()
             .filter(|(_, e)| e.listed())
-            .map(|(i, e)| (i, HeardSheetRow::from_station(e)))
+            .map(|(i, e)| {
+                let geo_line = geo.station_detail_line(
+                    e.locator.as_deref(),
+                    e.lat,
+                    e.lon,
+                    qth_ll,
+                );
+                (i, HeardSheetRow::from_station(e, geo_line))
+            })
             .collect();
         let mut clicked: Option<usize> = None;
         let row_font = FontId::monospace(13.0);
@@ -11305,6 +11467,11 @@ impl GpGuiApp {
                 let head_h = ui.fonts(|f| f.row_height(&head_font)).max(1.0) + 4.0;
                 let cell_w = ui.fonts(|f| f.glyph_width(&row_font, 'M')).max(1.0);
                 let cols = mheard_sheet_cols(text.width(), show_port, cell_w);
+                let payload_x = cols
+                    .iter()
+                    .take_while(|c| c.key != "payload")
+                    .map(|c| c.width)
+                    .sum::<f32>();
 
                 let mut snap = None;
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text), |ui| {
@@ -11357,18 +11524,49 @@ impl GpGuiApp {
                                         Color32::TRANSPARENT
                                     };
                                     let fg = if is_sel { bg } else { text_fg };
-                                    let (row_rect, resp) =
-                                        ui.allocate_exact_size(Vec2::new(body.width(), row_h), Sense::click());
-                                    ui.painter().rect_filled(row_rect, 0.0, fill);
+                                    let block_h = if row.geo_line.is_some() {
+                                        row_h * 2.0
+                                    } else {
+                                        row_h
+                                    };
+                                    let (block_rect, resp) = ui.allocate_exact_size(
+                                        Vec2::new(body.width(), block_h),
+                                        Sense::click(),
+                                    );
+                                    ui.painter().rect_filled(block_rect, 0.0, fill);
+                                    let main = Rect::from_min_size(
+                                        block_rect.min,
+                                        Vec2::new(block_rect.width(), row_h),
+                                    );
                                     paint_mheard_sheet_row(
                                         ui.painter(),
-                                        row_rect,
+                                        main,
                                         &cols,
                                         row,
                                         &row_font,
                                         fg,
                                         rule,
                                     );
+                                    if let Some(geo_line) = row.geo_line.as_deref() {
+                                        let sub = Rect::from_min_size(
+                                            Pos2::new(block_rect.left(), block_rect.top() + row_h),
+                                            Vec2::new(block_rect.width(), row_h),
+                                        );
+                                        let x = (sub.left() + payload_x + 4.0).min(sub.right() - 8.0);
+                                        let clipped = clip_sheet_cell(
+                                            geo_line,
+                                            (sub.right() - x).max(8.0),
+                                            &row_font,
+                                            ui.painter(),
+                                        );
+                                        ui.painter().text(
+                                            Pos2::new(x, sub.center().y),
+                                            egui::Align2::LEFT_CENTER,
+                                            clipped,
+                                            row_font.clone(),
+                                            fg,
+                                        );
+                                    }
                                     if resp.clicked() {
                                         clicked = Some(*i);
                                     }
@@ -13213,14 +13411,17 @@ impl GpGuiApp {
                 let resp = ui.interact(cell, id, Sense::click());
                 let resp = if label == "DOS" {
                     resp.on_hover_text("Send beacon (Alt+A)")
+                } else if label == "EMPTY"
+                    && matches!(self.active, ActivePane::Mh | ActivePane::Map)
+                {
+                    resp.on_hover_text("Map (Alt+W)")
                 } else {
                     resp
                 };
                 // Grey raised button face (classic GP), then the bitmap.
+                // EMPTY (slot 8) is the Map button on MHeard/Map — still has art in ICONS.GP.
                 ui.painter().rect_filled(cell, 0.0, VGA_GRAY);
-                if label == "EMPTY" || self.icon_tex.get(icon_idx).is_none() {
-                    // empty slot keeps the grey face on the menu-colour strip
-                } else if let Some(tex) = self.icon_tex.get(icon_idx).cloned() {
+                if let Some(tex) = self.icon_tex.get(icon_idx).cloned() {
                     ui.painter().image(
                         tex.id(),
                         cell,
@@ -13232,6 +13433,7 @@ impl GpGuiApp {
                     ("MONITOR", ActivePane::Monitor) => true,
                     ("EDIT", ActivePane::Editor) => true,
                     ("MHEARD", ActivePane::Mh) => true,
+                    ("EMPTY", ActivePane::Map) => true,
                     ("SPY", ActivePane::Spy(_)) => true,
                     ("SPY", ActivePane::Mh) if self.mheard_spy_pick => true,
                     ("CHECK", ActivePane::Check) | ("BBS", ActivePane::Check) => true,
@@ -13274,6 +13476,11 @@ impl GpGuiApp {
                 "SAVE" => self.save_active(),
                 "LOAD" => self.editor_load_dialog(),
                 "MHEARD" => self.select(ActivePane::Mh),
+                "EMPTY" => {
+                    // Map button (EMPTY slot on MHeard / Map strips).
+                    // World fit runs once per session on first paint (`map_needs_world_fit`).
+                    self.select(ActivePane::Map);
+                }
                 "SPY" => {
                     if matches!(self.active, ActivePane::Mh) {
                         self.spy_from_mheard();
@@ -14034,10 +14241,12 @@ struct HeardSheetRow {
     packets: String,
     payload: String,
     via: String,
+    /// Optional second line: `GRID  Region  Country  N Km from QTH`.
+    geo_line: Option<String>,
 }
 
 impl HeardSheetRow {
-    fn from_station(e: &super::mheard::HeardStation) -> Self {
+    fn from_station(e: &super::mheard::HeardStation, geo_line: Option<String>) -> Self {
         Self {
             date: e.date.clone(),
             time: e.time.clone(),
@@ -14050,6 +14259,7 @@ impl HeardSheetRow {
             packets: mheard::format_packet_count(e.packets),
             payload: mheard::clip_last_msg(&e.last_msg),
             via: e.via.clone(),
+            geo_line,
         }
     }
 
@@ -15128,6 +15338,7 @@ fn pane_scroll_owner(pane: ActivePane) -> u64 {
         ActivePane::Check => 3,
         ActivePane::List => 4,
         ActivePane::Mh => 5,
+        ActivePane::Map => 6,
         ActivePane::Channel(n) => 100 + n as u64,
         ActivePane::Spy(n) => 200 + n as u64,
     }

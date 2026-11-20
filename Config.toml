@@ -12,6 +12,7 @@ mycall = ["NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", 
 # Legacy: ZONE / TIME — display timezone offset and PC-clock skew (minutes).
 zone = "UTC"
 time_offset_minutes = 0
+locator = "JO32MW49"
 
 [serial]
 # Legacy: SERNR / SERPORT / SERIRQ / SERBAUD
@@ -84,7 +85,7 @@ channel_ctext = ["", "", "", "", "", "", "", "", "", "", ""]
 umlaut = 0
 softscroll = 0
 echo = 2047
-bell = 2046
+bell = 0
 seven_plus = 0
 remote = 2046
 scr_lock = false
@@ -204,6 +205,11 @@ spy_background = "Blue"
 spy_foreground = "White"
 spy_invers_attr = "LightCyan"
 
+map_background = "Blue"
+map_foreground = "DarkGreen"
+map_grid = "Magenta"
+map_qth = "Yellow"
+map_heard = "LightGreen"
 [beacon]
 address = "CQ"
 source = "file"
@@ -216,8 +222,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 876
-y = 135
+x = 1157
+y = 205
 width = 1155
 height = 890
 maximized = false

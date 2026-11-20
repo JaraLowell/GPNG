@@ -606,7 +606,7 @@ impl UiApp {
             ActivePane::Editor => (t.editor_fg, t.editor_bg),
             ActivePane::Check => (t.check_fg, t.check_bg),
             ActivePane::List => (t.list_fg, t.list_bg),
-            ActivePane::Mh => (t.mh_fg, t.mh_bg),
+            ActivePane::Mh | ActivePane::Map => (t.mh_fg, t.mh_bg),
             ActivePane::Spy(_) => (t.spy_fg, t.spy_bg),
         };
         let idx = match pane {
@@ -627,6 +627,7 @@ impl UiApp {
             ActivePane::Check => " Check ".into(),
             ActivePane::List => " List ".into(),
             ActivePane::Mh => " MH ".into(),
+            ActivePane::Map => " Map ".into(),
             ActivePane::Spy(n) => format!(" Spy {n} "),
         };
         let block = Block::default()

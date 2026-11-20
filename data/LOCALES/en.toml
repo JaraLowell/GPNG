@@ -29,6 +29,7 @@ spy_auto_ignore = "Spy Auto Ignore"
 max_spy = "Number of spies"
 mheard_clean = "Clear MHeard older than (days)"
 mheard_clear = "Clear MHeard List"
+locator = "Own locator (Maidenhead)"
 use = "Use these values"
 
 [help]

@@ -74,6 +74,10 @@ pub enum RowId {
     MheardClean,
     /// MHeard only. Drop every station on the list.
     MheardClear,
+    /// Own 6-character Maidenhead QTH (`StationConfig.locator`).
+    Locator,
+    /// Map pane colours (Theme submenu).
+    ColorsMap,
     Use,
 }
 
@@ -111,6 +115,8 @@ pub enum ColorSlot {
     Menu,
     /// Monitor clock. Background only (`clock_background`).
     Clock,
+    /// Map pane (`map_*`).
+    Map,
 }
 
 impl ColorSlot {
@@ -127,6 +133,7 @@ impl ColorSlot {
             Self::State => "Colours of State window",
             Self::Menu => "Colours of Menu window",
             Self::Clock => "Colours of Clock",
+            Self::Map => "Colours of Map window",
         }
     }
 }
@@ -165,6 +172,7 @@ impl RowId {
             Self::MaxSpy => "setup.max_spy",
             Self::MheardClean => "setup.mheard_clean",
             Self::MheardClear => "setup.mheard_clear",
+            Self::Locator => "setup.locator",
             Self::Use => "setup.use",
             Self::ColorsInput
             | Self::ColorsMonitor
@@ -176,7 +184,8 @@ impl RowId {
             | Self::ColorsSpy
             | Self::ColorsState
             | Self::ColorsMenu
-            | Self::ColorsClock => return String::new(),
+            | Self::ColorsClock
+            | Self::ColorsMap => return String::new(),
         };
         crate::i18n::t(key)
     }
@@ -194,6 +203,7 @@ impl RowId {
             Self::ColorsState => Some(ColorSlot::State),
             Self::ColorsMenu => Some(ColorSlot::Menu),
             Self::ColorsClock => Some(ColorSlot::Clock),
+            Self::ColorsMap => Some(ColorSlot::Map),
             _ => None,
         }
     }
@@ -207,6 +217,8 @@ pub enum EditKind {
     FileDrawer,
     AutoSpy,
     SpyAutoIgnore,
+    /// Own QTH Maidenhead (6 characters).
+    Locator,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,6 +277,7 @@ pub fn theme_rows() -> Vec<Row> {
         (RowId::ColorsState, RowKind::Submenu),
         (RowId::ColorsMenu, RowKind::Submenu),
         (RowId::ColorsClock, RowKind::Submenu),
+        (RowId::ColorsMap, RowKind::Submenu),
         (RowId::Zoom, RowKind::Toggle),
         (RowId::Icons, RowKind::Submenu),
     ])
@@ -305,9 +318,19 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::Backup, RowKind::Toggle),
             (RowId::RxClick, RowKind::Number),
             (RowId::Softscroll, RowKind::Toggle),
+            (RowId::Locator, RowKind::Submenu),
             (RowId::Language, RowKind::Number),
             (RowId::MheardClean, RowKind::Number),
             (RowId::MheardClear, RowKind::Action),
+            (RowId::Use, RowKind::Exit),
+        ]),
+        ActivePane::Map => rows(&[
+            (RowId::Theme, RowKind::Submenu),
+            (RowId::Locator, RowKind::Submenu),
+            (RowId::Backup, RowKind::Toggle),
+            (RowId::RxClick, RowKind::Number),
+            (RowId::Softscroll, RowKind::Toggle),
+            (RowId::Language, RowKind::Number),
             (RowId::Use, RowKind::Exit),
         ]),
         ActivePane::Spy(_) => rows(&[

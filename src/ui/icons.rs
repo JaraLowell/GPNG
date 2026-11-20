@@ -320,7 +320,7 @@ pub const ICON_SLOT_LABELS: [&str; 17] = [
     "LOAD",       // 5
     "MONITOR",    // 6
     "MYCALL",     // 7
-    "EMPTY",      // 8 — blank grey chrome
+    "EMPTY",      // 8 — Map button on MHeard / Map strips
     "SAVE",       // 9
     "SETUP",      // 10
     "FILETRANS",  // 11
@@ -337,8 +337,10 @@ pub const TOOLBAR_MONITOR: &[usize] = &[12, 3, 10, 6, 2, 9, 7, 4];
 pub const TOOLBAR_CHANNEL: &[usize] = &[0, 3, 10, 6, 2, 9, 7, 4];
 /// Channel strip while connecting or linked — DISCONNECT replaces CONNECT.
 pub const TOOLBAR_CHANNEL_DISC: &[usize] = &[1, 3, 10, 6, 2, 9, 7, 4];
-/// MHeard strip — SPY + CONNECT (connect selected call on first free channel).
-pub const TOOLBAR_MHEARD: &[usize] = &[12, 3, 10, 6, 2, 14, 0, 4];
+/// MHeard strip — EMPTY (slot 8) opens the Map; SPY + CONNECT stay.
+pub const TOOLBAR_MHEARD: &[usize] = &[12, 8, 10, 6, 2, 14, 0, 4];
+/// Map strip — same as MHeard; EMPTY/MAP stays lit while on the map.
+pub const TOOLBAR_MAP: &[usize] = &[12, 8, 10, 6, 2, 14, 0, 4];
 /// Spy strip — SAVE writes the spy pad; SPY sets the call, KILL SPY clears it.
 pub const TOOLBAR_SPY: &[usize] = &[12, 3, 10, 6, 9, 14, 15, 4];
 /// Editor strip.
@@ -359,6 +361,7 @@ pub fn toolbar_for(pane: super::layout::ActivePane) -> &'static [usize] {
         Monitor => TOOLBAR_MONITOR,
         Channel(_) => TOOLBAR_CHANNEL,
         Mh => TOOLBAR_MHEARD,
+        Map => TOOLBAR_MAP,
         Editor => TOOLBAR_EDITOR,
         Check => TOOLBAR_BBS_MENU,
         List => TOOLBAR_BOX_LIST,

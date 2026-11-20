@@ -9,12 +9,20 @@
 //!
 //! Station names live in `NAMES.GP`, not on this list. `%N` and `//Name`
 //! read and write that file.
+//!
+//! Optional `locator` / `lat` / `lon` come from payload filters (APRS position
+//! or a 6-/8-character Maidenhead tag). Longer locators are kept when a later
+//! packet only has a shorter tag. Older files omit those fields. When a fix is
+//! known, the sheet shows a second line under Last Payload:
+//! `GRID  Region  Country  N Km from QTH`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+
+use crate::locator::{self, PositionFix};
 
 use super::session::Ax25UiFrame;
 
@@ -50,10 +58,28 @@ pub struct HeardStation {
     /// Radio port this station was last heard on. Absent in older files.
     #[serde(default)]
     pub port: Option<u8>,
+    /// Last known Maidenhead locator (6 or 8 characters) from the information field.
+    #[serde(default)]
+    pub locator: Option<String>,
+    /// Latitude when an APRS (or locator-centre) fix is known.
+    #[serde(default)]
+    pub lat: Option<f64>,
+    /// Longitude when an APRS (or locator-centre) fix is known.
+    #[serde(default)]
+    pub lon: Option<f64>,
 }
 
 fn one_packet() -> u64 {
     1
+}
+
+fn apply_fix(entry: &mut HeardStation, fix: PositionFix) {
+    if !locator::should_replace_locator(entry.locator.as_deref(), &fix) {
+        return;
+    }
+    entry.locator = Some(fix.locator);
+    entry.lat = Some(fix.lat);
+    entry.lon = Some(fix.lon);
 }
 
 impl HeardStation {
@@ -68,6 +94,9 @@ impl HeardStation {
             packets: 1,
             last_msg: normalize_last_msg(&frame.info),
             port,
+            locator: None,
+            lat: None,
+            lon: None,
         }
     }
 
@@ -169,7 +198,8 @@ impl MheardList {
     /// `port` replaces the stored radio port when it is known.
     pub fn hear(&mut self, frame: &Ax25UiFrame, port: Option<u8>) {
         let now = Local::now();
-        let entry = HeardStation::from_ax25(frame, now, port);
+        let mut entry = HeardStation::from_ax25(frame, now, port);
+        let fix = locator::extract_position(&frame.info, &frame.src);
         if let Some(pos) = self
             .entries
             .iter()
@@ -189,10 +219,16 @@ impl MheardList {
                 if !entry.last_msg.is_empty() {
                     prev.last_msg = entry.last_msg;
                 }
+                if let Some(fix) = fix {
+                    apply_fix(prev, fix);
+                }
             }
             let updated = self.entries.remove(pos);
             self.entries.insert(0, updated);
         } else {
+            if let Some(fix) = fix {
+                apply_fix(&mut entry, fix);
+            }
             self.entries.insert(0, entry);
             if self.entries.len() > MAX_ENTRIES {
                 self.entries.truncate(MAX_ENTRIES);
@@ -369,6 +405,9 @@ mod tests {
             packets,
             last_msg: last_msg.into(),
             port: None,
+            locator: None,
+            lat: None,
+            lon: None,
         }
     }
 
@@ -453,6 +492,64 @@ mod tests {
         );
         assert!(!row.remote_line().contains("30"));
         assert!(!row.remote_line().contains("hello"));
+    }
+
+    #[test]
+    fn hear_stores_locator_from_payload_and_rejects_callsign_tag() {
+        let path = std::env::temp_dir().join(format!(
+            "gpng-mheard-loc-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_file(&path);
+        let mut list = MheardList::load_from(path.clone());
+        list.hear(
+            &Ax25UiFrame {
+                dest: "APRS".into(),
+                src: "PI12NN".into(),
+                via: vec![],
+                info: "hello PI12NN de JO32KX".into(),
+            },
+            None,
+        );
+        assert_eq!(list.entries[0].locator.as_deref(), Some("JO32KX"));
+        list.hear(
+            &Ax25UiFrame {
+                dest: "APRS".into(),
+                src: "PI12NN".into(),
+                via: vec![],
+                info: "qth JO32mw49".into(),
+            },
+            None,
+        );
+        assert_eq!(list.entries[0].locator.as_deref(), Some("JO32MW49"));
+        list.hear(
+            &Ax25UiFrame {
+                dest: "APRS".into(),
+                src: "PI12NN".into(),
+                via: vec![],
+                info: "still JO32KX only".into(),
+            },
+            None,
+        );
+        // Keep the more specific 8-char when a later packet only has 6.
+        assert_eq!(list.entries[0].locator.as_deref(), Some("JO32MW49"));
+        list.hear(
+            &Ax25UiFrame {
+                dest: "APRS".into(),
+                src: "PI12NN".into(),
+                via: vec![],
+                info: "!5231.00N/01324.00E-move".into(),
+            },
+            None,
+        );
+        assert!(list.entries[0].locator.as_ref().unwrap().starts_with("JO62"));
+        assert_eq!(list.entries[0].locator.as_ref().unwrap().len(), 8);
+        assert!(list.entries[0].lat.is_some());
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

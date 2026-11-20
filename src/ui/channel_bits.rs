@@ -149,7 +149,7 @@ impl ChannelBits {
 /// Slot for reading a per-pane setting. Editor / MHeard use Monitor bit 0.
 pub fn slot_for(pane: ActivePane) -> u8 {
     match pane {
-        ActivePane::Monitor | ActivePane::Editor | ActivePane::Mh => SLOT_MONITOR,
+        ActivePane::Monitor | ActivePane::Editor | ActivePane::Mh | ActivePane::Map => SLOT_MONITOR,
         ActivePane::Channel(n) => n.clamp(SLOT_CHANNEL_FIRST, SLOT_CHANNEL_LAST),
         ActivePane::Spy(n) => SLOT_SPY_BASE + n.clamp(1, 10),
         ActivePane::Check => SLOT_BBS,

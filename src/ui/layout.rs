@@ -20,7 +20,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use super::icons::TOOLBAR_LABELS;
 
-/// Which primary content surface is focused (mirrors F-keys / ALT-E / ALT-M).
+/// Which primary content surface is focused (mirrors F-keys / ALT-E / ALT-M / ALT-W).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivePane {
     Monitor,
@@ -29,6 +29,8 @@ pub enum ActivePane {
     Check,
     List,
     Mh,
+    /// Offline Maidenhead / country map (entered from MHeard).
+    Map,
     /// Spy window `1..=10`.
     Spy(u8),
 }
@@ -42,6 +44,7 @@ impl ActivePane {
             Self::Check => "BBS-Menu".into(),
             Self::List => "Box-List".into(),
             Self::Mh => "MHeard".into(),
+            Self::Map => "Map".into(),
             Self::Spy(n) => format!("Spy {n}"),
         }
     }
