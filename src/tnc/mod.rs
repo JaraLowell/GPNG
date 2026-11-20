@@ -1,7 +1,10 @@
 //! TNC / modem interface — WA8DED TNC2, TFPCX, KISS and FT232R BayCom.
 //!
-//! Only **one** driver is loaded, from `[tnc] protocol`. The pixel UI starts
-//! that driver when the operator presses Use this; `--tui` starts it immediately.
+//! Only **one** driver is started, from `[tnc] protocol`. The others stay in
+//! the program and are not run until the operator opens that protocol.
+//! APRS is decoded from monitor frames in the UI, so a pure WA8DED link can
+//! still read it. The pixel UI starts the chosen driver when the operator
+//! presses Use this; `--tui` starts it immediately.
 //! Shared wire helpers live in [`serial`] and [`hostmode`]; each driver owns
 //! its bring-up and poll loop.
 //! The session service sits between UI and driver: host AX.25 for KISS/BayCom,
@@ -18,8 +21,6 @@ pub mod ax25;
 pub mod baycom;
 mod drivers;
 mod known_hosts;
-#[allow(dead_code)] // Hostmode pacing kept beside WA8DED. The switch calls wa8ded::run.
-mod host_delivery;
 mod hostmode;
 mod kiss_ini;
 mod monitor_filter;
@@ -135,20 +136,6 @@ pub(crate) fn buffers_from_tx(snaps: &[TxSnap]) -> BufferReport {
             })
             .collect(),
     }
-}
-
-#[allow(dead_code)] // Buffer snapshots for a hostmode poller. WA8DED reports its own.
-pub(crate) fn send_buffers_if_changed(
-    events: &mpsc::Sender<TncEvent>,
-    snaps: &[TxSnap],
-    last: &mut Option<BufferReport>,
-) {
-    let report = buffers_from_tx(snaps);
-    if last.as_ref() == Some(&report) {
-        return;
-    }
-    *last = Some(report.clone());
-    let _ = events.blocking_send(TncEvent::Buffers(report));
 }
 
 /// Events emitted by the serial RX task toward the UI / session layer.

@@ -1,4 +1,8 @@
 //! Adapts the common session API to raw KISS/BayCom or TNC-owned hostmode links.
+//!
+//! A pure WA8DED link does not build the KISS session machine and does not
+//! wake its 20 ms timer. APRS still arrives as monitor frames and is decoded
+//! in the UI, so it does not depend on the KISS driver being started.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -21,10 +25,15 @@ pub(super) async fn run(
     mut driver_events: mpsc::Receiver<TncEvent>,
 ) {
     let modem = Modem::from_config(&config);
-    let mut sessions = KissSessions::new(Settings::from_config(&config));
-    if modem.is_switch() {
-        sessions.listen_on_every_kiss_port();
-    }
+    let mut sessions = if modem.runs_kiss() {
+        let mut sessions = KissSessions::new(Settings::from_config(&config));
+        if modem.is_switch() {
+            sessions.listen_on_every_kiss_port();
+        }
+        Some(sessions)
+    } else {
+        None
+    };
     let mut host = HostSessions::default();
     let mut timer = tokio::time::interval(Duration::from_millis(20));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -45,7 +54,7 @@ pub(super) async fn run(
                         if close {
                             let reason = "modem stopped or reinitialized";
                             if modem.runs_kiss() {
-                                actions.extend(sessions.close(reason));
+                                actions.extend(kiss(&mut sessions).close(reason));
                             }
                             if modem.runs_host() {
                                 actions.extend(host.close(reason));
@@ -67,6 +76,7 @@ pub(super) async fn run(
                 let Some(event) = event else { break; };
                 match event {
                     TncEvent::KissTx { port, ref frame } if modem.runs_kiss() => {
+                        let sessions = kiss(&mut sessions);
                         if modem.is_switch() {
                             sessions.credit_transmit(frame, Instant::now());
                         } else {
@@ -78,6 +88,7 @@ pub(super) async fn run(
                     TncEvent::HostFrame { channel: port, code: HostCode::Data, ref payload }
                         if modem.kiss_frame(port) =>
                     {
+                        let sessions = kiss(&mut sessions);
                         if modem.is_switch() {
                             sessions.adopt_port(port, payload);
                         }
@@ -100,7 +111,7 @@ pub(super) async fn run(
                     TncEvent::LinkDown(ref reason) => {
                         let mut actions = Vec::new();
                         if modem.runs_kiss() {
-                            actions.extend(sessions.close(reason));
+                            actions.extend(kiss(&mut sessions).close(reason));
                         }
                         if modem.runs_host() {
                             actions.extend(host.close(reason));
@@ -121,8 +132,8 @@ pub(super) async fn run(
                     }
                 }
             }
-            _ = timer.tick() => {
-                if modem.runs_kiss() && !shutting_down { sessions.tick(Instant::now()) } else { Vec::new() }
+            _ = timer.tick(), if modem.runs_kiss() && !shutting_down => {
+                kiss(&mut sessions).tick(Instant::now())
             }
         };
         for action in actions {
@@ -158,7 +169,7 @@ pub(super) async fn run(
             }
         }
         if modem.runs_kiss() {
-            let report = sessions.buffers();
+            let report = kiss(&mut sessions).buffers();
             if last_buffers.as_ref() != Some(&report) {
                 last_buffers = Some(report.clone());
                 if events.send(TncEvent::Buffers(report)).await.is_err() {
@@ -200,8 +211,14 @@ impl Modem {
         }
     }
 
+    /// KISS or BayCom, or a TFPCX switch that actually has a KISS radio.
+    /// An all-WA8DED switch does not load the software AX.25 machine.
     fn runs_kiss(&self) -> bool {
-        matches!(self, Self::Kiss | Self::Switch { .. })
+        match self {
+            Self::Kiss => true,
+            Self::Switch { kiss_ports, .. } => !kiss_ports.is_empty(),
+            Self::Host => false,
+        }
     }
 
     fn runs_host(&self) -> bool {
@@ -237,9 +254,15 @@ impl Modem {
     }
 }
 
+fn kiss(sessions: &mut Option<KissSessions>) -> &mut KissSessions {
+    sessions
+        .as_mut()
+        .expect("KISS sessions exist only while a KISS radio is loaded")
+}
+
 async fn apply_session(
     modem: &Modem,
-    sessions: &mut KissSessions,
+    sessions: &mut Option<KissSessions>,
     host: &mut HostSessions,
     driver_commands: &mpsc::Sender<TncCommand>,
     command: SessionCommand,
@@ -251,7 +274,11 @@ async fn apply_session(
                 .iter()
                 .cloned()
                 .partition(|config| *wa8ded != Some(config.port));
-            let mut actions = sessions.command(SessionCommand::Configure(kiss), Instant::now());
+            let mut actions = if let Some(sessions) = sessions.as_mut() {
+                sessions.command(SessionCommand::Configure(kiss), Instant::now())
+            } else {
+                Vec::new()
+            };
             match host.command(SessionCommand::Configure(host_configs)) {
                 Ok(raw) => {
                     for command in raw {
@@ -281,8 +308,13 @@ async fn apply_session(
             }
             Err(reason) => vec![Action::Event(SessionEvent::Error { channel, reason })],
         }
-    } else {
+    } else if let Some(sessions) = sessions.as_mut() {
         sessions.command(command, Instant::now())
+    } else {
+        vec![Action::Event(SessionEvent::Error {
+            channel: command_channel(&command),
+            reason: "no KISS radio is loaded".into(),
+        })]
     }
 }
 

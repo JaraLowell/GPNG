@@ -147,27 +147,13 @@ pub fn run(
         ) {
             super::super::reconnect::Attempt::Stop => return Ok(()),
             super::super::reconnect::Attempt::Again(err) => {
-                failures = failures.saturating_add(1);
-                let phase = if failures >= super::super::reconnect::RETRY_LIMIT {
-                    crate::tnc::LinkPhase::Closed
-                } else {
-                    crate::tnc::LinkPhase::Retry
-                };
-                let _ = events.blocking_send(TncEvent::Modem {
-                    index: 0,
-                    label: label.clone(),
-                    phase,
-                });
-                let _ = events.blocking_send(TncEvent::Warning(format!(
-                    "{label} down, try {failures} of {}: {err}",
-                    super::super::reconnect::RETRY_LIMIT
-                )));
-                let _ = events.blocking_send(TncEvent::LinkDown(err.to_string()));
-                if phase == crate::tnc::LinkPhase::Closed {
-                    super::super::reconnect::hold_until_shutdown(&mut commands);
-                    return Ok(());
-                }
-                if !super::super::reconnect::wait_retry(&mut commands) {
+                if !super::super::reconnect::fail_link(
+                    &events,
+                    &mut commands,
+                    &label,
+                    &mut failures,
+                    &err,
+                ) {
                     return Ok(());
                 }
             }

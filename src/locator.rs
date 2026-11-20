@@ -1,10 +1,11 @@
 //! Maidenhead locators and payload filters for heard-station positions.
 //!
 //! Stored locators are **6 or 8 characters** (`JO32KX`, `JO32MW49`). APRS
-//! lat/lon is encoded to 8-char. Plain text is scanned for 8-char first, then
-//! 6-char. A match equal to the source callsign (base call, SSID stripped) is
-//! rejected. When updating MHeard, a longer locator is preferred over a shorter
-//! one (keep rare 8-char tags unless APRS / equal-or-longer replaces them).
+//! uncompressed, compressed, and **Mic-E** lat/lon are encoded to 8-char.
+//! Plain text is scanned for 8-char first, then 6-char. A match equal to the
+//! source callsign (base call, SSID stripped) is rejected. When updating
+//! MHeard, a longer locator is preferred over a shorter one (keep rare 8-char
+//! tags unless APRS / equal-or-longer replaces them).
 
 /// Parsed position from a UI/APRS information field.
 #[derive(Debug, Clone, PartialEq)]
@@ -165,18 +166,149 @@ fn lat_lon_to_locator_n(lat: f64, lon: f64, len: usize) -> Option<String> {
     Some(out)
 }
 
-/// Extract the best position from an information field.
+/// Extract the best position from an APRS/UI information field.
 ///
-/// Priority: APRS lat/lon (stored as 8-char), else first valid 8- then 6-char
-/// Maidenhead tag that is not the source callsign.
-pub fn extract_position(info: &str, src_call: &str) -> Option<PositionFix> {
-    if info.is_empty() {
+/// `info_raw` is the unmodified AX.25 information bytes (required for Mic-E).
+/// `dest_call` is the AX.25 destination (Mic-E encodes latitude there).
+///
+/// Priority: Mic-E → APRS uncompressed/compressed → Maidenhead text tag.
+pub fn extract_position(
+    info_raw: &[u8],
+    src_call: &str,
+    dest_call: &str,
+) -> Option<PositionFix> {
+    if info_raw.is_empty() {
         return None;
     }
-    if let Some(fix) = parse_aprs_position(info) {
+    if let Some(fix) = parse_mice(dest_call, info_raw) {
         return Some(fix);
     }
-    extract_maidenhead_tag(info, src_call)
+    // Text parsers: lossy UTF-8 is fine for uncompressed / Maidenhead ASCII.
+    let info = String::from_utf8_lossy(info_raw);
+    if let Some(fix) = parse_aprs_position(&info) {
+        return Some(fix);
+    }
+    extract_maidenhead_tag(&info, src_call)
+}
+
+/// Mic-E current/old position DTI bytes (`'`, `` ` ``, 0x1c, 0x1d).
+fn mice_dti(b: u8) -> bool {
+    matches!(b, b'\'' | b'`' | 0x1c | 0x1d)
+}
+
+/// Decode Mic-E position (APRS 101 ch. 10). Needs dest call + info bytes.
+fn parse_mice(dest_call: &str, info: &[u8]) -> Option<PositionFix> {
+    if info.len() < 9 || !mice_dti(info[0]) {
+        return None;
+    }
+    let dest = mice_dest6(dest_call)?;
+    let body = &info[1..]; // longitude… after DTI
+    if body.len() < 8 {
+        return None;
+    }
+
+    // Latitude digits + flags from destination characters.
+    let mut digits = [0u8; 6];
+    let mut spaces = 0usize;
+    for (i, &ch) in dest.iter().enumerate() {
+        let (digit, space) = mice_dest_digit(ch, i)?;
+        digits[i] = digit;
+        if space {
+            spaces += 1;
+        } else if spaces > 0 {
+            // Spaces (ambiguity) may only trail.
+            return None;
+        }
+    }
+    // Centre ambiguous trailing digits (aprslib convention).
+    if spaces > 0 {
+        if spaces >= 4 {
+            digits[2] = 3;
+        } else {
+            digits[6 - spaces] = 5;
+        }
+    }
+
+    let lat_deg = (digits[0] * 10 + digits[1]) as f64;
+    let lat_min = (digits[2] * 10 + digits[3]) as f64
+        + (digits[4] * 10 + digits[5]) as f64 / 100.0;
+    let mut lat = lat_deg + lat_min / 60.0;
+    // Char 4: 0-9/L = South, P-Y/Z = North.
+    if dest[3] <= b'L' {
+        lat = -lat;
+    }
+
+    // Longitude from info bytes 2–4 (body[0..3]), offset/EW from dest 5–6.
+    let mut d = body[0] as i32 - 28;
+    if dest[4] >= b'P' {
+        d += 100;
+    }
+    if (180..=189).contains(&d) {
+        d -= 80;
+    }
+    if (190..=199).contains(&d) {
+        d -= 190;
+    }
+    let mut m = (body[1] as i32 - 28) as f64;
+    if m >= 60.0 {
+        m -= 60.0;
+    }
+    let h = (body[2] as i32 - 28) as f64;
+    // Ambiguity centring on longitude minutes.
+    let m = match spaces {
+        4 => 30.0,
+        3 => (m / 10.0).floor() * 10.0 + 5.0,
+        2 => m.floor() + 0.5,
+        1 => (m * 10.0).floor() / 10.0 + 0.05,
+        _ => m + h / 100.0,
+    };
+    let mut lon = d as f64 + m / 60.0;
+    // Char 6: P-Z = West.
+    if dest[5] >= b'P' {
+        lon = -lon;
+    }
+
+    if !(-90.0..90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    let locator = lat_lon_to_locator8(lat, lon)?;
+    Some(PositionFix {
+        locator,
+        lat,
+        lon,
+        from_aprs: true,
+    })
+}
+
+fn mice_dest6(dest_call: &str) -> Option<[u8; 6]> {
+    let base = dest_call
+        .split_once('-')
+        .map(|(b, _)| b)
+        .unwrap_or(dest_call)
+        .trim();
+    let b = base.as_bytes();
+    if b.len() < 6 {
+        return None;
+    }
+    let mut out = [0u8; 6];
+    out.copy_from_slice(&b[..6]);
+    for c in &mut out {
+        *c = c.to_ascii_uppercase();
+    }
+    Some(out)
+}
+
+/// One Mic-E destination character → latitude digit (0–9) and whether it is a space.
+fn mice_dest_digit(ch: u8, index: usize) -> Option<(u8, bool)> {
+    match ch {
+        b'0'..=b'9' => Some((ch - b'0', false)),
+        b'A'..=b'J' if index < 3 => Some((ch - b'A', false)),
+        b'K' if index < 3 => Some((0, true)),
+        b'L' => Some((0, true)),
+        b'P'..=b'Y' => Some((ch - b'P', false)),
+        b'Z' => Some((0, true)),
+        _ => None,
+    }
 }
 
 fn extract_maidenhead_tag(info: &str, src_call: &str) -> Option<PositionFix> {
@@ -397,39 +529,43 @@ mod tests {
         assert!(normalize_locator6("JO32MW49").is_none());
     }
 
+    fn pos(info: &str, src: &str) -> Option<PositionFix> {
+        extract_position(info.as_bytes(), src, "APRS")
+    }
+
     #[test]
     fn rejects_callsign_looking_locator() {
         let info = "hello PI12NN world";
-        assert!(extract_position(info, "PI12NN").is_none());
-        assert!(extract_position(info, "PI12NN-7").is_none());
-        let fix = extract_position(info, "PA0ABC").unwrap();
+        assert!(pos(info, "PI12NN").is_none());
+        assert!(pos(info, "PI12NN-7").is_none());
+        let fix = pos(info, "PA0ABC").unwrap();
         assert_eq!(fix.locator, "PI12NN");
         assert!(!fix.from_aprs);
     }
 
     #[test]
     fn finds_eight_char_tag() {
-        let fix = extract_position("QTH JO32mw49 73", "N0CALL").unwrap();
+        let fix = pos("QTH JO32mw49 73", "N0CALL").unwrap();
         assert_eq!(fix.locator, "JO32MW49");
         assert_eq!(fix.locator.len(), 8);
     }
 
     #[test]
     fn prefers_eight_over_six_in_same_payload() {
-        let fix = extract_position("near JO32KX and JO32KX12", "N0CALL").unwrap();
+        let fix = pos("near JO32KX and JO32KX12", "N0CALL").unwrap();
         assert_eq!(fix.locator, "JO32KX12");
     }
 
     #[test]
     fn finds_jo32kx_in_comment() {
-        let fix = extract_position("QTH JO32KX 73", "N0CALL").unwrap();
+        let fix = pos("QTH JO32KX 73", "N0CALL").unwrap();
         assert_eq!(fix.locator, "JO32KX");
     }
 
     #[test]
     fn aprs_uncompressed_bang() {
         let info = "!5231.00N/01324.00E-test";
-        let fix = extract_position(info, "DB0ABC").unwrap();
+        let fix = pos(info, "DB0ABC").unwrap();
         assert!(fix.from_aprs);
         assert_eq!(fix.locator.len(), 8);
         assert_eq!(&fix.locator[..4], "JO62");
@@ -440,9 +576,26 @@ mod tests {
     #[test]
     fn aprs_wins_over_text_tag() {
         let info = "!5231.00N/01324.00E- also JO32KX";
-        let fix = extract_position(info, "N0CALL").unwrap();
+        let fix = pos(info, "N0CALL").unwrap();
         assert!(fix.from_aprs);
         assert_ne!(&fix.locator[..6], "JO32KX");
+    }
+
+    /// Spec-style Mic-E: dest `S32UVT`, info `` `(_fn"Oj/` `` → Phoenix area.
+    #[test]
+    fn mice_phoenix_example() {
+        let info = b"`(_fn\"Oj/";
+        let fix = extract_position(info, "N7YV-9", "S32UVT").unwrap();
+        assert!(fix.from_aprs);
+        assert_eq!(fix.locator.len(), 8);
+        assert!((fix.lat - 33.427333).abs() < 0.001);
+        assert!((fix.lon - (-112.129)).abs() < 0.001);
+    }
+
+    #[test]
+    fn mice_needs_dest_and_raw() {
+        // Same bytes with a non-Mic-E dest must not invent a position.
+        assert!(extract_position(b"`(_fn\"Oj/", "N7YV-9", "APRS").is_none());
     }
 
     #[test]

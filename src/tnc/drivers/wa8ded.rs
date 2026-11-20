@@ -37,27 +37,7 @@ pub fn run(
         match run_once(&serial, &config, &events, &mut commands, &label, &mut failures) {
             Attempt::Stop => return Ok(()),
             Attempt::Again(err) => {
-                failures = failures.saturating_add(1);
-                let phase = if failures >= reconnect::RETRY_LIMIT {
-                    LinkPhase::Closed
-                } else {
-                    LinkPhase::Retry
-                };
-                let _ = events.blocking_send(TncEvent::Modem {
-                    index: 0,
-                    label: label.clone(),
-                    phase,
-                });
-                let _ = events.blocking_send(TncEvent::Warning(format!(
-                    "{label} down, try {failures} of {}: {err}",
-                    reconnect::RETRY_LIMIT
-                )));
-                let _ = events.blocking_send(TncEvent::LinkDown(err.to_string()));
-                if phase == LinkPhase::Closed {
-                    reconnect::hold_until_shutdown(&mut commands);
-                    return Ok(());
-                }
-                if !reconnect::wait_retry(&mut commands) {
+                if !reconnect::fail_link(&events, &mut commands, &label, &mut failures, &err) {
                     return Ok(());
                 }
             }

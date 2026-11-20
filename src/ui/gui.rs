@@ -1369,7 +1369,14 @@ impl GpGuiApp {
                             }
                             if let Some(frame) = parse_ax25_ui(&payload) {
                                 spy_src = Some(frame.src.clone());
-                                self.mheard.hear(&frame, Some(self.heard_text_port(channel)));
+                                self.note_heard_on_monitor(
+                                    &frame.src,
+                                    &frame.dest,
+                                    &frame.via,
+                                    &frame.info,
+                                    Some(frame.info_raw.as_slice()),
+                                    Some(self.heard_text_port(channel)),
+                                );
                                 (PadKind::Incoming, frame.display_line())
                             } else if text.chars().any(|c| c.is_ascii_graphic()) {
                                 spy_src = extract_heard_call(&text);
@@ -2417,12 +2424,13 @@ impl GpGuiApp {
         command: bool,
         info_text: Option<&str>,
         heard_info: &str,
+        heard_raw: Option<&[u8]>,
         port: u8,
     ) {
         if !self.monitor_lists_frame(frame_kind, src, dest, via) {
             return;
         }
-        self.note_heard_on_monitor(src, dest, via, heard_info, Some(port));
+        self.note_heard_on_monitor(src, dest, via, heard_info, heard_raw, Some(port));
         let hdr = stamp_monitor_fm(&ax25::tag_kiss_port(
             &ax25::monitor_ctl_line(src, dest, via, frame_kind, ns, nr, poll, command),
             port,
@@ -2441,12 +2449,14 @@ impl GpGuiApp {
     /// Every monitor `fm` line updates MHeard from its source call.
     /// Our own transmissions are not stations we heard.
     /// `info` is the payload row after the header, or empty when there is none.
+    /// `info_raw` is the unmodified AX.25 information field when available (Mic-E).
     fn note_heard_on_monitor(
         &mut self,
         src: &str,
         dest: &str,
         via: &[String],
         info: &str,
+        info_raw: Option<&[u8]>,
         port: Option<u8>,
     ) {
         let src = src.trim();
@@ -2460,12 +2470,16 @@ impl GpGuiApp {
             .map(|hop| hop.trim_end_matches('*').trim().to_string())
             .filter(|hop| !hop.is_empty())
             .collect();
+        let info_raw = info_raw
+            .map(|b| b.to_vec())
+            .unwrap_or_else(|| info.as_bytes().to_vec());
         self.mheard.hear(
             &Ax25UiFrame {
                 dest: dest.to_string(),
                 src: src.to_string(),
                 via,
                 info: info.to_string(),
+                info_raw,
             },
             port,
         );
@@ -2487,6 +2501,7 @@ impl GpGuiApp {
                 &dest,
                 &via,
                 info,
+                None,
                 Some(self.heard_text_port_line(line)),
             );
         }
@@ -2554,6 +2569,7 @@ impl GpGuiApp {
             frame.command,
             colored_info.as_deref(),
             heard_info,
+            Some(frame.info.as_slice()),
             port,
         );
     }
@@ -3796,13 +3812,12 @@ impl GpGuiApp {
             // Hidden UI frames never reach the monitor header, which is the
             // other place a packet is counted. Record them here, once.
             if matches!(frame.kind, Ax25FrameType::Ui) {
-                self.mheard.hear(
-                    &Ax25UiFrame {
-                        dest: frame.dest.clone(),
-                        src: frame.src.clone(),
-                        via: frame.via.clone(),
-                        info: info_text,
-                    },
+                self.note_heard_on_monitor(
+                    &frame.src,
+                    &frame.dest,
+                    &frame.via,
+                    &info_text,
+                    Some(frame.info.as_slice()),
                     Some(port),
                 );
             }
@@ -11987,43 +12002,7 @@ impl GpGuiApp {
                         [Pos2::new(c.x + 6.5, c.y), Pos2::new(c.x + 6.5, c.y + 3.2)],
                         Stroke::new(1.5, mark),
                     );
-                    let hint = if key_off {
-                        "Lock — needs a link"
-                    } else {
-                        "Lock — seal chat with both callsigns"
-                    };
-                    resp.clone().on_hover_text(hint);
                 }
-            }
-            if matches!(action, SessionClick::Ctext) {
-                let slot = self.ctext_slot();
-                let name = self.session.ctext_file_name_for(slot);
-                let hint = if slot == 0 {
-                    format!("Connect text (global): {name}\nChoose file")
-                } else if self.session.channel_ctext_path(slot).is_some() {
-                    format!("Connect text channel {slot}: {name}\nChoose file")
-                } else {
-                    format!("Connect text channel {slot} (global): {name}\nChoose file")
-                };
-                resp.clone().on_hover_text(hint);
-            }
-            if matches!(action, SessionClick::Echo) {
-                let slot = slot_for(self.active);
-                resp.clone()
-                    .on_hover_text(echo_hint(slot, self.session.echo_for(slot)));
-            }
-            if matches!(action, SessionClick::Bell) {
-                let state = on_off(self.session.bell_lit(self.active));
-                resp.clone()
-                    .on_hover_text(format!("♪ {state}\nConnect, disconnect and newline sounds"));
-            }
-            if matches!(action, SessionClick::Remote) {
-                let hint = if self.session.remote_lit(self.active) {
-                    "Remote ON\n//RUN commands are allowed"
-                } else {
-                    "Remote OFF\n//RUN commands are refused"
-                };
-                resp.clone().on_hover_text(hint);
             }
             if resp.clicked() && (!arrow || arrow_clickable) && !key_off {
                 clicks.push(action);
@@ -12250,7 +12229,6 @@ impl GpGuiApp {
                 lamp_w,
                 h,
                 index,
-                &face.label,
                 self.link_tex.as_ref(),
                 face.tx_until.is_some_and(|t| t > now),
                 face.rx_until.is_some_and(|t| t > now),
@@ -13409,15 +13387,6 @@ impl GpGuiApp {
                 let cell = Rect::from_min_size(Pos2::new(x, y), Vec2::new(icon_w, icon_h));
                 let id = ui.id().with(("icon", icon_idx, label));
                 let resp = ui.interact(cell, id, Sense::click());
-                let resp = if label == "DOS" {
-                    resp.on_hover_text("Send beacon (Alt+A)")
-                } else if label == "EMPTY"
-                    && matches!(self.active, ActivePane::Mh | ActivePane::Map)
-                {
-                    resp.on_hover_text("Map (Alt+W)")
-                } else {
-                    resp
-                };
                 // Grey raised button face (classic GP), then the bitmap.
                 // EMPTY (slot 8) is the Map button on MHeard/Map — still has art in ICONS.GP.
                 ui.painter().rect_filled(cell, 0.0, VGA_GRAY);
@@ -13978,20 +13947,6 @@ fn echo_status(channel: u8, on: bool) -> String {
     }
 }
 
-fn echo_hint(channel: u8, on: bool) -> String {
-    if channel == 0 {
-        return format!(
-            "Echo {}\nShow or hide your own monitor lines. The lines stay stored.",
-            on_off(on)
-        );
-    }
-    if on {
-        format!("Echo channel {channel}: your text and the other station")
-    } else {
-        format!("Echo channel {channel}: only the other station")
-    }
-}
-
 /// Same connect-text file under different absolute/relative spellings.
 fn paths_same_connect_text(a: &std::path::Path, b: &std::path::Path) -> bool {
     if a == b {
@@ -14157,17 +14112,13 @@ fn paint_link_lamp(
     w: f32,
     h: f32,
     index: usize,
-    label: &str,
     tex: Option<&TextureHandle>,
     tx_on: bool,
     rx_on: bool,
 ) {
     let cell = Rect::from_min_size(Pos2::new(origin_x, y), Vec2::new(w, h));
     controls.push(cell);
-    let resp = ui.interact(cell, ui.id().with(("sess-link-lamp", index)), Sense::hover());
-    resp.on_hover_text(format!(
-        "{label}\nFront screen red: sending\nBack screen green: receiving"
-    ));
+    let _resp = ui.interact(cell, ui.id().with(("sess-link-lamp", index)), Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(cell, 0.0, VGA_GRAY);
     paint_bevel(painter, cell, false);
@@ -14465,18 +14416,11 @@ fn paint_modem_badge(
     w: f32,
 ) {
     let cell = Rect::from_min_size(Pos2::new(origin_x, y), Vec2::new(w, h));
-    let resp = ui.interact(
+    let _resp = ui.interact(
         cell,
         ui.id().with(("sess-modem", label, origin_x.to_bits())),
         Sense::hover(),
     );
-    let hint = match phase {
-        LinkPhase::Open => format!("{label} open"),
-        LinkPhase::Retry => format!("{label} down — retrying every minute"),
-        LinkPhase::Closed => format!("{label} closed after 10 tries"),
-        LinkPhase::Pending => format!("{label} opening"),
-    };
-    resp.on_hover_text(hint);
     let painter = ui.painter();
     let fill = match phase {
         LinkPhase::Open => VGA_GREEN,

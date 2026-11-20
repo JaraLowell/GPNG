@@ -592,7 +592,10 @@ pub struct Ax25UiFrame {
     pub dest: String,
     pub src: String,
     pub via: Vec<String>,
+    /// Display/UTF-8 information field (controls may be replaced with `.`).
     pub info: String,
+    /// Unmodified information bytes (needed for Mic-E binary fields).
+    pub info_raw: Vec<u8>,
 }
 
 impl Ax25UiFrame {
@@ -606,55 +609,16 @@ impl Ax25UiFrame {
     }
 }
 
-/// Parse a KISS/AX.25 UI payload into addresses + info (APRS-friendly).
+/// Parse an AX.25 UI payload into addresses + info (APRS / unproto).
+///
+/// One decoder, shared with KISS and BayCom. A WA8DED session calls this
+/// from the monitor path and does not start the KISS driver.
 pub fn parse_ax25_ui(payload: &[u8]) -> Option<Ax25UiFrame> {
-    if payload.len() < 16 {
+    let frame = crate::tnc::ax25::parse_frame(payload)?;
+    if frame.kind != crate::tnc::ax25::Ax25FrameType::Ui {
         return None;
     }
-    let mut i = 0usize;
-    let mut addrs = Vec::new();
-    // Destination, source, then digis until address-extension bit clear.
-    loop {
-        if i + 7 > payload.len() {
-            return None;
-        }
-        let chunk = &payload[i..i + 7];
-        let mut call = String::new();
-        for b in &chunk[..6] {
-            let c = (*b >> 1) as char;
-            if c != ' ' && c.is_ascii_graphic() {
-                call.push(c);
-            }
-        }
-        if call.is_empty() {
-            return None;
-        }
-        let ssid = (chunk[6] >> 1) & 0x0f;
-        let last = chunk[6] & 0x01 != 0;
-        if ssid > 0 {
-            call.push_str(&format!("-{ssid}"));
-        }
-        addrs.push(call);
-        i += 7;
-        if last || addrs.len() >= 10 {
-            break;
-        }
-    }
-    if addrs.len() < 2 {
-        return None;
-    }
-    // Control + PID (UI + no-layer3 is common for APRS: 0x03 0xF0).
-    if i + 2 > payload.len() {
-        return None;
-    }
-    let control = payload[i];
-    let _pid = payload[i + 1];
-    i += 2;
-    // UI frame: control & 0xef == 0x03 (with/without poll bit).
-    if control & 0xef != 0x03 {
-        return None;
-    }
-    let info = decode_rx_text(&payload[i..], false)
+    let info = decode_rx_text(&frame.info, false)
         .chars()
         .map(|c| {
             if c.is_control() && c != '\n' && c != '\r' {
@@ -665,10 +629,11 @@ pub fn parse_ax25_ui(payload: &[u8]) -> Option<Ax25UiFrame> {
         })
         .collect::<String>();
     Some(Ax25UiFrame {
-        dest: addrs[0].clone(),
-        src: addrs[1].clone(),
-        via: addrs[2..].to_vec(),
+        dest: frame.dest,
+        src: frame.src,
+        via: frame.via,
         info,
+        info_raw: frame.info,
     })
 }
 

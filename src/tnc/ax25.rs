@@ -1,7 +1,9 @@
-//! AX.25 L2 helpers for the **KISS** driver path (no FCS — the TNC adds CRC).
+//! AX.25 L2 helpers (no FCS — the TNC adds CRC).
 //!
-//! Encoding/decoding uses the [`ax25`] crate. WA8DED/TFPCX keep L2 inside the
-//! TNC via hostmode and do **not** use this module.
+//! Encoding and decoding use the [`ax25`] crate. The KISS and BayCom drivers
+//! call this only while they are the open radio. WA8DED keeps connected
+//! AX.25 inside the TNC, but APRS and other UI frames on the monitor decode
+//! here too, without starting the KISS driver.
 //!
 //! Monitor / unproto → **UI** frames. The path is the beacon address (`CQ`, or
 //! `APMI03 WIDE1-1 WIDE2-2`). Source is the active mycall.

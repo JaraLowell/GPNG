@@ -199,7 +199,12 @@ impl MheardList {
     pub fn hear(&mut self, frame: &Ax25UiFrame, port: Option<u8>) {
         let now = Local::now();
         let mut entry = HeardStation::from_ax25(frame, now, port);
-        let fix = locator::extract_position(&frame.info, &frame.src);
+        let raw = if frame.info_raw.is_empty() {
+            frame.info.as_bytes()
+        } else {
+            frame.info_raw.as_slice()
+        };
+        let fix = locator::extract_position(raw, &frame.src, &frame.dest);
         if let Some(pos) = self
             .entries
             .iter()
@@ -411,6 +416,16 @@ mod tests {
         }
     }
 
+    fn test_ui(dest: &str, src: &str, info: &str) -> Ax25UiFrame {
+        Ax25UiFrame {
+            dest: dest.into(),
+            src: src.into(),
+            via: vec![],
+            info: info.into(),
+            info_raw: info.as_bytes().to_vec(),
+        }
+    }
+
     #[test]
     fn packet_count_fits_in_five_columns() {
         let samples = [
@@ -506,49 +521,31 @@ mod tests {
         ));
         let _ = fs::remove_file(&path);
         let mut list = MheardList::load_from(path.clone());
-        list.hear(
-            &Ax25UiFrame {
-                dest: "APRS".into(),
-                src: "PI12NN".into(),
-                via: vec![],
-                info: "hello PI12NN de JO32KX".into(),
-            },
-            None,
-        );
+        list.hear(&test_ui("APRS", "PI12NN", "hello PI12NN de JO32KX"), None);
         assert_eq!(list.entries[0].locator.as_deref(), Some("JO32KX"));
-        list.hear(
-            &Ax25UiFrame {
-                dest: "APRS".into(),
-                src: "PI12NN".into(),
-                via: vec![],
-                info: "qth JO32mw49".into(),
-            },
-            None,
-        );
+        list.hear(&test_ui("APRS", "PI12NN", "qth JO32mw49"), None);
         assert_eq!(list.entries[0].locator.as_deref(), Some("JO32MW49"));
-        list.hear(
-            &Ax25UiFrame {
-                dest: "APRS".into(),
-                src: "PI12NN".into(),
-                via: vec![],
-                info: "still JO32KX only".into(),
-            },
-            None,
-        );
+        list.hear(&test_ui("APRS", "PI12NN", "still JO32KX only"), None);
         // Keep the more specific 8-char when a later packet only has 6.
         assert_eq!(list.entries[0].locator.as_deref(), Some("JO32MW49"));
-        list.hear(
-            &Ax25UiFrame {
-                dest: "APRS".into(),
-                src: "PI12NN".into(),
-                via: vec![],
-                info: "!5231.00N/01324.00E-move".into(),
-            },
-            None,
-        );
+        list.hear(&test_ui("APRS", "PI12NN", "!5231.00N/01324.00E-move"), None);
         assert!(list.entries[0].locator.as_ref().unwrap().starts_with("JO62"));
         assert_eq!(list.entries[0].locator.as_ref().unwrap().len(), 8);
         assert!(list.entries[0].lat.is_some());
+        // Mic-E needs dest + raw info bytes.
+        list.hear(
+            &Ax25UiFrame {
+                dest: "S32UVT".into(),
+                src: "N7YV-9".into(),
+                via: vec![],
+                info: "`(_fn\"Oj/".into(),
+                info_raw: b"`(_fn\"Oj/".to_vec(),
+            },
+            None,
+        );
+        assert_eq!(list.entries[0].call, "N7YV-9");
+        assert!((list.entries[0].lat.unwrap() - 33.427).abs() < 0.01);
+        assert!((list.entries[0].lon.unwrap() - (-112.129)).abs() < 0.01);
         let _ = fs::remove_file(&path);
     }
 
@@ -594,6 +591,7 @@ mod tests {
                 src: "DL1ABC".into(),
                 via: vec!["DIGI".into()],
                 info: "hello\r\nthere".into(),
+                info_raw: b"hello\r\nthere".to_vec(),
             },
             Some(0),
         );
@@ -603,6 +601,7 @@ mod tests {
                 src: "dl1abc".into(),
                 via: vec![],
                 info: String::new(),
+                info_raw: vec![],
             },
             Some(2),
         );

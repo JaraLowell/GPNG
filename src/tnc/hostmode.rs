@@ -123,31 +123,6 @@ pub fn expand_command(command: &str) -> Vec<String> {
     }
 }
 
-/// Apply a list of TNCINI/TNCDEI-style command strings as channel-0 frames.
-#[allow(dead_code)] // WA8DED opens from its INI. Kept for a hostmode command list.
-pub fn apply_command_list(link: &mut SerialLink, cmds: &[String]) -> Result<(), TncError> {
-    let mut stream = Vec::new();
-    for cmd in cmds {
-        for cmd in expand_command(cmd) {
-            let reply = exchange(link, &mut stream, 0, true, cmd.as_bytes(), None)?;
-            if reply.code == HostCode::Error {
-                return Err(TncError::Protocol(format!(
-                    "{cmd}: {}",
-                    String::from_utf8_lossy(&reply.payload)
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Hostmode poll command. Drivers enqueue these bytes so the TNC reply is
-/// the acknowledgement that releases the next frame.
-#[allow(dead_code)]
-pub fn poll_command() -> &'static [u8] {
-    b"G"
-}
-
 /// One TNC→host frame. Callers decide whether it is traffic or a status reply.
 #[derive(Debug, Clone)]
 pub struct InboundFrame {
