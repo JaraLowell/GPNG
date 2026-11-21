@@ -137,22 +137,6 @@ impl HeardStation {
         line
     }
 
-    /// `//MHeard` row. No packet count and no last message.
-    /// The radio port is included only when this station was heard on one.
-    pub fn remote_line(&self) -> String {
-        let from = pad_call(&self.call);
-        let to = pad_call(&self.to);
-        let mut line = format!("{} {}", self.date, self.time);
-        if let Some(port) = self.port {
-            line.push_str(&format!("  {port:>2}"));
-        }
-        line.push_str(&format!("  {from} > {to}"));
-        if !self.via.is_empty() {
-            line.push_str("  via ");
-            line.push_str(&self.via);
-        }
-        line
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -292,27 +276,91 @@ impl MheardList {
             .collect()
     }
 
-    /// Lines for `//MHeard` / `//mh`.
+    /// Table for `//MHeard` / `//mh`.
     ///
     /// - no args → newest [`DEFAULT_REMOTE_LINES`] (classic default 10)
     /// - a number → that many newest rows (`//mh 50`, `//mh 5`)
     /// - a callsign → that station's row when it is on the list
     ///
-    /// Each line is date, time, the radio port when known, call, to, and via.
-    pub fn remote_lines(&self, args: &str) -> Vec<String> {
+    /// `port_label` turns the stored radio port into `0 Serial-link` or
+    /// `1 TCP-link`. Columns are Callsign, Date, Time (`yyyy/mm/dd hh:mm`),
+    /// Port, and packet count (`12`, `1.2K`, `1.0M`, `1.0B`, `1.0T`).
+    pub fn remote_table(
+        &self,
+        args: &str,
+        mut port_label: impl FnMut(Option<u8>) -> String,
+    ) -> String {
+        let rows = self.remote_rows(args);
+        let labels: Vec<String> = rows.iter().map(|row| port_label(row.port)).collect();
+        let port_w = labels
+            .iter()
+            .map(|label| label.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(REMOTE_PORT_W);
+        let mut lines = Vec::with_capacity(rows.len() + 2);
+        lines.push(format!(
+            " {}{}{}{}{}",
+            fit_left("Callsign", REMOTE_CALL_W),
+            fit_left("Date", REMOTE_DATE_W),
+            fit_left("Time", REMOTE_TIME_W),
+            fit_left("Port", port_w),
+            fit_right("Pck", REMOTE_COUNT_W),
+        ));
+        let rule = REMOTE_CALL_W + REMOTE_DATE_W + REMOTE_TIME_W + port_w + REMOTE_COUNT_W;
+        lines.push(format!(" {}", "-".repeat(rule)));
+        for (row, label) in rows.iter().zip(labels) {
+            let count = remote_packet_count(row.packets);
+            lines.push(format!(
+                " {}{}{}{}{}",
+                fit_left(&row.call, REMOTE_CALL_W),
+                fit_left(&row.date, REMOTE_DATE_W),
+                fit_left(&row.time, REMOTE_TIME_W),
+                fit_left(&label, port_w),
+                fit_right(&count, REMOTE_COUNT_W),
+            ));
+        }
+        lines.join("\r")
+    }
+
+    fn remote_rows(&self, args: &str) -> Vec<&HeardStation> {
         let args = args.trim();
         let listed = self.entries.iter().filter(|e| e.listed());
         if args.is_empty() {
-            return listed.take(DEFAULT_REMOTE_LINES).map(|e| e.remote_line()).collect();
+            return listed.take(DEFAULT_REMOTE_LINES).collect();
         }
         if let Ok(n) = args.parse::<usize>() {
-            return listed.take(n).map(|e| e.remote_line()).collect();
+            return listed.take(n).collect();
         }
         listed
             .filter(|e| e.call.eq_ignore_ascii_case(args))
-            .map(|e| e.remote_line())
             .collect()
     }
+}
+
+/// `//MHeard` columns. Date is `yyyy/mm/dd` plus one space; time is `hh:mm` plus two.
+const REMOTE_CALL_W: usize = 10;
+const REMOTE_DATE_W: usize = 11;
+const REMOTE_TIME_W: usize = 7;
+const REMOTE_PORT_W: usize = 13;
+/// `999.9T` is the longest count, plus one space so it never touches the port.
+const REMOTE_COUNT_W: usize = 7;
+
+fn fit_left(s: &str, width: usize) -> String {
+    let mut out: String = s.chars().take(width).collect();
+    let n = out.chars().count();
+    if n < width {
+        out.extend(std::iter::repeat(' ').take(width - n));
+    }
+    out
+}
+
+fn fit_right(s: &str, width: usize) -> String {
+    let text: String = s.chars().take(width).collect();
+    let n = text.chars().count();
+    let mut out = " ".repeat(width.saturating_sub(n));
+    out.push_str(&text);
+    out
 }
 
 /// Fixed 9-character call field so the count and message columns line up.
@@ -322,6 +370,47 @@ fn pad_call(s: &str) -> String {
         call.push(' ');
     }
     call
+}
+
+/// `//MHeard` count. Below 1000 the number is plain. From there it is one
+/// decimal and a unit: `1.0K`, `1.2M`, `1.0B`, `1.0T`. The longest form is
+/// `999.9T`; anything larger stays on that ceiling.
+fn remote_packet_count(n: u64) -> String {
+    if n < 1_000 {
+        return n.to_string();
+    }
+    let units: [(u64, char); 4] = [
+        (1_000, 'K'),
+        (1_000_000, 'M'),
+        (1_000_000_000, 'B'),
+        (1_000_000_000_000, 'T'),
+    ];
+    for (i, &(div, suf)) in units.iter().enumerate() {
+        if n < div {
+            break;
+        }
+        let tenths = div_round_tenths(n, div);
+        if tenths >= 10_000 {
+            match units.get(i + 1) {
+                Some(&(next_div, next_suf)) if n < next_div => {
+                    let next_tenths = div_round_tenths(n, next_div);
+                    return format!("{}.{}{next_suf}", next_tenths / 10, next_tenths % 10);
+                }
+                Some(_) => continue,
+                None => return "999.9T".into(),
+            }
+        }
+        if units.get(i + 1).is_some_and(|&(next_div, _)| n >= next_div) {
+            continue;
+        }
+        return format!("{}.{}{suf}", tenths / 10, tenths % 10);
+    }
+    "999.9T".into()
+}
+
+/// Rounded tenths of `div`: 1_200 and 1_000 → 12 (`1.2`).
+fn div_round_tenths(n: u64, div: u64) -> u64 {
+    n.saturating_mul(10).saturating_add(div / 2) / div
 }
 
 /// Packet count in at most five characters: `30`, `1.3k`, `26m`.
@@ -493,20 +582,98 @@ mod tests {
         assert_eq!(row.display_line(), row.format_line(false));
     }
 
+    fn heard(call: &str, time: &str, port: Option<u8>, packets: u64) -> HeardStation {
+        let mut row = station(packets, "hello packet", "DIGI");
+        row.call = call.into();
+        row.date = "2026/11/21".into();
+        row.time = time.into();
+        row.port = port;
+        row
+    }
+
+    fn sample_list() -> MheardList {
+        MheardList {
+            entries: vec![
+                heard("NL0MSK", "17:35", Some(0), 12),
+                heard("NL1WNB", "17:35", Some(0), 184),
+                heard("NL0PEL", "17:28", Some(0), 1_200),
+                heard("NL0AS", "17:17", Some(0), 88),
+                heard("NL1AS", "17:17", Some(1), 1),
+            ],
+            path: PathBuf::new(),
+            dirty: false,
+        }
+    }
+
+    fn port_label(port: Option<u8>) -> String {
+        match port {
+            Some(1) => "1 TCP-link".into(),
+            Some(port) => format!("{port} Serial-link"),
+            None => "-".into(),
+        }
+    }
+
     #[test]
-    fn remote_line_keeps_the_port_and_drops_count_and_message() {
-        let mut row = station(30, "hello packet", "DIGI");
-        assert_eq!(
-            row.remote_line(),
-            "2026/11/18 11:12  DL1ABC    > APRS       via DIGI"
-        );
-        row.port = Some(2);
-        assert_eq!(
-            row.remote_line(),
-            "2026/11/18 11:12   2  DL1ABC    > APRS       via DIGI"
-        );
-        assert!(!row.remote_line().contains("30"));
-        assert!(!row.remote_line().contains("hello"));
+    fn remote_table_shows_date_time_port_and_count() {
+        let table = sample_list().remote_table("", port_label);
+        let header = " Callsign  Date       Time   Port             Pck";
+        let rule = format!(" {}", "-".repeat(header.len() - 1));
+        let expected = [
+            header,
+            &rule,
+            " NL0MSK    2026/11/21 17:35  0 Serial-link     12",
+            " NL1WNB    2026/11/21 17:35  0 Serial-link    184",
+            " NL0PEL    2026/11/21 17:28  0 Serial-link   1.2K",
+            " NL0AS     2026/11/21 17:17  0 Serial-link     88",
+            " NL1AS     2026/11/21 17:17  1 TCP-link         1",
+        ]
+        .join("\r");
+        assert_eq!(table, expected);
+        assert!(!table.contains("hello"));
+        assert!(!table.contains("DIGI"));
+        assert!(!table.contains("APRS"));
+    }
+
+    #[test]
+    fn remote_table_limits_rows_and_finds_one_call() {
+        let list = sample_list();
+        let two = list.remote_table("2", port_label);
+        assert!(two.contains("NL0MSK"));
+        assert!(two.contains("NL1WNB"));
+        assert!(!two.contains("NL0PEL"));
+        let one = list.remote_table("nl0as", port_label);
+        assert!(one.contains("NL0AS"));
+        assert!(!one.contains("NL0MSK"));
+        assert!(one.contains("     88"));
+    }
+
+    #[test]
+    fn remote_packet_count_scales_and_keeps_a_leading_space() {
+        let samples = [
+            (0, "0"),
+            (12, "12"),
+            (999, "999"),
+            (1_000, "1.0K"),
+            (1_200, "1.2K"),
+            (999_949, "999.9K"),
+            (999_950, "1.0M"),
+            (1_200_000, "1.2M"),
+            (999_949_999, "999.9M"),
+            (1_000_000_000, "1.0B"),
+            (1_200_000_000, "1.2B"),
+            (1_000_000_000_000, "1.0T"),
+            (1_200_000_000_000, "1.2T"),
+            (u64::MAX, "999.9T"),
+        ];
+        for (n, want) in samples {
+            let got = remote_packet_count(n);
+            assert_eq!(got, want, "count {n}");
+            assert!(got.chars().count() <= 6, "{got} is wider than 999.9T");
+            let field = fit_right(&got, REMOTE_COUNT_W);
+            assert_eq!(field.chars().count(), REMOTE_COUNT_W);
+            assert!(field.starts_with(' '), "{field} touches the port column");
+        }
+        assert_eq!(fit_right("999.9K", REMOTE_COUNT_W), " 999.9K");
     }
 
     #[test]

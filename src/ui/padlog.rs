@@ -171,7 +171,7 @@ impl TextPad {
 
     fn push_line(&mut self, kind: PadKind, text: String, nowrap: bool) -> u64 {
         let text = if kind == PadKind::System {
-            format!("gp {} {text}", Local::now().format("%H:%M"))
+            format!("GPNG {} {text}", Local::now().format("%H:%M"))
         } else {
             text
         };
@@ -890,7 +890,7 @@ mod tests {
                 .take(3)
                 .zip(["channel status", "monitor warning", "banner"])
         {
-            let rest = line.text.strip_prefix("gp ").unwrap();
+            let rest = line.text.strip_prefix("GPNG ").unwrap();
             let (time, text) = rest.split_once(' ').unwrap();
             assert!(chrono::NaiveTime::parse_from_str(time, "%H:%M").is_ok());
             assert_eq!(text, message);

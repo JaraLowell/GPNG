@@ -2507,6 +2507,22 @@ impl GpGuiApp {
         }
     }
 
+    /// `//MHeard` port cell: `0 Serial-link` or `1 TCP-link`.
+    fn mheard_port_label(&self, port: Option<u8>) -> String {
+        let Some(port) = port else {
+            return "-".into();
+        };
+        let tcp = match self.cfg.tnc.protocol_kind() {
+            HostProtocol::Kiss => self.cfg.tnc.kiss_use_tcp(),
+            HostProtocol::Tfpcx => self.cfg.tnc.links.iter().any(|link| {
+                link.is_enabled() && link.uses_tcp() && link.ports.contains(&port)
+            }),
+            HostProtocol::Wa8ded | HostProtocol::Baycom => false,
+        };
+        let kind = if tcp { "TCP-link" } else { "Serial-link" };
+        format!("{port} {kind}")
+    }
+
     /// Port column on MHeard when TFPCX is running more than one radio.
     fn mheard_shows_port(&self) -> bool {
         if self.cfg.tnc.protocol_kind() != HostProtocol::Tfpcx {
@@ -4892,12 +4908,10 @@ impl GpGuiApp {
                 play_bell_wav(&self.bell_wav);
             }
             RemoteAction::MHeard => {
-                let lines = self.mheard.remote_lines(args);
-                if lines.is_empty() {
-                    self.send_report("MHeard: (empty)");
-                } else {
-                    self.send_report_block("MHeard", &lines.join("\r"));
-                }
+                let body = self
+                    .mheard
+                    .remote_table(args, |port| self.mheard_port_label(port));
+                self.send_report_block("Monitor Heard - Last heard stations:", &body);
             }
             RemoteAction::Name => {
                 self.store_remote_name(channel, args);
@@ -16932,7 +16946,7 @@ mod input_tests {
             assert_eq!(lines.len(), 2);
             for line in lines {
                 assert_eq!(line.kind, PadKind::System);
-                let rest = line.text.strip_prefix("gp ").unwrap();
+                let rest = line.text.strip_prefix("GPNG ").unwrap();
                 let (time, message) = rest.split_once(' ').unwrap();
                 assert!(chrono::NaiveTime::parse_from_str(time, "%H:%M").is_ok());
                 assert_eq!(message, "KISS port 12: undecodable AX.25 (3B) 01 DB C0");

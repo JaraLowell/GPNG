@@ -149,7 +149,7 @@ wa8ded_line_delay_ms = 300
 
 # Modem driver (only one is loaded): "wa8ded" (aliases: jhost, hostmode),
 # "tfpcx" (soft-TNC), or "kiss" (TAPR KISS over serial or TCP).
-protocol = "kiss"
+protocol = "tfpcx"
 
 # Monitor flags at connect — expanded as %M in WA8DED.INI / KISS.INI (e.g. M %M → M IUSC).
 monitor_mode = "IUSC"
@@ -168,7 +168,7 @@ kiss_char_delay_ms = 30
 kiss_line_delay_ms = 300
 kiss_exit_delay_ms = 5000  # settle after RESTART (classic KISSINIT -D exit)
 
-links = [{ protocol = "kiss", ports = [0], transport = "serial", serial_port = "COM7", baud = 19200, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "kiss", ports = [1], transport = "tcp", serial_port = "COM7", baud = 19200, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "off", ports = [4], transport = "serial", serial_port = "COM7", baud = 19200, tcp_host = "127.0.0.1", tcp_port = 8200 }]
+links = [{ protocol = "kiss", ports = [0], transport = "serial", serial_port = "COM7", baud = 19200, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "kiss", ports = [1], transport = "serial", serial_port = "COM6", baud = 9600, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "off", ports = [4], transport = "serial", serial_port = "COM7", baud = 19200, tcp_host = "127.0.0.1", tcp_port = 8200 }]
 [colors]
 # Legacy VGA attribute names preserved for theme migration / future TUI.
 clock_background = "DarkGreen"
@@ -215,15 +215,15 @@ address = "CQ"
 source = "file"
 text = ""
 file = "D:\\MyPython\\GPNG\\data\\BEACON.GPI"
-period_minutes = 60
+period_minutes = 0
 [print]
 # Legacy ESC/P printer attribute byte sequences.
 default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1157
-y = 205
+x = 62
+y = 412
 width = 1155
 height = 890
 maximized = false
