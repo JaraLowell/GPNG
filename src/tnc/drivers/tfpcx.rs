@@ -3,9 +3,15 @@
 //!
 //! A KISS link's hardware ports are 0, 1, … in the order the operator chose.
 //! WA8DED stays a single logical port and still receives ordinary hostmode commands.
+//!
+//! A frame that has to leave on more than one modem is handed to the first
+//! modem immediately. Each further modem waits out that transmission, so two
+//! transmitters are not keyed together on one supply. The wait is the
+//! 1200 bit/s on-air time plus key-up, and at least half a second. Receiving
+//! keeps running while a later modem is waiting.
 
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
@@ -54,15 +60,14 @@ pub fn run(
                     super::kiss::run(child_serial, child_tnc, child_events.clone(), cmd_rx)
                 };
                 if let Err(err) = result {
-                    let _ = child_events.blocking_send(TncEvent::Warning(format!(
-                        "link {slot}: {err}"
-                    )));
+                    let _ = child_events
+                        .blocking_send(TncEvent::Warning(format!("link {slot}: {err}")));
                 }
             })
             .map_err(|err| {
-            let _ = hosts.save();
-            TncError::Protocol(format!("link {slot}: {err}"))
-        })?;
+                let _ = hosts.save();
+                TncError::Protocol(format!("link {slot}: {err}"))
+            })?;
         // Detach. Shutdown is a command on the child's channel.
         drop(join);
         let _ = events.blocking_send(TncEvent::Status(link_status(slot, link)));
@@ -80,7 +85,14 @@ pub fn run(
         .flat_map(|plugin| plugin.ports.iter().copied())
         .collect();
 
-    let result = supervise(&plugins, &kiss_ports, &mut hosts, &events, &mut commands, &mut incoming);
+    let result = supervise(
+        &plugins,
+        &kiss_ports,
+        &mut hosts,
+        &events,
+        &mut commands,
+        &mut incoming,
+    );
     let _ = hosts.save();
     result
 }
@@ -93,15 +105,18 @@ fn supervise(
     commands: &mut mpsc::Receiver<TncCommand>,
     incoming: &mut [mpsc::Receiver<TncEvent>],
 ) -> Result<(), TncError> {
+    let mut stagger = Stagger::new();
     loop {
         loop {
             match commands.try_recv() {
                 Ok(cmd) => {
-                    if dispatch(plugins, kiss_ports, hosts, events, cmd)? {
+                    if dispatch(plugins, kiss_ports, hosts, events, &mut stagger, cmd)? {
+                        stagger.held.clear();
                         return Ok(());
                     }
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
+                    stagger.held.clear();
                     let _ = shutdown(plugins);
                     return Ok(());
                 }
@@ -109,12 +124,14 @@ fn supervise(
             }
         }
 
+        release_held(plugins, events, &mut stagger.held)?;
+
         for (index, rx) in incoming.iter_mut().enumerate() {
             while let Ok(event) = rx.try_recv() {
                 lift(index, &plugins[index], hosts, events, event);
             }
         }
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(stagger_nap(&stagger.held));
     }
 }
 
@@ -123,6 +140,7 @@ fn dispatch(
     kiss_ports: &[u8],
     hosts: &mut KnownHosts,
     events: &mpsc::Sender<TncEvent>,
+    stagger: &mut Stagger,
     cmd: TncCommand,
 ) -> Result<bool, TncError> {
     match cmd {
@@ -160,14 +178,10 @@ fn dispatch(
             send_wa8ded(plugins, events, TncCommand::HostData { channel, data })?;
         }
         TncCommand::HostFrame { channel, data } if host_command(&data) => {
-            send_wa8ded(
-                plugins,
-                events,
-                TncCommand::HostFrame { channel, data },
-            )?;
+            send_wa8ded(plugins, events, TncCommand::HostFrame { channel, data })?;
         }
         TncCommand::HostFrame { channel, data } => {
-            send_kiss(plugins, kiss_ports, hosts, events, channel, &data)?;
+            send_kiss(plugins, kiss_ports, hosts, events, stagger, channel, &data)?;
         }
         TncCommand::Session(_) => {
             return Err(TncError::Protocol("unadapted session command".into()));
@@ -198,6 +212,7 @@ fn send_kiss(
     kiss_ports: &[u8],
     hosts: &mut KnownHosts,
     events: &mpsc::Sender<TncEvent>,
+    stagger: &mut Stagger,
     channel: u8,
     data: &[u8],
 ) -> Result<(), TncError> {
@@ -227,10 +242,140 @@ fn send_kiss(
     if ports.len() > 1 {
         hosts.note_probe(&frame.dest, &frame.via);
     }
-    for port in ports {
-        send_on_logical(plugins, events, port, data.to_vec())?;
+    let groups = ports_by_modem(plugins, &ports);
+    if groups.len() < 2 {
+        for group in groups {
+            for port in group {
+                send_on_logical(plugins, events, port, data.to_vec())?;
+            }
+        }
+        return Ok(());
+    }
+    let gap = fanout_gap(data.len());
+    let now = Instant::now();
+    let mut when = if stagger.free_at > now {
+        stagger.free_at
+    } else {
+        now
+    };
+    for group in groups {
+        if when <= now {
+            for port in group {
+                send_on_logical(plugins, events, port, data.to_vec())?;
+            }
+        } else {
+            for port in group {
+                stagger.held.push(Held {
+                    at: when,
+                    logical: port,
+                    data: data.to_vec(),
+                });
+            }
+        }
+        when += gap;
+    }
+    stagger.free_at = when;
+    Ok(())
+}
+
+/// One copy of a frame waiting so a later modem does not key yet.
+struct Held {
+    at: Instant,
+    logical: u8,
+    data: Vec<u8>,
+}
+
+/// Shared-supply clock for frames that leave on more than one modem.
+struct Stagger {
+    /// When the last staggered copy should have finished keying.
+    free_at: Instant,
+    held: Vec<Held>,
+}
+
+impl Stagger {
+    fn new() -> Self {
+        Self {
+            free_at: Instant::now(),
+            held: Vec::new(),
+        }
+    }
+}
+
+/// Logical ports grouped by physical modem, lowest slot first.
+///
+/// Ports on one modem stay together: that box has one supply already, and
+/// its TNC receives the copies on one link. A port with no modem is its own
+/// group so the usual "not on a KISS link" warning still happens.
+fn ports_by_modem(plugins: &[Plugin], ports: &[u8]) -> Vec<Vec<u8>> {
+    let mut groups: Vec<Vec<u8>> = plugins.iter().map(|_| Vec::new()).collect();
+    let mut loose = Vec::new();
+    for &port in ports {
+        match plugins
+            .iter()
+            .position(|plugin| !plugin.wa8ded && plugin.ports.contains(&port))
+        {
+            Some(index) => groups[index].push(port),
+            None => loose.push(port),
+        }
+    }
+    let mut out: Vec<Vec<u8>> = groups
+        .into_iter()
+        .filter(|group| !group.is_empty())
+        .collect();
+    if !loose.is_empty() {
+        out.push(loose);
+    }
+    out
+}
+
+/// How long the next modem waits before it is allowed to key.
+///
+/// 1200 bit/s is the slow packet-radio case a shared supply has to survive.
+/// One byte is about 6.7 ms on the air there. A tenth of a millisecond per
+/// byte would be a few tens of milliseconds, and the second transmitter
+/// would still be keyed for almost the whole first transmission. The radio
+/// is already drawing current through TXDELAY, before the first flag, so
+/// that key-up is part of the wait. The result is never under half a second.
+fn fanout_gap(frame_len: usize) -> Duration {
+    const BAUD: u64 = 1200;
+    const TXDELAY: Duration = Duration::from_millis(500);
+    const FLOOR: Duration = Duration::from_millis(500);
+    // FCS and the two HDLC flags are not in the KISS payload. Worst-case
+    // bit stuffing is about one extra bit in five.
+    let bytes = (frame_len as u64).saturating_add(4).saturating_mul(12) / 10;
+    let air_ms = bytes.saturating_mul(8).saturating_mul(1000) / BAUD;
+    TXDELAY
+        .saturating_add(Duration::from_millis(air_ms))
+        .max(FLOOR)
+}
+
+fn release_held(
+    plugins: &[Plugin],
+    events: &mpsc::Sender<TncEvent>,
+    held: &mut Vec<Held>,
+) -> Result<(), TncError> {
+    let now = Instant::now();
+    let mut index = 0;
+    while index < held.len() {
+        if held[index].at <= now {
+            let item = held.remove(index);
+            send_on_logical(plugins, events, item.logical, item.data)?;
+        } else {
+            index += 1;
+        }
     }
     Ok(())
+}
+
+/// Keep polling commands and received frames. A later modem is due on the
+/// next tick, or sooner when its wait is almost over.
+fn stagger_nap(held: &[Held]) -> Duration {
+    let tick = Duration::from_millis(10);
+    held.iter()
+        .map(|item| item.at.saturating_duration_since(Instant::now()))
+        .min()
+        .map(|due| due.min(tick))
+        .unwrap_or(tick)
 }
 
 fn send_on_logical(
@@ -438,5 +583,185 @@ fn link_status(slot: usize, link: &TncLink) -> String {
             "link {slot}: KISS {} at {} baud, ports {ports}",
             link.serial_port, link.baud
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use tokio::sync::mpsc;
+
+    use super::super::super::ax25;
+    use super::super::super::known_hosts::KnownHosts;
+    use super::super::super::TncCommand;
+    use super::{fanout_gap, ports_by_modem, release_held, send_kiss, Plugin, Stagger};
+
+    fn kiss_plugin(ports: &[u8]) -> (Plugin, mpsc::Receiver<TncCommand>) {
+        let (commands, rx) = mpsc::channel(8);
+        (
+            Plugin {
+                wa8ded: false,
+                ports: ports.to_vec(),
+                commands,
+            },
+            rx,
+        )
+    }
+
+    fn hosts() -> KnownHosts {
+        let path = std::env::temp_dir().join(format!(
+            "gpng-tfpcx-stagger-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        KnownHosts::load(path, &[])
+    }
+
+    fn take_frame(rx: &mut mpsc::Receiver<TncCommand>) -> (u8, Vec<u8>) {
+        let TncCommand::HostFrame { channel, data } = rx.try_recv().expect("frame") else {
+            panic!("expected a KISS frame");
+        };
+        (channel, data)
+    }
+
+    #[test]
+    fn fanout_gap_is_half_a_second_plus_the_1200_baud_airtime() {
+        // 20-byte KISS payload → 24 bytes with FCS and flags, plus 20% stuffing.
+        // 28 bytes at 1200 bit/s is 186 ms, on top of a 500 ms key-up.
+        assert_eq!(fanout_gap(20).as_millis(), 686);
+        // 200 bytes → 244 stuffed bytes → 1626 ms on the air, plus the key-up.
+        assert_eq!(fanout_gap(200).as_millis(), 2126);
+        assert!(fanout_gap(200) > fanout_gap(20));
+        assert!(fanout_gap(0) >= Duration::from_millis(500));
+        // A tenth of a millisecond per byte would still be inside the key-up.
+        assert!(fanout_gap(200) > Duration::from_millis(500 + 20));
+    }
+
+    #[test]
+    fn ports_on_one_modem_stay_together_and_slot_order_is_kept() {
+        let (first, _a) = kiss_plugin(&[0, 1]);
+        let (commands, _wa) = mpsc::channel(1);
+        let wa8ded = Plugin {
+            wa8ded: true,
+            ports: vec![9],
+            commands,
+        };
+        let (third, _c) = kiss_plugin(&[2]);
+        let plugins = vec![first, wa8ded, third];
+        assert_eq!(
+            ports_by_modem(&plugins, &[2, 0, 1]),
+            vec![vec![0, 1], vec![2]]
+        );
+    }
+
+    #[test]
+    fn a_frame_for_every_modem_keys_the_first_now_and_holds_the_rest() {
+        let (first, mut first_rx) = kiss_plugin(&[0]);
+        let (second, mut second_rx) = kiss_plugin(&[1]);
+        let plugins = vec![first, second];
+        let (events, _events_rx) = mpsc::channel(4);
+        let mut stagger = Stagger::new();
+        let mut book = hosts();
+        let frame = ax25::build_ui("CQ", "N0CALL", &[], b"beacon");
+        let gap = fanout_gap(frame.len());
+
+        send_kiss(
+            &plugins,
+            &[0, 1],
+            &mut book,
+            &events,
+            &mut stagger,
+            0,
+            &frame,
+        )
+        .unwrap();
+
+        let (wire, data) = take_frame(&mut first_rx);
+        assert_eq!(wire, 0);
+        assert_eq!(data, frame);
+        assert!(second_rx.try_recv().is_err());
+        assert_eq!(stagger.held.len(), 1);
+        assert_eq!(stagger.held[0].logical, 1);
+        assert_eq!(stagger.held[0].data, frame);
+        assert_eq!(
+            stagger.free_at,
+            stagger.held[0].at.checked_add(gap).unwrap()
+        );
+
+        // A second copy must not key while the first copy is still on a radio.
+        send_kiss(
+            &plugins,
+            &[0, 1],
+            &mut book,
+            &events,
+            &mut stagger,
+            0,
+            &frame,
+        )
+        .unwrap();
+        assert!(first_rx.try_recv().is_err());
+        assert_eq!(stagger.held.len(), 3);
+        assert!(stagger.held[1].at >= stagger.held[0].at);
+        assert!(stagger.held[2].at > stagger.held[1].at);
+
+        for item in &mut stagger.held {
+            item.at = Instant::now();
+        }
+        release_held(&plugins, &events, &mut stagger.held).unwrap();
+        assert!(stagger.held.is_empty());
+        let (wire, data) = take_frame(&mut second_rx);
+        assert_eq!((wire, data), (0, frame.clone()));
+        let (wire, data) = take_frame(&mut first_rx);
+        assert_eq!((wire, data), (0, frame.clone()));
+        let (wire, data) = take_frame(&mut second_rx);
+        assert_eq!((wire, data), (0, frame));
+    }
+
+    #[test]
+    fn one_modem_and_a_known_port_are_not_delayed() {
+        let (dual, mut dual_rx) = kiss_plugin(&[0, 1]);
+        let plugins = vec![dual];
+        let (events, _events_rx) = mpsc::channel(4);
+        let mut stagger = Stagger::new();
+        let mut book = hosts();
+        let frame = ax25::build_ui("CQ", "N0CALL", &[], b"both ports");
+
+        send_kiss(
+            &plugins,
+            &[0, 1],
+            &mut book,
+            &events,
+            &mut stagger,
+            0,
+            &frame,
+        )
+        .unwrap();
+        assert!(stagger.held.is_empty());
+        assert_eq!(take_frame(&mut dual_rx).0, 0);
+        assert_eq!(take_frame(&mut dual_rx).0, 1);
+
+        book.remember("N1YOU", 1);
+        let (only, mut only_rx) = kiss_plugin(&[1]);
+        let plugins = vec![kiss_plugin(&[0]).0, only];
+        let directed = ax25::build_ui("N1YOU", "N0CALL", &[], b"one port");
+        send_kiss(
+            &plugins,
+            &[0, 1],
+            &mut book,
+            &events,
+            &mut stagger,
+            0,
+            &directed,
+        )
+        .unwrap();
+        assert!(stagger.held.is_empty());
+        let (wire, data) = take_frame(&mut only_rx);
+        assert_eq!(wire, 0);
+        assert_eq!(data, directed);
     }
 }

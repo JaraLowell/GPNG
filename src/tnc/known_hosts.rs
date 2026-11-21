@@ -283,10 +283,7 @@ mod tests {
         assert_eq!(hosts.port_of("DIGI"), Some(4));
         assert_eq!(hosts.port_of("N1YOU"), Some(4));
         assert_eq!(hosts.port_of("N0ME"), None);
-        assert_eq!(
-            hosts.route("N1YOU", &[], &[0, 1, 4]),
-            Route::Kiss(vec![4])
-        );
+        assert_eq!(hosts.route("N1YOU", &[], &[0, 1, 4]), Route::Kiss(vec![4]));
     }
 
     #[test]
@@ -298,10 +295,7 @@ mod tests {
             Route::Kiss(vec![2])
         );
         hosts.remember("N2BBS", 5);
-        assert_eq!(
-            hosts.route("N2BBS", &[], &[0, 2]),
-            Route::Other(5)
-        );
+        assert_eq!(hosts.route("N2BBS", &[], &[0, 2]), Route::Other(5));
     }
 
     #[test]

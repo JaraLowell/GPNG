@@ -811,10 +811,7 @@ mod tests {
             stamped_numbered,
             "fm1 14:30 NL1MSK to NL1AS via NL0MSK ctl RR1v"
         );
-        assert_eq!(
-            stamped_plain.find("14:30"),
-            stamped_numbered.find("14:30")
-        );
+        assert_eq!(stamped_plain.find("14:30"), stamped_numbered.find("14:30"));
         assert_eq!(insert_monitor_time(&stamped_plain, "14:31"), stamped_plain);
     }
 }

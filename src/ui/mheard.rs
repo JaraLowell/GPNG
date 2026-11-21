@@ -136,7 +136,6 @@ impl HeardStation {
         }
         line
     }
-
 }
 
 #[derive(Debug, Clone, Default)]
@@ -696,7 +695,11 @@ mod tests {
         // Keep the more specific 8-char when a later packet only has 6.
         assert_eq!(list.entries[0].locator.as_deref(), Some("JO32MW49"));
         list.hear(&test_ui("APRS", "PI12NN", "!5231.00N/01324.00E-move"), None);
-        assert!(list.entries[0].locator.as_ref().unwrap().starts_with("JO62"));
+        assert!(list.entries[0]
+            .locator
+            .as_ref()
+            .unwrap()
+            .starts_with("JO62"));
         assert_eq!(list.entries[0].locator.as_ref().unwrap().len(), 8);
         assert!(list.entries[0].lat.is_some());
         // Mic-E needs dest + raw info bytes.

@@ -700,16 +700,14 @@ impl KissSessions {
     }
 
     fn owns(&self, port: u8, call: &str) -> bool {
-        self.configs.values().any(|c| {
-            (self.any_kiss_port || c.port == port) && c.local == call
-        })
+        self.configs
+            .values()
+            .any(|c| (self.any_kiss_port || c.port == port) && c.local == call)
     }
 
     /// Free channel for an incoming SABM. TFPCX may move it onto the radio that called.
     fn incoming_config(&self, port: u8, local: &str) -> Option<ChannelConfig> {
-        let free = |c: &ChannelConfig| {
-            c.local == local && !self.links.contains_key(&c.channel)
-        };
+        let free = |c: &ChannelConfig| c.local == local && !self.links.contains_key(&c.channel);
         if let Some(config) = self
             .configs
             .values()
@@ -806,7 +804,8 @@ impl KissSessions {
             return;
         };
         let Some(port) = self.links.iter().find_map(|(_, link)| {
-            (link.config.local == frame.src && link.remote == frame.dest).then_some(link.config.port)
+            (link.config.local == frame.src && link.remote == frame.dest)
+                .then_some(link.config.port)
         }) else {
             return;
         };
@@ -1399,10 +1398,9 @@ mod tests {
         assert_eq!(engine.links[&1].config.port, 1);
         assert_eq!(engine.configs[&1].port, 0);
         let again = engine.receive(1, &sabm, now);
-        assert!(events(&again).iter().all(|event| !matches!(
-            event,
-            SessionEvent::Connected { channel: 2, .. }
-        )));
+        assert!(events(&again)
+            .iter()
+            .all(|event| !matches!(event, SessionEvent::Connected { channel: 2, .. })));
         assert!(!engine.links.contains_key(&2));
     }
 }

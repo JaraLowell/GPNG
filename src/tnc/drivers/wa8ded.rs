@@ -11,9 +11,9 @@ use crate::config::{SerialConfig, TncConfig};
 use super::super::hostmode::{
     exchange, expand_command, parse_free_buffer, parse_link_status, HostCode, HostIo, InboundFrame,
 };
+use super::super::reconnect::{self, Attempt};
 use super::super::serial::SerialLink;
 use super::super::wa8ded_ini::{self, resolve_wa8ded_ini};
-use super::super::reconnect::{self, Attempt};
 use super::super::{BufferReport, ChannelBuffers, LinkPhase, TncCommand, TncError, TncEvent};
 
 const CHANNELS: u8 = 10;
@@ -34,7 +34,14 @@ pub fn run(
     };
     let mut failures = 0u8;
     loop {
-        match run_once(&serial, &config, &events, &mut commands, &label, &mut failures) {
+        match run_once(
+            &serial,
+            &config,
+            &events,
+            &mut commands,
+            &label,
+            &mut failures,
+        ) {
             Attempt::Stop => return Ok(()),
             Attempt::Again(err) => {
                 if !reconnect::fail_link(&events, &mut commands, &label, &mut failures, &err) {
@@ -777,8 +784,16 @@ mod tests {
             })
             .unwrap();
         let mut failures = 0u8;
-        let error = run_hostmode(&mut modem, &config, &events, &mut rx, 10, "COM1", &mut failures)
-            .unwrap_err();
+        let error = run_hostmode(
+            &mut modem,
+            &config,
+            &events,
+            &mut rx,
+            10,
+            "COM1",
+            &mut failures,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("I N0BAD"));
         assert!(!modem.writes.iter().any(|wire| wire.ends_with(b"C N1YOU")));
     }

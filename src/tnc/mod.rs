@@ -20,9 +20,9 @@
 pub mod ax25;
 pub mod baycom;
 mod drivers;
-mod known_hosts;
 mod hostmode;
 mod kiss_ini;
+mod known_hosts;
 mod monitor_filter;
 mod payload;
 mod reconnect;

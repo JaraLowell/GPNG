@@ -282,7 +282,13 @@ mod tests {
 
     #[test]
     fn point_in_simple_square() {
-        let ring = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]];
+        let ring = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [0.0, 0.0],
+        ];
         assert!(point_in_ring(5.0, 5.0, &ring));
         assert!(!point_in_ring(15.0, 5.0, &ring));
     }

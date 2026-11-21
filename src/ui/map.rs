@@ -134,7 +134,6 @@ impl MapView {
         let lat = self.center_lat + span_lat * 0.5 - y * span_lat;
         (lon, lat)
     }
-
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -410,9 +409,7 @@ fn point_in_ring(lon: f64, lat: f64, ring: &[[f64; 2]]) -> bool {
     for i in 0..n {
         let (xi, yi) = (ring[i][0], ring[i][1]);
         let (xj, yj) = (ring[j][0], ring[j][1]);
-        if ((yi > lat) != (yj > lat))
-            && (lon < (xj - xi) * (lat - yi) / (yj - yi + 1e-15) + xi)
-        {
+        if ((yi > lat) != (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi + 1e-15) + xi) {
             inside = !inside;
         }
         j = i;
@@ -525,7 +522,11 @@ fn paint_country_labels(
     font: FontId,
     color: Color32,
 ) {
-    cands.sort_by(|a, b| b.area.partial_cmp(&a.area).unwrap_or(std::cmp::Ordering::Equal));
+    cands.sort_by(|a, b| {
+        b.area
+            .partial_cmp(&a.area)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut placed: Vec<Rect> = Vec::new();
     let pad = 4.0;
     for lab in cands.iter() {

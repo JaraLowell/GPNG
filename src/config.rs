@@ -1600,9 +1600,7 @@ fn check_link(slot: usize, link: &TncLink, used: &mut Vec<u8>) -> Result<(), Str
             check_serial(slot, link)?;
         }
     } else {
-        return Err(format!(
-            "Link {slot}: protocol must be KISS or WA8DED"
-        ));
+        return Err(format!("Link {slot}: protocol must be KISS or WA8DED"));
     }
     for port in &link.ports {
         if *port > TncConfig::TFPCX_MAX_PORT {

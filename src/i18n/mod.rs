@@ -227,10 +227,7 @@ pub fn help_for(language: &str, topic: &str) -> String {
     } else if let Some(body) = find_help_section(&st, &lang, topic) {
         trim_help_block(&body).to_string()
     } else {
-        format!(
-            "No help for {topic}\r{}",
-            trim_help_block(&overview)
-        )
+        format!("No help for {topic}\r{}", trim_help_block(&overview))
     }
 }
 
@@ -373,8 +370,7 @@ fn flatten(value: &Value, prefix: &str, cat: &mut Catalog) {
                 if next == "meta" {
                     if let Value::Table(meta) = v {
                         if let Some(name) = meta.get("name").and_then(|x| x.as_str()) {
-                            cat.strings
-                                .insert("meta.name".into(), name.to_string());
+                            cat.strings.insert("meta.name".into(), name.to_string());
                         }
                     }
                     continue;

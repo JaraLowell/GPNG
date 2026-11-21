@@ -197,7 +197,6 @@ impl Running {
         !self.code_known
     }
 
-
     /// The peer was linked when this started. A dropped link stops the script.
     pub fn set_while_linked(&mut self, yes: bool) {
         self.while_linked = yes;

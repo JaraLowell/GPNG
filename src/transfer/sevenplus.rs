@@ -404,7 +404,10 @@ fn incomplete_if_missing(
     })
 }
 
-fn decode_write_and_delete(dir: &Path, part_paths: Vec<PathBuf>) -> Result<AssembleOutcome, String> {
+fn decode_write_and_delete(
+    dir: &Path,
+    part_paths: Vec<PathBuf>,
+) -> Result<AssembleOutcome, String> {
     let mut bodies = Vec::with_capacity(part_paths.len());
     for path in &part_paths {
         bodies.push(fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?);

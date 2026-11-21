@@ -651,7 +651,13 @@ impl GpGuiApp {
         };
         let radio_host = cfg.tnc.kiss_tcp_host.clone();
         let radio_tcp_port = cfg.tnc.kiss_tcp_port.to_string();
-        let radio_links = radio_link_forms(&cfg.tnc, &radio_port, radio_baud, &radio_host, &radio_tcp_port);
+        let radio_links = radio_link_forms(
+            &cfg.tnc,
+            &radio_port,
+            radio_baud,
+            &radio_host,
+            &radio_tcp_port,
+        );
 
         let colors = &cfg.colors;
         let modems = modem_faces(&cfg);
@@ -1180,12 +1186,7 @@ impl GpGuiApp {
 
     /// One `CHIME.WAV` per hour on a 12-hour clock, 40 ms between strikes.
     fn play_hour_chime(&self, hour24: u32) {
-        play_wav_times(
-            &self.chime_wav,
-            chime_strikes(hour24),
-            Duration::ZERO,
-            0.25,
-        );
+        play_wav_times(&self.chime_wav, chime_strikes(hour24), Duration::ZERO, 0.25);
     }
 
     fn log_event(&mut self, msg: impl Into<String>) {
@@ -1300,7 +1301,11 @@ impl GpGuiApp {
                         }
                     }
                 }
-                TncEvent::Modem { index, label, phase } => {
+                TncEvent::Modem {
+                    index,
+                    label,
+                    phase,
+                } => {
                     self.note_modem(index, label, phase);
                 }
                 TncEvent::Buffers(report) => self.apply_buffers(report),
@@ -2514,9 +2519,12 @@ impl GpGuiApp {
         };
         let tcp = match self.cfg.tnc.protocol_kind() {
             HostProtocol::Kiss => self.cfg.tnc.kiss_use_tcp(),
-            HostProtocol::Tfpcx => self.cfg.tnc.links.iter().any(|link| {
-                link.is_enabled() && link.uses_tcp() && link.ports.contains(&port)
-            }),
+            HostProtocol::Tfpcx => self
+                .cfg
+                .tnc
+                .links
+                .iter()
+                .any(|link| link.is_enabled() && link.uses_tcp() && link.ports.contains(&port)),
             HostProtocol::Wa8ded | HostProtocol::Baycom => false,
         };
         let kind = if tcp { "TCP-link" } else { "Serial-link" };
@@ -6910,7 +6918,8 @@ impl GpGuiApp {
                     self.map_view.fit_locator(&loc);
                     self.status = format!("Own locator {loc}");
                 } else {
-                    self.status = "Locator must be 6 or 8 characters (e.g. JO32KX / JO32MW49)".into();
+                    self.status =
+                        "Locator must be 6 or 8 characters (e.g. JO32KX / JO32MW49)".into();
                 }
             }
         }
@@ -9466,7 +9475,13 @@ impl GpGuiApp {
                     .color(Color32::BLACK)
                     .font(font.clone()),
             );
-            retro::field(ui, &mut self.radio_links[index].host, row_w, "", font.clone());
+            retro::field(
+                ui,
+                &mut self.radio_links[index].host,
+                row_w,
+                "",
+                font.clone(),
+            );
             ui.label(
                 RichText::new("TCP port")
                     .color(Color32::BLACK)
@@ -9720,7 +9735,18 @@ impl GpGuiApp {
         self.radio_port.clear();
     }
 
-    fn radio_form_key(&self) -> (String, HostProtocol, bool, String, u32, String, String, String) {
+    fn radio_form_key(
+        &self,
+    ) -> (
+        String,
+        HostProtocol,
+        bool,
+        String,
+        u32,
+        String,
+        String,
+        String,
+    ) {
         (
             self.radio_call.clone(),
             self.radio_protocol,
@@ -9944,10 +9970,16 @@ impl GpGuiApp {
             RadioPick::Protocol => protocol_label(self.radio_protocol).to_string(),
             RadioPick::Connection => {
                 let tcp = link.map(|link| link.tcp).unwrap_or(self.radio_tcp);
-                if tcp { "TCP".into() } else { "Serial".into() }
+                if tcp {
+                    "TCP".into()
+                } else {
+                    "Serial".into()
+                }
             }
             RadioPick::Port => {
-                let selected = link.map(|link| link.port_name.as_str()).unwrap_or(&self.radio_port);
+                let selected = link
+                    .map(|link| link.port_name.as_str())
+                    .unwrap_or(&self.radio_port);
                 port_menu_label(&ports, selected)
             }
             RadioPick::Baud => link
@@ -11056,10 +11088,7 @@ impl GpGuiApp {
                             .unwrap_or(false)
                     })
                     .count();
-                let hover = self
-                    .map_hover_loc
-                    .clone()
-                    .unwrap_or_else(|| "—".into());
+                let hover = self.map_hover_loc.clone().unwrap_or_else(|| "—".into());
                 let place = self
                     .map_hover_loc
                     .as_deref()
@@ -11401,14 +11430,11 @@ impl GpGuiApp {
         }
         let markers = map::collect_markers(
             &self.cfg.station.locator,
-            self.mheard.entries.iter().filter(|e| e.listed()).map(|e| {
-                (
-                    e.call.clone(),
-                    e.locator.clone(),
-                    e.lat,
-                    e.lon,
-                )
-            }),
+            self.mheard
+                .entries
+                .iter()
+                .filter(|e| e.listed())
+                .map(|e| (e.call.clone(), e.locator.clone(), e.lat, e.lon)),
         );
         let colors = map::MapColors {
             background: self.map_bg,
@@ -11453,19 +11479,17 @@ impl GpGuiApp {
             .enumerate()
             .filter(|(_, e)| e.listed())
             .map(|(i, e)| {
-                let geo_line = geo.station_detail_line(
-                    e.locator.as_deref(),
-                    e.lat,
-                    e.lon,
-                    qth_ll,
-                );
+                let geo_line = geo.station_detail_line(e.locator.as_deref(), e.lat, e.lon, qth_ll);
                 (i, HeardSheetRow::from_station(e, geo_line))
             })
             .collect();
         let mut clicked: Option<usize> = None;
         let row_font = FontId::monospace(13.0);
         let head_font = FontId::monospace(12.0);
-        let rule = Stroke::new(1.0, Color32::from_rgb(text_fg.r() / 3, text_fg.g() / 3, text_fg.b() / 3));
+        let rule = Stroke::new(
+            1.0,
+            Color32::from_rgb(text_fg.r() / 3, text_fg.g() / 3, text_fg.b() / 3),
+        );
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
             let avail = ui.available_size();
@@ -11512,9 +11536,18 @@ impl GpGuiApp {
                                 .strong(),
                         );
                     }
-                    let header = Rect::from_min_size(ui.cursor().min, Vec2::new(text.width(), head_h));
+                    let header =
+                        Rect::from_min_size(ui.cursor().min, Vec2::new(text.width(), head_h));
                     ui.allocate_rect(header, Sense::hover());
-                    paint_mheard_sheet_header(ui.painter(), header, &cols, &head_font, text_fg, bg, rule);
+                    paint_mheard_sheet_header(
+                        ui.painter(),
+                        header,
+                        &cols,
+                        &head_font,
+                        text_fg,
+                        bg,
+                        rule,
+                    );
 
                     let body = Rect::from_min_max(
                         Pos2::new(text.left(), header.bottom()),
@@ -11581,7 +11614,8 @@ impl GpGuiApp {
                                             Pos2::new(block_rect.left(), block_rect.top() + row_h),
                                             Vec2::new(block_rect.width(), row_h),
                                         );
-                                        let x = (sub.left() + payload_x + 4.0).min(sub.right() - 8.0);
+                                        let x =
+                                            (sub.left() + payload_x + 4.0).min(sub.right() - 8.0);
                                         let clipped = clip_sheet_cell(
                                             geo_line,
                                             (sub.right() - x).max(8.0),
@@ -14132,7 +14166,11 @@ fn paint_link_lamp(
 ) {
     let cell = Rect::from_min_size(Pos2::new(origin_x, y), Vec2::new(w, h));
     controls.push(cell);
-    let _resp = ui.interact(cell, ui.id().with(("sess-link-lamp", index)), Sense::hover());
+    let _resp = ui.interact(
+        cell,
+        ui.id().with(("sess-link-lamp", index)),
+        Sense::hover(),
+    );
     let painter = ui.painter();
     painter.rect_filled(cell, 0.0, VGA_GRAY);
     paint_bevel(painter, cell, false);
@@ -14303,7 +14341,10 @@ fn paint_mheard_sheet_header(
     painter.rect_filled(rect, 0.0, mix_rgb(bg, fg, 0.12));
     let mut x = rect.left();
     for (i, col) in cols.iter().enumerate() {
-        let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(col.width, rect.height()));
+        let cell = Rect::from_min_size(
+            Pos2::new(x, rect.top()),
+            Vec2::new(col.width, rect.height()),
+        );
         painter.text(
             Pos2::new(cell.left() + 4.0, cell.center().y),
             egui::Align2::LEFT_CENTER,
@@ -14314,7 +14355,10 @@ fn paint_mheard_sheet_header(
         if i + 1 < cols.len() {
             let edge = cell.right();
             painter.line_segment(
-                [Pos2::new(edge, rect.top() + 1.0), Pos2::new(edge, rect.bottom() - 1.0)],
+                [
+                    Pos2::new(edge, rect.top() + 1.0),
+                    Pos2::new(edge, rect.bottom() - 1.0),
+                ],
                 rule,
             );
         }
@@ -14334,7 +14378,10 @@ fn paint_mheard_sheet_row(
 ) {
     let mut x = rect.left();
     for (i, col) in cols.iter().enumerate() {
-        let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(col.width, rect.height()));
+        let cell = Rect::from_min_size(
+            Pos2::new(x, rect.top()),
+            Vec2::new(col.width, rect.height()),
+        );
         let raw = row.cell(col.key);
         let clip = matches!(col.key, "payload" | "via");
         let text = if clip {
@@ -14366,7 +14413,12 @@ fn paint_mheard_sheet_row(
 
 fn clip_sheet_cell(text: &str, width: f32, font: &FontId, painter: &egui::Painter) -> String {
     let inner = (width - 8.0).max(8.0);
-    if painter.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE).size().x <= inner {
+    if painter
+        .layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE)
+        .size()
+        .x
+        <= inner
+    {
         return text.to_string();
     }
     let ellipsis = "...";
@@ -14503,7 +14555,13 @@ fn menu_open(ui: &mut Ui, label: &str, value: &str, width: f32) -> bool {
 }
 
 /// Equal cells for ports 0–11. Two-digit labels stay in the same columns as 0–5.
-fn paint_port_grid(ui: &mut Ui, chosen: &[u8], row_w: f32, font: &FontId, mut toggle: impl FnMut(u8)) {
+fn paint_port_grid(
+    ui: &mut Ui,
+    chosen: &[u8],
+    row_w: f32,
+    font: &FontId,
+    mut toggle: impl FnMut(u8),
+) {
     const COLS: usize = 6;
     let gap = 3.0;
     let cell_w = ((row_w - gap * (COLS as f32 - 1.0)) / COLS as f32).max(22.0);
@@ -16115,7 +16173,9 @@ mod input_tests {
                 for pressed in [None, Some(true), Some(false)] {
                     let mut input = egui::RawInput {
                         screen_rect: Some(Rect::from_min_size(
-                            Pos2::ZERO, Vec2::new(1000.0, 900.0))),
+                            Pos2::ZERO,
+                            Vec2::new(1000.0, 900.0),
+                        )),
                         ..Default::default()
                     };
                     if let Some(pressed) = pressed {
@@ -16134,15 +16194,23 @@ mod input_tests {
                             icon_editor_side(ui, &mut edit, &mut false, &mut None, &mut None);
                         });
                     });
-                    target = output.shapes.iter().filter_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text) if text.galley.text() == label => {
-                            Some(text.pos + text.galley.size() * 0.5)
-                        }
-                        _ => None,
-                    }).nth(occurrence).expect("cycle button rendered");
+                    target = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) if text.galley.text() == label => {
+                                Some(text.pos + text.galley.size() * 0.5)
+                            }
+                            _ => None,
+                        })
+                        .nth(occurrence)
+                        .expect("cycle button rendered");
                 }
-                assert_eq!((edit.index, edit.color, edit.right_color), expected,
-                    "{label} control {occurrence}");
+                assert_eq!(
+                    (edit.index, edit.color, edit.right_color),
+                    expected,
+                    "{label} control {occurrence}"
+                );
             }
         });
     }

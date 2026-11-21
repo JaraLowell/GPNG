@@ -313,7 +313,13 @@ fn run_loop(
                 if let Some(bit) = clock.push(sample) {
                     match modem.receive_bit(bit) {
                         Some(Ok(payload)) => {
-                            emit(events, TncEvent::LinkIo { tx: false, index: 0 })?;
+                            emit(
+                                events,
+                                TncEvent::LinkIo {
+                                    tx: false,
+                                    index: 0,
+                                },
+                            )?;
                             emit(
                                 events,
                                 TncEvent::HostFrame {

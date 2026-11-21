@@ -172,11 +172,7 @@ fn lat_lon_to_locator_n(lat: f64, lon: f64, len: usize) -> Option<String> {
 /// `dest_call` is the AX.25 destination (Mic-E encodes latitude there).
 ///
 /// Priority: Mic-E → APRS uncompressed/compressed → Maidenhead text tag.
-pub fn extract_position(
-    info_raw: &[u8],
-    src_call: &str,
-    dest_call: &str,
-) -> Option<PositionFix> {
+pub fn extract_position(info_raw: &[u8], src_call: &str, dest_call: &str) -> Option<PositionFix> {
     if info_raw.is_empty() {
         return None;
     }
@@ -230,8 +226,7 @@ fn parse_mice(dest_call: &str, info: &[u8]) -> Option<PositionFix> {
     }
 
     let lat_deg = (digits[0] * 10 + digits[1]) as f64;
-    let lat_min = (digits[2] * 10 + digits[3]) as f64
-        + (digits[4] * 10 + digits[5]) as f64 / 100.0;
+    let lat_min = (digits[2] * 10 + digits[3]) as f64 + (digits[4] * 10 + digits[5]) as f64 / 100.0;
     let mut lat = lat_deg + lat_min / 60.0;
     // Char 4: 0-9/L = South, P-Y/Z = North.
     if dest[3] <= b'L' {
@@ -448,7 +443,10 @@ fn parse_uncompressed_body(s: &str) -> Option<PositionFix> {
         lat = -lat;
     }
 
-    let lon_deg: f64 = std::str::from_utf8(&b[lon_off..lon_off + 3]).ok()?.parse().ok()?;
+    let lon_deg: f64 = std::str::from_utf8(&b[lon_off..lon_off + 3])
+        .ok()?
+        .parse()
+        .ok()?;
     let lon_min: f64 = std::str::from_utf8(&b[lon_off + 3..lon_off + 8])
         .ok()?
         .parse()
