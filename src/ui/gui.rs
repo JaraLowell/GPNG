@@ -376,6 +376,8 @@ pub struct GpGuiApp {
     radio: RadioLink,
     /// Global call (`mycall[0]`) shown first on the startup card.
     radio_call: String,
+    /// Own Maidenhead QTH (`station.locator`) on the startup card.
+    radio_locator: String,
     /// Call loaded from Config, so a change can be announced once.
     radio_call_loaded: String,
     radio_protocol: HostProtocol,
@@ -638,6 +640,7 @@ impl GpGuiApp {
         let (cmd_tx, _idle_rx) = mpsc::channel(1);
         let (_idle_tx, events) = mpsc::channel(1);
         let radio_call = cfg.primary_mycall().to_string();
+        let radio_locator = cfg.station.locator.clone();
         let radio_call_loaded = radio_call.clone();
         let radio_protocol = cfg.tnc.protocol_kind();
         let radio_tcp = cfg.tnc.kiss_transport.eq_ignore_ascii_case("tcp");
@@ -799,6 +802,7 @@ impl GpGuiApp {
             show_radio_gate: true,
             radio,
             radio_call,
+            radio_locator,
             radio_call_loaded,
             radio_protocol,
             radio_tcp,
@@ -9374,7 +9378,11 @@ impl GpGuiApp {
             let saved = self.store_radio_form();
             self.note_radio_save(saved);
             if self.radio_error.is_empty() {
-                self.open_chosen_radio();
+                if let Some(msg) = locator_blocks_start(&self.radio_locator) {
+                    self.radio_error = msg;
+                } else {
+                    self.open_chosen_radio();
+                }
             }
         }
         if self.show_radio_gate {
@@ -9586,12 +9594,62 @@ impl GpGuiApp {
         let font = menu_font(17.0);
         let ports = self.radio_ports.clone();
 
-        ui.label(
-            RichText::new("Call sign")
-                .color(Color32::BLACK)
-                .font(menu_font(16.0)),
-        );
-        retro::field(ui, &mut self.radio_call, row_w, "", font.clone());
+        clip_locator_edit(&mut self.radio_locator);
+        let gap = 8.0;
+        let label_font = menu_font(16.0);
+        let loc_text = ui.fonts(|fonts| {
+            fonts
+                .layout_no_wrap("JO32MW49".to_string(), font.clone(), Color32::BLACK)
+                .size()
+                .x
+        });
+        // Well inset plus the text edit's side margins, so eight characters fit.
+        let loc_w = loc_text + 24.0;
+        let loc_label = ui.fonts(|fonts| {
+            fonts
+                .layout_no_wrap("QTH Locator".to_string(), label_font.clone(), Color32::BLACK)
+                .size()
+                .x
+        });
+        let loc_col = loc_label.max(loc_w);
+        let call_w = (row_w - gap - loc_col).max(120.0);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            ui.vertical(|ui| {
+                ui.set_width(call_w);
+                ui.label(
+                    RichText::new("Call sign")
+                        .color(Color32::BLACK)
+                        .font(label_font.clone()),
+                );
+                retro::field(ui, &mut self.radio_call, call_w, "", font.clone());
+            });
+            ui.vertical(|ui| {
+                ui.set_width(loc_col);
+                ui.label(
+                    RichText::new("QTH Locator")
+                        .color(Color32::BLACK)
+                        .font(label_font),
+                );
+                retro::field_fixed(
+                    ui,
+                    &mut self.radio_locator,
+                    loc_w,
+                    "JO32KX",
+                    Color32::from_rgb(168, 168, 168),
+                    8,
+                    font.clone(),
+                );
+            });
+        });
+        clip_locator_edit(&mut self.radio_locator);
+        if let Some(msg) = locator_field_warning(&self.radio_locator) {
+            ui.label(
+                RichText::new(msg)
+                    .color(Color32::from_rgb(140, 0, 0))
+                    .font(menu_font(16.0)),
+            );
+        }
 
         let protocol = protocol_label(self.radio_protocol).to_string();
         if menu_open(ui, "Protocol", &protocol, row_w) {
@@ -9739,6 +9797,7 @@ impl GpGuiApp {
         &self,
     ) -> (
         String,
+        String,
         HostProtocol,
         bool,
         String,
@@ -9749,6 +9808,7 @@ impl GpGuiApp {
     ) {
         (
             self.radio_call.clone(),
+            self.radio_locator.clone(),
             self.radio_protocol,
             self.radio_tcp,
             self.radio_port.clone(),
@@ -9780,9 +9840,33 @@ impl GpGuiApp {
         }
     }
 
+    /// Write `station.locator` when the field is empty or a finished Maidenhead value.
+    /// A half-typed grid stays on the card and is not written yet.
+    fn sync_radio_locator(&mut self) -> Result<(), String> {
+        let raw = self.radio_locator.trim();
+        let next = if raw.is_empty() {
+            String::new()
+        } else if let Some(loc) = crate::locator::normalize_locator(raw) {
+            loc
+        } else {
+            return Ok(());
+        };
+        if next == self.cfg.station.locator {
+            return Ok(());
+        }
+        self.cfg.station.locator = next.clone();
+        self.cfg.persist_locator(&self.config_path)?;
+        if !next.is_empty() {
+            self.radio_locator = next.clone();
+            self.map_view.fit_locator(&next);
+        }
+        Ok(())
+    }
+
     /// Copy the card into `cfg` and rewrite Config.toml. Invalid fields are left unsaved.
     fn store_radio_form(&mut self) -> Result<(), String> {
         let call = normalize_mycall(self.radio_call.trim())?;
+        self.sync_radio_locator()?;
         self.apply_radio_form_to_cfg()?;
         let call_changed = !call.eq_ignore_ascii_case(self.cfg.primary_mycall());
         if call_changed {
@@ -14442,6 +14526,43 @@ fn clip_sheet_cell(text: &str, width: f32, font: &FontId, painter: &egui::Painte
     }
 }
 
+/// Keep the startup locator to eight Maidenhead characters.
+fn clip_locator_edit(text: &mut String) {
+    let next: String = text
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if *text != next {
+        *text = next;
+    }
+}
+
+/// Shown while a finished-looking grid is not a locator. Shorter text is still being typed.
+fn locator_field_warning(text: &str) -> Option<&'static str> {
+    let raw = text.trim();
+    let n = raw.len();
+    if raw.is_empty() || crate::locator::normalize_locator(raw).is_some() {
+        return None;
+    }
+    if n == 6 || n >= 8 {
+        Some("Locator is 6 or 8 characters (e.g. JO32KX)")
+    } else {
+        None
+    }
+}
+
+/// Apply refuses to open the link until the locator is empty or valid.
+fn locator_blocks_start(text: &str) -> Option<String> {
+    let raw = text.trim();
+    if raw.is_empty() || crate::locator::normalize_locator(raw).is_some() {
+        None
+    } else {
+        Some("Locator is 6 or 8 characters (e.g. JO32KX)".into())
+    }
+}
+
 fn modem_faces(cfg: &Config) -> Vec<ModemFace> {
     let faces = match cfg.tnc.protocol_kind() {
         HostProtocol::Tfpcx => cfg
@@ -16697,6 +16818,7 @@ mod input_tests {
         with_offline_app("wa8ded", |app, _, _| {
             std::fs::write(&app.config_path, toml::to_string(&app.cfg).unwrap()).unwrap();
             app.radio_call = "N0ME".into();
+            app.radio_locator = "JO32KX".into();
             app.radio_port = "COM999".into();
             app.radio_baud = 9600;
             for (index, protocol, label) in [
@@ -16710,6 +16832,7 @@ mod input_tests {
                 let saved: Config =
                     toml::from_str(&std::fs::read_to_string(&app.config_path).unwrap()).unwrap();
                 assert_eq!(saved.tnc.protocol, protocol);
+                assert_eq!(saved.station.locator, "JO32KX");
                 assert_eq!(saved.tnc.protocol_kind(), app.radio_protocol);
                 assert_eq!(protocol_label(saved.tnc.protocol_kind()), label);
                 if saved.tnc.protocol_kind() == HostProtocol::Baycom {
@@ -16722,6 +16845,23 @@ mod input_tests {
                     assert!(app.software_ax25());
                 }
             }
+            app.radio_locator = "jo32mw49".into();
+            app.store_radio_form().unwrap();
+            let saved: Config =
+                toml::from_str(&std::fs::read_to_string(&app.config_path).unwrap()).unwrap();
+            assert_eq!(saved.station.locator, "JO32MW49");
+            app.radio_locator = "JO32".into();
+            app.store_radio_form().unwrap();
+            let saved: Config =
+                toml::from_str(&std::fs::read_to_string(&app.config_path).unwrap()).unwrap();
+            assert_eq!(saved.station.locator, "JO32MW49");
+            app.radio_locator.clear();
+            app.store_radio_form().unwrap();
+            let saved: Config =
+                toml::from_str(&std::fs::read_to_string(&app.config_path).unwrap()).unwrap();
+            assert_eq!(saved.station.locator, "");
+            assert!(locator_blocks_start("JO32").is_some());
+            assert!(locator_blocks_start("").is_none());
         });
         with_offline_app("baycom", |app, _, _| {
             assert_eq!(app.radio_protocol, HostProtocol::Baycom);

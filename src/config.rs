@@ -533,6 +533,16 @@ impl Config {
         upsert_toml_key(path, None, "mycall", &format!("[{list}]"))
     }
 
+    /// Rewrite `locator` under `[station]` in Config.toml.
+    pub fn persist_locator(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        put_key(
+            path.as_ref(),
+            "station",
+            "locator",
+            &toml_string(&self.station.locator),
+        )
+    }
+
     /// Rewrite / create the `[session.chrome]` block for session-bar buttons.
     pub fn persist_chrome(&self, path: impl AsRef<Path>) -> Result<(), String> {
         let path = path.as_ref();

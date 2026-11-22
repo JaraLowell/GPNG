@@ -159,21 +159,60 @@ pub fn entry(
 
 /// Sunken typing line. Same rim as a menu row, pushed in.
 pub fn field(ui: &mut Ui, text: &mut String, width: f32, hint: &str, font: FontId) -> Response {
-    let width = width.max(120.0);
+    field_inner(ui, text, width.max(120.0), hint, None, usize::MAX, font)
+}
+
+/// Narrow sunken line. `hint_color` is the example shown while the line is empty.
+/// egui paints every hint with the weak text colour, so the example colour is set here.
+pub fn field_fixed(
+    ui: &mut Ui,
+    text: &mut String,
+    width: f32,
+    hint: &str,
+    hint_color: Color32,
+    char_limit: usize,
+    font: FontId,
+) -> Response {
+    field_inner(
+        ui,
+        text,
+        width.max(48.0),
+        hint,
+        Some(hint_color),
+        char_limit,
+        font,
+    )
+}
+
+fn field_inner(
+    ui: &mut Ui,
+    text: &mut String,
+    width: f32,
+    hint: &str,
+    hint_color: Option<Color32>,
+    char_limit: usize,
+    font: FontId,
+) -> Response {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::hover());
     paint(ui.painter(), rect, FIELD, true, ROW_ROUND);
     // Same 3px lift as the buttons, so the typed line sits on the middle.
     let text_h = (font.size + 4.0).min(rect.height() - 6.0);
     let inner = Rect::from_center_size(
         rect.center() + Vec2::new(0.0, 1.0 - 3.0),
-        Vec2::new((rect.width() - 16.0).max(40.0), text_h),
+        Vec2::new((rect.width() - 16.0).max(8.0), text_h),
     );
     let mut response = None;
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
+        if let Some(color) = hint_color {
+            let visuals = ui.visuals_mut();
+            visuals.override_text_color = Some(color);
+            visuals.widgets.noninteractive.weak_bg_fill = color;
+        }
         let mut edit = egui::TextEdit::singleline(text)
-            .desired_width(inner.width().max(40.0))
+            .desired_width(inner.width().max(8.0))
             .font(font)
             .frame(false)
+            .char_limit(char_limit)
             .text_color(Color32::BLACK);
         if !hint.is_empty() {
             edit = edit.hint_text(hint);
