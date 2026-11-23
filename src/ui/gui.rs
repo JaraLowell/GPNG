@@ -9155,17 +9155,24 @@ impl eframe::App for GpGuiApp {
         self.maybe_clean_mheard();
         self.poll_beacon();
         let now = Instant::now();
-        let link_hot = self.modems.iter().any(|face| {
-            face.tx_until.is_some_and(|t| t > now) || face.rx_until.is_some_and(|t| t > now)
-        });
+        // Each wake rebuilds the monitor galley. Stay asleep unless something
+        // on screen is actually changing.
         let repaint = if self.transfer_row_open() {
             Duration::from_millis(100)
-        } else if link_hot {
-            Duration::from_millis(40)
+        } else if let Some(left) = self
+            .modems
+            .iter()
+            .filter_map(|face| face.lamp_remaining(now))
+            .min()
+        {
+            // TX/RX glass is on or off. Wake when it should go dark.
+            left.max(Duration::from_millis(50))
         } else if self.external_run.iter().any(|run| run.occupied()) {
             Duration::from_millis(50)
         } else {
-            Duration::from_millis(200)
+            // Half a second so a packet, the COM glass, and a new-chat flash
+            // are not held for the clock. The hand still moves on the second.
+            idle_monitor_repaint(Local::now().timestamp_subsec_millis())
         };
         ctx.request_repaint_after(repaint);
         self.poll_hotkeys(ctx);
@@ -11243,7 +11250,17 @@ impl GpGuiApp {
             self.clear_channel_attention(n);
         }
         if self.channel_unread.iter().any(|on| *on) {
-            ui.ctx().request_repaint_after(Duration::from_millis(50));
+            // White/red is a step, not a fade. Wake on the change only.
+            let t = ui.input(|i| i.time);
+            let period = ALERT_BLINK_HALF * 2.0;
+            let phase = t % period;
+            let wait = if phase < ALERT_BLINK_HALF {
+                ALERT_BLINK_HALF - phase
+            } else {
+                period - phase
+            };
+            ui.ctx()
+                .request_repaint_after(Duration::from_secs_f64(wait.max(0.05)));
         }
         let painter = ui.painter_at(rect);
         // Menu-window background, so a 1px strip stays visible above/below the buttons.
@@ -11294,8 +11311,11 @@ impl GpGuiApp {
                 let fill = if selected { menu_bg } else { VGA_DARK_GRAY };
                 let text_color = if alert {
                     let t = ui.input(|i| i.time);
-                    let wave = ((t * std::f64::consts::TAU / 1.8).sin() as f32) * 0.5 + 0.5;
-                    mix_rgb(Color32::WHITE, Color32::from_rgb(220, 32, 32), wave)
+                    if (t / ALERT_BLINK_HALF) as i64 % 2 == 0 {
+                        Color32::WHITE
+                    } else {
+                        Color32::from_rgb(220, 32, 32)
+                    }
                 } else {
                     VGA_GRAY
                 };
@@ -14265,6 +14285,27 @@ fn call_after_fm(after: &str) -> Option<String> {
 /// How long a COM send or receive keeps its monitor glass bright.
 const LINK_LAMP_HOLD: Duration = Duration::from_millis(280);
 
+/// Unread channel label: white, then red, then white. Half of one blink.
+const ALERT_BLINK_HALF: f64 = 0.55;
+
+/// How often a quiet monitor looks for packets, lamp flashes, and new chat.
+const MONITOR_POLL: Duration = Duration::from_millis(500);
+
+/// Quiet window: look again within half a second, and also on the whole
+/// second so the clock hand steps then and not at the half-second poll.
+/// `subsec_millis` is the current millisecond within that second (`0..1000`).
+fn idle_monitor_repaint(subsec_millis: u32) -> Duration {
+    until_next_clock_second(subsec_millis).min(MONITOR_POLL)
+}
+
+/// Sleep until just after the next whole second. `subsec_millis` is the
+/// current millisecond within that second (`0..1000`).
+fn until_next_clock_second(subsec_millis: u32) -> Duration {
+    let sub = u64::from(subsec_millis.min(999));
+    let wait = 1000u64.saturating_sub(sub).saturating_add(30);
+    Duration::from_millis(wait.max(50))
+}
+
 /// Non-clickable COM lamp. The PNG screens are transparent; red (front,
 /// send) and green (back, receive) are painted behind those holes.
 fn paint_link_lamp(
@@ -14338,6 +14379,16 @@ impl ModemFace {
             tx_until: None,
             rx_until: None,
         }
+    }
+
+    /// Time left on the TX or RX glass, if either is still lit.
+    fn lamp_remaining(&self, now: Instant) -> Option<Duration> {
+        [self.tx_until, self.rx_until]
+            .into_iter()
+            .flatten()
+            .filter(|t| *t > now)
+            .map(|t| t.saturating_duration_since(now))
+            .min()
     }
 }
 
@@ -15350,7 +15401,8 @@ fn draw_analog_clock(ui: &mut Ui, rect: Rect, gong_on: bool, column: Color32) ->
 
     let h = now.hour() as f32 % 12.0 + now.minute() as f32 / 60.0;
     let m = now.minute() as f32 + now.second() as f32 / 60.0;
-    let s = now.second() as f32 + now.nanosecond() as f32 / 1e9;
+    // Whole seconds. A sweeping hand would repaint the window all day.
+    let s = now.second() as f32;
 
     let hand = |frac: f32, len: f32, stroke: Stroke| {
         let a = frac * TAU - TAU / 4.0;
@@ -16291,6 +16343,18 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
 #[cfg(test)]
 mod input_tests {
     use super::*;
+
+    #[test]
+    fn idle_monitor_polls_twice_a_second_and_catches_the_clock() {
+        assert_eq!(idle_monitor_repaint(0), Duration::from_millis(500));
+        assert_eq!(idle_monitor_repaint(400), Duration::from_millis(500));
+        // Past the half: the next whole second is sooner, so the hand stays on time.
+        let near = idle_monitor_repaint(700);
+        assert_eq!(near, until_next_clock_second(700));
+        assert!(near < Duration::from_millis(500));
+        let late = idle_monitor_repaint(980);
+        assert!(late >= Duration::from_millis(50) && late <= Duration::from_millis(80));
+    }
 
     #[test]
     fn icon_editor_up_increases_and_down_decreases_icons_and_both_colors() {
