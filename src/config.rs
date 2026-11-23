@@ -273,6 +273,9 @@ impl Config {
                 "QUESTIONS" => self.session.questions = parse_boolish(value),
                 "BACKUP" => self.session.backup = parse_boolish(value),
                 "ZOOM" => self.session.zoom = parse_u32(value, "ZOOM")?,
+                "PADFONT" => {
+                    self.session.pad_font_size = parse_u32(value, "PADFONT")?;
+                }
                 "PROMPT" => self.session.prompt = value.to_string(),
                 "NONAME" => self.session.noname = value.to_string(),
                 "REMOTELANGUAGE" | "LANGUAGE" => {
@@ -626,6 +629,12 @@ impl Config {
         put_key(path, "session", "prompt", &toml_string(&s.prompt))?;
         put_key(path, "session", "language", &toml_string(&s.language))?;
         put_key(path, "session", "zoom", &s.zoom.to_string())?;
+        put_key(
+            path,
+            "session",
+            "pad_font_size",
+            &clamp_pad_font(s.pad_font_size).to_string(),
+        )?;
         put_key(path, "session", "icon_file", &toml_string(&s.icon_file))?;
         put_key(
             path,
@@ -1115,6 +1124,9 @@ pub struct SessionConfig {
     pub backup: bool,
     /// DOS `Zoom`. `1` is off (JetBrains Mono Regular). `2` is on (Bold).
     pub zoom: u32,
+    /// Monospace size for Monitor, channel, BBS-Menu, and Box-List. Default 14.
+    #[serde(default = "default_pad_font_size")]
+    pub pad_font_size: u32,
     pub prompt: String,
     pub noname: String,
     /// ISO 639-1 UI / remote-help language (`en`, `de`, …). Legacy
@@ -1172,6 +1184,20 @@ fn default_language() -> String {
     "en".into()
 }
 
+fn default_pad_font_size() -> u32 {
+    14
+}
+
+/// Monitor, channel, BBS-Menu, and Box-List size. `0` is the default.
+pub fn clamp_pad_font(size: u32) -> u32 {
+    let size = if size == 0 {
+        default_pad_font_size()
+    } else {
+        size
+    };
+    size.clamp(10, 28)
+}
+
 fn default_allow_color_ansi() -> bool {
     true
 }
@@ -1190,6 +1216,7 @@ impl Default for SessionConfig {
             questions: false,
             backup: true,
             zoom: 1,
+            pad_font_size: default_pad_font_size(),
             prompt: "%c to %y>".into(),
             noname: "%c".into(),
             language: default_language(),

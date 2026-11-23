@@ -21,8 +21,13 @@ use chrono::Local;
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{Color32, FontId};
 
-/// Monitor, channel, spy, BBS, and Box-List pads. Column wrap uses this size.
+/// Default monospace size for the Monitor, channel, BBS-Menu, and Box-List pads.
 pub const PAD_FONT_SIZE: f32 = 14.0;
+
+/// Theme Setup value as a monospace point size. `0` stays at [`PAD_FONT_SIZE`].
+pub fn pad_font_px(size: u32) -> f32 {
+    crate::config::clamp_pad_font(size) as f32
+}
 use tracing::warn;
 
 const PAD_GREEN: Color32 = Color32::from_rgb(85, 255, 85);
@@ -280,7 +285,7 @@ impl TextPad {
     /// space. A `<0xNN>` / `<U+NNNN>` token moves as a whole.
     /// Header and payload keep their stored role colours.
     pub fn layout_job_wrapped(&self, columns: usize) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, true, false, false, None, None, None)
+        self.layout_job_wrapped_indent(columns, true, false, false, None, None, None, PAD_FONT_SIZE)
     }
 
     /// Monitor pad drawn with the output-window colours.
@@ -292,6 +297,7 @@ impl TextPad {
         header: Color32,
         payload: Color32,
         info: Color32,
+        font_px: f32,
     ) -> LayoutJob {
         self.layout_job_wrapped_indent(
             columns,
@@ -301,11 +307,18 @@ impl TextPad {
             Some((header, payload)),
             Some(info),
             None,
+            font_px,
         )
     }
 
     /// Spy pad. Heard lines use `fg`; the other side uses `inverse`.
-    pub fn layout_job_spy(&self, columns: usize, fg: Color32, inverse: Color32) -> LayoutJob {
+    pub fn layout_job_spy(
+        &self,
+        columns: usize,
+        fg: Color32,
+        inverse: Color32,
+        font_px: f32,
+    ) -> LayoutJob {
         self.layout_job_wrapped_indent(
             columns,
             false,
@@ -314,19 +327,29 @@ impl TextPad {
             None,
             None,
             Some((fg, inverse)),
+            font_px,
         )
     }
 
     /// Channel / spy / mail pads: wrap at `columns` with no continuation indent.
     pub fn layout_job_wrapped_plain(&self, columns: usize) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, false, false, false, None, None, None)
+        self.layout_job_wrapped_indent(
+            columns,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            PAD_FONT_SIZE,
+        )
     }
 
     /// Channel, BBS-Menu, and Box-List. `umlaut` maps the seven Latin-1
     /// glyphs back to äöüÄÖÜß. The stored row stays CP437, so turning the
     /// button off shows the shift again.
-    pub fn layout_job_channel(&self, columns: usize, umlaut: bool) -> LayoutJob {
-        self.layout_job_channel_show(columns, umlaut, true, None)
+    pub fn layout_job_channel(&self, columns: usize, umlaut: bool, font_px: f32) -> LayoutJob {
+        self.layout_job_channel_show(columns, umlaut, true, None, font_px)
     }
 
     /// Same as [`layout_job_channel`]. `show_own` false leaves our rows in the
@@ -337,8 +360,11 @@ impl TextPad {
         umlaut: bool,
         show_own: bool,
         system: Option<Color32>,
+        font_px: f32,
     ) -> LayoutJob {
-        self.layout_job_wrapped_indent(columns, false, umlaut, !show_own, None, system, None)
+        self.layout_job_wrapped_indent(
+            columns, false, umlaut, !show_own, None, system, None, font_px,
+        )
     }
 
     fn layout_job_wrapped_indent(
@@ -350,9 +376,10 @@ impl TextPad {
         monitor_colors: Option<(Color32, Color32)>,
         system_color: Option<Color32>,
         spy_colors: Option<(Color32, Color32)>,
+        font_px: f32,
     ) -> LayoutJob {
         let mut job = LayoutJob::default();
-        let font = FontId::monospace(PAD_FONT_SIZE);
+        let font = FontId::monospace(font_px);
         let mut first = true;
         for line in &self.lines {
             if hide_own && line.kind == PadKind::Own {

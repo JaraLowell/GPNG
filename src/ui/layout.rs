@@ -20,7 +20,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use super::icons::TOOLBAR_LABELS;
 
-/// Which primary content surface is focused (mirrors F-keys / ALT-E / ALT-M / ALT-W).
+/// Which primary content surface is focused (mirrors F-keys / ALT-E / ALT-H / ALT-M / ALT-W).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivePane {
     Monitor,

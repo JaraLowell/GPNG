@@ -5738,20 +5738,23 @@ impl GpGuiApp {
 
     /// Channel / spy / mail pads wrapped to the live viewport width.
     fn active_layout_for(&self, columns: usize) -> LayoutJob {
+        let font = self.pad_font_px();
         match self.active {
             ActivePane::Spy(n) => {
                 let idx = n.saturating_sub(1) as usize;
                 self.spy_pads
                     .get(idx)
-                    .map(|pad| pad.layout_job_spy(columns, self.spy_fg, self.spy_inv))
+                    .map(|pad| pad.layout_job_spy(columns, self.spy_fg, self.spy_inv, font))
                     .unwrap_or_default()
             }
-            ActivePane::Check => self
-                .bbs_pad
-                .layout_job_channel(columns, self.session.umlaut_for(SLOT_BBS)),
-            ActivePane::List => self
-                .box_pad
-                .layout_job_channel(columns, self.session.umlaut_for(SLOT_LIST)),
+            ActivePane::Check => {
+                self.bbs_pad
+                    .layout_job_channel(columns, self.session.umlaut_for(SLOT_BBS), font)
+            }
+            ActivePane::List => {
+                self.box_pad
+                    .layout_job_channel(columns, self.session.umlaut_for(SLOT_LIST), font)
+            }
             ActivePane::Channel(n) => self
                 .pads
                 .get(n as usize)
@@ -5761,6 +5764,7 @@ impl GpGuiApp {
                         self.session.umlaut_for(n),
                         self.session.echo_for(n),
                         Some(self.monitor_info),
+                        font,
                     )
                 })
                 .unwrap_or_default(),
@@ -5768,10 +5772,16 @@ impl GpGuiApp {
         }
     }
 
+    /// Monospace point size for Monitor, channel, BBS-Menu, and Box-List.
+    fn pad_font_px(&self) -> f32 {
+        padlog::pad_font_px(self.cfg.session.pad_font_size)
+    }
+
     /// Monitor pad (`pads[0]`). The full Monitor pane and the channel split
     /// both paint this job — there is no second monitor buffer.
     /// `columns` is how many monospace cells fit in the pane right now.
     fn monitor_layout_for(&self, columns: usize) -> LayoutJob {
+        let font = self.pad_font_px();
         self.pads
             .first()
             .map(|pad| {
@@ -5780,6 +5790,7 @@ impl GpGuiApp {
                     self.monitor_fg,
                     self.monitor_inv,
                     self.monitor_info,
+                    font,
                 )
             })
             .unwrap_or_default()
@@ -6071,6 +6082,7 @@ impl GpGuiApp {
             RowId::Softscroll => on_off(self.session.softscroll_lit(pane)).into(),
             RowId::Language => s.language.clone(),
             RowId::Zoom => on_off(zoom_bold(s.zoom)).into(),
+            RowId::FontSize => format!("{}", self.pad_font_px() as u32),
             RowId::Icons => icon_file_label(&s.icon_file),
             RowId::PacketLen => self.cfg.buffers.packet_payload.to_string(),
             RowId::AutoSave => on_off(self.session.seven_plus_lit(pane)).into(),
@@ -6137,6 +6149,11 @@ impl GpGuiApp {
                 crate::i18n::set_language(&self.cfg.session.language);
             }
             RowId::Zoom => self.toggle_zoom(),
+            RowId::FontSize => {
+                let current = crate::config::clamp_pad_font(self.cfg.session.pad_font_size) as i32;
+                let n = (current + step).clamp(10, 28);
+                self.cfg.session.pad_font_size = n as u32;
+            }
             RowId::PacketLen => {
                 let n = self.cfg.buffers.packet_payload as i32 + step;
                 self.cfg.buffers.packet_payload = n.clamp(16, 256) as u32;
@@ -8079,6 +8096,11 @@ impl GpGuiApp {
             self.select(ActivePane::Monitor);
             return;
         }
+        if eat_key(ctx, alt, egui::Key::H) {
+            // DOS chapter 8: MH list.
+            self.select(ActivePane::Mh);
+            return;
+        }
         if eat_key(ctx, alt, egui::Key::W) {
             // World map (MHeard EMPTY slot).
             self.select(ActivePane::Map);
@@ -8540,7 +8562,8 @@ impl GpGuiApp {
             return;
         }
         if matches!(self.active, ActivePane::Monitor) && !self.session.scr_lock {
-            self.session.nudge_lines(if dir > 0.0 { -1 } else { 1 });
+            self.session
+                .nudge_lines(if dir > 0.0 { -1 } else { 1 }, self.pad_font_px());
         }
     }
 
@@ -9264,8 +9287,9 @@ impl eframe::App for GpGuiApp {
                         show_bar,
                         0.0,
                         false,
+                        self.pad_font_px(),
                         |ui| {
-                            let cols = text_columns(ui);
+                            let cols = text_columns(ui, self.pad_font_px());
                             self.monitor_layout_for(cols)
                         },
                     );
@@ -9607,7 +9631,11 @@ impl GpGuiApp {
         let loc_w = loc_text + 24.0;
         let loc_label = ui.fonts(|fonts| {
             fonts
-                .layout_no_wrap("QTH Locator".to_string(), label_font.clone(), Color32::BLACK)
+                .layout_no_wrap(
+                    "QTH Locator".to_string(),
+                    label_font.clone(),
+                    Color32::BLACK,
+                )
                 .size()
                 .x
         });
@@ -11311,6 +11339,8 @@ impl GpGuiApp {
             .map(MailEntry::display)
             .collect();
         let mut pick: Option<(usize, bool, bool)> = None;
+        let font = FontId::monospace(self.pad_font_px());
+        let row_h = ui.fonts(|f| f.row_height(&font)).max(self.pad_font_px());
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
             Frame::none().fill(bg).show(ui, |ui| {
                 ui.set_min_size(rect.size());
@@ -11332,7 +11362,7 @@ impl GpGuiApp {
                                 Color32::WHITE
                             };
                             let (row, resp) = ui.allocate_exact_size(
-                                Vec2::new(ui.available_width().max(20.0), 14.0),
+                                Vec2::new(ui.available_width().max(20.0), row_h),
                                 Sense::click(),
                             );
                             ui.painter().rect_filled(row, 0.0, fill);
@@ -11346,7 +11376,7 @@ impl GpGuiApp {
                                 row.left_center() + Vec2::new(4.0, 0.0),
                                 egui::Align2::LEFT_CENTER,
                                 &shown,
-                                FontId::monospace(12.0),
+                                font.clone(),
                                 fg,
                             );
                             if resp.double_clicked() {
@@ -11492,8 +11522,9 @@ impl GpGuiApp {
             show_bar,
             nudge,
             false,
+            self.pad_font_px(),
             |ui| {
-                let cols = text_columns(ui);
+                let cols = text_columns(ui, self.pad_font_px());
                 if monitor {
                     self.monitor_layout_for(cols)
                 } else {
@@ -15438,9 +15469,9 @@ fn load_window_icon() -> egui::IconData {
 }
 
 /// How many monospace cells fit in the scroll viewport.
-fn text_columns(ui: &Ui) -> usize {
+fn text_columns(ui: &Ui, font_px: f32) -> usize {
     let char_w = ui
-        .fonts(|fonts| fonts.glyph_width(&FontId::monospace(padlog::PAD_FONT_SIZE), '0'))
+        .fonts(|fonts| fonts.glyph_width(&FontId::monospace(font_px), '0'))
         .max(1.0);
     // The DOS bar sits outside this viewport. A few pixels of slack keep
     // rounding from opening a horizontal bar.
@@ -15881,6 +15912,7 @@ fn paint_text_pane(
     show_bar: bool,
     nudge: f32,
     scroll_x: bool,
+    font_px: f32,
     make_job: impl FnOnce(&Ui) -> LayoutJob,
 ) {
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
@@ -16005,7 +16037,7 @@ fn paint_text_pane(
 
                 if show_bar && bar_rect.width() > 4.0 {
                     let row_h = ui
-                        .fonts(|f| f.row_height(&FontId::monospace(padlog::PAD_FONT_SIZE)))
+                        .fonts(|f| f.row_height(&FontId::monospace(font_px)))
                         .max(1.0);
                     let page = (view_h - row_h).max(row_h);
                     let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
@@ -16900,6 +16932,29 @@ mod input_tests {
     }
 
     #[test]
+    fn alt_h_opens_the_mheard_list() {
+        with_offline_app("wa8ded", |app, _, ctx| {
+            app.show_radio_gate = false;
+            assert_eq!(app.active, ActivePane::Monitor);
+            let _ = ctx.run(
+                egui::RawInput {
+                    modifiers: egui::Modifiers::ALT,
+                    events: vec![egui::Event::Key {
+                        key: egui::Key::H,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::ALT,
+                    }],
+                    ..Default::default()
+                },
+                |ctx| app.poll_hotkeys(ctx),
+            );
+            assert_eq!(app.active, ActivePane::Mh);
+        });
+    }
+
+    #[test]
     fn chat_relay_receives_packets_without_waiting_for_line_endings() {
         for protocol in ["wa8ded", "kiss", "baycom"] {
             with_offline_app(protocol, |app, rx, _| {
@@ -17160,7 +17215,13 @@ mod input_tests {
                 assert_eq!(message, "KISS port 12: undecodable AX.25 (3B) 01 DB C0");
             }
             let info = Color32::from_rgb(255, 168, 0);
-            let job = app.pads[0].layout_job_monitor(100, Color32::BLUE, Color32::WHITE, info);
+            let job = app.pads[0].layout_job_monitor(
+                100,
+                Color32::BLUE,
+                Color32::WHITE,
+                info,
+                padlog::PAD_FONT_SIZE,
+            );
             assert!(job
                 .sections
                 .iter()
@@ -17187,7 +17248,7 @@ mod input_tests {
                 app.compose[1].history.back().unwrap(),
                 "←[1;31mNot!←[0m normal ←"
             );
-            let job = app.pads[1].layout_job_channel(100, false);
+            let job = app.pads[1].layout_job_channel(100, false, padlog::PAD_FONT_SIZE);
             assert!(job.sections.iter().any(|section| {
                 &job.text[section.byte_range.clone()] == "Not!"
                     && section.format.color == Color32::from_rgb(255, 85, 85)
@@ -17212,7 +17273,7 @@ mod input_tests {
                 panic!("expected channel text");
             };
             assert_eq!(data, b"\x1b[1;31mNot!\r");
-            let job = app.pads[1].layout_job_channel(100, false);
+            let job = app.pads[1].layout_job_channel(100, false, padlog::PAD_FONT_SIZE);
             assert!(job.sections.iter().any(|section| {
                 &job.text[section.byte_range.clone()] == "Not!"
                     && section.format.color == PadKind::Own.color()
@@ -17225,7 +17286,7 @@ mod input_tests {
         with_offline_app("wa8ded", |app, _, _| {
             app.accept_rx_text(1, "\x1b[3", PadKind::Incoming);
             app.accept_rx_text(1, "1mGrr\x1b[0m plain\r", PadKind::Incoming);
-            let job = app.pads[1].layout_job_channel(100, false);
+            let job = app.pads[1].layout_job_channel(100, false, padlog::PAD_FONT_SIZE);
             assert!(job.sections.iter().any(|section| {
                 job.text[section.byte_range.clone()].contains("Grr")
                     && section.format.color == Color32::from_rgb(170, 0, 0)
@@ -17254,8 +17315,13 @@ mod input_tests {
             };
             assert_eq!(channel, 0);
             assert_eq!(data, b"\x1b[31mGrr and Stuff\r");
-            let job =
-                app.pads[0].layout_job_monitor(100, Color32::BLUE, Color32::WHITE, Color32::YELLOW);
+            let job = app.pads[0].layout_job_monitor(
+                100,
+                Color32::BLUE,
+                Color32::WHITE,
+                Color32::YELLOW,
+                padlog::PAD_FONT_SIZE,
+            );
             assert!(job.sections.iter().any(|section| {
                 job.text[section.byte_range.clone()].contains("Grr and Stuff")
                     && section.format.color == Color32::from_rgb(170, 0, 0)
@@ -17294,6 +17360,7 @@ mod input_tests {
                     Color32::BLUE,
                     payload_color,
                     Color32::YELLOW,
+                    padlog::PAD_FONT_SIZE,
                 );
                 for (word, color) in [
                     ("Red", Color32::from_rgb(170, 0, 0)),
@@ -17321,8 +17388,13 @@ mod input_tests {
             let raw = ax25::build_ui("N1BBB", "N1AAA", &[], b"\x1b[31mRed\x07");
             app.kiss_show_transit(&ax25::parse_frame(&raw).unwrap(), 0);
             let payload_color = Color32::from_rgb(3, 4, 5);
-            let job =
-                app.pads[0].layout_job_monitor(100, Color32::BLUE, payload_color, Color32::YELLOW);
+            let job = app.pads[0].layout_job_monitor(
+                100,
+                Color32::BLUE,
+                payload_color,
+                Color32::YELLOW,
+                padlog::PAD_FONT_SIZE,
+            );
             assert!(job.sections.iter().any(|section| {
                 job.text[section.byte_range.clone()].contains("Red")
                     && section.format.color == payload_color

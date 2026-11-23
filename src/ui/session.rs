@@ -405,9 +405,9 @@ impl SessionChrome {
             .to_string()
     }
 
-    pub fn nudge_lines(&mut self, lines: i32) {
-        // One monospace row in the RX pane (`padlog::PAD_FONT_SIZE`).
-        self.scroll_nudge += lines as f32 * -14.0;
+    pub fn nudge_lines(&mut self, lines: i32, row_px: f32) {
+        // One monospace row in the RX pane.
+        self.scroll_nudge += lines as f32 * -row_px;
     }
 
     pub fn take_scroll_nudge(&mut self) -> f32 {

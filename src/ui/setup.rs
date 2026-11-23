@@ -55,6 +55,8 @@ pub enum RowId {
     Language,
     /// DOS `Zoom`. Off is JetBrains Mono Regular, on is Bold.
     Zoom,
+    /// Monospace size for Monitor, channel, BBS-Menu, and Box-List. Default 14.
+    FontSize,
     Icons,
     PacketLen,
     AutoSave,
@@ -159,6 +161,7 @@ impl RowId {
             Self::Beacon => "setup.beacon",
             Self::Language => "setup.language",
             Self::Zoom => "setup.zoom",
+            Self::FontSize => "setup.font_size",
             Self::Icons => "setup.icons",
             Self::PacketLen => "setup.packet_len",
             Self::AutoSave => "setup.auto_save",
@@ -279,6 +282,7 @@ pub fn theme_rows() -> Vec<Row> {
         (RowId::ColorsClock, RowKind::Submenu),
         (RowId::ColorsMap, RowKind::Submenu),
         (RowId::Zoom, RowKind::Toggle),
+        (RowId::FontSize, RowKind::Number),
         (RowId::Icons, RowKind::Submenu),
     ])
 }
