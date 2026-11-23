@@ -136,7 +136,38 @@ impl Config {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let mut cfg = if path.exists() {
-            Self::from_toml_file(path)?
+            let text = fs::read_to_string(path).map_err(|source| ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            let upgraded = upgrade_document(&text).map_err(|source| ConfigError::Toml {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            if !upgraded.missing.is_empty() {
+                let names = upgraded
+                    .missing
+                    .iter()
+                    .map(|(key, _)| key.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let patched = insert_missing_keys(&text, &upgraded.missing);
+                if patched != text {
+                    match fs::write(path, patched) {
+                        Ok(()) => tracing::info!("stored missing settings in {}: {names}", path.display()),
+                        Err(err) => tracing::warn!(
+                            "could not store missing settings in {}: {err}",
+                            path.display()
+                        ),
+                    }
+                }
+            }
+            for key in &upgraded.replaced {
+                tracing::warn!(
+                    "config {key} cannot be read by this version — using the built-in default"
+                );
+            }
+            upgraded.cfg
         } else {
             tracing::warn!(
                 "config file {} not found — using built-in defaults",
@@ -178,16 +209,22 @@ impl Config {
     }
 
     /// Parse a modern TOML configuration file.
+    ///
+    /// Settings this version added are filled from [`Config::default`] when
+    /// the file does not have them. A value the new field cannot read is
+    /// replaced with that default so one old line cannot reject the file.
     pub fn from_toml_file(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let text = fs::read_to_string(path).map_err(|source| ConfigError::Io {
             path: path.to_path_buf(),
             source,
         })?;
-        toml::from_str(&text).map_err(|source| ConfigError::Toml {
-            path: path.to_path_buf(),
-            source,
-        })
+        upgrade_document(&text)
+            .map(|upgraded| upgraded.cfg)
+            .map_err(|source| ConfigError::Toml {
+                path: path.to_path_buf(),
+                source,
+            })
     }
 
     /// Overlay values from a classic `CONFIG.GP` key=value document.
@@ -2093,6 +2130,432 @@ impl Default for PrintConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Old Config.toml files
+// ---------------------------------------------------------------------------
+
+/// A file from an older GPNG. Missing settings were filled, and values this
+/// version cannot read were replaced.
+struct UpgradedToml {
+    cfg: Config,
+    /// Dotted keys that were not in the file, with the default value.
+    missing: Vec<(String, toml::Value)>,
+    /// Dotted keys whose saved value was replaced with the default.
+    replaced: Vec<String>,
+}
+
+/// Canonical name → key an older file may still use.
+const SETTING_ALIASES: &[(&str, &str)] = &[
+    ("language", "remote_language"),
+    ("umlaut", "extended_ascii"),
+    ("softscroll", "smooth_scroll"),
+];
+
+fn upgrade_document(text: &str) -> Result<UpgradedToml, toml::de::Error> {
+    let mut doc: toml::Value = toml::from_str(text)?;
+    let Some(defaults) = default_document() else {
+        return Ok(UpgradedToml {
+            cfg: toml::from_str(text)?,
+            missing: Vec::new(),
+            replaced: Vec::new(),
+        });
+    };
+    let mut missing = Vec::new();
+    fill_missing(&mut doc, &defaults, "", &mut missing);
+    let mut replaced = Vec::new();
+    if Config::deserialize(doc.clone()).is_err() {
+        scrub_incompatible(&mut doc, &defaults, &defaults, &[], &mut replaced);
+        strip_extra_keys(&mut doc, &defaults, &mut replaced);
+    }
+    if Config::deserialize(doc.clone()).is_err() {
+        tracing::warn!(
+            "config could not be repaired — built-in defaults replace the unreadable parts"
+        );
+        doc = defaults;
+        replaced.push("(file)".into());
+    }
+    let cfg = Config::deserialize(doc).unwrap_or_else(|_| Config::default());
+    Ok(UpgradedToml {
+        cfg,
+        missing,
+        replaced,
+    })
+}
+
+fn default_document() -> Option<toml::Value> {
+    match toml::Value::try_from(Config::default()) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            tracing::warn!("built-in defaults could not be prepared: {err}");
+            None
+        }
+    }
+}
+
+fn alias_for(key: &str) -> Option<&'static str> {
+    SETTING_ALIASES
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, alias)| *alias)
+}
+
+fn table_has(table: &toml::Table, key: &str) -> bool {
+    table.contains_key(key) || alias_for(key).is_some_and(|alias| table.contains_key(alias))
+}
+
+fn fill_missing(user: &mut toml::Value, proto: &toml::Value, path: &str, missing: &mut Vec<(String, toml::Value)>) {
+    let toml::Value::Table(proto_map) = proto else {
+        return;
+    };
+    let proto_keys: Vec<(String, toml::Value)> = proto_map
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let toml::Value::Table(user_map) = user else {
+        return;
+    };
+    for (key, proto_val) in proto_keys {
+        let child = if path.is_empty() {
+            key.clone()
+        } else {
+            format!("{path}.{key}")
+        };
+        if table_has(user_map, &key) {
+            if proto_val.is_table() {
+                if let Some(child_val) = user_map.get_mut(&key) {
+                    if child_val.is_table() {
+                        fill_missing(child_val, &proto_val, &child, missing);
+                    }
+                }
+            }
+            continue;
+        }
+        if proto_val.is_table() {
+            record_leaves(&child, &proto_val, missing);
+        } else {
+            missing.push((child, proto_val.clone()));
+        }
+        user_map.insert(key, proto_val);
+    }
+}
+
+fn record_leaves(path: &str, value: &toml::Value, missing: &mut Vec<(String, toml::Value)>) {
+    if let toml::Value::Table(map) = value {
+        for (key, child) in map {
+            let child_path = format!("{path}.{key}");
+            if child.is_table() {
+                record_leaves(&child_path, child, missing);
+            } else {
+                missing.push((child_path, child.clone()));
+            }
+        }
+    } else {
+        missing.push((path.to_string(), value.clone()));
+    }
+}
+
+fn scrub_incompatible(
+    doc: &mut toml::Value,
+    defaults: &toml::Value,
+    proto: &toml::Value,
+    path: &[String],
+    replaced: &mut Vec<String>,
+) {
+    let toml::Value::Table(proto_map) = proto else {
+        return;
+    };
+    let keys: Vec<(String, toml::Value)> = proto_map
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    for (key, proto_child) in keys {
+        let mut child_path = path.to_vec();
+        child_path.push(key);
+        let Some(current) = get_path(doc, &child_path).cloned() else {
+            continue;
+        };
+        if current.is_table() && proto_child.is_table() {
+            scrub_incompatible(doc, defaults, &proto_child, &child_path, replaced);
+            continue;
+        }
+        if isolated_ok(defaults, &child_path, &current) {
+            continue;
+        }
+        if current.is_array() && scrub_array(doc, defaults, &child_path, &current, &proto_child, replaced)
+        {
+            continue;
+        }
+        set_path(doc, &child_path, proto_child);
+        replaced.push(child_path.join("."));
+    }
+}
+
+fn scrub_array(
+    doc: &mut toml::Value,
+    defaults: &toml::Value,
+    path: &[String],
+    current: &toml::Value,
+    proto: &toml::Value,
+    replaced: &mut Vec<String>,
+) -> bool {
+    let Some(items) = current.as_array() else {
+        return false;
+    };
+    let elem_proto = proto
+        .as_array()
+        .and_then(|items| items.first())
+        .cloned()
+        .or_else(|| {
+            if path.last().map(String::as_str) == Some("links") {
+                toml::Value::try_from(TncLink::default()).ok()
+            } else {
+                None
+            }
+        });
+    let Some(elem_proto) = elem_proto else {
+        return false;
+    };
+    let mut fixed = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        if array_item_ok(defaults, path, item) {
+            fixed.push(item.clone());
+            continue;
+        }
+        if item.is_table() && elem_proto.is_table() {
+            let mut elem = elem_proto.clone();
+            if let Some(user_map) = item.as_table() {
+                for (key, user_val) in user_map {
+                    let Some(saved) = elem.as_table().and_then(|table| table.get(key)).cloned() else {
+                        continue;
+                    };
+                    if let Some(table) = elem.as_table_mut() {
+                        table.insert(key.clone(), user_val.clone());
+                    }
+                    if !array_item_ok(defaults, path, &elem) {
+                        if let Some(table) = elem.as_table_mut() {
+                            table.insert(key.clone(), saved);
+                        }
+                        replaced.push(format!("{}[{index}].{key}", path.join(".")));
+                    }
+                }
+            }
+            fixed.push(elem);
+        } else {
+            fixed.push(elem_proto.clone());
+            replaced.push(format!("{}[{index}]", path.join(".")));
+        }
+    }
+    set_path(doc, path, toml::Value::Array(fixed));
+    get_path(doc, path).is_some_and(|value| isolated_ok(defaults, path, value))
+}
+
+/// Drop a saved key that is not part of the current defaults (for example a
+/// field that is no longer written) when that key is why the file will not load.
+fn strip_extra_keys(doc: &mut toml::Value, proto: &toml::Value, replaced: &mut Vec<String>) {
+    if Config::deserialize(doc.clone()).is_ok() {
+        return;
+    }
+    let extras = extra_key_paths(doc, proto, &[]);
+    for path in &extras {
+        let mut trial = doc.clone();
+        remove_path(&mut trial, path);
+        if Config::deserialize(trial.clone()).is_ok() {
+            *doc = trial;
+            replaced.push(path.join("."));
+            return;
+        }
+    }
+    if extras.is_empty() {
+        return;
+    }
+    let mut trial = doc.clone();
+    for path in &extras {
+        remove_path(&mut trial, path);
+    }
+    if Config::deserialize(trial.clone()).is_ok() {
+        *doc = trial;
+        for path in extras {
+            replaced.push(path.join("."));
+        }
+    }
+}
+
+fn extra_key_paths(doc: &toml::Value, proto: &toml::Value, path: &[String]) -> Vec<Vec<String>> {
+    let Some(user_map) = get_path(doc, path).and_then(|value| value.as_table()) else {
+        return Vec::new();
+    };
+    let Some(proto_map) = get_path(proto, path).and_then(|value| value.as_table()) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for key in user_map.keys() {
+        if proto_map.contains_key(key) || SETTING_ALIASES.iter().any(|(_, alias)| alias == key) {
+            continue;
+        }
+        let mut child = path.to_vec();
+        child.push(key.clone());
+        found.push(child);
+    }
+    for key in user_map.keys() {
+        if proto_map.get(key).is_some_and(|value| value.is_table()) {
+            let mut child = path.to_vec();
+            child.push(key.clone());
+            found.extend(extra_key_paths(doc, proto, &child));
+        }
+    }
+    found
+}
+
+fn remove_path(doc: &mut toml::Value, path: &[String]) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let mut cur = doc;
+    for key in &path[..path.len() - 1] {
+        cur = match cur.as_table_mut().and_then(|table| table.get_mut(key)) {
+            Some(next) => next,
+            None => return false,
+        };
+    }
+    cur.as_table_mut()
+        .is_some_and(|table| table.remove(&path[path.len() - 1]).is_some())
+}
+
+fn isolated_ok(defaults: &toml::Value, path: &[String], candidate: &toml::Value) -> bool {
+    let mut doc = defaults.clone();
+    set_path(&mut doc, path, candidate.clone()) && Config::deserialize(doc).is_ok()
+}
+
+fn array_item_ok(defaults: &toml::Value, path: &[String], item: &toml::Value) -> bool {
+    isolated_ok(defaults, path, &toml::Value::Array(vec![item.clone()]))
+}
+
+fn get_path<'a>(doc: &'a toml::Value, path: &[String]) -> Option<&'a toml::Value> {
+    let mut cur = doc;
+    for key in path {
+        cur = cur.as_table()?.get(key)?;
+    }
+    Some(cur)
+}
+
+fn set_path(doc: &mut toml::Value, path: &[String], value: toml::Value) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let mut cur = doc;
+    for key in &path[..path.len() - 1] {
+        cur = match cur.as_table_mut().and_then(|table| table.get_mut(key)) {
+            Some(next) => next,
+            None => return false,
+        };
+    }
+    let Some(table) = cur.as_table_mut() else {
+        return false;
+    };
+    table.insert(path[path.len() - 1].clone(), value);
+    true
+}
+
+fn insert_missing_keys(text: &str, missing: &[(String, toml::Value)]) -> String {
+    let mut text = text.to_string();
+    for (path, value) in missing {
+        let Some(rendered) = format_toml_value(value) else {
+            continue;
+        };
+        let (section, key) = match path.rfind('.') {
+            Some(split) => (Some(&path[..split]), &path[split + 1..]),
+            None => (None, path.as_str()),
+        };
+        text = match section {
+            Some(section) => insert_key_in_section(&text, section, key, &rendered),
+            None => {
+                if !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                format!("{text}{key} = {rendered}\n")
+            }
+        };
+    }
+    text
+}
+
+fn format_toml_value(value: &toml::Value) -> Option<String> {
+    let mut table = toml::Table::new();
+    table.insert("v".into(), value.clone());
+    let text = toml::to_string(&table).ok()?;
+    let line = text.lines().next()?.trim();
+    line.strip_prefix("v = ").map(str::to_string)
+}
+
+fn section_name(line: &str) -> Option<&str> {
+    let inner = line.trim().strip_prefix('[')?.strip_suffix(']')?.trim();
+    if inner.is_empty() || inner.contains('[') || inner.contains(']') {
+        None
+    } else {
+        Some(inner)
+    }
+}
+
+fn line_key(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let head = trimmed.split('=').next()?.trim();
+    if head.is_empty() || head.starts_with('[') {
+        None
+    } else {
+        Some(head)
+    }
+}
+
+fn insert_key_in_section(text: &str, section: &str, key: &str, rendered: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let header_at = lines.iter().position(|line| {
+        section_name(line).is_some_and(|name| name.eq_ignore_ascii_case(section))
+    });
+    let Some(start) = header_at else {
+        if let Some((parent, rest)) = section.rsplit_once('.') {
+            if lines.iter().any(|line| {
+                section_name(line).is_some_and(|name| name.eq_ignore_ascii_case(parent))
+            }) {
+                return insert_key_in_section(text, parent, &format!("{rest}.{key}"), rendered);
+            }
+        }
+        let mut out = text.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+        out.push_str(&format!("[{section}]\n{key} = {rendered}\n"));
+        return out;
+    };
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find_map(|(index, line)| section_name(line).map(|_| index))
+        .unwrap_or(lines.len());
+    if lines[start + 1..end]
+        .iter()
+        .any(|line| line_key(line).is_some_and(|have| have.eq_ignore_ascii_case(key)))
+    {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    for (index, line) in lines.iter().enumerate() {
+        if index == end {
+            out.push_str(&format!("{key} = {rendered}\n"));
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if end == lines.len() {
+        out.push_str(&format!("{key} = {rendered}\n"));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Legacy parsing helpers
 // ---------------------------------------------------------------------------
 
@@ -2185,6 +2648,89 @@ fn parse_u8_list(value: &str, key: &str) -> Result<Vec<u8>, String> {
                 .map_err(|e| format!("{key}: cannot parse `{s}` as u8 ({e})"))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod load_old_config_tests {
+    use super::*;
+
+    const OLD_FILE: &str = r#"
+# keep this comment
+[station]
+mycall = ["DL0ABC"]
+
+[serial]
+port = "COM4"
+baud = 9600
+
+[session]
+channels = 4
+remote_language = "DE"
+remote = []
+
+[session.chrome]
+echo = false
+bell = true
+qrg_mhz = "70cm"
+
+[tnc]
+protocol = "kiss"
+links = [{ protocol = "kiss", ports = [0], transport = "serial", serial_port = "COM9", baud = "fast", tcp_host = "127.0.0.1", tcp_port = 8001 }]
+"#;
+
+    #[test]
+    fn old_config_keeps_saved_values_and_fills_new_settings() {
+        let dir = std::env::temp_dir().join(format!(
+            "gpng-old-cfg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Config.toml");
+        std::fs::write(&path, OLD_FILE).unwrap();
+
+        let cfg = Config::load(&path).unwrap();
+        assert_eq!(cfg.station.mycall, vec!["DL0ABC".to_string()]);
+        assert_eq!(cfg.serial.port, "COM4");
+        assert_eq!(cfg.serial.baud, 9600);
+        assert_eq!(cfg.session.channels, 4);
+        assert_eq!(cfg.session.language, "de");
+        assert_eq!(cfg.session.pad_font_size, 14);
+        assert_eq!(cfg.station.locator, "");
+        assert_eq!(cfg.colors.map_background, "Blue");
+        assert_eq!(cfg.colors.map_qth, "Red");
+        assert_eq!(cfg.session.chrome.echo, 0);
+        assert_eq!(
+            cfg.session.chrome.qrg_mhz,
+            SessionChromeConfig::default().qrg_mhz
+        );
+        assert_eq!(cfg.tnc.protocol, "kiss");
+        assert_eq!(cfg.tnc.links.len(), 1);
+        assert_eq!(cfg.tnc.links[0].serial_port, "COM9");
+        assert_eq!(cfg.tnc.links[0].baud, TncLink::default().baud);
+        assert_eq!(cfg.tnc.links[0].ports, vec![0]);
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("# keep this comment"));
+        assert!(written.contains("remote_language = \"DE\""));
+        assert!(written.contains("mycall = [\"DL0ABC\"]"));
+        assert!(written.contains("pad_font_size = 14"));
+        assert!(written.contains("map_background = \"Blue\""));
+        assert!(
+            !written
+                .lines()
+                .any(|line| line.trim().starts_with("language =")),
+            "alias remote_language must not be overridden by a default language key:\n{written}"
+        );
+
+        let again = std::fs::read_to_string(&path).unwrap();
+        Config::load(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), again);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 #[cfg(test)]
