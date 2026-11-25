@@ -369,6 +369,8 @@ pub struct GpGuiApp {
     icon_tex: Vec<TextureHandle>,
     /// `assets/start.png`, drawn above the radio card until Use this.
     start_screen: Option<TextureHandle>,
+    /// Last measured height of the TFPCX radio card, so the picture can leave room for it.
+    start_card_height: f32,
     /// `assets/network.png` — COM send/receive lamp left of ScrLock.
     link_tex: Option<TextureHandle>,
     /// Startup gate. The serial or TCP link stays closed until Use this.
@@ -798,6 +800,7 @@ impl GpGuiApp {
             show_connect_names: false,
             icon_tex,
             start_screen,
+            start_card_height: 0.0,
             link_tex,
             show_radio_gate: true,
             radio,
@@ -1233,11 +1236,14 @@ impl GpGuiApp {
                             self.serial_open = true;
                         }
                         if low.starts_with("serial open") || low.starts_with("tcp open") {
-                            self.log_event(m);
+                            self.log_event(m.clone());
                         }
                         if !was_open || low == "wa8ded tnc2 hostmode ready" {
                             self.sync_channel_identities();
                         }
+                    }
+                    if low.contains("serial refresh") && !low.starts_with("serial open") {
+                        self.log_event(m);
                     }
                 }
                 TncEvent::Warning(m) => {
@@ -9374,11 +9380,27 @@ impl GpGuiApp {
         self.refresh_radio_ports();
         let before = self.radio_form_key();
         let screen = ctx.screen_rect();
-        let logo_bottom = self.paint_start_logo(ctx, screen);
+        let tfpcx = self.radio_protocol == HostProtocol::Tfpcx;
+        // The short card hangs under the picture and stays clear of the credits.
+        // TFPCX adds the modem columns, so the picture gives up that extra height
+        // and the card moves up with it. The other three protocols keep the
+        // original anchor.
+        let card_h = if tfpcx {
+            self.start_card_height.max(START_TFPCX_RESERVE)
+        } else {
+            START_CARD_RESERVE
+        };
+        let logo_bottom = self.paint_start_logo(ctx, screen, card_h);
         let mut use_this = false;
-        let wide = self.radio_protocol == HostProtocol::Tfpcx;
+        let wide = tfpcx;
         let width = if wide { 760.0 } else { 460.0 };
-        let y = (logo_bottom + 12.0).min((screen.bottom() - 28.0).max(screen.top() + 8.0));
+        let natural = (logo_bottom + 12.0).min((screen.bottom() - 28.0).max(screen.top() + 8.0));
+        let y = if tfpcx {
+            let above_credits = screen.bottom() - START_CREDITS_H - START_CARD_CREDITS_GAP - card_h;
+            natural.min(above_credits).max(screen.top() + 8.0)
+        } else {
+            natural
+        };
         let mut open = true;
         let shown = egui::Window::new("Radio setup")
             .id(egui::Id::new("gp_radio_setup"))
@@ -9397,6 +9419,9 @@ impl GpGuiApp {
             });
         if let Some(shown) = &shown {
             paint_menu_border(ctx, &shown.response);
+            if tfpcx {
+                self.start_card_height = shown.response.rect.height();
+            }
         }
         if !open {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -9429,9 +9454,8 @@ impl GpGuiApp {
     }
 
     /// Monitor-blue splash with the welcome picture moved up, leaving room for the card.
-    fn paint_start_logo(&self, ctx: &Context, screen: Rect) -> f32 {
+    fn paint_start_logo(&self, ctx: &Context, screen: Rect, reserve: f32) -> f32 {
         let margin = 16.0;
-        let reserve = 312.0;
         let mut logo_bottom = screen.top() + margin;
         egui::Area::new(egui::Id::new("gp_start_screen"))
             .order(egui::Order::Middle)
@@ -14707,8 +14731,14 @@ fn paint_modem_badge(
     );
 }
 
+/// Room kept under the welcome picture for the KISS, WA8DED, and Baycom card.
+const START_CARD_RESERVE: f32 = 312.0;
+/// Height of the TFPCX card with its port grid, until a taller card is measured.
+const START_TFPCX_RESERVE: f32 = 440.0;
 /// Room kept under the radio card for the two-line welcome credits.
 const START_CREDITS_H: f32 = 56.0;
+/// Clear air between the TFPCX card and the orange credits.
+const START_CARD_CREDITS_GAP: f32 = 12.0;
 
 fn paint_start_credits(painter: &egui::Painter, screen: Rect) {
     let color = Color32::from_rgb(255, 168, 0);
@@ -16907,6 +16937,98 @@ mod input_tests {
         }
         assert_eq!(chosen, Some(2));
         assert!(!ctx.memory(|m| m.is_popup_open(responses[2].id.with("popup"))));
+    }
+
+    #[test]
+    fn tfpcx_start_card_moves_up_clear_of_the_credits() {
+        fn paint(app: &mut GpGuiApp, ctx: &Context, size: Vec2) -> Rect {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |ctx| app.paint_start_screen(ctx),
+            );
+            ctx.memory(|mem| mem.area_rect(egui::Id::new("gp_radio_setup")))
+                .expect("radio card")
+        }
+
+        fn settle(app: &mut GpGuiApp, ctx: &Context, size: Vec2) -> Rect {
+            let mut rect = Rect::NOTHING;
+            for _ in 0..4 {
+                rect = paint(app, ctx, size);
+            }
+            rect
+        }
+
+        let screen = Vec2::new(1160.0, 851.0);
+        let credits_top = screen.y - START_CREDITS_H;
+        with_offline_app("kiss", |app, _, ctx| {
+            let dir = app.config_path.parent().unwrap();
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(&app.config_path, toml::to_string(&app.cfg).unwrap()).unwrap();
+
+            let kiss = settle(app, ctx, screen);
+            assert!(
+                (kiss.top() - 400.0).abs() < 2.0,
+                "kiss card left its anchor: {kiss:?}"
+            );
+            assert!(
+                kiss.bottom() <= credits_top,
+                "kiss overlaps credits: {kiss:?}"
+            );
+
+            app.radio_protocol = HostProtocol::Wa8ded;
+            let wa8 = settle(app, ctx, screen);
+            assert!(
+                (wa8.top() - kiss.top()).abs() < 2.0,
+                "wa8ded card moved: {wa8:?} kiss {kiss:?}"
+            );
+
+            app.radio_protocol = HostProtocol::Baycom;
+            app.radio_baud = 1200;
+            let bay = settle(app, ctx, screen);
+            assert!(
+                (bay.top() - kiss.top()).abs() < 2.0,
+                "baycom card moved: {bay:?} kiss {kiss:?}"
+            );
+
+            app.radio_protocol = HostProtocol::Tfpcx;
+            let tfpcx = settle(app, ctx, screen);
+            assert!(
+                tfpcx.top() + 8.0 < kiss.top(),
+                "tfpcx card was not pushed up: {tfpcx:?} kiss {kiss:?} height {}",
+                app.start_card_height
+            );
+            assert!(
+                tfpcx.bottom() <= credits_top - 4.0,
+                "tfpcx overlaps credits: {tfpcx:?} credits_top {credits_top} height {}",
+                app.start_card_height
+            );
+
+            app.radio_links[0].tcp = true;
+            let tcp = settle(app, ctx, screen);
+            assert!(
+                tcp.bottom() <= credits_top - 4.0,
+                "tfpcx tcp overlaps credits: {tcp:?} height {}",
+                app.start_card_height
+            );
+
+            app.radio_protocol = HostProtocol::Kiss;
+            let back = settle(app, ctx, screen);
+            assert!(
+                (back.top() - kiss.top()).abs() < 2.0,
+                "kiss card did not return: {back:?} vs {kiss:?}"
+            );
+
+            app.radio_protocol = HostProtocol::Tfpcx;
+            let tall = settle(app, ctx, Vec2::new(1160.0, 1400.0));
+            assert!(
+                (tall.top() - kiss.top()).abs() < 2.0,
+                "tfpcx moved while the credits were already clear: {tall:?}"
+            );
+            assert!(tall.bottom() <= 1400.0 - START_CREDITS_H);
+        });
     }
 
     #[test]

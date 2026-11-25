@@ -3,7 +3,7 @@
 //! A terminal channel is not a radio port. KISS circuits are identified by
 //! (port, local callsign/SSID, remote callsign/SSID), never by a peer alone.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use super::ax25::{self, Ax25Frame, Ax25FrameType};
@@ -848,6 +848,30 @@ impl KissSessions {
         out
     }
 
+    /// A circuit that is connecting, connected, or disconnecting.
+    /// An empty `ports` set means every circuit on this modem.
+    pub fn busy_on(&self, ports: &BTreeSet<u8>) -> bool {
+        self.links
+            .values()
+            .any(|link| ports.is_empty() || ports.contains(&link.config.port))
+    }
+
+    /// Drop circuits on `ports` without sending DISC. The COM port is about to go away.
+    pub fn close_on(&mut self, ports: &BTreeSet<u8>, reason: &str) -> Vec<Action> {
+        let channels: Vec<u8> = self
+            .links
+            .iter()
+            .filter(|(_, link)| ports.is_empty() || ports.contains(&link.config.port))
+            .map(|(channel, _)| *channel)
+            .collect();
+        let mut out = Vec::new();
+        for channel in channels {
+            disconnected(channel, reason, &mut out);
+            self.links.remove(&channel);
+        }
+        out
+    }
+
     pub fn buffers(&self) -> BufferReport {
         let snaps: Vec<_> = self
             .links
@@ -1402,5 +1426,23 @@ mod tests {
             .iter()
             .all(|event| !matches!(event, SessionEvent::Connected { channel: 2, .. })));
         assert!(!engine.links.contains_key(&2));
+    }
+
+    #[test]
+    fn close_on_drops_only_the_ports_being_refreshed() {
+        let now = Instant::now();
+        let mut engine = setup(&[(1, 0, "N0ME"), (2, 1, "N0ME")]);
+        connect(&mut engine, 1, 0, "N1YOU", now);
+        connect(&mut engine, 2, 1, "N2YOU", now);
+        let port0 = std::collections::BTreeSet::from([0]);
+        assert!(engine.busy_on(&port0));
+        assert!(engine.busy_on(&std::collections::BTreeSet::new()));
+        let out = engine.close_on(&port0, "disconnected for serial refresh");
+        assert!(matches!(
+            events(&out).as_slice(),
+            [SessionEvent::Disconnected { channel: 1, .. }]
+        ));
+        assert!(!engine.busy_on(&port0));
+        assert!(engine.busy_on(&std::collections::BTreeSet::from([1])));
     }
 }

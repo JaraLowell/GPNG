@@ -1,7 +1,9 @@
 //! TAPR KISS modem driver — `FEND` / `FESC` framing.
 //!
 //! **Serial** (`kiss_transport = "serial"`): Kenwood etc. — applies `KISS.INI`,
-//! DTR pulse, and exit sequence.
+//! DTR pulse, and exit sequence. After 12 quiet hours the session layer asks
+//! for a refresh: leave KISS, drop the COM handle, open it again, and rerun
+//! `KISS.INI`. TCP is left alone.
 //!
 //! **TCP** (`kiss_transport = "tcp"`): Soundmodem / Direwolf — raw KISS on a
 //! socket; no radio command-mode init (peer is already in KISS).
@@ -19,7 +21,7 @@
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::{SerialConfig, TncConfig};
 
@@ -39,6 +41,8 @@ const TFESC: u8 = 0xDD;
 enum KissLink {
     Serial(SerialLink),
     Tcp(TcpKissLink),
+    /// Holds no OS handle, so a new `open` can take the same COM name.
+    Idle,
 }
 
 impl KissLink {
@@ -61,6 +65,7 @@ impl KissLink {
         match self {
             Self::Serial(s) => s.watch(events),
             Self::Tcp(t) => t.watch(events),
+            Self::Idle => {}
         }
     }
 
@@ -68,6 +73,7 @@ impl KissLink {
         match self {
             Self::Serial(s) => format!("{} @ {}", s.port_name, s.baud),
             Self::Tcp(t) => t.addr.clone(),
+            Self::Idle => "closed".into(),
         }
     }
 
@@ -75,6 +81,7 @@ impl KissLink {
         match self {
             Self::Serial(s) => s.write_all(buf),
             Self::Tcp(t) => t.write_all(buf),
+            Self::Idle => Err(port_closed()),
         }
     }
 
@@ -82,6 +89,7 @@ impl KissLink {
         match self {
             Self::Serial(s) => s.try_read(buf),
             Self::Tcp(t) => t.try_read(buf),
+            Self::Idle => Err(port_closed()),
         }
     }
 
@@ -89,6 +97,7 @@ impl KissLink {
         match self {
             Self::Serial(s) => s.flush_input(),
             Self::Tcp(t) => t.flush_input(),
+            Self::Idle => {}
         }
     }
 
@@ -102,6 +111,7 @@ impl KissLink {
                 }
                 t.write_all(&buf)
             }
+            Self::Idle => Err(port_closed()),
         }
     }
 
@@ -123,9 +133,20 @@ impl KissLink {
     fn kiss_exit(&mut self) -> Result<(), TncError> {
         match self {
             Self::Serial(s) => s.kiss_exit(),
-            Self::Tcp(_) => Ok(()),
+            Self::Tcp(_) | Self::Idle => Ok(()),
         }
     }
+}
+
+fn port_closed() -> TncError {
+    TncError::Protocol("serial port is closed".into())
+}
+
+enum Drive {
+    Stay,
+    Stop,
+    /// The COM handle was replaced. Drop any half-read KISS bytes.
+    Recycled,
 }
 
 pub fn run(
@@ -218,7 +239,7 @@ fn run_link(
 
     loop {
         while let Ok(cmd) = commands.try_recv() {
-            match handle_command(&mut link, serial, tnc_cfg, events, cmd) {
+            match accept_command(&mut link, serial, tnc_cfg, events, &mut stream, cmd) {
                 Ok(true) => return super::super::reconnect::Attempt::Stop,
                 Ok(false) => {}
                 Err(err) => return super::super::reconnect::Attempt::Again(err),
@@ -230,7 +251,7 @@ fn run_link(
                 leave_kiss_and_close(&mut link, tnc_cfg, events);
                 return super::super::reconnect::Attempt::Stop;
             }
-            Ok(cmd) => match handle_command(&mut link, serial, tnc_cfg, events, cmd) {
+            Ok(cmd) => match accept_command(&mut link, serial, tnc_cfg, events, &mut stream, cmd) {
                 Ok(true) => return super::super::reconnect::Attempt::Stop,
                 Ok(false) => {}
                 Err(err) => return super::super::reconnect::Attempt::Again(err),
@@ -258,7 +279,12 @@ fn leave_kiss_and_close(link: &mut KissLink, tnc_cfg: &TncConfig, events: &mpsc:
         let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
         return;
     }
+    release_serial(link, tnc_cfg);
+    let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
+}
 
+/// KISS close section, then drop DTR. Does not tell the UI the link died.
+fn release_serial(link: &mut KissLink, tnc_cfg: &TncConfig) {
     let path = resolve_kiss_ini(&tnc_cfg.kiss_ini);
     let close_sec = if tnc_cfg.kiss_close_section.is_empty() {
         "close"
@@ -274,7 +300,58 @@ fn leave_kiss_and_close(link: &mut KissLink, tnc_cfg: &TncConfig, events: &mpsc:
     }
     std::thread::sleep(Duration::from_millis(800));
     link.prepare_close();
-    let _ = events.blocking_send(TncEvent::LinkDown("shutdown".into()));
+}
+
+/// Close the radio, release the COM name, open it again, and rerun KISS.INI.
+fn recycle_serial(
+    link: &mut KissLink,
+    serial: &SerialConfig,
+    tnc_cfg: &TncConfig,
+    events: &mpsc::Sender<TncEvent>,
+) -> Result<(), TncError> {
+    info!(port = %serial.port, "refreshing serial KISS");
+    release_serial(link, tnc_cfg);
+    // Drop the old handle before open. Windows will not share the COM name.
+    drop(std::mem::replace(link, KissLink::Idle));
+    *link = KissLink::open(serial, tnc_cfg)?;
+    link.watch(events.clone());
+    link.leave_kiss_for_commands();
+    if let Err(err) = run_kiss_init(link, tnc_cfg) {
+        let _ = events.blocking_send(TncEvent::Warning(format!("KISS.INI: {err}")));
+    }
+    link.flush_input();
+    let timing = load_kiss_params(tnc_cfg);
+    apply_configured_params(link, tnc_cfg, &timing, events);
+    let _ = events.blocking_send(TncEvent::Modem {
+        index: 0,
+        label: kiss_badge(serial, tnc_cfg),
+        phase: super::super::LinkPhase::Open,
+    });
+    let _ = events.blocking_send(TncEvent::Status(format!(
+        "serial OPEN {} — serial refresh",
+        link.label()
+    )));
+    publish_kiss_timing_banner(tnc_cfg, &timing, events);
+    Ok(())
+}
+
+fn accept_command(
+    link: &mut KissLink,
+    serial: &SerialConfig,
+    tnc_cfg: &TncConfig,
+    events: &mpsc::Sender<TncEvent>,
+    stream: &mut Vec<u8>,
+    cmd: TncCommand,
+) -> Result<bool, TncError> {
+    let stop = match handle_command(link, serial, tnc_cfg, events, cmd)? {
+        Drive::Stop => true,
+        Drive::Stay => false,
+        Drive::Recycled => {
+            stream.clear();
+            false
+        }
+    };
+    Ok(stop)
 }
 
 fn apply_kiss_ini_serial(
@@ -325,7 +402,7 @@ fn handle_command(
     tnc_cfg: &TncConfig,
     events: &mpsc::Sender<TncEvent>,
     cmd: TncCommand,
-) -> Result<bool, TncError> {
+) -> Result<Drive, TncError> {
     match cmd {
         TncCommand::HostFrame { channel, data } => {
             write_kiss_data(link, channel, &data, events)?;
@@ -361,6 +438,12 @@ fn handle_command(
             apply_configured_params(link, tnc_cfg, &timing, events);
             publish_kiss_timing_banner(tnc_cfg, &timing, events);
         }
+        TncCommand::RefreshSerial { .. } => {
+            if !link.is_tcp() {
+                recycle_serial(link, serial, tnc_cfg, events)?;
+                return Ok(Drive::Recycled);
+            }
+        }
         TncCommand::KissParam { cmd, arg } => {
             match write_kiss_command(link, tnc_cfg.kiss_port, cmd, arg) {
                 Ok(()) => {}
@@ -376,10 +459,10 @@ fn handle_command(
         }
         TncCommand::Shutdown => {
             leave_kiss_and_close(link, tnc_cfg, events);
-            return Ok(true);
+            return Ok(Drive::Stop);
         }
     }
-    Ok(false)
+    Ok(Drive::Stay)
 }
 
 fn write_kiss_data(

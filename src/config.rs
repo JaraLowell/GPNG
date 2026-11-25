@@ -154,7 +154,9 @@ impl Config {
                 let patched = insert_missing_keys(&text, &upgraded.missing);
                 if patched != text {
                     match fs::write(path, patched) {
-                        Ok(()) => tracing::info!("stored missing settings in {}: {names}", path.display()),
+                        Ok(()) => {
+                            tracing::info!("stored missing settings in {}: {names}", path.display())
+                        }
                         Err(err) => tracing::warn!(
                             "could not store missing settings in {}: {err}",
                             path.display()
@@ -2202,7 +2204,12 @@ fn table_has(table: &toml::Table, key: &str) -> bool {
     table.contains_key(key) || alias_for(key).is_some_and(|alias| table.contains_key(alias))
 }
 
-fn fill_missing(user: &mut toml::Value, proto: &toml::Value, path: &str, missing: &mut Vec<(String, toml::Value)>) {
+fn fill_missing(
+    user: &mut toml::Value,
+    proto: &toml::Value,
+    path: &str,
+    missing: &mut Vec<(String, toml::Value)>,
+) {
     let toml::Value::Table(proto_map) = proto else {
         return;
     };
@@ -2280,7 +2287,8 @@ fn scrub_incompatible(
         if isolated_ok(defaults, &child_path, &current) {
             continue;
         }
-        if current.is_array() && scrub_array(doc, defaults, &child_path, &current, &proto_child, replaced)
+        if current.is_array()
+            && scrub_array(doc, defaults, &child_path, &current, &proto_child, replaced)
         {
             continue;
         }
@@ -2324,7 +2332,8 @@ fn scrub_array(
             let mut elem = elem_proto.clone();
             if let Some(user_map) = item.as_table() {
                 for (key, user_val) in user_map {
-                    let Some(saved) = elem.as_table().and_then(|table| table.get(key)).cloned() else {
+                    let Some(saved) = elem.as_table().and_then(|table| table.get(key)).cloned()
+                    else {
                         continue;
                     };
                     if let Some(table) = elem.as_table_mut() {
@@ -2510,9 +2519,9 @@ fn line_key(line: &str) -> Option<&str> {
 
 fn insert_key_in_section(text: &str, section: &str, key: &str, rendered: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
-    let header_at = lines.iter().position(|line| {
-        section_name(line).is_some_and(|name| name.eq_ignore_ascii_case(section))
-    });
+    let header_at = lines
+        .iter()
+        .position(|line| section_name(line).is_some_and(|name| name.eq_ignore_ascii_case(section)));
     let Some(start) = header_at else {
         if let Some((parent, rest)) = section.rsplit_once('.') {
             if lines.iter().any(|line| {

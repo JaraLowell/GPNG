@@ -27,6 +27,7 @@ mod monitor_filter;
 mod payload;
 mod reconnect;
 mod serial;
+mod serial_refresh;
 mod session;
 mod session_service;
 mod tcp;
@@ -222,6 +223,11 @@ pub enum TncCommand {
     },
     /// Re-run the configured `TNCINI` sequence.
     Reinitialize,
+    /// Leave KISS, drop the COM handle, open it again, and rerun `KISS.INI`.
+    /// `port` picks the TFPCX modem. TCP KISS ignores this.
+    RefreshSerial {
+        port: u8,
+    },
     /// WA8DED: re-query `F` / `@T2` / `@T3` and emit [`TncEvent::TimingBanner`].
     QueryTiming,
     /// Graceful shutdown: deinit (+ leave hostmode when applicable).

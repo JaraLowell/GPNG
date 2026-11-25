@@ -154,6 +154,16 @@ fn dispatch(
                 let _ = plugin.commands.blocking_send(cmd.clone());
             }
         }
+        TncCommand::RefreshSerial { port } => {
+            if let Some(plugin) = plugins
+                .iter()
+                .find(|plugin| !plugin.wa8ded && plugin.ports.contains(&port))
+            {
+                let _ = plugin
+                    .commands
+                    .blocking_send(TncCommand::RefreshSerial { port });
+            }
+        }
         TncCommand::TerminalLine(line) => {
             let targets: Vec<_> = plugins.iter().filter(|plugin| plugin.wa8ded).collect();
             let targets: Vec<_> = if targets.is_empty() {

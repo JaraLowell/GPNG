@@ -39,6 +39,7 @@ pub(super) async fn run(
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_buffers = None;
     let mut shutting_down = false;
+    let mut refresh = super::serial_refresh::Plan::from_config(&config);
     loop {
         let actions = tokio::select! {
             command = commands.recv(), if !shutting_down => {
@@ -108,6 +109,17 @@ pub(super) async fn run(
                         }
                         actions
                     }
+                    TncEvent::Modem {
+                        index,
+                        ref label,
+                        phase,
+                    } => {
+                        refresh.note(index, label, phase, Instant::now());
+                        if events.send(event).await.is_err() {
+                            break;
+                        }
+                        Vec::new()
+                    }
                     TncEvent::LinkDown(ref reason) => {
                         let mut actions = Vec::new();
                         if modem.runs_kiss() {
@@ -133,7 +145,21 @@ pub(super) async fn run(
                 }
             }
             _ = timer.tick(), if modem.runs_kiss() && !shutting_down => {
-                kiss(&mut sessions).tick(Instant::now())
+                let now = Instant::now();
+                let mut actions = kiss(&mut sessions).tick(now);
+                match serial_refresh(
+                    kiss(&mut sessions),
+                    &mut refresh,
+                    now,
+                    &events,
+                    &driver_commands,
+                )
+                .await
+                {
+                    Ok(extra) => actions.extend(extra),
+                    Err(()) => return,
+                }
+                actions
             }
         };
         for action in actions {
@@ -178,6 +204,35 @@ pub(super) async fn run(
             }
         }
     }
+}
+
+async fn serial_refresh(
+    sessions: &mut KissSessions,
+    plan: &mut super::serial_refresh::Plan,
+    now: Instant,
+    events: &mpsc::Sender<TncEvent>,
+    driver_commands: &mpsc::Sender<TncCommand>,
+) -> Result<Vec<Action>, ()> {
+    let due = plan.poll(now, |ports| sessions.busy_on(ports));
+    let mut actions = Vec::new();
+    for line in due.lines {
+        if events.send(TncEvent::Status(line)).await.is_err() {
+            return Err(());
+        }
+    }
+    for job in due.jobs {
+        if job.forced {
+            actions.extend(sessions.close_on(&job.ports, "disconnected for serial refresh"));
+        }
+        if driver_commands
+            .send(TncCommand::RefreshSerial { port: job.port })
+            .await
+            .is_err()
+        {
+            return Err(());
+        }
+    }
+    Ok(actions)
 }
 
 enum Modem {

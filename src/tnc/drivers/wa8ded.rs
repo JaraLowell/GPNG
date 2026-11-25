@@ -140,6 +140,7 @@ fn run_hostmode(
                 run_open(link, &mut stream, config, events)?;
                 poller = Poller::default();
             }
+            Ok(TncCommand::RefreshSerial { .. }) => {}
             Ok(TncCommand::KissParam { .. }) => {
                 let _ = events.blocking_send(TncEvent::Warning(
                     "KISS parameters are not supported by WA8DED TNC2".into(),
