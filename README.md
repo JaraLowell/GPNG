@@ -215,6 +215,7 @@ cargo run -- --tui
 
 1. The splash shows **Radio setup**. Set **Call sign**, **Protocol**, then either
    serial **Port** / **Baud to TNC**, or (KISS + TCP) **IP address** / **TCP port**.
+   Also supports Lora Kiss from https://github.com/JaraLowell/AXLoRaTNC
 2. Click **Use this** — the modem link opens and the choices are saved to
    `Config.toml`.
 3. Inside the session, **ALT-U** or **SETUP** opens Program parameters for the
