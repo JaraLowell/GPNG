@@ -551,6 +551,9 @@ pub struct GpGuiApp {
     tnc_cmd: String,
     /// Wall-clock beacon. Not the paint loop: a covered window stops painting.
     beacon_sched: BeaconSchedule,
+    /// UI beacons already repeated, so a second radio hearing the same one
+    /// does not key again. `(src|dest|via|info, when)`.
+    digipeat_seen: VecDeque<(String, Instant)>,
     /// Window place changed and still needs a write to Config.toml.
     window_dirty: bool,
     /// When the place last changed. The file is written after it settles.
@@ -685,7 +688,8 @@ impl GpGuiApp {
             ctx.clone(),
             BeaconSnap {
                 kiss: cfg.tnc.runs_kiss_ax25(),
-                port: cfg.tnc.kiss_tx_port(),
+                wa8ded: cfg.tnc.has_wa8ded(),
+                ports: cfg.tnc.kiss_beacon_ports(),
                 beacon: cfg.beacon.clone(),
                 my_call: cfg.primary_mycall().to_string(),
                 qrg: session.qrg_text(),
@@ -886,6 +890,7 @@ impl GpGuiApp {
             show_tnc: false,
             tnc_cmd: String::new(),
             beacon_sched,
+            digipeat_seen: VecDeque::new(),
             window_dirty: false,
             window_dirty_at: Instant::now(),
             fullscreen: false,
@@ -1330,6 +1335,18 @@ impl GpGuiApp {
                 } => {
                     self.serial_rx_frames += 1;
                     let text = decode_rx_text(&payload, self.session.umlaut_for(channel));
+                    // `I NL0MSK` is station identity, not a monitored frame. Orange,
+                    // naming the link channel it set. `GPNG HH:MM` is added by the system row.
+                    if matches!(code, HostCode::CommandReply) {
+                        if let Some(line) = crate::tnc::mycall_command(&text) {
+                            let port = self.heard_text_port(channel);
+                            self.push_mon_line(
+                                PadKind::System,
+                                format!("WA8DED port {port}: channel {channel} {line}"),
+                            );
+                            continue;
+                        }
+                    }
                     // WA8DED answers a bare `M` with the live flags (code 1). That
                     // reply is the monitor line, not a frame to list.
                     if !self.uses_software_monitor()
@@ -1465,7 +1482,9 @@ impl GpGuiApp {
                             );
                             for part in &sgr_rows {
                                 if is_fm_header(part) {
-                                    self.push_mon_line(kind, stamp_monitor_fm(part));
+                                    let port = self.heard_text_port_line(part);
+                                    let tagged = ax25::tag_kiss_port(part, port);
+                                    self.push_mon_line(kind, stamp_monitor_fm(&tagged));
                                 } else {
                                     self.push_mon_line_sgr(kind, part);
                                 }
@@ -2231,9 +2250,10 @@ impl GpGuiApp {
     }
 
     /// Local TX echo into the RX pad(s). The line is always stored.
-    /// Echo on a channel only hides or shows those rows. Hostmode also copies
-    /// the line onto the Monitor when Monitor Echo is on. KISS Monitor lines
-    /// come from [`TncEvent::KissTx`] after a successful write to the modem.
+    /// Echo on a channel only hides or shows those rows. Hostmode lists the
+    /// same bytes on the Monitor as `fm{port} HH:MM SRC to DEST`, so the
+    /// payload is not anonymous. KISS Monitor lines come from
+    /// [`TncEvent::KissTx`] after a successful write to the modem.
     fn echo_own_line(&mut self, line: &str) {
         let idx = match self.active {
             ActivePane::Channel(n) => n as usize,
@@ -2257,7 +2277,56 @@ impl GpGuiApp {
         if self.software_ax25() || !self.session.echo_for(SLOT_MONITOR) {
             return;
         }
-        self.push_mon_line_sgr(PadKind::Own, line);
+        self.list_host_transmit(line);
+    }
+
+    /// One hostmode transmit on the monitor: who sent it, then the payload.
+    ///
+    /// The TNC builds the AX.25 header and does not echo it. Unproto uses the
+    /// beacon path. A linked channel is an I-frame to that station. Sequence
+    /// numbers stay in the modem, so the control field is `I` without N(R)/N(S).
+    fn list_host_transmit(&mut self, line: &str) {
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            return;
+        }
+        let channel = match self.active {
+            ActivePane::Channel(n) if n >= 1 => n,
+            _ => 0,
+        };
+        let src = self.effective_mycall(channel);
+        let peer = (channel >= 1).then(|| self.linked_call(channel)).flatten();
+        let (dest, via) = if let Some(peer) = peer.clone() {
+            let via = self
+                .channel_via
+                .get(channel as usize)
+                .cloned()
+                .unwrap_or_default();
+            (peer, via)
+        } else {
+            ax25::parse_unproto(&self.cfg.beacon.address)
+        };
+        let header = if peer.is_some() {
+            let via = if via.is_empty() {
+                String::new()
+            } else {
+                format!(" via {}", via.join(","))
+            };
+            format!("fm {src} to {dest}{via} ctl I pid F0")
+        } else {
+            ax25::monitor_ctl_line(&src, &dest, &via, Ax25FrameType::Ui, 0, 0, false, true)
+        };
+        let port = self.heard_text_port(channel);
+        self.push_mon_line(
+            PadKind::Own,
+            stamp_monitor_fm(&ax25::tag_kiss_port(&header, port)),
+        );
+        let payload = if line.starts_with("   ") {
+            line.to_string()
+        } else {
+            format!("   {line}")
+        };
+        self.push_mon_line_sgr(PadKind::Own, &payload);
     }
 
     /// Monitor listing after a KISS write or completed BayCom burst.
@@ -3834,6 +3903,9 @@ impl GpGuiApp {
 
     /// List every decoded receive independently of endpoint delivery.
     fn kiss_show_transit(&mut self, frame: &Ax25Frame, port: u8) {
+        if frame.kind == Ax25FrameType::Ui {
+            self.maybe_digipeat(frame, port);
+        }
         let info_mon =
             ax25::bytes_to_monitor_body(&frame.info, self.session.umlaut_for(SLOT_MONITOR));
         let info_for_mon = if info_mon.is_empty() {
@@ -3869,6 +3941,63 @@ impl GpGuiApp {
         }
     }
 
+    /// Repeat a heard UI beacon onto the other TFPCX radios.
+    ///
+    /// Connected frames are ignored. A payload over 128 bytes, or a via list
+    /// that already fills the hop budget for that payload, is dropped.
+    fn maybe_digipeat(&mut self, frame: &Ax25Frame, port: u8) {
+        if !self.cfg.session.digipeater || !self.cfg.tnc.multi_modem() {
+            return;
+        }
+        let my = self.cfg.primary_mycall().to_string();
+        let Some(raw) = ax25::digipeat_beacon(frame, &my) else {
+            return;
+        };
+        let ports = self.cfg.tnc.digipeat_kiss_ports(port);
+        let wa8ded = self.cfg.tnc.digipeat_to_wa8ded(port);
+        if ports.is_empty() && !wa8ded {
+            return;
+        }
+        let key = format!(
+            "{}|{}|{}|{}",
+            frame.src,
+            frame.dest,
+            frame.via.join(","),
+            String::from_utf8_lossy(&frame.info)
+        );
+        let now = Instant::now();
+        self.digipeat_seen
+            .retain(|(_, at)| now.saturating_duration_since(*at) < Duration::from_secs(20));
+        if self.digipeat_seen.iter().any(|(seen, _)| seen == &key) {
+            return;
+        }
+        self.digipeat_seen.push_back((key, now));
+        if self.digipeat_seen.len() > 32 {
+            self.digipeat_seen.pop_front();
+        }
+        if !ports.is_empty() {
+            let _ = self.cmd_tx.try_send(TncCommand::KissBroadcast {
+                ports,
+                data: raw,
+            });
+        }
+        if wa8ded {
+            let mut command = format!("C {}", frame.dest);
+            for hop in frame.via.iter().chain(std::iter::once(&my)) {
+                command.push(' ');
+                command.push_str(hop.trim_end_matches('*'));
+            }
+            let _ = self.cmd_tx.try_send(TncCommand::HostFrame {
+                channel: 0,
+                data: command.into_bytes(),
+            });
+            let _ = self.cmd_tx.try_send(TncCommand::HostData {
+                channel: 0,
+                data: frame.info.clone(),
+            });
+        }
+    }
+
     /// Hostmode/modem command TX — skipped on KISS (identity lives in AX.25 headers).
     fn tx_modem_line(&mut self, channel: u8, line: &str) {
         if self.software_ax25() && !self.cfg.tnc.has_wa8ded() {
@@ -3883,7 +4012,10 @@ impl GpGuiApp {
                 pad.push(PadKind::Own, line.to_string());
             }
         }
-        self.pads[0].push_monitor(PadKind::Own, line.to_string());
+        // `I CALL` comes back from the modem as an orange monitor line.
+        if crate::tnc::mycall_command(line).is_none() {
+            self.pads[0].push_monitor(PadKind::Own, line.to_string());
+        }
         let mut data = line.as_bytes().to_vec();
         if !data.ends_with(&[b'\r']) {
             data.push(b'\r');
@@ -6085,6 +6217,7 @@ impl GpGuiApp {
             RowId::Umlaut => on_off(self.session.umlaut_lit(pane)).into(),
             RowId::InputColumns => s.input_columns.to_string(),
             RowId::InsertMon => on_off(s.insert_mon_line).into(),
+            RowId::Digipeater => on_off(s.digipeater).into(),
             RowId::Softscroll => on_off(self.session.softscroll_lit(pane)).into(),
             RowId::Language => s.language.clone(),
             RowId::Zoom => on_off(zoom_bold(s.zoom)).into(),
@@ -6146,6 +6279,7 @@ impl GpGuiApp {
             RowId::InsertMon => {
                 self.cfg.session.insert_mon_line = !self.cfg.session.insert_mon_line
             }
+            RowId::Digipeater => self.cfg.session.digipeater = !self.cfg.session.digipeater,
             RowId::Softscroll => {
                 self.session.toggle_softscroll(self.setup_pane);
             }
@@ -7936,7 +8070,8 @@ impl GpGuiApp {
     fn poll_beacon(&mut self) {
         self.beacon_sched.publish(BeaconSnap {
             kiss: self.software_ax25(),
-            port: self.cfg.tnc.kiss_tx_port(),
+            wa8ded: self.cfg.tnc.has_wa8ded(),
+            ports: self.cfg.tnc.kiss_beacon_ports(),
             beacon: self.cfg.beacon.clone(),
             my_call: self.cfg.primary_mycall().to_string(),
             qrg: self.session.qrg_text(),
@@ -9148,6 +9283,8 @@ impl eframe::App for GpGuiApp {
         if self.cfg.session.backup {
             self.save_pad_logs();
         }
+        // Leave JHOST1 before the window drops the radio channels.
+        self.radio.shutdown();
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
@@ -17565,6 +17702,90 @@ mod input_tests {
                 assert!(job.text.contains("<0x1b>[2J"));
             });
         }
+    }
+
+    #[test]
+    fn wa8ded_monitor_names_the_sender_and_mycall_is_orange() {
+        with_offline_app("wa8ded", |app, _, _| {
+            app.cfg.station.mycall = vec!["NL0MSK".into()];
+            app.pads[0].lines.clear();
+            app.active = ActivePane::Monitor;
+            app.compose[0].input = "hello".into();
+            app.submit();
+            let header = app.pads[0]
+                .lines
+                .iter()
+                .find(|line| line.text.contains(" to "))
+                .expect("fm header");
+            assert!(header.text.starts_with("fm"));
+            assert!(header.text.contains("NL0MSK to CQ"));
+            assert!(header.text.contains(" ctl UI"));
+            assert!(header
+                .text
+                .split_whitespace()
+                .any(|token| { chrono::NaiveTime::parse_from_str(token, "%H:%M").is_ok() }));
+            assert!(app.pads[0]
+                .lines
+                .iter()
+                .any(|line| line.text.contains("hello")));
+
+            app.pads[0].lines.clear();
+            let (tx, rx) = mpsc::channel(4);
+            app.events = rx;
+            tx.try_send(TncEvent::HostFrame {
+                channel: 0,
+                code: HostCode::CommandReply,
+                payload: b"I NL0MSK".to_vec(),
+            })
+            .unwrap();
+            tx.try_send(TncEvent::HostFrame {
+                channel: 10,
+                code: HostCode::CommandReply,
+                payload: b"I NL3MSK".to_vec(),
+            })
+            .unwrap();
+            tx.try_send(TncEvent::HostFrame {
+                channel: 0,
+                code: HostCode::MonitorHeader,
+                payload: b"fm N1SRC to CQ ctl UI^ pid F0".to_vec(),
+            })
+            .unwrap();
+            tx.try_send(TncEvent::HostFrame {
+                channel: 0,
+                code: HostCode::MonitorData,
+                payload: b"from n1src".to_vec(),
+            })
+            .unwrap();
+            app.drain_tnc();
+            let info = app.pads[0]
+                .lines
+                .iter()
+                .find(|line| line.kind == PadKind::System)
+                .expect("mycall line");
+            let rest = info.text.strip_prefix("GPNG ").unwrap();
+            let (time, message) = rest.split_once(' ').unwrap();
+            assert!(chrono::NaiveTime::parse_from_str(time, "%H:%M").is_ok());
+            assert_eq!(message, "WA8DED port 0: channel 0 I NL0MSK");
+            assert!(app.pads[0]
+                .lines
+                .iter()
+                .any(|line| line.text.contains("WA8DED port 0: channel 10 I NL3MSK")));
+            let heard = app.pads[0]
+                .lines
+                .iter()
+                .find(|line| line.text.contains("N1SRC"))
+                .expect("heard header");
+            assert!(heard.text.starts_with("fm"));
+            assert!(heard.text.contains("N1SRC to CQ"));
+            assert!(heard
+                .text
+                .split_whitespace()
+                .any(|token| { chrono::NaiveTime::parse_from_str(token, "%H:%M").is_ok() }));
+            assert!(app.pads[0]
+                .lines
+                .iter()
+                .any(|line| line.text.contains("from n1src")));
+        });
     }
 
     #[test]

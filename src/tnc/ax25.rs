@@ -555,6 +555,98 @@ pub fn split_connect_hops(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Information field of a repeated UI beacon. Longer payloads are not repeated.
+pub const DIGIPEATER_INFO_MAX: usize = 128;
+/// AX.25 frame carried in KISS, without the FCS the TNC adds.
+const DIGIPEATER_FRAME_MAX: usize = 256;
+/// One callsign in the address field.
+const AX25_CALL_BYTES: usize = 7;
+/// Control byte plus PID.
+const AX25_CTRL_PID: usize = 2;
+/// AX.25 allows at most eight digipeaters.
+const AX25_VIA_CAP: usize = 8;
+
+/// How many digipeaters fit when the information field is reserved at 128 bytes.
+///
+/// Destination, source, control, PID, and that payload are taken first. Each
+/// remaining 7 bytes is one via. The result is never above the AX.25 cap of eight.
+pub fn digipeater_via_max() -> usize {
+    let fixed = AX25_CALL_BYTES + AX25_CALL_BYTES + AX25_CTRL_PID + DIGIPEATER_INFO_MAX;
+    let from_size = DIGIPEATER_FRAME_MAX.saturating_sub(fixed) / AX25_CALL_BYTES;
+    from_size.min(AX25_VIA_CAP)
+}
+
+/// Beacon UI to send on the other radios.
+///
+/// Only an unproto UI frame is repeated. The heard path is kept, then our
+/// call is added as the last via with the H bit set. `None` when the payload
+/// is over 128 bytes, or adding our hop would pass the via count that still
+/// fits beside that payload.
+pub fn digipeat_beacon(frame: &Ax25Frame, mycall: &str) -> Option<Vec<u8>> {
+    if frame.kind != Ax25FrameType::Ui {
+        return None;
+    }
+    if frame.info.len() > DIGIPEATER_INFO_MAX {
+        return None;
+    }
+    let mycall = mycall.trim();
+    if station_base(mycall).is_empty() {
+        return None;
+    }
+    if same_station(&frame.src, mycall) || frame.via.iter().any(|hop| same_station(hop, mycall)) {
+        return None;
+    }
+    // One more hop is us. The budget assumes a 128-byte payload, not this
+    // frame's shorter text, so a small beacon cannot grow extra vias.
+    if frame.via.len() + 1 > digipeater_via_max() {
+        return None;
+    }
+    let mut hops: Vec<(&str, bool)> = frame
+        .via
+        .iter()
+        .enumerate()
+        .map(|(i, call)| (call.as_str(), frame.repeated.get(i).copied().unwrap_or(false)))
+        .collect();
+    hops.push((mycall, true));
+    Some(build_ui_hops(&frame.dest, &frame.src, &hops, &frame.info))
+}
+
+fn station_base(call: &str) -> String {
+    let call = call.trim().trim_end_matches('*');
+    call.split('-')
+        .next()
+        .unwrap_or(call)
+        .trim()
+        .to_ascii_uppercase()
+}
+
+fn same_station(a: &str, b: &str) -> bool {
+    let a = station_base(a);
+    let b = station_base(b);
+    !a.is_empty() && a == b
+}
+
+fn build_ui_hops(dest: &str, src: &str, via: &[(&str, bool)], info: &[u8]) -> Vec<u8> {
+    let route = via
+        .iter()
+        .map(|(call, repeated)| RouteEntry {
+            repeater: address(call),
+            has_repeated: *repeated,
+        })
+        .collect();
+    encode(LibFrame {
+        source: address(src),
+        destination: address(dest),
+        route,
+        command_or_response: Some(CommandResponse::Command),
+        content: FrameContent::UnnumberedInformation(UnnumberedInformation {
+            pid: ProtocolIdentifier::None,
+            info: info.to_vec(),
+            poll_or_final: false,
+        }),
+    })
+}
+
 /// If our call is the next digipeater that has not repeated, set that H bit
 /// and return the frame to retransmit. Source, destination, and order stay.
 /// `None` when it is not our turn.
@@ -813,5 +905,48 @@ mod tests {
         );
         assert_eq!(stamped_plain.find("14:30"), stamped_numbered.find("14:30"));
         assert_eq!(insert_monitor_time(&stamped_plain, "14:31"), stamped_plain);
+    }
+
+    fn ui_frame(via: &[&str], info: &[u8]) -> Ax25Frame {
+        parse_frame(&build_ui("CQ", "N1YOU", via, info)).expect("ui frame")
+    }
+
+    #[test]
+    fn digipeater_appends_our_call_as_the_last_via() {
+        let heard = ui_frame(&["WIDE1-1"], b"hello beacon");
+        let raw = digipeat_beacon(&heard, "NL0MSK").expect("repeat");
+        let out = parse_frame(&raw).expect("parsed repeat");
+        assert_eq!(out.src, "N1YOU");
+        assert_eq!(out.dest, "CQ");
+        assert_eq!(out.via, ["WIDE1-1", "NL0MSK"]);
+        assert_eq!(out.repeated, [false, true]);
+        assert_eq!(out.info, b"hello beacon");
+        assert!(digipeat_beacon(&out, "NL0MSK").is_none());
+        assert!(digipeat_beacon(&out, "NL0MSK-2").is_none());
+    }
+
+    #[test]
+    fn digipeater_drops_ui_frames_past_the_payload_and_hop_budget() {
+        // 256 - dest - source - control - pid - 128 payload = 112, and 112/7 = 16.
+        // AX.25 stops at eight digipeaters, so the repeat stops there.
+        assert_eq!(digipeater_via_max(), 8);
+        let mut connected = ui_frame(&[], b"not a beacon");
+        connected.kind = Ax25FrameType::Info;
+        assert!(digipeat_beacon(&connected, "NL0MSK").is_none());
+        let ours = parse_frame(&build_ui("CQ", "NL0MSK", &[], b"mine")).unwrap();
+        assert!(digipeat_beacon(&ours, "NL0MSK").is_none());
+        let long = ui_frame(&[], &vec![b'x'; 129]);
+        assert!(digipeat_beacon(&long, "NL0MSK").is_none());
+        let hops: Vec<String> = (0..8).map(|n| format!("D{n}IG")).collect();
+        let refs: Vec<&str> = hops.iter().map(String::as_str).collect();
+        let full = ui_frame(&refs, b"full");
+        assert_eq!(full.via.len(), 8);
+        assert!(digipeat_beacon(&full, "NL0MSK").is_none());
+        let seven: Vec<&str> = refs[..7].to_vec();
+        let repeated = digipeat_beacon(&ui_frame(&seven, b"ok"), "NL0MSK").unwrap();
+        let out = parse_frame(&repeated).unwrap();
+        assert_eq!(out.via.len(), 8);
+        assert_eq!(out.via[7], "NL0MSK");
+        assert!(out.repeated[7]);
     }
 }

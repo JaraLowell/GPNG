@@ -271,7 +271,8 @@ impl UiApp {
                     };
                     self.status = beacon::send_now(&BeaconSnap {
                         kiss: self.cfg.tnc.runs_kiss_ax25(),
-                        port: self.cfg.tnc.kiss_tx_port(),
+                        wa8ded: self.cfg.tnc.has_wa8ded(),
+                        ports: self.cfg.tnc.kiss_beacon_ports(),
                         beacon: self.cfg.beacon.clone(),
                         my_call: self.cfg.primary_mycall().to_string(),
                         qrg,
@@ -822,12 +823,12 @@ mod tests {
         let mut app = UiApp::new(cfg);
         let (tx, mut rx) = mpsc::channel(2);
         app.on_key(KeyCode::Char('a'), KeyModifiers::ALT, &tx);
-        let TncCommand::Session(SessionCommand::Unproto { port, data, .. }) =
+        let TncCommand::Session(SessionCommand::UnprotoBroadcast { ports, data, .. }) =
             rx.try_recv().unwrap()
         else {
-            panic!("expected unproto request");
+            panic!("expected beacon broadcast");
         };
-        assert_eq!(port, 0);
+        assert_eq!(ports, [0]);
         assert_eq!(data, b"Test beacon");
         assert!(app.scrollbar);
         app.on_key(KeyCode::Char('b'), KeyModifiers::ALT, &tx);

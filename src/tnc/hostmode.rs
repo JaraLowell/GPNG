@@ -179,6 +179,42 @@ pub fn parse_free_buffer(payload: &[u8]) -> Option<u32> {
     payload_text(payload).trim().parse().ok()
 }
 
+/// `I NL0MSK` — the hostmode mycall command, with the call folded to upper case.
+///
+/// A bare `I` is a query and returns nothing here. Extra words are not a call.
+pub fn mycall_command(text: &str) -> Option<String> {
+    let text = text.trim().trim_matches('\0').trim();
+    let mut parts = text.split_whitespace();
+    let cmd = parts.next()?;
+    if !cmd.eq_ignore_ascii_case("I") {
+        return None;
+    }
+    let call = parts.next()?;
+    if parts.next().is_some() || !call_token(call) {
+        return None;
+    }
+    Some(format!("I {}", call.to_ascii_uppercase()))
+}
+
+/// Bare `I` asks the TNC for the current mycall.
+pub fn mycall_query(text: &str) -> bool {
+    text.trim()
+        .trim_matches('\0')
+        .trim()
+        .eq_ignore_ascii_case("I")
+}
+
+fn call_token(call: &str) -> bool {
+    let (base, ssid) = call.split_once('-').unwrap_or((call, ""));
+    if base.is_empty() || base.len() > 6 || !base.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    if ssid.is_empty() {
+        return !call.contains('-');
+    }
+    matches!(ssid.parse::<u8>(), Ok(n) if n <= 15 && ssid.len() <= 2)
+}
+
 fn payload_text(payload: &[u8]) -> &str {
     let end = payload
         .iter()
@@ -363,6 +399,17 @@ mod tests {
         assert_eq!(decoded[6].payload, [0, 0xdb, 0xc0, b'\r']);
         assert_eq!(decoded[7].channel, 10);
         assert_eq!(decoded[7].payload, (0..=255).collect::<Vec<u8>>());
+        assert_eq!(mycall_command("I nl0msk").as_deref(), Some("I NL0MSK"));
+        assert_eq!(mycall_command("I N0ME-1").as_deref(), Some("I N0ME-1"));
+        assert_eq!(
+            mycall_command("I NL0MSK-15").as_deref(),
+            Some("I NL0MSK-15")
+        );
+        assert!(mycall_command("I NL0MSK-16").is_none());
+        assert!(mycall_command("I").is_none());
+        assert!(mycall_command("IUSC").is_none());
+        assert!(mycall_query("I"));
+        assert!(!mycall_query("I NL0MSK"));
         let mut joined = b"\x00\x00\x01\x01OK\0\x01\x07\x00\0".to_vec();
         assert_eq!(drain_frames(&mut joined).unwrap().len(), 3);
         assert!(joined.is_empty());

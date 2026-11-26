@@ -17,6 +17,7 @@ pub const KISS_EXIT: [u8; 3] = [0xC0, 0xFF, 0xC0];
 /// Thin wrapper around a configured OS serial handle.
 pub struct SerialLink {
     port: Box<dyn SerialPort>,
+    native_esp_usb: bool,
     pub port_name: String,
     pub baud: u32,
     /// UI lamp. `try_send` so a full queue never stalls the UART thread.
@@ -32,6 +33,11 @@ impl SerialLink {
             baud = serial.baud,
             "opening modem serial port"
         );
+        let native_esp_usb = serialport::available_ports()?.iter().any(|info| {
+            info.port_name.eq_ignore_ascii_case(&serial.port)
+                && matches!(&info.port_type, serialport::SerialPortType::UsbPort(usb)
+                        if usb.vid == 0x303a && usb.pid == 0x1001)
+        });
         let mut port = serialport::new(&serial.port, serial.baud)
             .data_bits(serialport::DataBits::Eight)
             .parity(serialport::Parity::None)
@@ -41,11 +47,14 @@ impl SerialLink {
             // a write that cannot finish inside it returns 0 bytes.
             .timeout(Duration::from_millis(50))
             .open()?;
-        // Assert modem-control lines (physical unplug/replug toggles these).
-        let _ = port.write_data_terminal_ready(true);
-        let _ = port.write_request_to_send(true);
+        // ESP USB Serial/JTAG interprets modem-control transitions as reset/boot commands.
+        if !native_esp_usb {
+            let _ = port.write_data_terminal_ready(true);
+            let _ = port.write_request_to_send(true);
+        }
         Ok(Self {
             port,
+            native_esp_usb,
             port_name: serial.port.clone(),
             baud: serial.baud,
             activity: None,
@@ -172,6 +181,10 @@ impl SerialLink {
 
     /// Pulse DTR like a cable reconnect (helps stubborn USB-serial / TNC state).
     pub fn pulse_dtr(&mut self) {
+        if self.native_esp_usb {
+            info!(port = %self.port_name, "skipping DTR reset on ESP USB Serial/JTAG");
+            return;
+        }
         if let Err(e) = self.port.write_data_terminal_ready(false) {
             warn!("DTR low failed: {e}");
         }
@@ -186,8 +199,10 @@ impl SerialLink {
     pub fn prepare_close(&mut self) {
         self.flush_input();
         let _ = self.port.flush();
-        let _ = self.port.write_request_to_send(false);
-        let _ = self.port.write_data_terminal_ready(false);
+        if !self.native_esp_usb {
+            let _ = self.port.write_request_to_send(false);
+            let _ = self.port.write_data_terminal_ready(false);
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -313,7 +328,9 @@ pub(crate) fn wire_time(baud: u32, nbytes: usize) -> Duration {
 
 impl Drop for SerialLink {
     fn drop(&mut self) {
-        let _ = self.port.write_request_to_send(false);
-        let _ = self.port.write_data_terminal_ready(false);
+        if !self.native_esp_usb {
+            let _ = self.port.write_request_to_send(false);
+            let _ = self.port.write_data_terminal_ready(false);
+        }
     }
 }

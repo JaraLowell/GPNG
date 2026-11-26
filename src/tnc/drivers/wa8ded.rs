@@ -116,10 +116,12 @@ fn run_hostmode(
                 return Ok(());
             }
             Ok(TncCommand::HostFrame { channel, data }) => {
-                let reply = exchange(link, &mut stream, channel, true, &data, Some(events))?;
-                if data.starts_with(b"I ") || data.starts_with(b"Y ") {
-                    require_success(&reply, &String::from_utf8_lossy(&data))?;
+                let mut reply = exchange(link, &mut stream, channel, true, &data, Some(events))?;
+                let command = String::from_utf8_lossy(&data);
+                if crate::tnc::mycall_command(&command).is_some() || data.starts_with(b"Y ") {
+                    require_success(&reply, &command)?;
                 }
+                present_mycall(&data, &mut reply);
                 emit(events, reply);
             }
             Ok(TncCommand::HostData { channel, data }) => {
@@ -128,7 +130,9 @@ fn run_hostmode(
             }
             Ok(TncCommand::TerminalLine(line)) => {
                 let command = line.trim().trim_start_matches('\x1b');
-                let reply = exchange(link, &mut stream, 0, true, command.as_bytes(), Some(events))?;
+                let mut reply =
+                    exchange(link, &mut stream, 0, true, command.as_bytes(), Some(events))?;
+                present_mycall(command.as_bytes(), &mut reply);
                 emit(events, reply);
             }
             Ok(TncCommand::QueryTiming) => timing(link, &mut stream, config, events)?,
@@ -144,6 +148,11 @@ fn run_hostmode(
             Ok(TncCommand::KissParam { .. }) => {
                 let _ = events.blocking_send(TncEvent::Warning(
                     "KISS parameters are not supported by WA8DED TNC2".into(),
+                ));
+            }
+            Ok(TncCommand::KissBroadcast { .. }) => {
+                let _ = events.blocking_send(TncEvent::Warning(
+                    "KISS beacon is not sent on a WA8DED TNC".into(),
                 ));
             }
             Ok(TncCommand::Session(_)) => {
@@ -256,6 +265,29 @@ fn require_success(reply: &InboundFrame, command: &str) -> Result<(), TncError> 
     Ok(())
 }
 
+/// An accepted `I NL0MSK` is returned as that command, on the channel it set.
+///
+/// Channel 0 is the TNC default. Channel 1..10 is that link block. The TNC
+/// answers a set with an empty success and a query with the call alone.
+fn present_mycall(command: &[u8], reply: &mut InboundFrame) {
+    let Ok(text) = std::str::from_utf8(command) else {
+        return;
+    };
+    if let Some(line) = crate::tnc::mycall_command(text) {
+        if matches!(reply.code, HostCode::Ok | HostCode::CommandReply) {
+            reply.code = HostCode::CommandReply;
+            reply.payload = line.into_bytes();
+        }
+        return;
+    }
+    if crate::tnc::mycall_query(text) && reply.code == HostCode::CommandReply {
+        let body = String::from_utf8_lossy(&reply.payload);
+        if let Some(line) = crate::tnc::mycall_command(&format!("I {}", body.trim())) {
+            reply.payload = line.into_bytes();
+        }
+    }
+}
+
 fn emit(events: &mpsc::Sender<TncEvent>, reply: InboundFrame) {
     let _ = events.blocking_send(TncEvent::HostFrame {
         channel: reply.channel,
@@ -308,8 +340,10 @@ fn run_open(
     }
     if !config.runtime_mycall.is_empty() {
         let command = format!("I {}", config.runtime_mycall);
-        let reply = exchange(link, stream, 0, true, command.as_bytes(), Some(events))?;
+        let mut reply = exchange(link, stream, 0, true, command.as_bytes(), Some(events))?;
         require_success(&reply, &command)?;
+        present_mycall(command.as_bytes(), &mut reply);
+        emit(events, reply);
     }
     timing(link, stream, config, events)?;
     let reply = exchange(link, stream, 0, true, b"M", Some(events))?;
@@ -385,7 +419,48 @@ fn run_close(
         .iter()
         .map(|line| wa8ded_ini::expand_placeholders(line, &config.monitor_mode))
         .collect();
-    command_list(link, stream, &lines, events)
+    // An earlier line must not skip JHOST0. That command is what leaves hostmode.
+    let mut left_hostmode = false;
+    let mut failure = None;
+    for command in &lines {
+        for wire in expand_command(command) {
+            let leaving = wire.eq_ignore_ascii_case("JHOST0");
+            stream.clear();
+            match exchange(link, stream, 0, true, wire.as_bytes(), Some(events)) {
+                Ok(reply) => match require_success(&reply, &wire) {
+                    Ok(()) if leaving => left_hostmode = true,
+                    Ok(()) => {}
+                    Err(err) => note_close_failure(events, &wire, err, &mut failure),
+                },
+                Err(err) => {
+                    // The request is written before the wait, so a timeout still
+                    // took the TNC out of hostmode.
+                    if leaving && err.to_string().contains("timed out") {
+                        left_hostmode = true;
+                    }
+                    note_close_failure(events, &wire, err, &mut failure);
+                }
+            }
+        }
+    }
+    if left_hostmode {
+        Ok(())
+    } else {
+        Err(failure
+            .unwrap_or_else(|| TncError::Protocol("WA8DED close did not send JHOST0".into())))
+    }
+}
+
+fn note_close_failure(
+    events: &mpsc::Sender<TncEvent>,
+    command: &str,
+    err: TncError,
+    failure: &mut Option<TncError>,
+) {
+    let _ = events.blocking_send(TncEvent::Warning(format!("WA8DED close {command}: {err}")));
+    if failure.is_none() {
+        *failure = Some(err);
+    }
 }
 
 #[derive(Default)]
@@ -449,6 +524,7 @@ mod tests {
         stage: u8,
         extended: bool,
         reject_init: bool,
+        fail_payloads: Vec<Vec<u8>>,
         rx: VecDeque<u8>,
         queued: BTreeMap<u8, VecDeque<(u8, Vec<u8>)>>,
         writes: Vec<Vec<u8>>,
@@ -460,6 +536,7 @@ mod tests {
                 stage: 0,
                 extended: true,
                 reject_init: false,
+                fail_payloads: Vec::new(),
                 rx: VecDeque::new(),
                 writes: Vec::new(),
                 queued: BTreeMap::new(),
@@ -542,6 +619,8 @@ mod tests {
                 self.response(channel, code, &payload);
             } else if self.reject_init && matches!(payload, b"U0" | b"I N0BAD") {
                 self.response(channel, 2, b"INVALID COMMAND");
+            } else if self.fail_payloads.iter().any(|item| item == payload) {
+                self.response(channel, 2, b"INVALID PARAMETER");
             } else {
                 let text: Option<&[u8]> = match payload {
                     b"V" => Some(b"TheFirmware Version 2.7 TNC2"),
@@ -797,5 +876,70 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("I N0BAD"));
         assert!(!modem.writes.iter().any(|wire| wire.ends_with(b"C N1YOU")));
+    }
+
+    #[test]
+    fn accepted_mycall_is_returned_for_the_monitor() {
+        let mut modem = Modem::new();
+        let config = TncConfig {
+            wa8ded_ini: String::new(),
+            init: Vec::new(),
+            deinit: vec!["JHOST0".into()],
+            runtime_mycall: "nl0msk".into(),
+            ..TncConfig::default()
+        };
+        let (events, mut rx) = mpsc::channel(256);
+        let (commands, mut cmd_rx) = mpsc::channel(4);
+        commands
+            .blocking_send(TncCommand::HostFrame {
+                channel: 3,
+                data: b"I n0me-1\r".to_vec(),
+            })
+            .unwrap();
+        commands.blocking_send(TncCommand::Shutdown).unwrap();
+        let mut failures = 0u8;
+        run_hostmode(
+            &mut modem,
+            &config,
+            &events,
+            &mut cmd_rx,
+            10,
+            "COM8",
+            &mut failures,
+        )
+        .unwrap();
+        let mut lines = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let TncEvent::HostFrame {
+                channel,
+                code: HostCode::CommandReply,
+                payload,
+            } = event
+            {
+                lines.push((channel, String::from_utf8_lossy(&payload).into_owned()));
+            }
+        }
+        assert!(lines
+            .iter()
+            .any(|(channel, line)| *channel == 0 && line == "I NL0MSK"));
+        assert!(lines
+            .iter()
+            .any(|(channel, line)| *channel == 3 && line == "I N0ME-1"));
+    }
+
+    #[test]
+    fn close_sends_jhost0_after_a_rejected_line() {
+        let mut modem = Modem::new();
+        modem.stage = 2;
+        modem.fail_payloads.push(b"MN".to_vec());
+        let config = TncConfig {
+            wa8ded_ini: String::new(),
+            deinit: vec!["MN".into(), "U1Away!".into(), "K2".into(), "JHOST0".into()],
+            ..TncConfig::default()
+        };
+        let (events, _rx) = mpsc::channel(64);
+        run_close(&mut modem, &mut Vec::new(), &config, &events).unwrap();
+        assert!(modem.writes.iter().any(|wire| wire.ends_with(b"MN")));
+        assert_eq!(modem.writes.last().unwrap(), b"\x00\x01\x05JHOST0");
     }
 }

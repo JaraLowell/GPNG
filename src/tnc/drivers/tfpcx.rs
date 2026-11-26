@@ -193,6 +193,9 @@ fn dispatch(
         TncCommand::HostFrame { channel, data } => {
             send_kiss(plugins, kiss_ports, hosts, events, stagger, channel, &data)?;
         }
+        TncCommand::KissBroadcast { ports, data } => {
+            send_broadcast(plugins, events, stagger, &ports, &data)?;
+        }
         TncCommand::Session(_) => {
             return Err(TncError::Protocol("unadapted session command".into()));
         }
@@ -253,6 +256,34 @@ fn send_kiss(
         hosts.note_probe(&frame.dest, &frame.via);
     }
     let groups = ports_by_modem(plugins, &ports);
+    fan_out_groups(plugins, events, stagger, groups, data)
+}
+
+/// Beacon (and the mail line after it). Every listed KISS port gets a copy.
+/// A call remembered on one radio does not hide the others, and a serial
+/// link and a TCP link are both keyed, one modem after the other.
+fn send_broadcast(
+    plugins: &[Plugin],
+    events: &mpsc::Sender<TncEvent>,
+    stagger: &mut Stagger,
+    ports: &[u8],
+    data: &[u8],
+) -> Result<(), TncError> {
+    if ports.is_empty() {
+        let _ = events.blocking_send(TncEvent::Warning("beacon has no KISS port".into()));
+        return Ok(());
+    }
+    let groups = ports_by_modem(plugins, ports);
+    fan_out_groups(plugins, events, stagger, groups, data)
+}
+
+fn fan_out_groups(
+    plugins: &[Plugin],
+    events: &mpsc::Sender<TncEvent>,
+    stagger: &mut Stagger,
+    groups: Vec<Vec<u8>>,
+    data: &[u8],
+) -> Result<(), TncError> {
     if groups.len() < 2 {
         for group in groups {
             for port in group {
@@ -605,7 +636,9 @@ mod tests {
     use super::super::super::ax25;
     use super::super::super::known_hosts::KnownHosts;
     use super::super::super::TncCommand;
-    use super::{fanout_gap, ports_by_modem, release_held, send_kiss, Plugin, Stagger};
+    use super::{
+        fanout_gap, ports_by_modem, release_held, send_broadcast, send_kiss, Plugin, Stagger,
+    };
 
     fn kiss_plugin(ports: &[u8]) -> (Plugin, mpsc::Receiver<TncCommand>) {
         let (commands, rx) = mpsc::channel(8);
@@ -773,5 +806,32 @@ mod tests {
         let (wire, data) = take_frame(&mut only_rx);
         assert_eq!(wire, 0);
         assert_eq!(data, directed);
+    }
+
+    #[test]
+    fn a_beacon_still_reaches_every_modem_when_the_destination_is_known() {
+        let (serial, mut serial_rx) = kiss_plugin(&[0]);
+        let (tcp, mut tcp_rx) = kiss_plugin(&[2]);
+        let plugins = vec![serial, tcp];
+        let (events, _events_rx) = mpsc::channel(4);
+        let mut stagger = Stagger::new();
+        let mut book = hosts();
+        book.remember("CQ", 0);
+        let frame = ax25::build_ui("CQ", "N0CALL", &[], b"beacon");
+
+        send_broadcast(&plugins, &events, &mut stagger, &[0, 2], &frame).unwrap();
+
+        let (wire, data) = take_frame(&mut serial_rx);
+        assert_eq!((wire, data), (0, frame.clone()));
+        assert!(tcp_rx.try_recv().is_err());
+        assert_eq!(stagger.held.len(), 1);
+        assert_eq!(stagger.held[0].logical, 2);
+        for item in &mut stagger.held {
+            item.at = Instant::now();
+        }
+        release_held(&plugins, &events, &mut stagger.held).unwrap();
+        let (wire, data) = take_frame(&mut tcp_rx);
+        assert_eq!((wire, data), (0, frame));
+        assert_eq!(book.port_of("CQ"), Some(0));
     }
 }

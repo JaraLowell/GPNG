@@ -187,6 +187,16 @@ pub(super) async fn run(
                     }
                     continue;
                 }
+                Action::Broadcast { ports, frame } => {
+                    if driver_commands
+                        .send(TncCommand::KissBroadcast { ports, data: frame })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    continue;
+                }
                 Action::Event(event) => TncEvent::Session(event),
                 Action::Warning(message) => TncEvent::Warning(message),
             };
@@ -300,6 +310,7 @@ impl Modem {
                 SessionCommand::Unproto { port, .. } | SessionCommand::Connect { port, .. } => {
                     *wa8ded == Some(*port)
                 }
+                SessionCommand::UnprotoBroadcast { .. } => false,
                 SessionCommand::Disconnect { channel } | SessionCommand::Send { channel, .. } => {
                     host.configs.contains_key(channel)
                 }
@@ -421,7 +432,7 @@ impl HostSessions {
     fn command(&mut self, command: SessionCommand) -> Result<Vec<TncCommand>, String> {
         let mut raw = Vec::new();
         match command {
-            SessionCommand::Unproto { .. } => {
+            SessionCommand::Unproto { .. } | SessionCommand::UnprotoBroadcast { .. } => {
                 return Err("structured unproto is currently implemented for KISS only".into())
             }
             SessionCommand::Configure(configs) => {

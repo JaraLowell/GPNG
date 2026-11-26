@@ -70,6 +70,7 @@ crossterm = "0.28"
 # Window / taskbar icon (assets/GPNG.ico — PNG or ICO).
 image = { version = "0.25", default-features = false, features = ["png", "ico"] }
 ax25 = "0.4.0"
+socket2 = { version = "0.6", features = ["all"] }
 
 [patch.crates-io]
 # Preserve Windows character messages generated when an Alt code is released.

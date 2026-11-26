@@ -26,6 +26,15 @@ pub enum SessionCommand {
         via: Vec<String>,
         data: Vec<u8>,
     },
+    /// Beacon UI on every listed KISS port. Not the monitor's one-port unproto:
+    /// TFPCX must not fold this onto the known-host radio.
+    UnprotoBroadcast {
+        ports: Vec<u8>,
+        local: String,
+        remote: String,
+        via: Vec<String>,
+        data: Vec<u8>,
+    },
     Connect {
         channel: u8,
         port: u8,
@@ -79,8 +88,19 @@ pub enum SessionEvent {
 }
 
 pub(super) enum Action {
-    Transmit { port: u8, frame: Vec<u8> },
-    HostCommand { channel: u8, data: Vec<u8> },
+    Transmit {
+        port: u8,
+        frame: Vec<u8>,
+    },
+    /// One UI frame, delivered on each port. The switch does not reroute it.
+    Broadcast {
+        ports: Vec<u8>,
+        frame: Vec<u8>,
+    },
+    HostCommand {
+        channel: u8,
+        data: Vec<u8>,
+    },
     Event(SessionEvent),
     Warning(String),
 }
@@ -386,6 +406,29 @@ impl KissSessions {
                 let via = validate_via(via)?;
                 out.push(Action::Transmit {
                     port,
+                    frame: ax25::build_ui(&remote, &local, &refs(&via), &data),
+                });
+            }
+            SessionCommand::UnprotoBroadcast {
+                mut ports,
+                local,
+                remote,
+                via,
+                data,
+            } => {
+                if ports.is_empty() || ports.iter().any(|port| *port > 15) || data.len() > 256 {
+                    return Err(
+                        "beacon requires radio ports 0..15 and at most 256 information bytes"
+                            .into(),
+                    );
+                }
+                ports.sort_unstable();
+                ports.dedup();
+                let local = canonical_call(&local)?;
+                let remote = canonical_call(&remote)?;
+                let via = validate_via(via)?;
+                out.push(Action::Broadcast {
+                    ports,
                     frame: ax25::build_ui(&remote, &local, &refs(&via), &data),
                 });
             }

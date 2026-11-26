@@ -7,7 +7,7 @@
 
 [station]
 # Legacy: MYCALL — monitor call first, then per-channel overrides (comma-separated).
-mycall = ["NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", "NL0MSK", ""]
+mycall = ["NL0MSK", "", "", "", "", "", "", "", "", "", ""]
 
 # Legacy: ZONE / TIME — display timezone offset and PC-clock skew (minutes).
 zone = "UTC"
@@ -18,18 +18,18 @@ locator = "JO32MW49"
 # Legacy: SERNR / SERPORT / SERIRQ / SERBAUD
 # Prefer a modern device path (USB-serial). SERPORT/SERIRQ remain optional
 # for documentation / migration from DOS IO-port based setups.
-port = "COM6" # Linux/macOS examples: "/dev/ttyUSB0", "/dev/tty.usbserial-*"
+port = "COM9" # Linux/macOS examples: "/dev/ttyUSB0", "/dev/tty.usbserial-*"
 # TM-D710 KISS: Kenwood docs use 9600 here — must match radio Menu PC PORT SPEED
 # (9600/19200/38400/57600). Only set 19200 if the radio menu is also 19200.
 baud = 9600 # SERBAUD
-com_number = 6 # SERNR (informational when `port` is set)
+com_number = 9 # SERNR (informational when `port` is set)
 # Optional DOS legacy fields (omit when unused — TOML has no null):
 # io_port = 0x3F8      # SERPORT — unused on modern USB-serial
 # irq = 4              # SERIRQ — unused on modern USB-serial
 fast_poll = "auto"     # FASTPOLL: "auto" | "on" | "off"
 multiport = "auto"     # MULTIPORT: "auto" | "on" | "off"
 
-port_detail = "USB-K5G Radio Cable"
+port_detail = "USB Serial Device"
 [session]
 # Legacy: CHANNELS, MAXSPY, buffers, bells, remote, spy, …
 channels = 10
@@ -40,6 +40,8 @@ screensave_minutes = 0
 popup_time_seconds = 3
 popup_enable_keyboard = false
 insert_mon_line = false
+# Repeat UI frames heard on one TFPCX radio onto the others. Off until set.
+digipeater = true
 questions = false
 backup = true
 # DOS Zoom. 1 = off (JetBrains Mono Regular), 2 = on (Bold). Setup menu and ALT-Z.
@@ -170,7 +172,7 @@ kiss_char_delay_ms = 30
 kiss_line_delay_ms = 300
 kiss_exit_delay_ms = 5000  # settle after RESTART (classic KISSINIT -D exit)
 
-links = [{ protocol = "kiss", ports = [0], transport = "serial", serial_port = "COM7", baud = 19200, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "kiss", ports = [1], transport = "serial", serial_port = "COM6", baud = 9600, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "off", ports = [4], transport = "serial", serial_port = "COM7", baud = 19200, tcp_host = "127.0.0.1", tcp_port = 8200 }]
+links = [{ protocol = "kiss", ports = [0], transport = "serial", serial_port = "COM7", baud = 19200, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "kiss", ports = [1], transport = "serial", serial_port = "COM6", baud = 9600, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "kiss", ports = [2], transport = "tcp", serial_port = "COM8", baud = 9600, tcp_host = "192.168.178.193", tcp_port = 8100 }]
 channel_ports = []
 kiss_port = 0
 [colors]
@@ -226,8 +228,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 23
-y = 485
+x = 1280
+y = 119
 width = 1162
 height = 857
 maximized = false

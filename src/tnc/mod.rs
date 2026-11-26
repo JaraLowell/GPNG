@@ -47,7 +47,7 @@ use crate::config::{HostProtocol, SerialConfig, TncConfig};
 
 pub use ax25::{Ax25Frame, Ax25FrameType};
 pub use drivers::baycom::detect_ports as detect_baycom_ports;
-pub use hostmode::HostCode;
+pub use hostmode::{mycall_command, mycall_query, HostCode};
 pub use kiss_ini::{
     apply_configured_paclen, load_paclen as load_kiss_paclen, load_params as load_kiss_params,
     open_lines as kiss_param_lines, parse_esc as parse_kiss_esc, payload_len as kiss_payload_len,
@@ -206,6 +206,12 @@ pub enum TncCommand {
     HostFrame {
         channel: u8,
         /// Command / data byte stream (e.g. `b"I NL0MSK"`).
+        data: Vec<u8>,
+    },
+    /// Beacon AX.25 on each listed KISS port. A switch must not reroute it
+    /// onto the one radio that last heard the destination.
+    KissBroadcast {
+        ports: Vec<u8>,
         data: Vec<u8>,
     },
     /// Send connected/unproto information, never interpreted as a TNC command.
@@ -381,11 +387,11 @@ impl RadioLink {
         if self
             .rt
             .block_on(async {
-                tokio::time::timeout(std::time::Duration::from_secs(8), live.join).await
+                tokio::time::timeout(std::time::Duration::from_secs(20), live.join).await
             })
             .is_err()
         {
-            error!("TNC driver did not stop within 8 s — COM may still be held");
+            error!("TNC driver did not stop within 20 s — COM may still be held");
         }
         true
     }

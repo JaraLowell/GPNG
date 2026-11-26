@@ -52,6 +52,8 @@ pub enum RowId {
     InsertMon,
     Softscroll,
     Beacon,
+    /// Monitor only. Repeat a heard beacon onto the other TFPCX radios.
+    Digipeater,
     Language,
     /// DOS `Zoom`. Off is JetBrains Mono Regular, on is Bold.
     Zoom,
@@ -159,6 +161,7 @@ impl RowId {
             Self::InsertMon => "setup.insert_mon",
             Self::Softscroll => "setup.softscroll",
             Self::Beacon => "setup.beacon",
+            Self::Digipeater => "setup.digipeater",
             Self::Language => "setup.language",
             Self::Zoom => "setup.zoom",
             Self::FontSize => "setup.font_size",
@@ -358,6 +361,7 @@ pub fn rows_for(pane: ActivePane) -> Vec<Row> {
             (RowId::InsertMon, RowKind::Toggle),
             (RowId::Softscroll, RowKind::Toggle),
             (RowId::Beacon, RowKind::Submenu),
+            (RowId::Digipeater, RowKind::Toggle),
             (RowId::Language, RowKind::Number),
             (RowId::Use, RowKind::Exit),
         ]),

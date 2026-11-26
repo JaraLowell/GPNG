@@ -29,8 +29,14 @@ use crate::tnc::{SessionCommand, TncCommand};
 /// hold the lock while it reads the beacon file.
 #[derive(Clone)]
 pub struct BeaconSnap {
+    /// KISS or BayCom, or a TFPCX switch that has a KISS radio.
     pub kiss: bool,
-    pub port: u8,
+    /// WA8DED, alone or as one modem on a TFPCX switch.
+    pub wa8ded: bool,
+    /// Every KISS port that must carry the beacon. One entry for a single
+    /// serial or TCP KISS radio. Every serial and TCP port when several
+    /// modems are on.
+    pub ports: Vec<u8>,
     pub beacon: BeaconConfig,
     pub my_call: String,
     pub qrg: String,
@@ -109,9 +115,9 @@ fn run(ctx: Context, shared: Arc<Mutex<Shared>>, stop: Arc<AtomicBool>) {
         if !clock.due(period, now) {
             continue;
         }
-        // Hostmode stores the beacon and does not invent a TNC command.
-        // Count the period anyway so switching to KISS later is not a burst.
-        if !snap.kiss {
+        // No radio that can send a UI frame. Count the period anyway so
+        // turning a modem on later is not a burst of stored beacons.
+        if !snap.kiss && !snap.wa8ded {
             clock.commit(now);
             continue;
         }
@@ -182,8 +188,8 @@ enum Attempt {
 
 /// Send once even when the periodic beacon is disabled.
 pub fn send_now(snap: &BeaconSnap) -> String {
-    if !snap.kiss {
-        return "Manual beacon requires KISS mode".into();
+    if !snap.kiss && !snap.wa8ded {
+        return "Manual beacon requires KISS or WA8DED".into();
     }
     match transmit(snap) {
         Attempt::Sent(note) | Attempt::Skip(note) => note,
@@ -207,33 +213,108 @@ fn transmit(snap: &BeaconSnap) -> Attempt {
         return Attempt::Skip("Beacon is empty".into());
     }
     let (dest, vias) = ax25::parse_unproto(&snap.beacon.address);
-    match snap
-        .cmd_tx
-        .try_send(TncCommand::Session(SessionCommand::Unproto {
-            port: snap.port,
-            local: snap.my_call.clone(),
-            remote: dest.clone(),
-            via: vias.clone(),
-            data: text.into_bytes(),
-        })) {
-        Ok(()) => {
-            let where_to = ax25::unproto_to(&dest, &vias);
-            let note = match queue_mail_beacon(snap, &dest, &vias) {
-                MailSend::None => format!("beacon {} {}", snap.my_call, where_to),
-                MailSend::Sent(line) => format!("beacon {} {}; {line}", snap.my_call, where_to),
-                // The beacon already left. Do not retry it; the mail line
-                // waits for the next period.
-                MailSend::NotQueued => {
-                    format!(
-                        "beacon {} {} (mail notice not queued)",
-                        snap.my_call, where_to
-                    )
-                }
-            };
-            Attempt::Sent(note)
+    let bytes = text.into_bytes();
+    let mut queued = false;
+    let mut failed = false;
+    if snap.kiss {
+        if snap.ports.is_empty() {
+            if !snap.wa8ded {
+                return Attempt::Skip("Beacon has no KISS port".into());
+            }
+            failed = true;
+        } else {
+            match queue_broadcast(snap, &dest, &vias, bytes.clone()) {
+                Ok(()) => queued = true,
+                Err(()) => failed = true,
+            }
         }
-        Err(_) => Attempt::Retry,
     }
+    if snap.wa8ded {
+        // The TNC owns the UI header. Point channel 0 at the beacon address,
+        // then send the text the same way a monitor line leaves.
+        match queue_wa8ded(snap, &dest, &vias, &bytes) {
+            Ok(()) => queued = true,
+            Err(()) => failed = true,
+        }
+    }
+    if !queued {
+        return if failed {
+            Attempt::Retry
+        } else {
+            Attempt::Skip("Beacon is empty".into())
+        };
+    }
+    let where_to = ax25::unproto_to(&dest, &vias);
+    let where_to = if snap.ports.len() > 1 {
+        let list = snap
+            .ports
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{where_to} ports {list}")
+    } else {
+        where_to
+    };
+    let note = match queue_mail_beacon(snap, &dest, &vias) {
+        MailSend::None => format!("beacon {} {}", snap.my_call, where_to),
+        MailSend::Sent(line) => format!("beacon {} {}; {line}", snap.my_call, where_to),
+        // The beacon already left. Do not retry it; the mail line
+        // waits for the next period.
+        MailSend::NotQueued => {
+            format!(
+                "beacon {} {} (mail notice not queued)",
+                snap.my_call, where_to
+            )
+        }
+    };
+    let note = if failed {
+        format!("{note} (one radio did not queue)")
+    } else {
+        note
+    };
+    Attempt::Sent(note)
+}
+
+/// One UI frame, queued for every KISS port on this station. A single serial
+/// or TCP modem has one port. TFPCX names each serial port and each TCP port.
+fn queue_broadcast(
+    snap: &BeaconSnap,
+    dest: &str,
+    vias: &[String],
+    data: Vec<u8>,
+) -> Result<(), ()> {
+    snap.cmd_tx
+        .try_send(TncCommand::Session(SessionCommand::UnprotoBroadcast {
+            ports: snap.ports.clone(),
+            local: snap.my_call.clone(),
+            remote: dest.to_string(),
+            via: vias.to_vec(),
+            data,
+        }))
+        .map_err(|_| ())
+}
+
+/// `C CALL [via…]` then the information bytes. TFPCX delivers both to the
+/// WA8DED modem; a KISS port never sees them.
+fn queue_wa8ded(snap: &BeaconSnap, dest: &str, vias: &[String], data: &[u8]) -> Result<(), ()> {
+    let mut command = format!("C {dest}");
+    for hop in vias {
+        command.push(' ');
+        command.push_str(hop);
+    }
+    snap.cmd_tx
+        .try_send(TncCommand::HostFrame {
+            channel: 0,
+            data: command.into_bytes(),
+        })
+        .map_err(|_| ())?;
+    snap.cmd_tx
+        .try_send(TncCommand::HostData {
+            channel: 0,
+            data: data.to_vec(),
+        })
+        .map_err(|_| ())
 }
 
 enum MailSend {
@@ -249,17 +330,30 @@ fn queue_mail_beacon(snap: &BeaconSnap, dest: &str, via: &[String]) -> MailSend 
     let Some(line) = mail_beacon_line(&snap.my_call, &calls) else {
         return MailSend::None;
     };
-    match snap
-        .cmd_tx
-        .try_send(TncCommand::Session(SessionCommand::Unproto {
-            port: snap.port,
-            local: snap.my_call.clone(),
-            remote: dest.into(),
-            via: via.to_vec(),
-            data: line.as_bytes().to_vec(),
-        })) {
-        Ok(()) => MailSend::Sent(line),
-        Err(_) => MailSend::NotQueued,
+    let bytes = line.as_bytes();
+    let mut sent = false;
+    let mut failed = false;
+    if snap.kiss && !snap.ports.is_empty() {
+        match queue_broadcast(snap, dest, via, bytes.to_vec()) {
+            Ok(()) => sent = true,
+            Err(()) => failed = true,
+        }
+    }
+    if snap.wa8ded {
+        match snap.cmd_tx.try_send(TncCommand::HostData {
+            channel: 0,
+            data: bytes.to_vec(),
+        }) {
+            Ok(()) => sent = true,
+            Err(_) => failed = true,
+        }
+    }
+    if sent && !failed {
+        MailSend::Sent(line)
+    } else if sent {
+        MailSend::Sent(format!("{line} (one radio did not queue)"))
+    } else {
+        MailSend::NotQueued
     }
 }
 
@@ -336,7 +430,8 @@ mod tests {
         (
             BeaconSnap {
                 kiss: true,
-                port: 0,
+                wa8ded: false,
+                ports: vec![0],
                 beacon,
                 my_call: "N0CALL".into(),
                 qrg: "145.500".into(),
@@ -352,17 +447,17 @@ mod tests {
     fn manual_beacon_sends_with_timer_disabled() {
         let (snap, mut rx) = snapshot();
         assert!(send_now(&snap).starts_with("beacon N0CALL"));
-        let TncCommand::Session(SessionCommand::Unproto {
-            port,
+        let TncCommand::Session(SessionCommand::UnprotoBroadcast {
+            ports,
             local,
             remote,
             via,
             data,
         }) = rx.try_recv().unwrap()
         else {
-            panic!("expected unproto request");
+            panic!("expected beacon broadcast");
         };
-        assert_eq!(port, 0);
+        assert_eq!(ports, [0]);
         assert_eq!(remote, "CQ");
         assert_eq!(local, "N0CALL");
         assert_eq!(via, ["WIDE1-1"]);
@@ -386,7 +481,8 @@ mod tests {
     fn manual_beacon_reports_unsupported_empty_and_full_queue() {
         let (mut snap, mut rx) = snapshot();
         snap.kiss = false;
-        assert_eq!(send_now(&snap), "Manual beacon requires KISS mode");
+        snap.wa8ded = false;
+        assert_eq!(send_now(&snap), "Manual beacon requires KISS or WA8DED");
         assert!(rx.try_recv().is_err());
         snap.kiss = true;
         snap.beacon.text.clear();
@@ -399,5 +495,50 @@ mod tests {
             send_now(&snap),
             "Beacon not queued: radio queue is full or closed"
         );
+    }
+
+    #[test]
+    fn wa8ded_beacon_sets_the_path_then_sends_the_text() {
+        let (mut snap, mut rx) = snapshot();
+        snap.kiss = false;
+        snap.wa8ded = true;
+        assert!(send_now(&snap).starts_with("beacon N0CALL"));
+        let TncCommand::HostFrame { channel, data } = rx.try_recv().unwrap() else {
+            panic!("expected unproto path");
+        };
+        assert_eq!(channel, 0);
+        assert_eq!(data, b"C CQ WIDE1-1");
+        let TncCommand::HostData { channel, data } = rx.try_recv().unwrap() else {
+            panic!("expected beacon text");
+        };
+        assert_eq!(channel, 0);
+        assert_eq!(data, b"Hello beacon");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn tfpcx_beacon_reaches_kiss_and_wa8ded() {
+        let (cmd_tx, mut rx) = mpsc::channel(8);
+        let mut snap = snapshot().0;
+        snap.cmd_tx = cmd_tx;
+        snap.kiss = true;
+        snap.wa8ded = true;
+        snap.ports = vec![0, 2];
+        assert!(send_now(&snap).contains("ports 0,2"));
+        let TncCommand::Session(SessionCommand::UnprotoBroadcast { ports, data, .. }) =
+            rx.try_recv().unwrap()
+        else {
+            panic!("expected KISS beacon");
+        };
+        assert_eq!(ports, [0, 2]);
+        assert_eq!(data, b"Hello beacon");
+        let TncCommand::HostFrame { data, .. } = rx.try_recv().unwrap() else {
+            panic!("expected WA8DED path");
+        };
+        assert_eq!(data, b"C CQ WIDE1-1");
+        let TncCommand::HostData { data, .. } = rx.try_recv().unwrap() else {
+            panic!("expected WA8DED text");
+        };
+        assert_eq!(data, b"Hello beacon");
     }
 }

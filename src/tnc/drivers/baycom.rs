@@ -364,7 +364,8 @@ fn run_loop(
                     return Ok(())
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
-                Ok(TncCommand::HostFrame { channel: 0, data }) => {
+                Ok(TncCommand::HostFrame { channel: 0, data })
+                | Ok(TncCommand::KissBroadcast { data, .. }) => {
                     modem.enqueue(&data).map_err(|e| error("enqueue", e))?;
                 }
                 Ok(TncCommand::HostFrame { channel, .. }) => {

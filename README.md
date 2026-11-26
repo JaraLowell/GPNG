@@ -401,7 +401,7 @@ Pick **Connection: Serial** or **TCP** on the Radio setup card (same fields as
 
 | `kiss_transport` | Wire | Typical use |
 |------------------|------|-------------|
-| `serial` (default) | COM/tty + baud | Kenwood TM-D710 etc. — applies `KISS.INI` (`kiss_section` / `kiss_close_section`), DTR pulse, exit sequence |
+| `serial` (default) | COM/tty + baud | Kenwood TM-D710 etc. — applies `KISS.INI` (`kiss_section` / `kiss_close_section`), modem-control reset where applicable, exit sequence |
 | `tcp` | host:port | Soft TNC already in KISS — **UZ7HO Soundmodem** (often port `8100`), **Direwolf** (often `8001`); no `KISS.INI` |
 
 Equivalent hand-edit for a Soundmodem lab (optional — the startup card writes the same):
@@ -415,6 +415,24 @@ kiss_tcp_port = 8100
 ```
 
 Session badge shows `TCP 127.0.0.1:8100` when the TCP path is active.
+
+For ESP USB Serial/JTAG interfaces (`303A:1001`, including the Station G2),
+the serial driver avoids manual DTR/RTS changes on open, KISS reset and close.
+Those lines control chip reset/download mode, not radio flow control;
+the normal modem-control sequence can leave the G2 unresponsive.
+Other serial adapters retain their existing DTR/RTS handling. If an older
+client left a G2 unresponsive, press RESET (not BOOT) before using updated GPNG.
+
+TCP sockets enable OS keepalive after 120 seconds idle, with 30-second probe
+intervals and five unanswered probes before declaring the peer lost.
+These are TCP packets, not KISS commands or RF transmissions. A healthy
+connection can remain idle for hours or days; no application ping is needed.
+The driver reports EOF, resets and keepalive failures as link-down events and
+uses the existing reconnect policy: retry once a minute, stop after ten
+consecutive failures. Reconnecting starts a fresh KISS stream; existing AX.25
+sessions are closed on link loss, and uncertain outgoing blocks are not replayed.
+TCP writes are bounded to two seconds; ordinary idle reads are not treated
+as disconnects.
 
 KISS TX builds real AX.25 frames with the `ax25` crate (hostmode `I`/`C`/`D` strings are not sent raw). Monitor uses classic GP / axlisten lines, e.g. `fm NL0MSK to NL0MSK ctl SABM+`, `… ctl UA-`, `… ctl I00^ pid F0`, `… ctl RR1v`, optional `via DIGI`:
 

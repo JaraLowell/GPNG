@@ -665,6 +665,12 @@ impl Config {
             "insert_mon_line",
             if s.insert_mon_line { "true" } else { "false" },
         )?;
+        put_key(
+            path,
+            "session",
+            "digipeater",
+            if s.digipeater { "true" } else { "false" },
+        )?;
         put_key(path, "session", "prompt", &toml_string(&s.prompt))?;
         put_key(path, "session", "language", &toml_string(&s.language))?;
         put_key(path, "session", "zoom", &s.zoom.to_string())?;
@@ -1159,6 +1165,9 @@ pub struct SessionConfig {
     pub popup_time_seconds: u32,
     pub popup_enable_keyboard: bool,
     pub insert_mon_line: bool,
+    /// Repeat a beacon heard on one TFPCX radio onto the others. Off until set.
+    #[serde(default)]
+    pub digipeater: bool,
     pub questions: bool,
     pub backup: bool,
     /// DOS `Zoom`. `1` is off (JetBrains Mono Regular). `2` is on (Bold).
@@ -1252,6 +1261,7 @@ impl Default for SessionConfig {
             popup_time_seconds: 3,
             popup_enable_keyboard: false,
             insert_mon_line: false,
+            digipeater: false,
             questions: false,
             backup: true,
             zoom: 1,
@@ -1643,6 +1653,44 @@ impl TncConfig {
             .collect()
     }
 
+    /// Two or more enabled TFPCX modems. A lone KISS or WA8DED radio is not.
+    pub fn multi_modem(&self) -> bool {
+        self.protocol_kind() == HostProtocol::Tfpcx
+            && self
+                .validated_links()
+                .map(|links| links.len() >= 2)
+                .unwrap_or(false)
+    }
+
+    /// KISS ports on the other modems. The radio that heard the beacon is left out,
+    /// including every port on that same modem.
+    pub fn digipeat_kiss_ports(&self, heard: u8) -> Vec<u8> {
+        if !self.multi_modem() {
+            return Vec::new();
+        }
+        let Ok(links) = self.validated_links() else {
+            return Vec::new();
+        };
+        let Some(heard_at) = links.iter().position(|link| link.ports.contains(&heard)) else {
+            return Vec::new();
+        };
+        links
+            .into_iter()
+            .enumerate()
+            .filter(|(index, link)| *index != heard_at && link.is_kiss())
+            .flat_map(|(_, link)| link.ports)
+            .collect()
+    }
+
+    /// The WA8DED modem should carry this beacon too, when it was not the one
+    /// that heard it.
+    pub fn digipeat_to_wa8ded(&self, heard: u8) -> bool {
+        self.multi_modem()
+            && self
+                .wa8ded_logical_port()
+                .is_some_and(|port| port != heard)
+    }
+
     /// The single WA8DED logical port, when that link is enabled.
     pub fn wa8ded_logical_port(&self) -> Option<u8> {
         self.validated_links()
@@ -1745,7 +1793,7 @@ impl TncConfig {
         }
     }
 
-    /// Port used for a beacon or monitor UI frame.
+    /// Port used for monitor UI text.
     /// TFPCX uses `kiss_port` when that radio is one of its KISS ports.
     pub fn kiss_tx_port(&self) -> u8 {
         if self.protocol_kind() != HostProtocol::Tfpcx {
@@ -1756,6 +1804,24 @@ impl TncConfig {
             self.kiss_port
         } else {
             ports.first().copied().unwrap_or(self.kiss_port)
+        }
+    }
+
+    /// Every KISS port a beacon must key.
+    ///
+    /// A single serial or TCP KISS radio is just `kiss_port`. TFPCX lists
+    /// every port on every enabled KISS link, serial and TCP together.
+    /// Known-host routing does not apply: a beacon is not a directed call.
+    pub fn kiss_beacon_ports(&self) -> Vec<u8> {
+        match self.protocol_kind() {
+            HostProtocol::Kiss | HostProtocol::Baycom => vec![self.kiss_port],
+            HostProtocol::Tfpcx => {
+                let mut ports = self.kiss_logical_ports();
+                ports.sort_unstable();
+                ports.dedup();
+                ports
+            }
+            HostProtocol::Wa8ded => Vec::new(),
         }
     }
 }
@@ -2706,6 +2772,7 @@ links = [{ protocol = "kiss", ports = [0], transport = "serial", serial_port = "
         assert_eq!(cfg.serial.port, "COM4");
         assert_eq!(cfg.serial.baud, 9600);
         assert_eq!(cfg.session.channels, 4);
+        assert!(!cfg.session.digipeater);
         assert_eq!(cfg.session.language, "de");
         assert_eq!(cfg.session.pad_font_size, 14);
         assert_eq!(cfg.station.locator, "");
@@ -2727,6 +2794,10 @@ links = [{ protocol = "kiss", ports = [0], transport = "serial", serial_port = "
         assert!(written.contains("remote_language = \"DE\""));
         assert!(written.contains("mycall = [\"DL0ABC\"]"));
         assert!(written.contains("pad_font_size = 14"));
+        assert!(
+            written.contains("digipeater = false"),
+            "a file without digipeater must gain the off default:\n{written}"
+        );
         assert!(written.contains("map_background = \"Blue\""));
         assert!(
             !written
@@ -2738,6 +2809,14 @@ links = [{ protocol = "kiss", ports = [0], transport = "serial", serial_port = "
         let again = std::fs::read_to_string(&path).unwrap();
         Config::load(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), again);
+
+        let kept = dir.join("kept.toml");
+        std::fs::write(&kept, "[session]\ndigipeater = true\n").unwrap();
+        let kept_cfg = Config::load(&kept).unwrap();
+        assert!(kept_cfg.session.digipeater);
+        let kept_text = std::fs::read_to_string(&kept).unwrap();
+        assert!(kept_text.contains("digipeater = true"));
+        assert!(!kept_text.contains("digipeater = false"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
@@ -2804,5 +2883,32 @@ mod tfpcx_link_tests {
         assert!(cfg.runs_kiss_ax25());
         assert!(!cfg.has_wa8ded());
         assert_eq!(cfg.kiss_tx_port(), 0);
+        assert_eq!(cfg.kiss_beacon_ports(), vec![0, 1, 2]);
+
+        cfg.protocol = "kiss".into();
+        cfg.kiss_transport = "serial".into();
+        assert_eq!(cfg.kiss_beacon_ports(), vec![9]);
+        cfg.kiss_transport = "tcp".into();
+        cfg.kiss_port = 1;
+        assert_eq!(cfg.kiss_beacon_ports(), vec![1]);
+        cfg.protocol = "wa8ded".into();
+        assert!(cfg.kiss_beacon_ports().is_empty());
+    }
+
+    #[test]
+    fn digipeater_uses_the_other_modem_only() {
+        let mut cfg = TncConfig::default();
+        cfg.protocol = "tfpcx".into();
+        cfg.links = vec![kiss(&[0, 1]), kiss(&[2])];
+        cfg.links[1].serial_port = "COM4".into();
+        assert!(cfg.multi_modem());
+        assert_eq!(cfg.digipeat_kiss_ports(0), vec![2]);
+        assert_eq!(cfg.digipeat_kiss_ports(1), vec![2]);
+        assert_eq!(cfg.digipeat_kiss_ports(2), vec![0, 1]);
+        assert!(!cfg.digipeat_to_wa8ded(0));
+
+        cfg.links.pop();
+        assert!(!cfg.multi_modem());
+        assert!(cfg.digipeat_kiss_ports(0).is_empty());
     }
 }

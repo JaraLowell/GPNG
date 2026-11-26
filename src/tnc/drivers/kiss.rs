@@ -218,7 +218,9 @@ fn run_link(
     }
     // Modem is in KISS now (serial after INI, TCP already). Push [params].
     let timing = load_kiss_params(tnc_cfg);
-    apply_configured_params(&mut link, tnc_cfg, &timing, events);
+    if let Err(err) = apply_configured_params(&mut link, tnc_cfg, &timing, events) {
+        return super::super::reconnect::Attempt::Again(err);
+    }
 
     let status = if link.is_tcp() {
         format!("TCP OPEN {} — KISS listen", link.label())
@@ -321,7 +323,7 @@ fn recycle_serial(
     }
     link.flush_input();
     let timing = load_kiss_params(tnc_cfg);
-    apply_configured_params(link, tnc_cfg, &timing, events);
+    apply_configured_params(link, tnc_cfg, &timing, events)?;
     let _ = events.blocking_send(TncEvent::Modem {
         index: 0,
         label: kiss_badge(serial, tnc_cfg),
@@ -407,6 +409,16 @@ fn handle_command(
         TncCommand::HostFrame { channel, data } => {
             write_kiss_data(link, channel, &data, events)?;
         }
+        TncCommand::KissBroadcast { ports, data } => {
+            let ports = if ports.is_empty() {
+                vec![tnc_cfg.kiss_port]
+            } else {
+                ports
+            };
+            for port in ports {
+                write_kiss_data(link, port, &data, events)?;
+            }
+        }
         TncCommand::Session(_) => {
             return Err(TncError::Protocol("unadapted session command".into()))
         }
@@ -417,6 +429,9 @@ fn handle_command(
         }
         TncCommand::TerminalLine(line) => {
             if let Err(err) = link.write_terminal(&line) {
+                if link.is_tcp() {
+                    return Err(err);
+                }
                 let _ = events.blocking_send(TncEvent::Warning(err.to_string()));
             }
         }
@@ -435,7 +450,7 @@ fn handle_command(
                 }
             }
             let timing = load_kiss_params(tnc_cfg);
-            apply_configured_params(link, tnc_cfg, &timing, events);
+            apply_configured_params(link, tnc_cfg, &timing, events)?;
             publish_kiss_timing_banner(tnc_cfg, &timing, events);
         }
         TncCommand::RefreshSerial { .. } => {
@@ -448,6 +463,9 @@ fn handle_command(
             match write_kiss_command(link, tnc_cfg.kiss_port, cmd, arg) {
                 Ok(()) => {}
                 Err(err) => {
+                    if link.is_tcp() {
+                        return Err(err);
+                    }
                     let name = kiss_ini::cmd_label(cmd);
                     let _ = events.blocking_send(TncEvent::Warning(format!("kiss {name}: {err}")));
                 }
@@ -531,7 +549,7 @@ fn apply_kiss_params(
     port: u8,
     params: &[KissParam],
     events: &mpsc::Sender<TncEvent>,
-) {
+) -> Result<(), TncError> {
     for param in params {
         match write_kiss_command(link, port, param.cmd, param.value) {
             Ok(()) => {
@@ -541,11 +559,15 @@ fn apply_kiss_params(
                 )));
             }
             Err(err) => {
+                if link.is_tcp() {
+                    return Err(err);
+                }
                 let _ =
                     events.blocking_send(TncEvent::Warning(format!("kiss {}: {err}", param.name)));
             }
         }
     }
+    Ok(())
 }
 
 fn apply_configured_params(
@@ -553,13 +575,14 @@ fn apply_configured_params(
     config: &TncConfig,
     params: &[KissParam],
     events: &mpsc::Sender<TncEvent>,
-) {
+) -> Result<(), TncError> {
     let ports: std::collections::BTreeSet<_> = std::iter::once(config.kiss_port)
         .chain(config.channel_ports.iter().copied())
         .collect();
     for port in ports {
-        apply_kiss_params(link, port, params, events);
+        apply_kiss_params(link, port, params, events)?;
     }
+    Ok(())
 }
 
 fn publish_kiss_timing_banner(
@@ -687,6 +710,135 @@ fn unescape_kiss(raw: &[u8]) -> Result<Option<(u8, Vec<u8>)>, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn kiss_tcp_reconnects_after_peer_disconnect() {
+        use socket2::SockRef;
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let peer = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(75);
+            let accept = || loop {
+                match listener.accept() {
+                    Ok((socket, _)) => {
+                        socket.set_nonblocking(false).unwrap();
+                        break socket;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline, "TCP accept timed out");
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => panic!("TCP accept failed: {e}"),
+                }
+            };
+            let first = accept();
+            first
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut first = first;
+            let mut byte = [0];
+            use std::io::Read;
+            let opening = encode_kiss(0, 0, b"open").unwrap();
+            let mut received = Vec::new();
+            while !received.ends_with(&opening) {
+                first.read_exact(&mut byte).unwrap();
+                received.push(byte[0]);
+            }
+            first.write_all(&[FEND, 0, b'o']).unwrap();
+            SockRef::from(&first)
+                .set_linger(Some(Duration::ZERO))
+                .unwrap();
+            drop(first);
+            let mut second = accept();
+            second
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            second
+                .write_all(&encode_kiss(0, 0, b"new link").unwrap())
+                .unwrap();
+            let mut drained = Vec::new();
+            second.read_to_end(&mut drained).unwrap();
+        });
+        let config = TncConfig {
+            protocol: "kiss".into(),
+            kiss_transport: "tcp".into(),
+            kiss_tcp_host: "127.0.0.1".into(),
+            kiss_tcp_port: port,
+            ..TncConfig::default()
+        };
+        let (events, mut rx) = mpsc::channel(32);
+        let (commands, commands_rx) = mpsc::channel(8);
+        let driver = tokio::task::spawn_blocking(move || {
+            run(SerialConfig::default(), config, events, commands_rx)
+        });
+        commands
+            .send(TncCommand::HostFrame {
+                channel: 0,
+                data: b"open".to_vec(),
+            })
+            .await
+            .unwrap();
+        let mut dropped = false;
+        let mut opens = 0;
+        let result = tokio::time::timeout(Duration::from_secs(70), async {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    TncEvent::Modem {
+                        phase: super::super::super::LinkPhase::Open,
+                        ..
+                    } => opens += 1,
+                    TncEvent::LinkDown(_) => dropped = true,
+                    TncEvent::HostFrame {
+                        channel: 0,
+                        payload,
+                        ..
+                    } if payload == b"new link" => return,
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        commands.send(TncCommand::Shutdown).await.unwrap();
+        while rx.recv().await.is_some() {}
+        driver.await.unwrap().unwrap();
+        peer.join().unwrap();
+        assert!(result.is_ok(), "TCP driver did not reconnect");
+        assert!(dropped);
+        assert_eq!(opens, 2);
+    }
+
+    #[test]
+    fn kiss_tcp_parameter_write_failure_is_fatal() {
+        use socket2::SockRef;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let tcp = TcpKissLink::connect("127.0.0.1", listener.local_addr().unwrap().port()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        SockRef::from(&peer)
+            .set_linger(Some(Duration::ZERO))
+            .unwrap();
+        drop(peer);
+        let mut link = KissLink::Tcp(tcp);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while link.try_read(&mut [0; 16]).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Peer reset was not detected"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let config = TncConfig::default();
+        let (events, _rx) = mpsc::channel(32);
+        assert!(
+            apply_configured_params(&mut link, &config, &load_kiss_params(&config), &events)
+                .is_err()
+        );
+    }
 
     #[test]
     fn kiss_multiport_type_and_parameter_bytes_are_escaped() {
