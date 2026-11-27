@@ -366,6 +366,12 @@ pub struct GpGuiApp {
     connect_dialog_focus: bool,
     /// Name list popped up from the connect dialog's Name field.
     show_connect_names: bool,
+    /// Radio row the operator picked, kept only for that call.
+    connect_radio_pick: Option<(String, usize)>,
+    /// Radio for the connect that is about to start. Not written to Config.toml.
+    connect_force_port: Option<u8>,
+    /// Per-channel TFPCX radio. Empty uses [`TncConfig::channel_port`].
+    channel_radio: Vec<Option<u8>>,
     icon_tex: Vec<TextureHandle>,
     /// `assets/start.png`, drawn above the radio card until Use this.
     start_screen: Option<TextureHandle>,
@@ -802,6 +808,9 @@ impl GpGuiApp {
             name_dialog_focus: false,
             connect_dialog_focus: false,
             show_connect_names: false,
+            connect_radio_pick: None,
+            connect_force_port: None,
+            channel_radio: vec![None; channels as usize + 1],
             icon_tex,
             start_screen,
             start_card_height: 0.0,
@@ -1295,6 +1304,9 @@ impl GpGuiApp {
                     for port in &mut self.channel_link_port {
                         *port = None;
                     }
+                    for port in &mut self.channel_radio {
+                        *port = None;
+                    }
                     for down in &mut self.channel_down {
                         down.clear();
                     }
@@ -1552,7 +1564,7 @@ impl GpGuiApp {
         let configs = (1..=self.channels)
             .map(|channel| ChannelConfig {
                 channel,
-                port: self.cfg.tnc.channel_port(channel),
+                port: self.port_for_channel(channel),
                 local: self.effective_mycall(channel),
             })
             .collect();
@@ -2514,7 +2526,11 @@ impl GpGuiApp {
         if !self.monitor_lists_frame(frame_kind, src, dest, via) {
             return;
         }
-        self.note_heard_on_monitor(src, dest, via, heard_info, heard_raw, Some(port));
+        // A digipeated copy is our own transmission. MHeard keeps the frame
+        // that arrived, not the one we sent on the other radio.
+        if !(kind == PadKind::Own && self.frame_is_outgoing_digi(via)) {
+            self.note_heard_on_monitor(src, dest, via, heard_info, heard_raw, Some(port));
+        }
         let hdr = stamp_monitor_fm(&ax25::tag_kiss_port(
             &ax25::monitor_ctl_line(src, dest, via, frame_kind, ns, nr, poll, command),
             port,
@@ -3976,10 +3992,9 @@ impl GpGuiApp {
             self.digipeat_seen.pop_front();
         }
         if !ports.is_empty() {
-            let _ = self.cmd_tx.try_send(TncCommand::KissBroadcast {
-                ports,
-                data: raw,
-            });
+            let _ = self
+                .cmd_tx
+                .try_send(TncCommand::KissBroadcast { ports, data: raw });
         }
         if wa8ded {
             let mut command = format!("C {}", frame.dest);
@@ -5875,29 +5890,31 @@ impl GpGuiApp {
     }
 
     /// Channel / spy / mail pads wrapped to the live viewport width.
-    fn active_layout_for(&self, columns: usize) -> LayoutJob {
+    fn active_layout_for(&self, columns: usize) -> (LayoutJob, Vec<super::links::TextLink>) {
         let font = self.pad_font_px();
         match self.active {
             ActivePane::Spy(n) => {
                 let idx = n.saturating_sub(1) as usize;
                 self.spy_pads
                     .get(idx)
-                    .map(|pad| pad.layout_job_spy(columns, self.spy_fg, self.spy_inv, font))
+                    .map(|pad| pad.layout_job_spy_links(columns, self.spy_fg, self.spy_inv, font))
                     .unwrap_or_default()
             }
-            ActivePane::Check => {
-                self.bbs_pad
-                    .layout_job_channel(columns, self.session.umlaut_for(SLOT_BBS), font)
-            }
-            ActivePane::List => {
-                self.box_pad
-                    .layout_job_channel(columns, self.session.umlaut_for(SLOT_LIST), font)
-            }
+            ActivePane::Check => self.bbs_pad.layout_job_channel_links(
+                columns,
+                self.session.umlaut_for(SLOT_BBS),
+                font,
+            ),
+            ActivePane::List => self.box_pad.layout_job_channel_links(
+                columns,
+                self.session.umlaut_for(SLOT_LIST),
+                font,
+            ),
             ActivePane::Channel(n) => self
                 .pads
                 .get(n as usize)
                 .map(|pad| {
-                    pad.layout_job_channel_show(
+                    pad.layout_job_channel_show_links(
                         columns,
                         self.session.umlaut_for(n),
                         self.session.echo_for(n),
@@ -5918,12 +5935,12 @@ impl GpGuiApp {
     /// Monitor pad (`pads[0]`). The full Monitor pane and the channel split
     /// both paint this job — there is no second monitor buffer.
     /// `columns` is how many monospace cells fit in the pane right now.
-    fn monitor_layout_for(&self, columns: usize) -> LayoutJob {
+    fn monitor_layout_for(&self, columns: usize) -> (LayoutJob, Vec<super::links::TextLink>) {
         let font = self.pad_font_px();
         self.pads
             .first()
             .map(|pad| {
-                pad.layout_job_monitor(
+                pad.layout_job_monitor_links(
                     columns,
                     self.monitor_fg,
                     self.monitor_inv,
@@ -5932,6 +5949,16 @@ impl GpGuiApp {
                 )
             })
             .unwrap_or_default()
+    }
+
+    fn open_clicked_url(&mut self, url: &str) {
+        match super::links::open_in_browser(url) {
+            Ok(()) => self.status = format!("Opened {url}"),
+            Err(err) => {
+                self.status = format!("Could not open {url}: {err}");
+                self.log_event(self.status.clone());
+            }
+        }
     }
 
     fn split_visible(&self) -> bool {
@@ -9426,7 +9453,7 @@ impl eframe::App for GpGuiApp {
                         ui.disable();
                     }
                     let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
-                    paint_text_pane(
+                    let opened = paint_text_pane(
                         ui,
                         rect,
                         mon_bg,
@@ -9443,6 +9470,9 @@ impl eframe::App for GpGuiApp {
                             self.monitor_layout_for(cols)
                         },
                     );
+                    if let Some(url) = opened {
+                        self.open_clicked_url(&url);
+                    }
                     self.note_split_right_click(ui, rect);
                 });
         }
@@ -11692,7 +11722,7 @@ impl GpGuiApp {
         let show_bar = self.session.scrollbar;
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         // Never enable horizontal scroll — wrap to the viewport instead.
-        paint_text_pane(
+        let opened = paint_text_pane(
             ui,
             rect,
             bg,
@@ -11713,6 +11743,9 @@ impl GpGuiApp {
                 }
             },
         );
+        if let Some(url) = opened {
+            self.open_clicked_url(&url);
+        }
         self.note_split_right_click(ui, rect);
     }
 
@@ -11782,10 +11815,11 @@ impl GpGuiApp {
         let mut clicked: Option<usize> = None;
         let row_font = FontId::monospace(13.0);
         let head_font = FontId::monospace(12.0);
-        let rule = Stroke::new(
-            1.0,
-            Color32::from_rgb(text_fg.r() / 3, text_fg.g() / 3, text_fg.b() / 3),
-        );
+        // Unselected rules use the inverse background. A selected row is
+        // already filled with that color, so its rules flip back to the
+        // normal background and stay visible.
+        let rule = Stroke::new(1.0, text_inv);
+        let rule_sel = Stroke::new(1.0, bg);
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
             let avail = ui.available_size();
@@ -11835,15 +11869,8 @@ impl GpGuiApp {
                     let header =
                         Rect::from_min_size(ui.cursor().min, Vec2::new(text.width(), head_h));
                     ui.allocate_rect(header, Sense::hover());
-                    paint_mheard_sheet_header(
-                        ui.painter(),
-                        header,
-                        &cols,
-                        &head_font,
-                        text_fg,
-                        bg,
-                        rule,
-                    );
+                    paint_mheard_sheet_header(ui.painter(), header, &cols, &head_font, text_fg, bg);
+                    paint_mheard_sheet_grid(ui.painter(), header.min, &cols, head_h, false, rule);
 
                     let body = Rect::from_min_max(
                         Pos2::new(text.left(), header.bottom()),
@@ -11882,19 +11909,26 @@ impl GpGuiApp {
                                         Color32::TRANSPARENT
                                     };
                                     let fg = if is_sel { bg } else { text_fg };
-                                    let block_h = if row.geo_line.is_some() {
+                                    let text_h = if row.geo_line.is_some() {
                                         row_h * 2.0
                                     } else {
                                         row_h
                                     };
                                     let (block_rect, resp) = ui.allocate_exact_size(
-                                        Vec2::new(body.width(), block_h),
+                                        Vec2::new(body.width(), text_h + MHEARD_STATION_GAP),
                                         Sense::click(),
                                     );
-                                    ui.painter().rect_filled(block_rect, 0.0, fill);
+                                    let content = Rect::from_min_size(
+                                        Pos2::new(
+                                            block_rect.left(),
+                                            block_rect.top() + MHEARD_STATION_GAP,
+                                        ),
+                                        Vec2::new(block_rect.width(), text_h),
+                                    );
+                                    ui.painter().rect_filled(content, 0.0, fill);
                                     let main = Rect::from_min_size(
-                                        block_rect.min,
-                                        Vec2::new(block_rect.width(), row_h),
+                                        content.min,
+                                        Vec2::new(content.width(), row_h),
                                     );
                                     paint_mheard_sheet_row(
                                         ui.painter(),
@@ -11903,29 +11937,35 @@ impl GpGuiApp {
                                         row,
                                         &row_font,
                                         fg,
-                                        rule,
                                     );
+                                    let has_geo = row.geo_line.is_some();
                                     if let Some(geo_line) = row.geo_line.as_deref() {
-                                        let sub = Rect::from_min_size(
-                                            Pos2::new(block_rect.left(), block_rect.top() + row_h),
-                                            Vec2::new(block_rect.width(), row_h),
-                                        );
-                                        let x =
-                                            (sub.left() + payload_x + 4.0).min(sub.right() - 8.0);
+                                        let table_w: f32 = cols.iter().map(|c| c.width).sum();
+                                        let cell_w = (table_w - payload_x).max(8.0);
+                                        let cell_left = content.left() + payload_x;
+                                        let x = cell_left + 4.0;
                                         let clipped = clip_sheet_cell(
                                             geo_line,
-                                            (sub.right() - x).max(8.0),
+                                            cell_w,
                                             &row_font,
                                             ui.painter(),
                                         );
                                         ui.painter().text(
-                                            Pos2::new(x, sub.center().y),
+                                            Pos2::new(x, content.top() + row_h + row_h * 0.5),
                                             egui::Align2::LEFT_CENTER,
                                             clipped,
                                             row_font.clone(),
                                             fg,
                                         );
                                     }
+                                    paint_mheard_sheet_grid(
+                                        ui.painter(),
+                                        content.min,
+                                        &cols,
+                                        row_h,
+                                        has_geo,
+                                        if is_sel { rule_sel } else { rule },
+                                    );
                                     if resp.clicked() {
                                         clicked = Some(*i);
                                     }
@@ -13023,7 +13063,20 @@ impl GpGuiApp {
         }
     }
 
+    fn port_for_channel(&self, channel: u8) -> u8 {
+        self.channel_radio
+            .get(usize::from(channel))
+            .and_then(|port| *port)
+            .unwrap_or_else(|| self.cfg.tnc.channel_port(channel))
+    }
+
+    /// Digipeater is on and this via list is one we transmitted.
+    fn frame_is_outgoing_digi(&self, via: &[String]) -> bool {
+        outgoing_digipeat(self.cfg.session.digipeater, self.cfg.primary_mycall(), via)
+    }
+
     fn begin_connect(&mut self, channel: u8, dest: &str, vias: &[String], downlinks: Vec<String>) {
+        let forced = self.connect_force_port.take();
         if !(1..=self.channels).contains(&channel) || self.channel_connected(channel) {
             self.status = format!("connect: channel {channel} is unavailable");
             return;
@@ -13048,10 +13101,15 @@ impl GpGuiApp {
             local = call;
         }
         self.adopt_air_call(channel, &local);
+        if let Some(slot) = self.channel_radio.get_mut(usize::from(channel)) {
+            *slot = forced;
+        }
+        let port = self.port_for_channel(channel);
+        self.pin_connect_radio(&local, dest, forced);
         if !self.configure_sessions()
             || !self.send_session_command(SessionCommand::Connect {
                 channel,
-                port: self.cfg.tnc.channel_port(channel),
+                port,
                 local: local.clone(),
                 remote: dest.into(),
                 via: vias.to_vec(),
@@ -13068,10 +13126,16 @@ impl GpGuiApp {
         self.clear_lock(channel);
         self.session.spy_slot = None;
         self.active = ActivePane::Channel(channel);
-        self.status = format!(
-            "Connecting {local} to {dest} on port {}",
-            self.cfg.tnc.channel_port(channel)
-        );
+        let where_ = if self.cfg.tnc.protocol_kind() == HostProtocol::Tfpcx {
+            if vias.is_empty() {
+                format!("fm{port}")
+            } else {
+                format!("fm{port} via {}", vias.join(" "))
+            }
+        } else {
+            format!("port {port}")
+        };
+        self.status = format!("Connecting {local} to {dest} on {where_}");
         self.pads[idx].push(PadKind::System, format!("*** {}", self.status));
     }
 
@@ -13080,13 +13144,97 @@ impl GpGuiApp {
         self.session.open_connect_dialog(ch, "");
         self.connect_dialog_focus = true;
         self.show_connect_names = false;
+        self.connect_radio_pick = None;
+        self.connect_force_port = None;
         self.status = format!("Connect — enter call for ch{ch}");
+    }
+
+    /// Enabled TFPCX radios, lowest port first. Empty for every other protocol.
+    fn tfpcx_radio_ports(&self) -> Vec<u8> {
+        if self.cfg.tnc.protocol_kind() != HostProtocol::Tfpcx {
+            return Vec::new();
+        }
+        let mut ports = self.cfg.tnc.kiss_logical_ports();
+        if let Some(port) = self.cfg.tnc.wa8ded_logical_port() {
+            ports.push(port);
+        }
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    }
+
+    /// Last path stored for `call`: the radio, then the digipeaters.
+    /// Our own hop is left out. That hop is the copy we transmitted.
+    fn heard_path(&self, call: &str) -> (Option<u8>, Vec<String>) {
+        let Some(entry) = self
+            .mheard
+            .entries
+            .iter()
+            .find(|entry| entry.listed() && entry.call.eq_ignore_ascii_case(call))
+        else {
+            return (None, Vec::new());
+        };
+        let via = entry
+            .via
+            .split(',')
+            .map(|hop| hop.trim().trim_end_matches('*').to_string())
+            .filter(|hop| {
+                !hop.is_empty()
+                    && !outgoing_digipeat(
+                        true,
+                        self.cfg.primary_mycall(),
+                        std::slice::from_ref(hop),
+                    )
+            })
+            .collect();
+        (entry.port, via)
+    }
+
+    /// Port and via for this connect. A TFPCX dialog choice names the radio.
+    /// `direct`, once picked, drops every digipeater. A typed path is kept
+    /// until that happens. Other protocols leave the port unset.
+    fn radio_for_connect(&self, dest: &str, vias: Vec<String>) -> (Option<u8>, Vec<String>) {
+        let radios = self.tfpcx_radio_ports();
+        if radios.is_empty() {
+            return (None, vias);
+        }
+        let (heard_port, heard_via) = self.heard_path(dest);
+        let (choices, default_index) = connect_radio_choices(
+            &radios,
+            heard_port,
+            &heard_via,
+            Some(self.cfg.tnc.kiss_tx_port()),
+        );
+        let picked = self
+            .connect_radio_pick
+            .as_ref()
+            .filter(|(call, _)| call.eq_ignore_ascii_case(dest))
+            .map(|(_, index)| *index);
+        let index = picked.unwrap_or(default_index).min(choices.len() - 1);
+        let choice = &choices[index];
+        let vias = vias_for_radio(picked.is_some() && choice.direct, &vias, &choice.via);
+        (Some(choice.port), vias)
+    }
+
+    fn pin_connect_radio(&self, local: &str, remote: &str, port: Option<u8>) {
+        if self.cfg.tnc.protocol_kind() != HostProtocol::Tfpcx {
+            return;
+        }
+        let port = port.filter(|port| self.cfg.tnc.kiss_logical_ports().contains(port));
+        let _ = self.cmd_tx.try_send(TncCommand::PinRadio {
+            local: local.to_string(),
+            remote: remote.to_string(),
+            port,
+        });
     }
 
     fn apply_connect_from_edit(&mut self) -> Result<(), String> {
         let ch = self.session.connect_channel.clamp(1, self.channels);
         let (dest, vias, down) = self.resolve_connect_target(&self.session.connect_edit)?;
+        let (port, vias) = self.radio_for_connect(&dest, vias);
+        self.connect_force_port = port;
         self.session.show_connect_dialog = false;
+        self.connect_radio_pick = None;
         self.begin_connect(ch, &dest, &vias, down);
         Ok(())
     }
@@ -13369,6 +13517,39 @@ impl GpGuiApp {
             }
             let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             ui.add_space(6.0);
+            let radios = self.tfpcx_radio_ports();
+            let call_key = connect_call_key(&self.session.connect_edit);
+            let (heard_port, heard_via) = self.heard_path(&call_key);
+            let (choices, default_index) = connect_radio_choices(
+                &radios,
+                heard_port,
+                &heard_via,
+                Some(self.cfg.tnc.kiss_tx_port()),
+            );
+            let mut picked = None;
+            if !choices.is_empty() {
+                ui.label(RichText::new("Radio").font(menu_font(16.0)));
+                let selected = self
+                    .connect_radio_pick
+                    .as_ref()
+                    .filter(|(call, _)| call == &call_key)
+                    .map(|(_, index)| *index)
+                    .unwrap_or(default_index)
+                    .min(choices.len() - 1);
+                let label = choices[selected].label.clone();
+                name_selector(ui, "connect_radio", &label, |ui| {
+                    for (index, choice) in choices.iter().enumerate() {
+                        let row = name_select_row(ui, &choice.label, index == selected, false);
+                        if row.clicked() {
+                            picked = Some(index);
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+            }
+            if let Some(index) = picked {
+                self.connect_radio_pick = Some((call_key, index));
+            }
             self.connect_name_field(ui);
             if retro::apply(ui, false, menu_font(20.0)) || enter {
                 if let Err(e) = self.apply_connect_from_edit() {
@@ -13500,6 +13681,9 @@ impl GpGuiApp {
         self.show_connect_names = false;
         self.session.show_connect_dialog = false;
         let (dest, via, downlinks) = route_parts(route);
+        let (port, via) = self.radio_for_connect(&dest, via);
+        self.connect_force_port = port;
+        self.connect_radio_pick = None;
         self.begin_connect(ch, &dest, &via, downlinks);
     }
 
@@ -14587,7 +14771,7 @@ impl HeardSheetRow {
             from: e.call.clone(),
             to: e.to.clone(),
             packets: mheard::format_packet_count(e.packets),
-            payload: mheard::clip_last_msg(&e.last_msg),
+            payload: e.last_msg.clone(),
             via: e.via.clone(),
             geo_line,
         }
@@ -14613,6 +14797,11 @@ struct HeardSheetCol {
     title: &'static str,
     width: f32,
 }
+
+/// Air above each station. A location line stays on the next text row,
+/// inside the same block, so this gap separates stations and not the
+/// two lines of one station.
+const MHEARD_STATION_GAP: f32 = 8.0;
 
 fn mheard_sheet_cols(total: f32, show_port: bool, cell_w: f32) -> Vec<HeardSheetCol> {
     // Pad each fixed column so the full value fits: date, time, call, packet count.
@@ -14663,11 +14852,10 @@ fn paint_mheard_sheet_header(
     font: &FontId,
     fg: Color32,
     bg: Color32,
-    rule: Stroke,
 ) {
     painter.rect_filled(rect, 0.0, mix_rgb(bg, fg, 0.12));
     let mut x = rect.left();
-    for (i, col) in cols.iter().enumerate() {
+    for col in cols {
         let cell = Rect::from_min_size(
             Pos2::new(x, rect.top()),
             Vec2::new(col.width, rect.height()),
@@ -14679,19 +14867,8 @@ fn paint_mheard_sheet_header(
             font.clone(),
             fg,
         );
-        if i + 1 < cols.len() {
-            let edge = cell.right();
-            painter.line_segment(
-                [
-                    Pos2::new(edge, rect.top() + 1.0),
-                    Pos2::new(edge, rect.bottom() - 1.0),
-                ],
-                rule,
-            );
-        }
         x += col.width;
     }
-    painter.line_segment([rect.left_bottom(), rect.right_bottom()], rule);
 }
 
 fn paint_mheard_sheet_row(
@@ -14701,10 +14878,9 @@ fn paint_mheard_sheet_row(
     row: &HeardSheetRow,
     font: &FontId,
     fg: Color32,
-    rule: Stroke,
 ) {
     let mut x = rect.left();
-    for (i, col) in cols.iter().enumerate() {
+    for col in cols {
         let cell = Rect::from_min_size(
             Pos2::new(x, rect.top()),
             Vec2::new(col.width, rect.height()),
@@ -14727,45 +14903,85 @@ fn paint_mheard_sheet_row(
             Pos2::new(cell.left() + 4.0, cell.center().y)
         };
         painter.text(pos, align, text, font.clone(), fg);
-        if i + 1 < cols.len() {
-            let edge = cell.right();
-            painter.line_segment(
-                [Pos2::new(edge, rect.top()), Pos2::new(edge, rect.bottom())],
-                rule,
-            );
+        x += col.width;
+    }
+}
+
+/// Closed cell grid. A locator row keeps one cell from Last Payload through
+/// Via, with a line above it, and boxes the empty cells to its left.
+fn paint_mheard_sheet_grid(
+    painter: &egui::Painter,
+    origin: Pos2,
+    cols: &[HeardSheetCol],
+    row_h: f32,
+    has_geo: bool,
+    rule: Stroke,
+) {
+    let width: f32 = cols.iter().map(|c| c.width).sum();
+    if width <= 0.0 || row_h <= 0.0 {
+        return;
+    }
+    let left = origin.x;
+    let right = left + width;
+    let top = origin.y;
+    let bottom = top + if has_geo { row_h * 2.0 } else { row_h };
+    painter.line_segment([Pos2::new(left, top), Pos2::new(right, top)], rule);
+    painter.line_segment([Pos2::new(left, bottom), Pos2::new(right, bottom)], rule);
+    painter.line_segment([Pos2::new(left, top), Pos2::new(left, bottom)], rule);
+    painter.line_segment([Pos2::new(right, top), Pos2::new(right, bottom)], rule);
+    if has_geo {
+        let mid = top + row_h;
+        painter.line_segment([Pos2::new(left, mid), Pos2::new(right, mid)], rule);
+    }
+    let mut x = left;
+    for (i, col) in cols.iter().enumerate() {
+        if i + 1 == cols.len() {
+            break;
         }
         x += col.width;
+        // The locator text spans Last Payload and Via, so that divider
+        // stops at the station line and the lower cell stays one box.
+        let y_end = if has_geo && col.key == "payload" {
+            top + row_h
+        } else {
+            bottom
+        };
+        painter.line_segment([Pos2::new(x, top), Pos2::new(x, y_end)], rule);
     }
 }
 
 fn clip_sheet_cell(text: &str, width: f32, font: &FontId, painter: &egui::Painter) -> String {
     let inner = (width - 8.0).max(8.0);
-    if painter
-        .layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE)
-        .size()
-        .x
-        <= inner
-    {
+    let fits = |sample: &str| {
+        painter
+            .layout_no_wrap(sample.to_string(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+            <= inner
+    };
+    if fits(text) {
         return text.to_string();
     }
     let ellipsis = "...";
-    let mut out = String::new();
-    for ch in text.chars() {
-        let next = format!("{out}{ch}{ellipsis}");
-        if painter
-            .layout_no_wrap(next, font.clone(), Color32::WHITE)
-            .size()
-            .x
-            > inner
-        {
-            break;
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0;
+    let mut hi = chars.len();
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        let mut candidate: String = chars[..mid].iter().collect();
+        candidate.push_str(ellipsis);
+        if fits(&candidate) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
         }
-        out.push(ch);
     }
-    if out.is_empty() {
+    if lo == 0 {
         ellipsis.to_string()
     } else {
-        format!("{out}{ellipsis}")
+        let mut out: String = chars[..lo].iter().collect();
+        out.push_str(ellipsis);
+        out
     }
 }
 
@@ -16132,8 +16348,8 @@ fn paint_text_pane(
     nudge: f32,
     scroll_x: bool,
     font_px: f32,
-    make_job: impl FnOnce(&Ui) -> LayoutJob,
-) {
+    make_job: impl FnOnce(&Ui) -> (LayoutJob, Vec<super::links::TextLink>),
+) -> Option<String> {
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
         let avail = ui.available_size();
         ui.set_min_size(avail);
@@ -16142,156 +16358,218 @@ fn paint_text_pane(
         ui.painter().rect_filled(rect, 0.0, bg);
         // Fill the whole pane. A stroke on the right and bottom leaves a line,
         // and on MHeard that line is the monitor blue showing through.
-        Frame::none().fill(bg).inner_margin(0.0).show(ui, |ui| {
-            let full = ui.max_rect();
-            ui.set_min_size(full.size());
-            let bar_w = if show_bar {
-                DOS_SCROLL_W.min(full.width() * 0.5)
-            } else {
-                0.0
-            };
-            let text_outer =
-                Rect::from_min_max(full.min, Pos2::new(full.right() - bar_w, full.bottom()));
-            let text = Rect::from_min_max(
-                Pos2::new(text_outer.left() + 6.0, text_outer.top() + 4.0),
-                Pos2::new(
-                    (text_outer.right() - 4.0).max(text_outer.left() + 8.0),
-                    (text_outer.bottom() - 4.0).max(text_outer.top() + 8.0),
-                ),
-            );
-            let bar_rect = Rect::from_min_max(
-                Pos2::new(text_outer.right(), full.top()),
-                full.right_bottom(),
-            );
-
-            let area = if scroll_x {
-                egui::ScrollArea::both()
-            } else {
-                egui::ScrollArea::vertical()
-            };
-            // Follow is applied after layout. egui's own stick jumps a whole line.
-            // The DOS bar is drawn beside this viewport, so egui's bar stays hidden.
-            let mut snap = None;
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text), |ui| {
-                ui.set_min_size(text.size());
-                let out = area
-                    .id_salt(id)
-                    .animated(false)
-                    .stick_to_bottom(false)
-                    .auto_shrink([false, false])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(ui, |ui| {
-                        if nudge != 0.0 {
-                            ui.scroll_with_delta(Vec2::new(0.0, nudge));
-                        }
-                        let job = make_job(ui);
-                        ui.add(egui::Label::new(job).wrap_mode(TextWrapMode::Extend));
-                    });
-                snap = Some((
-                    out.id,
-                    out.state,
-                    out.content_size.y,
-                    out.inner_rect.height(),
-                ));
-            });
-            if let Some((sid, mut state, content_h, view_h)) = snap {
-                let max_off = (content_h - view_h).max(0.0);
-                let now = ui.input(|i| i.time);
-                let ctx = ui.ctx().clone();
-                let mut crawl = ctx
-                    .data(|d| d.get_temp::<SoftCrawl>(sid))
-                    .unwrap_or_default();
-                let before = state.offset.y;
-                // ScrLock off → follow. Turning it off again must resume even
-                // if a prior lock had cleared `follow` while scrolled up.
-                let unlocked = stick && !crawl.stick;
-
-                if !stick {
-                    crawl.follow = false;
-                    crawl.carry = 0.0;
-                } else if !crawl.seen {
-                    crawl.seen = true;
-                    crawl.owner = owner;
-                    crawl.last_t = now;
-                    state.offset.y = max_off;
-                    crawl.follow = true;
-                } else if unlocked {
-                    crawl.owner = owner;
-                    crawl.carry = 0.0;
-                    crawl.last_t = now;
-                    state.offset.y = max_off;
-                    crawl.follow = true;
-                } else if owner != crawl.owner {
-                    // Another pad in this same viewport. Show its end at once;
-                    // only lines that arrive afterwards crawl.
-                    crawl.owner = owner;
-                    crawl.carry = 0.0;
-                    crawl.last_t = now;
-                    if crawl.follow {
-                        state.offset.y = max_off;
-                    }
+        Frame::none()
+            .fill(bg)
+            .inner_margin(0.0)
+            .show(ui, |ui| {
+                let full = ui.max_rect();
+                ui.set_min_size(full.size());
+                let bar_w = if show_bar {
+                    DOS_SCROLL_W.min(full.width() * 0.5)
                 } else {
-                    let dt = (now - crawl.last_t).clamp(0.0, 0.5) as f32;
-                    crawl.last_t = now;
-                    crawl.follow = keep_following(
-                        stick,
-                        state.offset.y,
-                        crawl.last_offset,
-                        max_off,
-                        crawl.last_max,
-                        crawl.follow,
-                    );
-                    if crawl.follow {
-                        let (y, carry) =
-                            soft_scroll_toward(state.offset.y, max_off, crawl.carry, dt, smooth);
-                        state.offset.y = y;
-                        crawl.carry = carry;
-                        if max_off - y > 0.5 {
-                            ctx.request_repaint_after(Duration::from_millis(50));
+                    0.0
+                };
+                let text_outer =
+                    Rect::from_min_max(full.min, Pos2::new(full.right() - bar_w, full.bottom()));
+                let text = Rect::from_min_max(
+                    Pos2::new(text_outer.left() + 6.0, text_outer.top() + 4.0),
+                    Pos2::new(
+                        (text_outer.right() - 4.0).max(text_outer.left() + 8.0),
+                        (text_outer.bottom() - 4.0).max(text_outer.top() + 8.0),
+                    ),
+                );
+                let bar_rect = Rect::from_min_max(
+                    Pos2::new(text_outer.right(), full.top()),
+                    full.right_bottom(),
+                );
+
+                let area = if scroll_x {
+                    egui::ScrollArea::both()
+                } else {
+                    egui::ScrollArea::vertical()
+                };
+                // Follow is applied after layout. egui's own stick jumps a whole line.
+                // The DOS bar is drawn beside this viewport, so egui's bar stays hidden.
+                let mut snap = None;
+                let mut opened = None;
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text), |ui| {
+                    ui.set_min_size(text.size());
+                    let out = area
+                        .id_salt(id)
+                        .animated(false)
+                        .stick_to_bottom(false)
+                        .auto_shrink([false, false])
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| {
+                            if nudge != 0.0 {
+                                ui.scroll_with_delta(Vec2::new(0.0, nudge));
+                            }
+                            let (job, links) = make_job(ui);
+                            let response = ui
+                                .add(egui::Label::new(job.clone()).wrap_mode(TextWrapMode::Extend));
+                            click_text_link(ui, &response, job, &links)
+                        });
+                    opened = out.inner;
+                    snap = Some((
+                        out.id,
+                        out.state,
+                        out.content_size.y,
+                        out.inner_rect.height(),
+                    ));
+                });
+                if let Some((sid, mut state, content_h, view_h)) = snap {
+                    let max_off = (content_h - view_h).max(0.0);
+                    let now = ui.input(|i| i.time);
+                    let ctx = ui.ctx().clone();
+                    let mut crawl = ctx
+                        .data(|d| d.get_temp::<SoftCrawl>(sid))
+                        .unwrap_or_default();
+                    let before = state.offset.y;
+                    // ScrLock off → follow. Turning it off again must resume even
+                    // if a prior lock had cleared `follow` while scrolled up.
+                    let unlocked = stick && !crawl.stick;
+
+                    if !stick {
+                        crawl.follow = false;
+                        crawl.carry = 0.0;
+                    } else if !crawl.seen {
+                        crawl.seen = true;
+                        crawl.owner = owner;
+                        crawl.last_t = now;
+                        state.offset.y = max_off;
+                        crawl.follow = true;
+                    } else if unlocked {
+                        crawl.owner = owner;
+                        crawl.carry = 0.0;
+                        crawl.last_t = now;
+                        state.offset.y = max_off;
+                        crawl.follow = true;
+                    } else if owner != crawl.owner {
+                        // Another pad in this same viewport. Show its end at once;
+                        // only lines that arrive afterwards crawl.
+                        crawl.owner = owner;
+                        crawl.carry = 0.0;
+                        crawl.last_t = now;
+                        if crawl.follow {
+                            state.offset.y = max_off;
                         }
                     } else {
-                        crawl.carry = 0.0;
-                    }
-                }
-
-                if show_bar && bar_rect.width() > 4.0 {
-                    let row_h = ui
-                        .fonts(|f| f.row_height(&FontId::monospace(font_px)))
-                        .max(1.0);
-                    let page = (view_h - row_h).max(row_h);
-                    let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
-                    let (offset, moved, held) = dos_bar_input(
-                        ui,
-                        sid,
-                        &parts,
-                        bar_rect,
-                        state.offset.y,
-                        max_off,
-                        page,
-                        row_h,
-                    );
-                    if moved {
-                        state.offset.y = offset;
-                        if max_off - state.offset.y > 1.0 {
-                            crawl.follow = false;
+                        let dt = (now - crawl.last_t).clamp(0.0, 0.5) as f32;
+                        crawl.last_t = now;
+                        crawl.follow = keep_following(
+                            stick,
+                            state.offset.y,
+                            crawl.last_offset,
+                            max_off,
+                            crawl.last_max,
+                            crawl.follow,
+                        );
+                        if crawl.follow {
+                            let (y, carry) = soft_scroll_toward(
+                                state.offset.y,
+                                max_off,
+                                crawl.carry,
+                                dt,
+                                smooth,
+                            );
+                            state.offset.y = y;
+                            crawl.carry = carry;
+                            if max_off - y > 0.5 {
+                                ctx.request_repaint_after(Duration::from_millis(50));
+                            }
+                        } else {
                             crawl.carry = 0.0;
                         }
                     }
-                    let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
-                    paint_dos_scrollbar(ui.painter(), bar_rect, &parts, held);
-                }
 
-                crawl.stick = stick;
-                crawl.seen = true;
-                crawl.last_offset = state.offset.y;
-                crawl.last_max = max_off;
-                ctx.data_mut(|d| d.insert_temp(sid, crawl));
-                if (state.offset.y - before).abs() > 0.01 {
-                    state.store(&ctx, sid);
+                    if show_bar && bar_rect.width() > 4.0 {
+                        let row_h = ui
+                            .fonts(|f| f.row_height(&FontId::monospace(font_px)))
+                            .max(1.0);
+                        let page = (view_h - row_h).max(row_h);
+                        let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
+                        let (offset, moved, held) = dos_bar_input(
+                            ui,
+                            sid,
+                            &parts,
+                            bar_rect,
+                            state.offset.y,
+                            max_off,
+                            page,
+                            row_h,
+                        );
+                        if moved {
+                            state.offset.y = offset;
+                            if max_off - state.offset.y > 1.0 {
+                                crawl.follow = false;
+                                crawl.carry = 0.0;
+                            }
+                        }
+                        let parts = dos_bar_parts(bar_rect, state.offset.y, max_off, view_h);
+                        paint_dos_scrollbar(ui.painter(), bar_rect, &parts, held);
+                    }
+
+                    crawl.stick = stick;
+                    crawl.seen = true;
+                    crawl.last_offset = state.offset.y;
+                    crawl.last_max = max_off;
+                    ctx.data_mut(|d| d.insert_temp(sid, crawl));
+                    if (state.offset.y - before).abs() > 0.01 {
+                        state.store(&ctx, sid);
+                    }
                 }
-            }
+                opened
+            })
+            .inner
+    })
+    .inner
+}
+
+/// A primary click on an `http://` or `https://` span. Dragging still selects
+/// text. The address is underlined, and the pointer changes while it is over one.
+fn click_text_link(
+    ui: &Ui,
+    response: &egui::Response,
+    job: LayoutJob,
+    links: &[super::links::TextLink],
+) -> Option<String> {
+    if links.is_empty() {
+        return None;
+    }
+    let galley = ui.fonts(|fonts| fonts.layout_job(job));
+    let origin = response.rect.min;
+    let index_at = |pos: Pos2| galley.cursor_from_pos(pos - origin).ccursor.index;
+    if let Some(pos) = response.hover_pos() {
+        if super::links::hit_link(links, index_at(pos)).is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+    let painter = ui.painter();
+    let stroke = Stroke::new(1.0, Color32::from_rgb(140, 190, 255));
+    for link in links {
+        let start = galley.pos_from_ccursor(egui::text::CCursor {
+            index: link.start,
+            prefer_next_row: true,
         });
-    });
+        let end = galley.pos_from_ccursor(egui::text::CCursor {
+            index: link.end,
+            prefer_next_row: false,
+        });
+        if (start.top() - end.top()).abs() > 1.0 {
+            continue;
+        }
+        let y = origin.y + start.bottom() - 1.0;
+        painter.hline(
+            (origin.x + start.left())..=(origin.x + end.left()),
+            y,
+            stroke,
+        );
+    }
+    if !response.clicked() {
+        return None;
+    }
+    let pos = response.interact_pointer_pos()?;
+    super::links::hit_link(links, index_at(pos)).map(|link| link.url.clone())
 }
 
 /// Characters from an IME commit (`°`, emoji, a dead-key umlaut).
@@ -16507,9 +16785,158 @@ pub fn run(cfg: Config, config_path: PathBuf, radio: RadioLink) -> anyhow::Resul
     Ok(())
 }
 
+/// One row in the TFPCX connect-window radio list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConnectRadio {
+    label: String,
+    port: u8,
+    via: Vec<String>,
+    /// Connect with no digipeater.
+    direct: bool,
+}
+
+/// Radios `fm0` … `fmN`, plus `direct`.
+///
+/// The default is the radio (and digipeater path) we last heard `call` on.
+/// `direct` stays available so a station heard via a digipeater can still be
+/// called with an empty path. `prefer` is the radio used for `direct` when
+/// the station has not been heard.
+fn connect_radio_choices(
+    ports: &[u8],
+    heard_port: Option<u8>,
+    heard_via: &[String],
+    prefer: Option<u8>,
+) -> (Vec<ConnectRadio>, usize) {
+    if ports.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let heard_port = heard_port.filter(|port| ports.contains(port));
+    let direct_port = heard_port
+        .or(prefer)
+        .filter(|port| ports.contains(port))
+        .unwrap_or(ports[0]);
+    let mut choices = vec![ConnectRadio {
+        label: "direct".into(),
+        port: direct_port,
+        via: Vec::new(),
+        direct: true,
+    }];
+    for &port in ports {
+        let via = if heard_port == Some(port) {
+            heard_via.to_vec()
+        } else {
+            Vec::new()
+        };
+        let label = if via.is_empty() {
+            format!("fm{port}")
+        } else {
+            format!("fm{port} via {}", via.join(" "))
+        };
+        choices.push(ConnectRadio {
+            label,
+            port,
+            via,
+            direct: false,
+        });
+    }
+    let default_index = heard_port
+        .and_then(|port| {
+            choices
+                .iter()
+                .position(|choice| !choice.direct && choice.port == port)
+        })
+        .unwrap_or(0);
+    (choices, default_index)
+}
+
+/// `direct` drops a typed path. Otherwise the typed path wins, then the row.
+fn vias_for_radio(picked_direct: bool, typed: &[String], row: &[String]) -> Vec<String> {
+    if picked_direct {
+        Vec::new()
+    } else if !typed.is_empty() {
+        typed.to_vec()
+    } else {
+        row.to_vec()
+    }
+}
+
+fn connect_call_key(raw: &str) -> String {
+    ax25::split_connect_hops(raw)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+fn call_base(call: &str) -> String {
+    let call = call.trim().trim_end_matches('*');
+    call.split('-')
+        .next()
+        .unwrap_or(call)
+        .trim()
+        .to_ascii_uppercase()
+}
+
+/// True when digipeater mode is on and `via` contains our station.
+/// Those hops are the frames we sent, not stations we heard.
+fn outgoing_digipeat(enabled: bool, mycall: &str, via: &[String]) -> bool {
+    if !enabled {
+        return false;
+    }
+    let mine = call_base(mycall);
+    !mine.is_empty() && via.iter().any(|hop| call_base(hop) == mine)
+}
+
 #[cfg(test)]
 mod input_tests {
     use super::*;
+
+    #[test]
+    fn connect_radio_defaults_to_the_last_heard_path_and_keeps_direct() {
+        let (choices, default) =
+            connect_radio_choices(&[0, 2], Some(2), &["DB0FN".into()], Some(0));
+        assert_eq!(choices[0].label, "direct");
+        assert_eq!(choices[0].port, 2);
+        assert!(choices[0].via.is_empty());
+        assert_eq!(choices[1].label, "fm0");
+        assert!(choices[1].via.is_empty());
+        assert_eq!(choices[2].label, "fm2 via DB0FN");
+        assert_eq!(choices[2].via, vec!["DB0FN".to_string()]);
+        assert_eq!(default, 2);
+
+        let (direct, default) = connect_radio_choices(&[0, 1], Some(0), &[], Some(1));
+        assert_eq!(default, 1);
+        assert_eq!(direct[default].label, "fm0");
+        assert!(direct[0].direct);
+
+        let (unheard, default) = connect_radio_choices(&[1, 3], None, &[], Some(3));
+        assert_eq!(default, 0);
+        assert_eq!(unheard[0].port, 3);
+        assert_eq!(
+            vias_for_radio(true, &["DIGI".into()], &["DB0FN".into()]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            vias_for_radio(false, &["DIGI".into()], &["DB0FN".into()]),
+            vec!["DIGI".to_string()]
+        );
+        assert_eq!(
+            vias_for_radio(false, &[], &["DB0FN".into()]),
+            vec!["DB0FN".to_string()]
+        );
+    }
+
+    #[test]
+    fn outgoing_digipeats_are_not_stations_we_heard() {
+        assert!(outgoing_digipeat(
+            true,
+            "NL0MSK",
+            &["DB0FN".into(), "NL0MSK*".into()]
+        ));
+        assert!(outgoing_digipeat(true, "NL0MSK-2", &["nl0msk".into()]));
+        assert!(!outgoing_digipeat(false, "NL0MSK", &["NL0MSK".into()]));
+        assert!(!outgoing_digipeat(true, "NL0MSK", &["DB0FN".into()]));
+        assert_eq!(connect_call_key("n1you via db0fn"), "N1YOU");
+    }
 
     #[test]
     fn idle_monitor_polls_twice_a_second_and_catches_the_clock() {

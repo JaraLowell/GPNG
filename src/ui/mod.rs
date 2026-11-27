@@ -11,6 +11,7 @@ pub mod editor;
 pub mod gui;
 pub mod icons;
 pub mod layout;
+pub mod links;
 pub mod map;
 pub mod mheard;
 pub mod padlog;

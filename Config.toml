@@ -41,7 +41,7 @@ popup_time_seconds = 3
 popup_enable_keyboard = false
 insert_mon_line = false
 # Repeat UI frames heard on one TFPCX radio onto the others. Off until set.
-digipeater = true
+digipeater = false
 questions = false
 backup = true
 # DOS Zoom. 1 = off (JetBrains Mono Regular), 2 = on (Bold). Setup menu and ALT-Z.
@@ -80,7 +80,7 @@ allow_color_ansi = true
 
 # Session-bar button state (restored on start; rewritten when you toggle).
 icon_file = "ICONS-A.GP"
-pad_font_size = 14
+pad_font_size = 18
 qrg_text = ""
 [session.chrome]
 qrg_mhz = 27.235
@@ -172,7 +172,7 @@ kiss_char_delay_ms = 30
 kiss_line_delay_ms = 300
 kiss_exit_delay_ms = 5000  # settle after RESTART (classic KISSINIT -D exit)
 
-links = [{ protocol = "kiss", ports = [0], transport = "serial", serial_port = "COM7", baud = 19200, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "kiss", ports = [1], transport = "serial", serial_port = "COM6", baud = 9600, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "kiss", ports = [2], transport = "tcp", serial_port = "COM8", baud = 9600, tcp_host = "192.168.178.193", tcp_port = 8100 }]
+links = [{ protocol = "kiss", ports = [1], transport = "serial", serial_port = "COM7", baud = 19200, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "kiss", ports = [2], transport = "serial", serial_port = "COM6", baud = 9600, tcp_host = "127.0.0.1", tcp_port = 8200 }, { protocol = "off", ports = [3], transport = "serial", serial_port = "COM8", baud = 9600, tcp_host = "192.168.178.193", tcp_port = 8100 }]
 channel_ports = []
 kiss_port = 0
 [colors]
@@ -218,8 +218,8 @@ map_qth = "Yellow"
 map_heard = "LightGreen"
 [beacon]
 address = "CQ"
-source = "file"
-text = ""
+source = "text"
+text = "* NL0MSK Listening on 27.235 Mhz Local time now %t %z JO32MW49 *"
 file = "D:\\MyPython\\GPNG\\data\\BEACON.GPI"
 period_minutes = 60
 [print]
@@ -228,8 +228,8 @@ default_print = [27, 53, 27, 70]
 invers_print = [27, 52, 27, 69]
 
 [window]
-x = 1280
-y = 119
-width = 1162
+x = 1318
+y = 177
+width = 1161
 height = 857
 maximized = false

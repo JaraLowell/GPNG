@@ -196,6 +196,13 @@ fn dispatch(
         TncCommand::KissBroadcast { ports, data } => {
             send_broadcast(plugins, events, stagger, &ports, &data)?;
         }
+        TncCommand::PinRadio {
+            local,
+            remote,
+            port,
+        } => {
+            hosts.pin(&local, &remote, port);
+        }
         TncCommand::Session(_) => {
             return Err(TncError::Protocol("unadapted session command".into()));
         }
@@ -232,10 +239,20 @@ fn send_kiss(
     let Some(frame) = ax25::parse_frame(data) else {
         return send_on_logical(plugins, events, channel, data.to_vec());
     };
+    // The connect window named this radio. It wins over the port we last
+    // heard the station on, so a direct connect can leave on another radio.
+    if let Some(port) = hosts.pinned_port(&frame.src, &frame.dest) {
+        if kiss_ports.contains(&port) {
+            return send_on_logical(plugins, events, port, data.to_vec());
+        }
+    }
     if hosts.is_own(&frame.dest) && frame.via.is_empty() {
         return send_on_logical(plugins, events, channel, data.to_vec());
     }
-    let route = hosts.route(&frame.dest, &frame.via, kiss_ports);
+    // A digipeated frame must leave toward the station that has not repeated
+    // yet. The first via has often already repeated, and that radio is the
+    // one the frame just arrived on.
+    let route = hosts.route(&frame.dest, &frame.via, &frame.repeated, kiss_ports);
     let ports = match route {
         Route::Other(port) => {
             let _ = events.blocking_send(TncEvent::Warning(format!(
@@ -833,5 +850,70 @@ mod tests {
         let (wire, data) = take_frame(&mut tcp_rx);
         assert_eq!((wire, data), (0, frame));
         assert_eq!(book.port_of("CQ"), Some(0));
+    }
+
+    #[test]
+    fn a_pinned_radio_is_used_even_when_the_station_was_heard_on_another() {
+        let (heard, mut heard_rx) = kiss_plugin(&[0]);
+        let (chosen, mut chosen_rx) = kiss_plugin(&[1]);
+        let plugins = vec![heard, chosen];
+        let (events, _events_rx) = mpsc::channel(4);
+        let mut stagger = Stagger::new();
+        let mut book = hosts();
+        book.remember("N1YOU", 0);
+        book.pin("N0ME", "N1YOU", Some(1));
+        let frame = ax25::build_sabm("N1YOU", "N0ME");
+
+        send_kiss(
+            &plugins,
+            &[0, 1],
+            &mut book,
+            &events,
+            &mut stagger,
+            0,
+            &frame,
+        )
+        .unwrap();
+
+        assert!(heard_rx.try_recv().is_err());
+        assert!(stagger.held.is_empty());
+        let (wire, data) = take_frame(&mut chosen_rx);
+        assert_eq!(wire, 0);
+        assert_eq!(data, frame);
+    }
+
+    #[test]
+    fn a_finished_digipeat_is_sent_to_the_destination_radio() {
+        let (back, mut back_rx) = kiss_plugin(&[2]);
+        let (ahead, mut ahead_rx) = kiss_plugin(&[3]);
+        let plugins = vec![back, ahead];
+        let (events, _events_rx) = mpsc::channel(4);
+        let mut stagger = Stagger::new();
+        let mut book = hosts();
+        book.own("NL0MSK");
+        book.remember("NL1AS", 2);
+        book.remember("NL5AS", 3);
+        let heard = ax25::build_sabm_via("NL5AS", "NL0AS", &["NL1AS", "NL0MSK"]);
+        let from_first = ax25::repeat_if_ours(&heard, &["NL1AS".into()]).unwrap();
+        let repeated = ax25::repeat_if_ours(&from_first, &["NL0MSK".into()]).unwrap();
+
+        send_kiss(
+            &plugins,
+            &[2, 3],
+            &mut book,
+            &events,
+            &mut stagger,
+            2,
+            &repeated,
+        )
+        .unwrap();
+
+        assert!(
+            back_rx.try_recv().is_err(),
+            "repeated SABM went back to NL1AS"
+        );
+        let (wire, data) = take_frame(&mut ahead_rx);
+        assert_eq!(wire, 0);
+        assert_eq!(data, repeated);
     }
 }

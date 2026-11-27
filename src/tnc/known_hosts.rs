@@ -41,6 +41,8 @@ pub struct KnownHosts {
     own: BTreeSet<String>,
     own_bases: BTreeSet<String>,
     pending: Vec<Probe>,
+    /// Connect dialog chose this radio. Not written to `TFPCX.HOSTS`.
+    pinned: BTreeMap<(String, String), u8>,
 }
 
 impl KnownHosts {
@@ -81,6 +83,7 @@ impl KnownHosts {
             own: BTreeSet::new(),
             own_bases: BTreeSet::new(),
             pending: Vec::new(),
+            pinned: BTreeMap::new(),
         };
         for call in own {
             book.own(call);
@@ -168,6 +171,28 @@ impl KnownHosts {
         }
     }
 
+    /// Remember the radio chosen for this pair. `None` lets the heard-station
+    /// table decide again. The choice stays in memory until then.
+    pub fn pin(&mut self, local: &str, remote: &str, port: Option<u8>) {
+        let key = (pin_key(local), pin_key(remote));
+        if key.0.is_empty() || key.1.is_empty() {
+            return;
+        }
+        match port {
+            Some(port) => {
+                self.pinned.insert(key, port);
+            }
+            None => {
+                self.pinned.remove(&key);
+            }
+        }
+    }
+
+    /// Radio the connect dialog pinned for this pair, if it is still set.
+    pub fn pinned_port(&self, local: &str, remote: &str) -> Option<u8> {
+        self.pinned.get(&(pin_key(local), pin_key(remote))).copied()
+    }
+
     pub fn port_of(&self, call: &str) -> Option<u8> {
         if self.is_own(call) {
             return None;
@@ -176,16 +201,31 @@ impl KnownHosts {
         fresh(heard.seen, Local::now()).then_some(heard.port)
     }
 
-    /// Known KISS port for the first via, else the destination.
-    /// Unknown names are tried on every KISS port.
-    /// Stations last heard four days ago are dropped before the choice is made.
-    pub fn route(&mut self, dest: &str, vias: &[String], kiss_ports: &[u8]) -> Route {
+    /// Port for the station that still has to hear this frame.
+    ///
+    /// Digipeaters already marked repeated are behind us, so their radio is
+    /// not used. The next hop is the first via whose H bit is still clear.
+    /// When every via has repeated, the frame is for `dest`. An unknown next
+    /// hop is tried on every KISS port. Our own calls are never a radio.
+    /// Stations last heard four days ago are dropped before the choice.
+    pub fn route(
+        &mut self,
+        dest: &str,
+        vias: &[String],
+        repeated: &[bool],
+        kiss_ports: &[u8],
+    ) -> Route {
         self.prune();
-        let known = vias
-            .iter()
-            .chain(std::iter::once(&dest.to_string()))
-            .find_map(|call| self.port_of(call));
-        match known {
+        let next = vias.iter().enumerate().find_map(|(index, call)| {
+            let done = repeated.get(index).copied().unwrap_or(false);
+            if done || self.is_own(call) {
+                None
+            } else {
+                Some(call.as_str())
+            }
+        });
+        let target = next.unwrap_or(dest);
+        match self.port_of(target) {
             Some(port) if kiss_ports.contains(&port) => Route::Kiss(vec![port]),
             Some(port) => Route::Other(port),
             None => Route::Kiss(kiss_ports.to_vec()),
@@ -232,6 +272,12 @@ fn normalize(call: &str) -> String {
     call.trim().to_ascii_uppercase()
 }
 
+/// `N0CALL-0` and `N0CALL` are the same station on the air.
+fn pin_key(call: &str) -> String {
+    let call = normalize(call);
+    call.strip_suffix("-0").unwrap_or(&call).to_string()
+}
+
 fn base(call: &str) -> &str {
     call.split('-').next().unwrap_or(call)
 }
@@ -274,7 +320,7 @@ mod tests {
     fn unknown_call_is_tried_on_every_kiss_port_then_locked() {
         let mut hosts = book(&["N0ME", "N0ME-1"]);
         assert_eq!(
-            hosts.route("N1YOU", &["DIGI".into()], &[0, 1, 4]),
+            hosts.route("N1YOU", &["DIGI".into()], &[false], &[0, 1, 4]),
             Route::Kiss(vec![0, 1, 4])
         );
         hosts.note_probe("N1YOU", &["DIGI".into()]);
@@ -283,7 +329,10 @@ mod tests {
         assert_eq!(hosts.port_of("DIGI"), Some(4));
         assert_eq!(hosts.port_of("N1YOU"), Some(4));
         assert_eq!(hosts.port_of("N0ME"), None);
-        assert_eq!(hosts.route("N1YOU", &[], &[0, 1, 4]), Route::Kiss(vec![4]));
+        assert_eq!(
+            hosts.route("N1YOU", &[], &[], &[0, 1, 4]),
+            Route::Kiss(vec![4])
+        );
     }
 
     #[test]
@@ -291,11 +340,49 @@ mod tests {
         let mut hosts = book(&["N0ME"]);
         hosts.remember("DIGI", 2);
         assert_eq!(
-            hosts.route("N1YOU", &["DIGI".into()], &[0, 2]),
+            hosts.route("N1YOU", &["DIGI".into()], &[false], &[0, 2]),
             Route::Kiss(vec![2])
         );
         hosts.remember("N2BBS", 5);
-        assert_eq!(hosts.route("N2BBS", &[], &[0, 2]), Route::Other(5));
+        assert_eq!(hosts.route("N2BBS", &[], &[], &[0, 2]), Route::Other(5));
+    }
+
+    #[test]
+    fn a_repeated_digipeater_does_not_pull_the_frame_backwards() {
+        let mut hosts = book(&["NL0MSK"]);
+        hosts.remember("NL1AS", 2);
+        hosts.remember("NL5AS", 3);
+        // NL1AS and we have both repeated. The station ahead is NL5AS.
+        assert_eq!(
+            hosts.route(
+                "NL5AS",
+                &["NL1AS".into(), "NL0MSK".into()],
+                &[true, true],
+                &[2, 3]
+            ),
+            Route::Kiss(vec![3])
+        );
+        // Still on the way in: NL1AS has repeated, we have not. Next is us,
+        // which is not a radio, so the frame is for whoever follows.
+        assert_eq!(
+            hosts.route(
+                "NL5AS",
+                &["NL1AS".into(), "NL0MSK".into()],
+                &[true, false],
+                &[2, 3]
+            ),
+            Route::Kiss(vec![3])
+        );
+        // A new connect still goes to the first digipeater that has not repeated.
+        assert_eq!(
+            hosts.route(
+                "NL5AS",
+                &["NL1AS".into(), "NL0MSK".into()],
+                &[false, false],
+                &[2, 3]
+            ),
+            Route::Kiss(vec![2])
+        );
     }
 
     #[test]
@@ -338,5 +425,17 @@ mod tests {
         assert_eq!(loaded.port_of("NL1MSK"), Some(1));
         assert_eq!(loaded.port_of("N0ME"), None);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_pinned_radio_is_remembered_until_it_is_cleared() {
+        let mut hosts = book(&["N0ME"]);
+        hosts.remember("N1YOU", 0);
+        assert_eq!(hosts.pinned_port("N0ME", "N1YOU"), None);
+        hosts.pin("n0me-0", "n1you", Some(1));
+        assert_eq!(hosts.pinned_port("N0ME", "N1YOU"), Some(1));
+        hosts.pin("N0ME", "N1YOU", None);
+        assert_eq!(hosts.pinned_port("N0ME", "N1YOU"), None);
+        assert_eq!(hosts.port_of("N1YOU"), Some(0));
     }
 }

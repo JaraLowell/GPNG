@@ -140,28 +140,30 @@ impl Config {
                 path: path.to_path_buf(),
                 source,
             })?;
-            let upgraded = upgrade_document(&text).map_err(|source| ConfigError::Toml {
+            // A previous save could leave `chrome.qrg_mhz` inside `[session]`
+            // and a real `[session.chrome]` as well. TOML rejects that, so
+            // drop the dotted copy and keep the section the operator saved.
+            let opened = drop_shadowed_dotted_keys(&text);
+            let upgraded = upgrade_document(&opened).map_err(|source| ConfigError::Toml {
                 path: path.to_path_buf(),
                 source,
             })?;
-            if !upgraded.missing.is_empty() {
-                let names = upgraded
-                    .missing
-                    .iter()
-                    .map(|(key, _)| key.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let patched = insert_missing_keys(&text, &upgraded.missing);
-                if patched != text {
-                    match fs::write(path, patched) {
-                        Ok(()) => {
-                            tracing::info!("stored missing settings in {}: {names}", path.display())
-                        }
-                        Err(err) => tracing::warn!(
-                            "could not store missing settings in {}: {err}",
-                            path.display()
-                        ),
-                    }
+            let patched = insert_missing_keys(&opened, &upgraded.missing);
+            if patched != text {
+                if !upgraded.missing.is_empty() {
+                    let names = upgraded
+                        .missing
+                        .iter()
+                        .map(|(key, _)| key.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    tracing::info!("stored missing settings in {}: {names}", path.display());
+                }
+                if let Err(err) = fs::write(path, &patched) {
+                    tracing::warn!(
+                        "could not store missing settings in {}: {err}",
+                        path.display()
+                    );
                 }
             }
             for key in &upgraded.replaced {
@@ -990,8 +992,17 @@ fn upsert_toml_key(
 }
 
 /// Replace an existing `[name]` section body, or append the section.
+///
+/// Nested settings that were filled in as `chrome.qrg_mhz` under `[session]`
+/// are removed in the same write. Leaving both forms makes the next load
+/// reject the file, so the saved call and QRG never come back.
 fn upsert_toml_section(path: &Path, name: &str, body: &str) -> Result<(), String> {
     let text = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text = if let Some((parent, child)) = name.rsplit_once('.') {
+        remove_dotted_child_keys(&text, parent, child)
+    } else {
+        text
+    };
     let header = format!("[{name}]");
     let header_lc = header.to_ascii_lowercase();
     let ends_nl = text.ends_with('\n');
@@ -1685,10 +1696,7 @@ impl TncConfig {
     /// The WA8DED modem should carry this beacon too, when it was not the one
     /// that heard it.
     pub fn digipeat_to_wa8ded(&self, heard: u8) -> bool {
-        self.multi_modem()
-            && self
-                .wa8ded_logical_port()
-                .is_some_and(|port| port != heard)
+        self.multi_modem() && self.wa8ded_logical_port().is_some_and(|port| port != heard)
     }
 
     /// The single WA8DED logical port, when that link is enabled.
@@ -2219,10 +2227,11 @@ const SETTING_ALIASES: &[(&str, &str)] = &[
 ];
 
 fn upgrade_document(text: &str) -> Result<UpgradedToml, toml::de::Error> {
-    let mut doc: toml::Value = toml::from_str(text)?;
+    let opened = drop_shadowed_dotted_keys(text);
+    let mut doc: toml::Value = toml::from_str(&opened)?;
     let Some(defaults) = default_document() else {
         return Ok(UpgradedToml {
-            cfg: toml::from_str(text)?,
+            cfg: toml::from_str(&opened)?,
             missing: Vec::new(),
             replaced: Vec::new(),
         });
@@ -2236,12 +2245,12 @@ fn upgrade_document(text: &str) -> Result<UpgradedToml, toml::de::Error> {
     }
     if Config::deserialize(doc.clone()).is_err() {
         tracing::warn!(
-            "config could not be repaired — built-in defaults replace the unreadable parts"
+            "config still has unreadable settings — those use the built-in default, saved settings stay"
         );
-        doc = defaults;
-        replaced.push("(file)".into());
+        doc = keep_saved_leaves(&doc, &defaults);
     }
-    let cfg = Config::deserialize(doc).unwrap_or_else(|_| Config::default());
+    let cfg = Config::deserialize(doc.clone())
+        .unwrap_or_else(|_| Config::deserialize(defaults).unwrap_or_else(|_| Config::default()));
     Ok(UpgradedToml {
         cfg,
         missing,
@@ -2512,6 +2521,36 @@ fn get_path<'a>(doc: &'a toml::Value, path: &[String]) -> Option<&'a toml::Value
     Some(cur)
 }
 
+/// Keep every saved leaf that this version can read. Unreadable leaves stay
+/// at the built-in default. The rest of the file is not replaced.
+fn keep_saved_leaves(user: &toml::Value, defaults: &toml::Value) -> toml::Value {
+    let mut out = defaults.clone();
+    copy_readable_leaves(&mut out, user, defaults, &[]);
+    out
+}
+
+fn copy_readable_leaves(
+    out: &mut toml::Value,
+    user: &toml::Value,
+    defaults: &toml::Value,
+    path: &[String],
+) {
+    let Some(table) = get_path(user, path).and_then(|value| value.as_table()) else {
+        return;
+    };
+    for (key, value) in table {
+        let mut child = path.to_vec();
+        child.push(key.clone());
+        if value.is_table() {
+            copy_readable_leaves(out, user, defaults, &child);
+            continue;
+        }
+        if isolated_ok(defaults, &child, value) {
+            set_path(out, &child, value.clone());
+        }
+    }
+}
+
 fn set_path(doc: &mut toml::Value, path: &[String], value: toml::Value) -> bool {
     if path.is_empty() {
         return false;
@@ -2528,6 +2567,54 @@ fn set_path(doc: &mut toml::Value, path: &[String], value: toml::Value) -> bool 
     };
     table.insert(path[path.len() - 1].clone(), value);
     true
+}
+
+/// Drop `chrome.qrg_mhz` lines inside `[session]` when `[session.chrome]`
+/// is also present. The section is the copy written by a save.
+fn drop_shadowed_dotted_keys(text: &str) -> String {
+    let headers: Vec<String> = text
+        .lines()
+        .filter_map(section_name)
+        .map(str::to_string)
+        .collect();
+    let mut text = text.to_string();
+    for header in headers {
+        if let Some((parent, child)) = header.rsplit_once('.') {
+            text = remove_dotted_child_keys(&text, parent, child);
+        }
+    }
+    text
+}
+
+/// Remove `child.key` lines from `[parent]` only.
+/// The original text is returned unchanged when no such line is present.
+fn remove_dotted_child_keys(text: &str, parent: &str, child: &str) -> String {
+    let prefix = format!("{child}.");
+    let mut removed = false;
+    let mut out = String::new();
+    let mut section = String::new();
+    let ends_nl = text.ends_with('\n');
+    for line in text.lines() {
+        if let Some(name) = section_name(line) {
+            section = name.to_string();
+        } else if section.eq_ignore_ascii_case(parent)
+            && line_key(line).is_some_and(|key| {
+                key.len() > prefix.len() && key[..prefix.len()].eq_ignore_ascii_case(&prefix)
+            })
+        {
+            removed = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !removed {
+        return text.to_string();
+    }
+    if !ends_nl && out.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 fn insert_missing_keys(text: &str, missing: &[(String, toml::Value)]) -> String {
@@ -2589,13 +2676,10 @@ fn insert_key_in_section(text: &str, section: &str, key: &str, rendered: &str) -
         .iter()
         .position(|line| section_name(line).is_some_and(|name| name.eq_ignore_ascii_case(section)));
     let Some(start) = header_at else {
-        if let Some((parent, rest)) = section.rsplit_once('.') {
-            if lines.iter().any(|line| {
-                section_name(line).is_some_and(|name| name.eq_ignore_ascii_case(parent))
-            }) {
-                return insert_key_in_section(text, parent, &format!("{rest}.{key}"), rendered);
-            }
-        }
+        // A missing `[session.chrome]` becomes its own section. Folding the
+        // keys in as `chrome.qrg_mhz` under `[session]` leaves the default in
+        // place when a later save writes `[session.chrome]`, and TOML then
+        // rejects the file.
         let mut out = text.to_string();
         if !out.is_empty() && !out.ends_with('\n') {
             out.push('\n');
@@ -2752,6 +2836,212 @@ qrg_mhz = "70cm"
 protocol = "kiss"
 links = [{ protocol = "kiss", ports = [0], transport = "serial", serial_port = "COM9", baud = "fast", tcp_host = "127.0.0.1", tcp_port = 8001 }]
 "#;
+
+    #[test]
+    fn missing_chrome_then_save_keeps_call_and_qrg() {
+        let dir = std::env::temp_dir().join(format!(
+            "gpng-miss-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[station]
+mycall = ["DL0ABC"]
+locator = "JO32KX"
+
+[serial]
+port = "COM4"
+baud = 19200
+
+[session]
+channels = 4
+language = "de"
+
+[beacon]
+text = "hello beacon"
+period_minutes = 15
+
+[colors]
+monitor_foreground = "LightGreen"
+"#,
+        )
+        .unwrap();
+
+        let mut cfg = Config::load(&path).unwrap();
+        assert_eq!(
+            cfg.station.mycall,
+            vec!["DL0ABC".to_string()],
+            "load wiped call"
+        );
+        assert_eq!(cfg.serial.port, "COM4");
+        assert_eq!(cfg.beacon.text, "hello beacon");
+        assert_eq!(cfg.colors.monitor_foreground, "LightGreen");
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("[session.chrome]"),
+            "missing chrome must be its own section:\n{written}"
+        );
+        assert!(
+            !written
+                .lines()
+                .any(|line| line.trim().starts_with("chrome.")),
+            "chrome defaults must not be dotted inside [session]:\n{written}"
+        );
+
+        cfg.set_mycall_for_slot(0, "OE1NEW").unwrap();
+        cfg.persist_mycall(&path).unwrap();
+        cfg.session.chrome.qrg_mhz = 145.5;
+        cfg.session.chrome.echo = 3;
+        cfg.persist_chrome(&path).unwrap();
+        cfg.window.x = Some(10.0);
+        cfg.window.y = Some(20.0);
+        cfg.window.width = 800.0;
+        cfg.window.height = 600.0;
+        cfg.persist_window(&path).unwrap();
+        cfg.persist_setup(&path).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        let chrome_headers = after
+            .lines()
+            .filter(|line| line.trim().eq_ignore_ascii_case("[session.chrome]"))
+            .count();
+        assert_eq!(chrome_headers, 1, "chrome section was duplicated:\n{after}");
+        assert!(
+            !after.lines().any(|line| line.trim().starts_with("chrome.")),
+            "dotted chrome defaults survived the save:\n{after}"
+        );
+        let again = Config::load(&path).unwrap();
+        assert_eq!(
+            again.station.mycall[0], "OE1NEW",
+            "call did not stick:\n{after}"
+        );
+        assert_eq!(
+            again.session.chrome.qrg_mhz, 145.5,
+            "qrg did not stick:\n{after}"
+        );
+        assert_eq!(again.session.chrome.echo, 3, "echo did not stick:\n{after}");
+        assert_eq!(again.serial.port, "COM4", "port became default:\n{after}");
+        assert_eq!(again.serial.baud, 19200, "baud became default:\n{after}");
+        assert_eq!(
+            again.beacon.text, "hello beacon",
+            "beacon became default:\n{after}"
+        );
+        assert_eq!(again.beacon.period_minutes, 15);
+        assert_eq!(again.colors.monitor_foreground, "LightGreen");
+        assert_eq!(again.station.locator, "JO32KX");
+        assert_eq!(again.session.channels, 4);
+        assert_eq!(again.session.language, "de");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn dotted_chrome_save_replaces_the_default_qrg() {
+        let dir = std::env::temp_dir().join(format!(
+            "gpng-dot-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[station]
+mycall = ["DL0ABC"]
+
+[session]
+channels = 4
+chrome.qrg_mhz = 27.235
+chrome.echo = 2047
+
+[serial]
+port = "COM4"
+"#,
+        )
+        .unwrap();
+
+        let mut cfg = Config::load(&path).unwrap();
+        assert_eq!(cfg.station.mycall[0], "DL0ABC");
+        assert_eq!(cfg.session.chrome.qrg_mhz, 27.235);
+        cfg.session.chrome.qrg_mhz = 145.5;
+        cfg.persist_chrome(&path).unwrap();
+        cfg.set_mycall_for_slot(0, "OE1NEW").unwrap();
+        cfg.persist_mycall(&path).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !after.lines().any(|line| line.trim().starts_with("chrome.")),
+            "default dotted qrg was left behind:\n{after}"
+        );
+        let again = Config::load(&path).unwrap();
+        assert_eq!(
+            again.station.mycall[0], "OE1NEW",
+            "call did not stick:\n{after}"
+        );
+        assert_eq!(
+            again.session.chrome.qrg_mhz, 145.5,
+            "qrg stayed at the default:\n{after}"
+        );
+        assert_eq!(again.serial.port, "COM4", "port became default:\n{after}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn duplicate_chrome_keeps_the_saved_section() {
+        let dir = std::env::temp_dir().join(format!(
+            "gpng-dup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[station]
+mycall = ["OE1NEW"]
+
+[session]
+channels = 4
+chrome.qrg_mhz = 27.235
+chrome.echo = 2047
+
+[session.chrome]
+qrg_mhz = 145.5
+echo = 3
+"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(&path).unwrap();
+        assert_eq!(cfg.station.mycall[0], "OE1NEW");
+        assert_eq!(cfg.session.chrome.qrg_mhz, 145.5);
+        assert_eq!(cfg.session.chrome.echo, 3);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !written
+                .lines()
+                .any(|line| line.trim().starts_with("chrome.")),
+            "dotted default chrome was kept:\n{written}"
+        );
+        let again = Config::load(&path).unwrap();
+        assert_eq!(again.session.chrome.qrg_mhz, 145.5);
+        assert_eq!(again.station.mycall[0], "OE1NEW");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn old_config_keeps_saved_values_and_fills_new_settings() {

@@ -2,8 +2,9 @@
 //!
 //! The pane is a sheet: Date, Time, Port (when TFPCX has more than one
 //! radio), From, To, Packets, Last Payload, and Via. Packet counts stay
-//! short (`30`, `1.3k`, `26m`). The payload is kept in full; the sheet
-//! clips it for the cell. Older `MHEARD.json` files omit `packets`,
+//! short (`30`, `1.3k`, `26m`). The payload is stored as one line (line
+//! breaks become spaces) and kept in full. The sheet clips it to the
+//! Last Payload column. Older `MHEARD.json` files omit `packets`,
 //! `last_msg`, and `port`; those load as one packet, an empty message,
 //! and no port.
 //!
@@ -52,7 +53,8 @@ pub struct HeardStation {
     /// list, so it was heard at least once).
     #[serde(default = "one_packet")]
     pub packets: u64,
-    /// Last information text, kept in full. The list shows at most 60 characters.
+    /// Last information text, one line, kept in full. Line breaks are stored
+    /// as spaces. The sheet clips this to the Last Payload column.
     #[serde(default)]
     pub last_msg: String,
     /// Radio port this station was last heard on. Absent in older files.
@@ -164,6 +166,12 @@ impl MheardList {
         // Older lists kept `//Name` rows that had never been heard.
         list.entries.retain(|e| e.listed());
         list.sort_newest_first();
+        // Payloads saved before line breaks were flattened get rewritten
+        // as one line the next time the file is read.
+        if flatten_payloads(&mut list.entries) {
+            list.dirty = true;
+            let _ = list.save();
+        }
         list
     }
 
@@ -252,6 +260,7 @@ impl MheardList {
     }
 
     pub fn save(&mut self) -> Result<(), String> {
+        flatten_payloads(&mut self.entries);
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -450,7 +459,23 @@ fn compact_count(n: u64) -> String {
     }
 }
 
-/// One display line of the information field. Controls become spaces.
+/// Rewrite any stored payload that still contains a line break.
+fn flatten_payloads(entries: &mut [HeardStation]) -> bool {
+    let mut changed = false;
+    for entry in entries {
+        let flat = normalize_last_msg(&entry.last_msg);
+        if flat != entry.last_msg {
+            entry.last_msg = flat;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// One display line of the information field.
+///
+/// Enter, other controls, and runs of whitespace become a single space,
+/// so the stored payload stays on one table row.
 fn normalize_last_msg(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut pending_space = false;
@@ -787,6 +812,36 @@ mod tests {
         let raw = fs::read_to_string(&path).unwrap();
         assert!(raw.contains("\"packets\""));
         assert!(raw.contains("\"last_msg\""));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_flattens_a_stored_payload_that_still_has_line_breaks() {
+        let path = std::env::temp_dir().join(format!(
+            "gpng-mheard-flat-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let raw = r#"[{
+            "date": "2026/11/18",
+            "time": "11:12",
+            "call": "DL1ABC",
+            "to": "APRS",
+            "via": "",
+            "heard_ms": 1,
+            "packets": 1,
+            "last_msg": "line one\r\nline two\nline three"
+        }]"#;
+        fs::write(&path, raw).unwrap();
+        let loaded = MheardList::load_from(path.clone());
+        assert_eq!(loaded.entries[0].last_msg, "line one line two line three");
+        let again = fs::read_to_string(&path).unwrap();
+        assert!(again.contains("line one line two line three"));
+        assert!(!again.contains("\\n"));
+        assert!(!again.contains("\\r"));
         let _ = fs::remove_file(&path);
     }
 }

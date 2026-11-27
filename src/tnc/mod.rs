@@ -214,6 +214,13 @@ pub enum TncCommand {
         ports: Vec<u8>,
         data: Vec<u8>,
     },
+    /// TFPCX: frames between these calls leave on `port` and skip the
+    /// heard-station table. `None` clears that pin.
+    PinRadio {
+        local: String,
+        remote: String,
+        port: Option<u8>,
+    },
     /// Send connected/unproto information, never interpreted as a TNC command.
     HostData {
         channel: u8,

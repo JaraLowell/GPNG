@@ -7,7 +7,8 @@
 //! data/           ICONS.GP, *.GPI, MHEARD.json, KISS.INI, WA8DED.INI, sounds
 //! data/LOCALES/   ISO UI + //Help packs (en.toml, de.toml, …);
 //!                 offline map packs (MAP_COUNTRIES/REGIONS/PLACES.json)
-//! data/LOG/       gpng.log (shell), `<base call>.GPL` (journal), PADS/
+//! data/LOG/       gpng.log (this run), lastlog.log (the run before it),
+//!                 `<base call>.GPL` (journal), PADS/
 //! ```
 //!
 //! Lookups try the current directory, the executable directory, then the

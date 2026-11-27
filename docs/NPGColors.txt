@@ -1,0 +1,18 @@
+NPG maps ASCII control/Esc bytes 1 (^A) through 15 (^O) and 16 (^P) through 31 (^_) directly to the standard 16-color DOS CGA/VGA BIOS text palette
+
+1. Direct 1-Byte Color Codes (^A – ^O):
+In Borland Pascal DOS programs, ASCII values 1 through 15 correspond directly to the standard 16-color CGA/EGA/VGA foreground palette (0 = Black is skipped so null bytes don't terminate strings):
+
+^A / ^Q		1 / 17	Blue / Bright Blue
+^B / ^R		2 / 18	Green / Bright Green
+^C / ^S		3 / 19	Cyan / Bright Cyan
+^D / ^T		4 / 20	Red / Bright Red
+^E / ^U		5 / 21	Magenta / Bright Magenta
+^F / ^V		6 / 22	Brown / Yellow
+^G / ^W		7 / 23	Light Gray (Default) / White
+^H		8	Dark Gray (or Reset to default body text color)
+^P		16	Highlight / Bright Accent (used for borders & callsigns)
+
+(note: ^J = LF 0x0A and ^M = CR 0x0D are reserved for line endings, which is why NPG shifted higher/bright colors or used ^P as an escape/highlight toggle).
+
+So ^H more or less Resets to client default; 

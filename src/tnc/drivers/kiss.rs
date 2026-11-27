@@ -422,6 +422,7 @@ fn handle_command(
         TncCommand::Session(_) => {
             return Err(TncError::Protocol("unadapted session command".into()))
         }
+        TncCommand::PinRadio { .. } => {}
         TncCommand::HostData { .. } => {
             return Err(TncError::Protocol(
                 "hostmode data sent to KISS driver".into(),
@@ -491,7 +492,6 @@ fn write_kiss_data(
 ) -> Result<(), TncError> {
     let frame = encode_kiss(port, 0, payload)?;
     link.write_all(&frame)?;
-    debug!(port, len = payload.len(), "tx kiss frame");
     let _ = events.blocking_send(TncEvent::KissTx {
         port,
         frame: payload.to_vec(),

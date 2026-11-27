@@ -210,6 +210,19 @@ impl Link {
         self.awaiting_write = false;
     }
 
+    /// I frames the peer has not acknowledged, oldest first.
+    ///
+    /// A SABM starts the sequence numbers again at 0. Those frames were never
+    /// accepted, so they are sent again instead of being dropped.
+    fn take_unacked(&mut self) -> VecDeque<Packet> {
+        let mut pending = VecDeque::new();
+        if let Some(cur) = self.inflight.take() {
+            pending.push_back(cur.packet);
+        }
+        pending.append(&mut self.queued);
+        pending
+    }
+
     fn tx(&self, frame: Vec<u8>, out: &mut Vec<Action>) {
         out.push(Action::Transmit {
             port: self.config.port,
@@ -597,7 +610,15 @@ impl KissSessions {
                     return out;
                 }
                 let was_connected = link.state == State::Connected;
+                // The peer's SABM never acknowledged the I frames already
+                // sent. Keep them and transmit again from N(S) = 0.
+                let unacked = if was_connected {
+                    link.take_unacked()
+                } else {
+                    VecDeque::new()
+                };
                 link.reset(now);
+                link.queued = unacked;
                 link.state = State::Connected;
                 link.via = ax25::reply_via(&frame.via);
                 reply(&frame, port, true, &mut out);
@@ -610,6 +631,7 @@ impl KissSessions {
                 } else {
                     link.connected(true, &mut out);
                 }
+                link.send_next(now, &mut out);
             } else if let Some(config) = self.incoming_config(port, &frame.dest) {
                 let mut link = Link::new(
                     config.clone(),
@@ -1240,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn session_remote_disc_or_sabm_flushes_old_data_on_only_that_circuit() {
+    fn session_remote_disc_drops_one_circuit_and_sabm_resends_unacked() {
         for reset in [false, true] {
             let now = Instant::now();
             let mut e = setup(&[(1, 0, "N0ME"), (2, 0, "N0ME")]);
@@ -1258,9 +1280,22 @@ mod tests {
             assert_eq!(frames(&out)[0].1.kind, Ax25FrameType::Ua);
             assert!(e.links[&2].inflight.is_some());
             if reset {
-                assert!(e.links[&1].inflight.is_none());
-                assert!(e.links[&1].queued.is_empty());
-                assert_eq!(frames(&send(&mut e, 1, 4, now))[0].1.ns, 0);
+                let info = frames(&out)
+                    .into_iter()
+                    .find(|(_, frame)| frame.kind == Ax25FrameType::Info)
+                    .expect("unacked I frame");
+                assert_eq!((info.1.ns, info.1.nr, info.1.info), (0, 0, vec![1]));
+                assert_eq!(e.links[&1].inflight.as_ref().map(|cur| cur.ns), Some(0));
+                assert_eq!(
+                    e.links[&1]
+                        .queued
+                        .iter()
+                        .map(|packet| packet.data.clone())
+                        .collect::<Vec<_>>(),
+                    vec![vec![2]]
+                );
+                assert!(frames(&send(&mut e, 1, 4, now)).is_empty());
+                assert_eq!(e.links[&1].queued.len(), 2);
             } else {
                 assert!(!e.links.contains_key(&1));
             }

@@ -4,7 +4,7 @@
 pub const APP_NAME: &str = "Graphic Packet NG";
 
 /// Operator-facing version (e.g. clock `GP V2.01`, banner `v2.01`).
-pub const APP_VERSION: &str = "2.02";
+pub const APP_VERSION: &str = "2.03";
 
 /// Modern authors shown on the Monitor startup credits line.
 pub const APP_AUTHORS: &str = "MichTronics (PD4MV) and Jara Lowel";

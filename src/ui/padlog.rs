@@ -21,6 +21,8 @@ use chrono::Local;
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{Color32, FontId};
 
+use super::links::{self, TextLink};
+
 /// Default monospace size for the Monitor, channel, BBS-Menu, and Box-List pads.
 pub const PAD_FONT_SIZE: f32 = 14.0;
 
@@ -285,6 +287,10 @@ impl TextPad {
     /// space. A `<0xNN>` / `<U+NNNN>` token moves as a whole.
     /// Header and payload keep their stored role colours.
     pub fn layout_job_wrapped(&self, columns: usize) -> LayoutJob {
+        self.layout_job_wrapped_links(columns).0
+    }
+
+    pub fn layout_job_wrapped_links(&self, columns: usize) -> (LayoutJob, Vec<TextLink>) {
         self.layout_job_wrapped_indent(columns, true, false, false, None, None, None, PAD_FONT_SIZE)
     }
 
@@ -299,6 +305,18 @@ impl TextPad {
         info: Color32,
         font_px: f32,
     ) -> LayoutJob {
+        self.layout_job_monitor_links(columns, header, payload, info, font_px)
+            .0
+    }
+
+    pub fn layout_job_monitor_links(
+        &self,
+        columns: usize,
+        header: Color32,
+        payload: Color32,
+        info: Color32,
+        font_px: f32,
+    ) -> (LayoutJob, Vec<TextLink>) {
         self.layout_job_wrapped_indent(
             columns,
             true,
@@ -319,6 +337,16 @@ impl TextPad {
         inverse: Color32,
         font_px: f32,
     ) -> LayoutJob {
+        self.layout_job_spy_links(columns, fg, inverse, font_px).0
+    }
+
+    pub fn layout_job_spy_links(
+        &self,
+        columns: usize,
+        fg: Color32,
+        inverse: Color32,
+        font_px: f32,
+    ) -> (LayoutJob, Vec<TextLink>) {
         self.layout_job_wrapped_indent(
             columns,
             false,
@@ -343,13 +371,23 @@ impl TextPad {
             None,
             PAD_FONT_SIZE,
         )
+        .0
     }
 
     /// Channel, BBS-Menu, and Box-List. `umlaut` maps the seven Latin-1
     /// glyphs back to äöüÄÖÜß. The stored row stays CP437, so turning the
     /// button off shows the shift again.
     pub fn layout_job_channel(&self, columns: usize, umlaut: bool, font_px: f32) -> LayoutJob {
-        self.layout_job_channel_show(columns, umlaut, true, None, font_px)
+        self.layout_job_channel_links(columns, umlaut, font_px).0
+    }
+
+    pub fn layout_job_channel_links(
+        &self,
+        columns: usize,
+        umlaut: bool,
+        font_px: f32,
+    ) -> (LayoutJob, Vec<TextLink>) {
+        self.layout_job_channel_show_links(columns, umlaut, true, None, font_px)
     }
 
     /// Same as [`layout_job_channel`]. `show_own` false leaves our rows in the
@@ -362,6 +400,18 @@ impl TextPad {
         system: Option<Color32>,
         font_px: f32,
     ) -> LayoutJob {
+        self.layout_job_channel_show_links(columns, umlaut, show_own, system, font_px)
+            .0
+    }
+
+    pub fn layout_job_channel_show_links(
+        &self,
+        columns: usize,
+        umlaut: bool,
+        show_own: bool,
+        system: Option<Color32>,
+        font_px: f32,
+    ) -> (LayoutJob, Vec<TextLink>) {
         self.layout_job_wrapped_indent(
             columns, false, umlaut, !show_own, None, system, None, font_px,
         )
@@ -377,8 +427,10 @@ impl TextPad {
         system_color: Option<Color32>,
         spy_colors: Option<(Color32, Color32)>,
         font_px: f32,
-    ) -> LayoutJob {
+    ) -> (LayoutJob, Vec<TextLink>) {
         let mut job = LayoutJob::default();
+        let mut links = Vec::new();
+        let mut job_chars = 0usize;
         let font = FontId::monospace(font_px);
         let mut first = true;
         for line in &self.lines {
@@ -450,6 +502,10 @@ impl TextPad {
             } else {
                 wrap_monitor_rows(text, runs, columns, indent, base)
             };
+            // A wrapped address is still one target. The newline and the
+            // continuation indent are not part of the source line.
+            let content_base = job_chars + usize::from(!first);
+            links.extend(place_line_links(text, &rows, indent, content_base));
             for row in rows {
                 if !first {
                     job.append(
@@ -461,6 +517,7 @@ impl TextPad {
                             ..Default::default()
                         },
                     );
+                    job_chars += 1;
                 }
                 first = false;
                 if row.is_empty() {
@@ -480,6 +537,7 @@ impl TextPad {
                             color = inverse;
                         }
                     }
+                    job_chars += run.text.chars().count();
                     job.append(
                         &run.text,
                         0.0,
@@ -492,7 +550,7 @@ impl TextPad {
                 }
             }
         }
-        job
+        (job, links)
     }
 
     pub fn load_log(&mut self, path: &Path) {
@@ -898,6 +956,107 @@ fn push_run(runs: &mut Vec<PadRun>, text: String, color: Color32) {
     });
 }
 
+/// Map `http://` / `https://` ranges in one source line onto the laid-out
+/// pane. Wrap breaks become a newline plus `indent` spaces, and the space
+/// that caused the break is not drawn. Those extras are not part of the address.
+fn place_line_links(
+    source: &str,
+    rows: &[Vec<PadRun>],
+    indent: usize,
+    base: usize,
+) -> Vec<TextLink> {
+    let urls = links::find_urls(source);
+    if urls.is_empty() {
+        return Vec::new();
+    }
+    let mut frag = String::new();
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            frag.push('\n');
+        }
+        for run in row {
+            frag.push_str(&run.text);
+        }
+    }
+    let src: Vec<char> = source.chars().collect();
+    let shown: Vec<char> = frag.chars().collect();
+    // Source character → character index in `frag`.
+    let mut at = vec![0usize; src.len()];
+    let mut si = 0;
+    let mut fi = 0;
+    let mut row = 0usize;
+    let mut row_start = true;
+    while si < src.len() && fi < shown.len() {
+        if row_start && row > 0 {
+            let mut skipped = 0;
+            while skipped < indent && fi < shown.len() && shown[fi] == ' ' {
+                fi += 1;
+                skipped += 1;
+            }
+            row_start = false;
+            continue;
+        }
+        row_start = false;
+        if shown[fi] == '\n' {
+            if src[si] == ' ' {
+                si += 1;
+            }
+            fi += 1;
+            row += 1;
+            row_start = true;
+            continue;
+        }
+        at[si] = fi;
+        si += 1;
+        fi += 1;
+    }
+    if si != src.len() {
+        // The wrap and the source diverged. Keep the address clickable as one
+        // span when it still sits on a single visual row.
+        return urls
+            .into_iter()
+            .filter_map(|(start, end, url)| {
+                let slice: String = src.get(start..end)?.iter().collect();
+                let pos = frag.find(&slice)?;
+                let start = frag[..pos].chars().count();
+                Some(TextLink {
+                    start: base + start,
+                    end: base + start + slice.chars().count(),
+                    url,
+                })
+            })
+            .collect();
+    }
+    let mut out = Vec::new();
+    for (start, end, url) in urls {
+        if start >= at.len() || end == 0 || end > at.len() {
+            continue;
+        }
+        let mut span_start = at[start];
+        let mut prev = at[start];
+        for index in start + 1..end {
+            let here = at[index];
+            if here > prev + 1 {
+                push_link(&mut out, base, span_start, prev + 1, &url);
+                span_start = here;
+            }
+            prev = here;
+        }
+        push_link(&mut out, base, span_start, prev + 1, &url);
+    }
+    out
+}
+
+fn push_link(out: &mut Vec<TextLink>, base: usize, start: usize, end: usize, url: &str) {
+    if end > start {
+        out.push(TextLink {
+            start: base + start,
+            end: base + end,
+            url: url.to_string(),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,5 +1083,52 @@ mod tests {
             assert_eq!(line.kind.color(), PAD_SYSTEM);
         }
         assert_eq!(pad.transcript_text(), "received\r\nsent\r\n");
+    }
+
+    #[test]
+    fn a_wrapped_url_stays_one_address() {
+        let mut pad = TextPad::new(4);
+        let line = "een versie ouder staat op https://github.com/JaraLowell/GPNG/releases";
+        pad.push(PadKind::Incoming, line);
+        let (job, links) = pad.layout_job_channel_links(28, false, PAD_FONT_SIZE);
+        assert!(
+            job.text.contains('\n'),
+            "the line should wrap at 28 columns"
+        );
+        let urls: Vec<_> = links.iter().map(|link| link.url.as_str()).collect();
+        assert!(
+            urls.iter()
+                .all(|url| *url == "https://github.com/JaraLowell/GPNG/releases"),
+            "{urls:?}"
+        );
+        assert!(links.len() > 1, "a wrap should split the clickable span");
+        let chars: Vec<char> = job.text.chars().collect();
+        let mut rebuilt = String::new();
+        for link in &links {
+            rebuilt.extend(chars[link.start..link.end].iter().copied());
+        }
+        assert_eq!(rebuilt, "https://github.com/JaraLowell/GPNG/releases");
+    }
+
+    #[test]
+    fn monitor_wrap_keeps_the_url_across_the_indent() {
+        let mut pad = TextPad::new(4);
+        let line = "een versie ouder staat op https://github.com/JaraLowell/GPNG/releases";
+        pad.push_monitor(PadKind::Incoming, line);
+        let (job, links) = pad.layout_job_monitor_links(
+            28,
+            Color32::WHITE,
+            Color32::WHITE,
+            Color32::WHITE,
+            PAD_FONT_SIZE,
+        );
+        assert!(job.text.contains('\n'));
+        let chars: Vec<char> = job.text.chars().collect();
+        let mut rebuilt = String::new();
+        for link in &links {
+            assert_eq!(link.url, "https://github.com/JaraLowell/GPNG/releases");
+            rebuilt.extend(chars[link.start..link.end].iter().copied());
+        }
+        assert_eq!(rebuilt, "https://github.com/JaraLowell/GPNG/releases");
     }
 }

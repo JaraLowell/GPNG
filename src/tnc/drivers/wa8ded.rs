@@ -158,6 +158,7 @@ fn run_hostmode(
             Ok(TncCommand::Session(_)) => {
                 return Err(TncError::Protocol("unadapted session command".into()));
             }
+            Ok(TncCommand::PinRadio { .. }) => {}
             Err(mpsc::error::TryRecvError::Empty) => {}
         }
         let now = Instant::now();

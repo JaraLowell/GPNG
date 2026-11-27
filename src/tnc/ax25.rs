@@ -605,7 +605,12 @@ pub fn digipeat_beacon(frame: &Ax25Frame, mycall: &str) -> Option<Vec<u8>> {
         .via
         .iter()
         .enumerate()
-        .map(|(i, call)| (call.as_str(), frame.repeated.get(i).copied().unwrap_or(false)))
+        .map(|(i, call)| {
+            (
+                call.as_str(),
+                frame.repeated.get(i).copied().unwrap_or(false),
+            )
+        })
         .collect();
     hops.push((mycall, true));
     Some(build_ui_hops(&frame.dest, &frame.src, &hops, &frame.info))
